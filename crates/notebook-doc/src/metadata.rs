@@ -151,9 +151,11 @@ pub struct DenoMetadata {
 
 /// Snapshot of notebook-level metadata for Automerge sync.
 ///
-/// Covers kernelspec + language_info + runt namespace — everything needed for
-/// kernel detection and environment resolution. Serialized as JSON and stored
-/// in the Automerge document under `metadata.notebook_metadata`.
+/// Three named fields (`kernelspec`, `language_info`, `runt`) plus a
+/// catch-all `extras` bag for unknown/third-party top-level keys
+/// (`jupytext`, `colab`, `vscode`, etc.). The flatten attribute means
+/// unknown keys at deserialize land in `extras` automatically; on
+/// serialize they emit at top level alongside the typed keys.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct NotebookMetadataSnapshot {
     /// Jupyter kernel specification (runtime type detection).
@@ -165,13 +167,28 @@ pub struct NotebookMetadataSnapshot {
     pub language_info: Option<LanguageInfoSnapshot>,
 
     /// Runt-specific metadata (dependencies, trust, environment config).
+    ///
+    /// Defaulted on deserialize so a notebook without `metadata.runt`
+    /// (i.e. every vanilla Jupyter notebook) deserializes cleanly.
+    /// Skipped on serialize when empty so we don't stamp a synthetic
+    /// `runt: { schema_version: "1" }` blob on every save of an
+    /// unrelated notebook.
+    #[serde(default, skip_serializing_if = "RuntMetadata::is_empty")]
     pub runt: RuntMetadata,
+
+    /// Catch-all for unknown/third-party top-level metadata keys.
+    /// See `RuntMetadata::extra` for the analogous pattern one level
+    /// deeper.
+    #[serde(default, flatten)]
+    pub extras: std::collections::BTreeMap<String, serde_json::Value>,
 }
 
 /// Kernelspec snapshot for Automerge sync.
 ///
-/// Mirrors the standard Jupyter `kernelspec` metadata fields.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+/// Mirrors standard Jupyter `kernelspec` fields plus an `extras` bag
+/// so sub-keys we don't model (`env`, `interrupt_mode`, `metadata`)
+/// still round-trip.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct KernelspecSnapshot {
     /// Kernel name (e.g. `"python3"`, `"deno"`).
     pub name: String,
@@ -180,18 +197,28 @@ pub struct KernelspecSnapshot {
     /// Programming language (e.g. `"python"`, `"typescript"`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub language: Option<String>,
+
+    /// Catch-all for unknown kernelspec sub-fields.
+    #[serde(default, flatten)]
+    pub extras: std::collections::BTreeMap<String, serde_json::Value>,
 }
 
 /// Language info snapshot for Automerge sync.
 ///
-/// Mirrors the standard Jupyter `language_info` metadata fields (subset).
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+/// Jupyter kernels populate many fields here after startup
+/// (`codemirror_mode`, `mimetype`, `file_extension`, `nbconvert_exporter`,
+/// `pygments_lexer`). Extras bag preserves them.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct LanguageInfoSnapshot {
     /// Language name (e.g. `"python"`, `"typescript"`).
     pub name: String,
     /// Language version (e.g. `"3.11.5"`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
+
+    /// Catch-all for unknown language_info sub-fields.
+    #[serde(default, flatten)]
+    pub extras: std::collections::BTreeMap<String, serde_json::Value>,
 }
 
 // ── Conversions to/from serde_json::Value ────────────────────────────
@@ -202,45 +229,45 @@ impl NotebookMetadataSnapshot {
     ///
     /// Extracts `kernelspec`, `language_info`, and `runt` (with fallback to
     /// legacy `uv`/`conda` top-level keys).
+    /// Build a snapshot from raw notebook metadata JSON (from an `.ipynb`).
+    ///
+    /// Uses `serde_json::from_value::<Self>` so all three snapshot levels
+    /// (top, kernelspec, language_info) populate their `extras` bags in
+    /// one pass. `#[serde(default)]` on `runt` means vanilla Jupyter
+    /// notebooks (no `metadata.runt` key) deserialize cleanly.
+    ///
+    /// After the serde pass, runs one legacy fallback: if `runt.uv` or
+    /// `runt.conda` is unset but a top-level `uv` or `conda` exists (old
+    /// pre-`runt.*` notebooks), fold them into `runt` and remove from
+    /// extras so save doesn't emit them at both depths.
+    ///
+    /// Malformed input (serde_json::from_value fails for any reason)
+    /// produces a default snapshot. Today's per-field tolerance is
+    /// sacrificed for a cleaner single-call shape; malformed notebooks
+    /// are rare enough that silent partial success hides more bugs than
+    /// it saves data.
     pub fn from_metadata_value(metadata: &serde_json::Value) -> Self {
-        let kernelspec = metadata
-            .get("kernelspec")
-            .and_then(|v| serde_json::from_value::<KernelspecSnapshot>(v.clone()).ok());
+        let mut snapshot: NotebookMetadataSnapshot =
+            serde_json::from_value(metadata.clone()).unwrap_or_default();
 
-        let language_info = metadata
-            .get("language_info")
-            .and_then(|v| serde_json::from_value::<LanguageInfoSnapshot>(v.clone()).ok());
-
-        let runt = metadata
-            .get("runt")
-            .and_then(|v| serde_json::from_value::<RuntMetadata>(v.clone()).ok())
-            .unwrap_or_else(|| {
-                // Fallback: try legacy top-level uv/conda keys
-                let uv = metadata
-                    .get("uv")
-                    .and_then(|v| serde_json::from_value::<UvInlineMetadata>(v.clone()).ok());
-                let conda = metadata
-                    .get("conda")
-                    .and_then(|v| serde_json::from_value::<CondaInlineMetadata>(v.clone()).ok());
-
-                RuntMetadata {
-                    schema_version: "1".to_string(),
-                    env_id: None,
-                    uv,
-                    conda,
-                    pixi: None,
-                    deno: None,
-                    trust_signature: None,
-                    trust_timestamp: None,
-                    extra: std::collections::BTreeMap::new(),
-                }
-            });
-
-        NotebookMetadataSnapshot {
-            kernelspec,
-            language_info,
-            runt,
+        // Legacy fallback: older notebooks stored uv/conda at the top
+        // level (not inside runt). Fold them into runt.* if typed runt
+        // didn't already carry them. Always strip from extras so save
+        // doesn't emit them at both depths.
+        let legacy_uv = snapshot.extras.remove("uv");
+        let legacy_conda = snapshot.extras.remove("conda");
+        if snapshot.runt.uv.is_none() {
+            if let Some(raw_uv) = legacy_uv {
+                snapshot.runt.uv = serde_json::from_value(raw_uv).ok();
+            }
         }
+        if snapshot.runt.conda.is_none() {
+            if let Some(raw_conda) = legacy_conda {
+                snapshot.runt.conda = serde_json::from_value(raw_conda).ok();
+            }
+        }
+
+        snapshot
     }
 
     /// Merge this snapshot into a mutable JSON object representing the full
@@ -651,6 +678,24 @@ impl Default for RuntMetadata {
     }
 }
 
+impl RuntMetadata {
+    /// Returns true when this metadata carries no daemon-relevant state.
+    /// Used by `skip_serializing_if` so vanilla Jupyter notebooks don't
+    /// get a synthetic `runt: { schema_version: "1" }` stamped on first
+    /// save, which would churn git-tracked notebooks.
+    pub fn is_empty(&self) -> bool {
+        self.env_id.is_none()
+            && self.uv.is_none()
+            && self.conda.is_none()
+            && self.pixi.is_none()
+            && self.deno.is_none()
+            && self.trust_signature.is_none()
+            && self.trust_timestamp.is_none()
+            && self.extra.is_empty()
+            && self.schema_version == "1"
+    }
+}
+
 // ── Package name extraction ──────────────────────────────────────────
 
 /// Extract the base package name from a PEP 508 or conda dependency specifier.
@@ -808,10 +853,12 @@ mod tests {
                 name: "python3".to_string(),
                 display_name: "Python 3".to_string(),
                 language: Some("python".to_string()),
+                extras: std::collections::BTreeMap::new(),
             }),
             language_info: Some(LanguageInfoSnapshot {
                 name: "python".to_string(),
                 version: Some("3.11.5".to_string()),
+                extras: std::collections::BTreeMap::new(),
             }),
             runt: RuntMetadata {
                 schema_version: "1".to_string(),
@@ -828,6 +875,7 @@ mod tests {
                 trust_timestamp: None,
                 extra: std::collections::BTreeMap::new(),
             },
+            extras: std::collections::BTreeMap::new(),
         };
 
         let json = serde_json::to_string(&snapshot).unwrap();
@@ -905,9 +953,11 @@ mod tests {
                 name: "python3".to_string(),
                 display_name: "Python 3".to_string(),
                 language: Some("python".to_string()),
+                extras: std::collections::BTreeMap::new(),
             }),
             language_info: None,
             runt: RuntMetadata::new_uv("env-1".to_string()),
+            extras: std::collections::BTreeMap::new(),
         };
 
         snapshot.merge_into_metadata_value(&mut metadata).unwrap();
@@ -1116,9 +1166,11 @@ mod tests {
                 name: name.to_string(),
                 display_name: name.to_string(),
                 language: language.map(String::from),
+                extras: std::collections::BTreeMap::new(),
             }),
             language_info: None,
             runt: RuntMetadata::default(),
+            extras: std::collections::BTreeMap::new(),
         }
     }
 
@@ -1128,8 +1180,10 @@ mod tests {
             language_info: Some(LanguageInfoSnapshot {
                 name: name.to_string(),
                 version: None,
+                extras: std::collections::BTreeMap::new(),
             }),
             runt: RuntMetadata::default(),
+            extras: std::collections::BTreeMap::new(),
         }
     }
 
@@ -1249,6 +1303,7 @@ mod tests {
                 name: "deno".to_string(),
                 display_name: "Deno".to_string(),
                 language: Some("typescript".to_string()),
+                extras: std::collections::BTreeMap::new(),
             }),
             runt: RuntMetadata {
                 uv: Some(UvInlineMetadata {
@@ -1277,12 +1332,15 @@ mod tests {
                 name: "python3".to_string(),
                 display_name: "Python 3".to_string(),
                 language: None,
+                extras: std::collections::BTreeMap::new(),
             }),
             language_info: Some(LanguageInfoSnapshot {
                 name: "typescript".to_string(),
                 version: None,
+                extras: std::collections::BTreeMap::new(),
             }),
             runt: RuntMetadata::default(),
+            extras: std::collections::BTreeMap::new(),
         };
         assert_eq!(s.detect_runtime(), Some("python".to_string()));
     }
@@ -1579,5 +1637,306 @@ mod tests {
         assert!(s.kernelspec.is_none());
         assert!(s.language_info.is_none());
         assert_eq!(s.runt.schema_version, "1");
+    }
+}
+
+#[cfg(test)]
+mod is_empty_tests {
+    use super::*;
+
+    #[test]
+    fn default_runt_is_empty() {
+        let runt = RuntMetadata::default();
+        assert!(
+            runt.is_empty(),
+            "freshly-defaulted RuntMetadata should be empty"
+        );
+    }
+
+    #[test]
+    fn runt_with_env_id_is_not_empty() {
+        let runt = RuntMetadata {
+            env_id: Some("abc-123".to_string()),
+            ..RuntMetadata::default()
+        };
+        assert!(!runt.is_empty());
+    }
+
+    #[test]
+    fn runt_with_uv_is_not_empty() {
+        let runt = RuntMetadata {
+            uv: Some(UvInlineMetadata {
+                dependencies: vec!["pandas".to_string()],
+                requires_python: None,
+                prerelease: None,
+            }),
+            ..RuntMetadata::default()
+        };
+        assert!(!runt.is_empty());
+    }
+
+    #[test]
+    fn runt_with_trust_signature_is_not_empty() {
+        let runt = RuntMetadata {
+            trust_signature: Some("hmac-sha256:deadbeef".to_string()),
+            ..RuntMetadata::default()
+        };
+        assert!(!runt.is_empty());
+    }
+
+    #[test]
+    fn runt_with_extra_key_is_not_empty() {
+        let mut runt = RuntMetadata::default();
+        runt.extra
+            .insert("future_field".to_string(), serde_json::json!(42));
+        // Mutating a field through a mutable method (BTreeMap::insert)
+        // rather than reassigning via Default::default() — clippy is
+        // fine with this shape.
+        assert!(!runt.is_empty());
+    }
+
+    #[test]
+    fn runt_with_modified_schema_version_is_not_empty() {
+        let runt = RuntMetadata {
+            schema_version: "2".to_string(),
+            ..RuntMetadata::default()
+        };
+        assert!(!runt.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod snapshot_extras_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn vanilla_snapshot_serializes_without_runt_key() {
+        let snap = NotebookMetadataSnapshot::default();
+        let v = serde_json::to_value(&snap).unwrap();
+        let obj = v.as_object().expect("snapshot serializes to object");
+        assert!(
+            !obj.contains_key("runt"),
+            "vanilla snapshot must not emit runt key, got: {v}"
+        );
+    }
+
+    #[test]
+    fn snapshot_with_runt_env_id_serializes_runt_key() {
+        let mut snap = NotebookMetadataSnapshot::default();
+        snap.runt.env_id = Some("abc".to_string());
+        let v = serde_json::to_value(&snap).unwrap();
+        assert!(v.as_object().unwrap().contains_key("runt"));
+    }
+
+    #[test]
+    fn snapshot_deserializes_when_runt_absent() {
+        let v = json!({
+            "kernelspec": {"name": "python3", "display_name": "Python 3"},
+        });
+        let snap: NotebookMetadataSnapshot = serde_json::from_value(v).unwrap();
+        assert!(snap.runt.is_empty());
+        assert_eq!(snap.kernelspec.as_ref().unwrap().name, "python3");
+    }
+
+    #[test]
+    fn extras_round_trip_at_top_level() {
+        let v = json!({
+            "kernelspec": {"name": "python3", "display_name": "Python 3"},
+            "jupytext": {"paired_paths": [["notebook.py", "py:percent"]]},
+            "colab": {"kernel": {"name": "python3"}},
+        });
+        let snap: NotebookMetadataSnapshot = serde_json::from_value(v.clone()).unwrap();
+        assert_eq!(snap.extras.len(), 2);
+        assert!(snap.extras.contains_key("jupytext"));
+        assert!(snap.extras.contains_key("colab"));
+
+        let round_tripped = serde_json::to_value(&snap).unwrap();
+        assert_eq!(round_tripped["jupytext"], v["jupytext"]);
+        assert_eq!(round_tripped["colab"], v["colab"]);
+    }
+}
+
+#[cfg(test)]
+mod nested_extras_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn kernelspec_extras_round_trip() {
+        let v = json!({
+            "name": "python3",
+            "display_name": "Python 3 (ipykernel)",
+            "language": "python",
+            "env": {"PYTHONPATH": "/opt/extra"},
+            "interrupt_mode": "signal",
+            "metadata": {"debugger": true},
+        });
+        let ks: KernelspecSnapshot = serde_json::from_value(v.clone()).unwrap();
+        assert_eq!(ks.extras.len(), 3);
+        assert!(ks.extras.contains_key("env"));
+        assert!(ks.extras.contains_key("interrupt_mode"));
+        assert!(ks.extras.contains_key("metadata"));
+
+        let out = serde_json::to_value(&ks).unwrap();
+        assert_eq!(out["env"], v["env"]);
+        assert_eq!(out["interrupt_mode"], v["interrupt_mode"]);
+        assert_eq!(out["metadata"], v["metadata"]);
+    }
+
+    #[test]
+    fn language_info_extras_round_trip() {
+        let v = json!({
+            "name": "python",
+            "version": "3.11.5",
+            "codemirror_mode": {"name": "ipython", "version": 3},
+            "mimetype": "text/x-python",
+            "file_extension": ".py",
+            "nbconvert_exporter": "python",
+            "pygments_lexer": "ipython3",
+        });
+        let li: LanguageInfoSnapshot = serde_json::from_value(v.clone()).unwrap();
+        assert_eq!(li.extras.len(), 5);
+        for key in [
+            "codemirror_mode",
+            "mimetype",
+            "file_extension",
+            "nbconvert_exporter",
+            "pygments_lexer",
+        ] {
+            assert!(li.extras.contains_key(key), "missing {key}");
+        }
+
+        let out = serde_json::to_value(&li).unwrap();
+        assert_eq!(out["codemirror_mode"], v["codemirror_mode"]);
+        assert_eq!(out["mimetype"], v["mimetype"]);
+        assert_eq!(out["pygments_lexer"], v["pygments_lexer"]);
+    }
+}
+
+#[cfg(test)]
+mod from_metadata_value_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn vanilla_jupyter_notebook_deserializes() {
+        let v = json!({
+            "kernelspec": {
+                "name": "python3",
+                "display_name": "Python 3 (ipykernel)",
+                "language": "python",
+            },
+            "language_info": {
+                "name": "python",
+                "version": "3.11.5",
+            },
+        });
+        let snap = NotebookMetadataSnapshot::from_metadata_value(&v);
+        assert!(snap.kernelspec.is_some());
+        assert!(snap.language_info.is_some());
+        assert!(snap.runt.is_empty());
+        assert!(snap.extras.is_empty());
+    }
+
+    #[test]
+    fn unknown_top_level_keys_become_extras() {
+        let v = json!({
+            "kernelspec": {"name": "python3", "display_name": "Python 3"},
+            "jupytext": {"paired_paths": [["x.py", "py:percent"]]},
+            "colab": {"kernel": {"name": "python3"}},
+        });
+        let snap = NotebookMetadataSnapshot::from_metadata_value(&v);
+        assert!(snap.extras.contains_key("jupytext"));
+        assert!(snap.extras.contains_key("colab"));
+        assert!(!snap.extras.contains_key("kernelspec"));
+    }
+
+    #[test]
+    fn legacy_top_level_uv_is_absorbed_into_runt() {
+        let v = json!({
+            "uv": {"dependencies": ["pandas"]},
+        });
+        let snap = NotebookMetadataSnapshot::from_metadata_value(&v);
+        assert!(snap.runt.uv.is_some());
+        assert_eq!(snap.runt.uv.as_ref().unwrap().dependencies, vec!["pandas"]);
+        assert!(
+            !snap.extras.contains_key("uv"),
+            "legacy uv must be folded into runt, not left in extras"
+        );
+    }
+
+    #[test]
+    fn legacy_top_level_conda_is_absorbed_into_runt() {
+        let v = json!({
+            "conda": {
+                "dependencies": ["numpy"],
+                "channels": ["conda-forge"],
+            },
+        });
+        let snap = NotebookMetadataSnapshot::from_metadata_value(&v);
+        assert!(snap.runt.conda.is_some());
+        assert_eq!(
+            snap.runt.conda.as_ref().unwrap().dependencies,
+            vec!["numpy"]
+        );
+        assert!(!snap.extras.contains_key("conda"));
+    }
+
+    #[test]
+    fn runt_wins_when_both_typed_and_legacy_present() {
+        let v = json!({
+            "runt": {
+                "schema_version": "1",
+                "uv": {"dependencies": ["fresh"]},
+            },
+            "uv": {"dependencies": ["stale"]},
+        });
+        let snap = NotebookMetadataSnapshot::from_metadata_value(&v);
+        assert_eq!(
+            snap.runt.uv.as_ref().unwrap().dependencies,
+            vec!["fresh"],
+            "runt.uv must win over legacy top-level uv"
+        );
+        assert!(!snap.extras.contains_key("uv"));
+    }
+
+    #[test]
+    fn full_round_trip_preserves_all_levels() {
+        let v = json!({
+            "kernelspec": {
+                "name": "python3",
+                "display_name": "Python 3",
+                "language": "python",
+                "env": {"A": "1"},
+            },
+            "language_info": {
+                "name": "python",
+                "version": "3.11.5",
+                "codemirror_mode": {"name": "ipython", "version": 3},
+                "file_extension": ".py",
+            },
+            "runt": {
+                "schema_version": "1",
+                "uv": {"dependencies": ["pandas"]},
+            },
+            "jupytext": {"paired_paths": [["x.py", "py:percent"]]},
+            "vscode": {"extension": {"id": "ms-python.python"}},
+        });
+        let snap = NotebookMetadataSnapshot::from_metadata_value(&v);
+        let out = serde_json::to_value(&snap).unwrap();
+
+        assert_eq!(out["kernelspec"]["env"], v["kernelspec"]["env"]);
+        assert_eq!(
+            out["language_info"]["codemirror_mode"],
+            v["language_info"]["codemirror_mode"]
+        );
+        assert_eq!(
+            out["language_info"]["file_extension"],
+            v["language_info"]["file_extension"]
+        );
+        assert_eq!(out["runt"]["uv"], v["runt"]["uv"]);
+        assert_eq!(out["jupytext"], v["jupytext"]);
+        assert_eq!(out["vscode"], v["vscode"]);
     }
 }

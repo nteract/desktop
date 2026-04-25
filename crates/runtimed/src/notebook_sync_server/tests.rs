@@ -490,6 +490,7 @@ fn snapshot_with_uv(deps: Vec<String>) -> NotebookMetadataSnapshot {
             trust_timestamp: None,
             extra: std::collections::BTreeMap::new(),
         },
+        extras: std::collections::BTreeMap::new(),
     }
 }
 
@@ -513,6 +514,7 @@ fn snapshot_with_conda(deps: Vec<String>) -> NotebookMetadataSnapshot {
             trust_timestamp: None,
             extra: std::collections::BTreeMap::new(),
         },
+        extras: std::collections::BTreeMap::new(),
     }
 }
 
@@ -532,6 +534,7 @@ fn snapshot_empty() -> NotebookMetadataSnapshot {
             trust_timestamp: None,
             extra: std::collections::BTreeMap::new(),
         },
+        extras: std::collections::BTreeMap::new(),
     }
 }
 
@@ -593,6 +596,7 @@ fn test_check_inline_deps_uv_priority() {
             trust_timestamp: None,
             extra: std::collections::BTreeMap::new(),
         },
+        extras: std::collections::BTreeMap::new(),
     };
     use notebook_protocol::connection::{EnvSource, PackageManager};
     assert_eq!(
@@ -627,6 +631,7 @@ fn test_check_inline_deps_deno() {
             trust_timestamp: None,
             extra: std::collections::BTreeMap::new(),
         },
+        extras: std::collections::BTreeMap::new(),
     };
     use notebook_protocol::connection::EnvSource;
     assert_eq!(check_inline_deps(&snapshot), Some(EnvSource::Deno));
@@ -741,10 +746,20 @@ async fn test_save_notebook_to_disk_preserves_unknown_metadata() {
         .unwrap();
     }
 
-    // Add a cell and save
+    // Load from disk first (populates doc with extras + runt). Then
+    // edit + save. The doc is the source of truth for metadata; the
+    // save path no longer reads the on-disk file to rescue unknown
+    // keys, so they must be in the doc.
     {
         let mut doc = room.doc.write().await;
-        doc.add_cell(0, "cell1", "code").unwrap();
+        crate::notebook_sync_server::load_notebook_from_disk(
+            &mut doc,
+            &notebook_path,
+            &room.blob_store,
+        )
+        .await
+        .unwrap();
+        doc.add_cell(1, "cell1", "code").unwrap();
         doc.update_source("cell1", "x = 1").unwrap();
     }
 
@@ -755,7 +770,7 @@ async fn test_save_notebook_to_disk_preserves_unknown_metadata() {
     let saved: serde_json::Value = serde_json::from_str(&content).unwrap();
     let metadata = saved.get("metadata").unwrap();
 
-    // custom_extension should be preserved
+    // custom_extension should be preserved (via top-level extras)
     assert!(
         metadata.get("custom_extension").is_some(),
         "custom_extension should be preserved"
@@ -765,18 +780,19 @@ async fn test_save_notebook_to_disk_preserves_unknown_metadata() {
         Some(&serde_json::json!("value"))
     );
 
-    // jupyter should be preserved
+    // jupyter should be preserved (via top-level extras)
     assert!(
         metadata.get("jupyter").is_some(),
         "jupyter metadata should be preserved"
     );
 
-    // trust_signature in runt should be preserved (deep-merge)
+    // trust_signature in runt should be preserved (the typed runt
+    // field round-trips trust_signature explicitly).
     let runt = metadata.get("runt").unwrap();
     assert_eq!(
         runt.get("trust_signature"),
         Some(&serde_json::json!("abc123")),
-        "trust_signature should be preserved via deep-merge"
+        "trust_signature should be preserved"
     );
 }
 
@@ -3396,8 +3412,16 @@ async fn test_check_and_update_trust_state_no_deps() {
             .unwrap();
     }
 
-    // Write an empty metadata snapshot (no dependencies).
-    let snapshot = snapshot_empty();
+    // Write a minimal snapshot with a kernelspec so get_metadata_snapshot
+    // returns Some (post-refactor: empty runt alone produces a None
+    // snapshot because no keys get written to the doc).
+    let mut snapshot = snapshot_empty();
+    snapshot.kernelspec = Some(crate::notebook_metadata::KernelspecSnapshot {
+        name: "python3".to_string(),
+        display_name: "Python 3".to_string(),
+        language: Some("python".to_string()),
+        extras: std::collections::BTreeMap::new(),
+    });
     {
         let mut doc = room.doc.write().await;
         doc.set_metadata_snapshot(&snapshot).unwrap();
@@ -3476,8 +3500,16 @@ async fn test_check_and_update_trust_state_idempotent() {
             .unwrap();
     }
 
-    // Write an empty metadata snapshot to trigger Untrusted → NoDependencies.
-    let snapshot = snapshot_empty();
+    // Write a minimal snapshot with a kernelspec so get_metadata_snapshot
+    // returns Some (post-refactor: empty runt alone produces a None
+    // snapshot because no keys get written to the doc).
+    let mut snapshot = snapshot_empty();
+    snapshot.kernelspec = Some(crate::notebook_metadata::KernelspecSnapshot {
+        name: "python3".to_string(),
+        display_name: "Python 3".to_string(),
+        language: Some("python".to_string()),
+        extras: std::collections::BTreeMap::new(),
+    });
     {
         let mut doc = room.doc.write().await;
         doc.set_metadata_snapshot(&snapshot).unwrap();
@@ -6036,4 +6068,262 @@ async fn test_clone_as_ephemeral_rejects_invalid_uuid() {
         }
         other => panic!("Expected Error, got {other:?}"),
     }
+}
+
+#[tokio::test]
+async fn test_save_round_trips_unknown_top_level_metadata() {
+    // Regression test for Codex F3 on PR #2192: unknown top-level
+    // metadata keys (jupytext, colab, etc.) must survive save.
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (room, notebook_path) = test_room_with_path(&tmp, "with-jupytext.ipynb");
+
+    std::fs::write(
+        &notebook_path,
+        r#"{
+ "cells": [],
+ "metadata": {
+  "kernelspec": {"name": "python3", "display_name": "Python 3", "language": "python"},
+  "language_info": {"name": "python", "version": "3.11.5"},
+  "jupytext": {"paired_paths": [["x.py", "py:percent"]]},
+  "colab": {"kernel": {"name": "python3"}}
+ },
+ "nbformat": 4,
+ "nbformat_minor": 5
+}"#,
+    )
+    .unwrap();
+
+    {
+        let mut doc = room.doc.write().await;
+        crate::notebook_sync_server::load_notebook_from_disk(
+            &mut doc,
+            &notebook_path,
+            &room.blob_store,
+        )
+        .await
+        .unwrap();
+    }
+
+    save_notebook_to_disk(&room, None).await.unwrap();
+
+    let written = std::fs::read_to_string(&notebook_path).unwrap();
+    let nb: serde_json::Value = serde_json::from_str(&written).unwrap();
+
+    assert_eq!(
+        nb["metadata"]["jupytext"],
+        serde_json::json!({"paired_paths": [["x.py", "py:percent"]]}),
+        "jupytext key must survive save round-trip"
+    );
+    assert_eq!(
+        nb["metadata"]["colab"],
+        serde_json::json!({"kernel": {"name": "python3"}}),
+        "colab key must survive save round-trip"
+    );
+}
+
+#[tokio::test]
+async fn test_save_does_not_stamp_synthetic_runt_on_vanilla_notebook() {
+    // Vanilla Jupyter notebook: no metadata.runt. Save must NOT add
+    // `runt: { schema_version: "1" }` — that would churn every
+    // git-tracked Jupyter notebook the user opens.
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (room, notebook_path) = test_room_with_path(&tmp, "vanilla.ipynb");
+
+    std::fs::write(
+        &notebook_path,
+        r#"{
+ "cells": [],
+ "metadata": {
+  "kernelspec": {"name": "python3", "display_name": "Python 3", "language": "python"},
+  "language_info": {"name": "python", "version": "3.11.5"}
+ },
+ "nbformat": 4,
+ "nbformat_minor": 5
+}"#,
+    )
+    .unwrap();
+
+    {
+        let mut doc = room.doc.write().await;
+        crate::notebook_sync_server::load_notebook_from_disk(
+            &mut doc,
+            &notebook_path,
+            &room.blob_store,
+        )
+        .await
+        .unwrap();
+    }
+
+    save_notebook_to_disk(&room, None).await.unwrap();
+
+    let written = std::fs::read_to_string(&notebook_path).unwrap();
+    let nb: serde_json::Value = serde_json::from_str(&written).unwrap();
+
+    assert!(
+        !nb["metadata"].as_object().unwrap().contains_key("runt"),
+        "vanilla notebook save must not stamp metadata.runt, got: {}",
+        nb["metadata"]
+    );
+}
+
+#[tokio::test]
+async fn test_clone_as_ephemeral_carries_unknown_metadata_extras() {
+    // Codex F3 on PR #2192: clone must preserve unknown top-level
+    // metadata keys from source (jupytext, colab, vscode, etc.).
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (rooms, path_index, docs_dir, blob_store) = clone_test_scaffolding(&tmp);
+
+    let source_uuid = Uuid::new_v4();
+    let source_room = get_or_create_room(
+        &rooms,
+        &path_index,
+        source_uuid,
+        Some(tmp.path().join("source.ipynb")),
+        &docs_dir,
+        blob_store.clone(),
+        false,
+    )
+    .await;
+
+    // Seed source doc with kernelspec (so snapshot is Some) plus
+    // unknown extras.
+    {
+        let mut doc = source_room.doc.write().await;
+        let mut snap = snapshot_empty();
+        snap.kernelspec = Some(crate::notebook_metadata::KernelspecSnapshot {
+            name: "python3".to_string(),
+            display_name: "Python 3".to_string(),
+            language: Some("python".to_string()),
+            extras: std::collections::BTreeMap::new(),
+        });
+        snap.extras.insert(
+            "jupytext".to_string(),
+            serde_json::json!({"paired_paths": [["x.py", "py:percent"]]}),
+        );
+        snap.extras.insert(
+            "vscode".to_string(),
+            serde_json::json!({"extension": {"id": "ms-python.python"}}),
+        );
+        doc.set_metadata_snapshot(&snap).unwrap();
+    }
+
+    let response = crate::requests::clone_notebook::handle_inner(
+        &rooms,
+        &path_index,
+        &docs_dir,
+        blob_store.clone(),
+        source_uuid.to_string(),
+    )
+    .await;
+
+    let clone_id = match response {
+        NotebookResponse::NotebookCloned { notebook_id, .. } => notebook_id,
+        other => panic!("Expected NotebookCloned, got {other:?}"),
+    };
+    let clone_uuid = Uuid::parse_str(&clone_id).unwrap();
+    let clone_room = rooms
+        .lock()
+        .await
+        .get(&clone_uuid)
+        .cloned()
+        .expect("clone room should be registered");
+
+    let clone_snap = clone_room
+        .doc
+        .read()
+        .await
+        .get_metadata_snapshot()
+        .expect("clone has metadata");
+    assert!(
+        clone_snap.extras.contains_key("jupytext"),
+        "jupytext must survive clone; extras: {:?}",
+        clone_snap.extras.keys().collect::<Vec<_>>()
+    );
+    assert!(
+        clone_snap.extras.contains_key("vscode"),
+        "vscode must survive clone; extras: {:?}",
+        clone_snap.extras.keys().collect::<Vec<_>>()
+    );
+    assert_eq!(
+        clone_snap.extras["jupytext"],
+        serde_json::json!({"paired_paths": [["x.py", "py:percent"]]})
+    );
+}
+
+#[tokio::test]
+async fn test_file_watcher_replacement_drops_stale_top_level_metadata() {
+    // Codex P2#2 on PR #2198: the file-watcher path calls
+    // set_metadata_snapshot with whatever the new on-disk file
+    // parsed to. When a user deletes an unknown top-level key (say,
+    // `colab`) from the .ipynb, the daemon must converge — not keep
+    // the stale Automerge map around forever. Simulate the reload by
+    // parsing two different on-disk states and applying each.
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (room, notebook_path) = test_room_with_path(&tmp, "watcher-reload.ipynb");
+
+    // First state: both jupytext and colab present.
+    std::fs::write(
+        &notebook_path,
+        r#"{
+ "cells": [],
+ "metadata": {
+  "kernelspec": {"name": "python3", "display_name": "Python 3", "language": "python"},
+  "language_info": {"name": "python", "version": "3.11.5"},
+  "jupytext": {"paired_paths": [["x.py", "py:percent"]]},
+  "colab": {"kernel": {"name": "python3"}}
+ },
+ "nbformat": 4,
+ "nbformat_minor": 5
+}"#,
+    )
+    .unwrap();
+    {
+        let mut doc = room.doc.write().await;
+        crate::notebook_sync_server::load_notebook_from_disk(
+            &mut doc,
+            &notebook_path,
+            &room.blob_store,
+        )
+        .await
+        .unwrap();
+    }
+
+    let first = {
+        let doc = room.doc.read().await;
+        doc.get_metadata_snapshot().unwrap()
+    };
+    assert!(first.extras.contains_key("jupytext"));
+    assert!(first.extras.contains_key("colab"));
+
+    // Second state: colab removed, jupytext kept. This mirrors the
+    // watcher path exactly: parse_metadata_from_ipynb + set_metadata_snapshot.
+    let new_json = serde_json::json!({
+        "cells": [],
+        "metadata": {
+            "kernelspec": {"name": "python3", "display_name": "Python 3", "language": "python"},
+            "language_info": {"name": "python", "version": "3.11.5"},
+            "jupytext": {"paired_paths": [["x.py", "py:percent"]]}
+        },
+        "nbformat": 4,
+        "nbformat_minor": 5
+    });
+    let new_meta = crate::notebook_sync_server::parse_metadata_from_ipynb(&new_json).unwrap();
+    {
+        let mut doc = room.doc.write().await;
+        doc.set_metadata_snapshot(&new_meta).unwrap();
+    }
+
+    let after = {
+        let doc = room.doc.read().await;
+        doc.get_metadata_snapshot().unwrap()
+    };
+    assert!(
+        after.extras.contains_key("jupytext"),
+        "jupytext must still be present after replace"
+    );
+    assert!(
+        !after.extras.contains_key("colab"),
+        "colab must be deleted from doc after replacement snapshot omits it; extras={:?}",
+        after.extras.keys().collect::<Vec<_>>()
+    );
 }

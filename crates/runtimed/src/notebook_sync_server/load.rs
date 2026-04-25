@@ -822,10 +822,12 @@ pub(crate) fn build_new_notebook_metadata(
                 name: "deno".to_string(),
                 display_name: "Deno".to_string(),
                 language: Some("typescript".to_string()),
+                extras: std::collections::BTreeMap::new(),
             },
             LanguageInfoSnapshot {
                 name: "typescript".to_string(),
                 version: None,
+                extras: std::collections::BTreeMap::new(),
             },
             RuntMetadata {
                 schema_version: "1".to_string(),
@@ -911,10 +913,12 @@ pub(crate) fn build_new_notebook_metadata(
                     name: "python3".to_string(),
                     display_name: "Python 3".to_string(),
                     language: Some("python".to_string()),
+                    extras: std::collections::BTreeMap::new(),
                 },
                 LanguageInfoSnapshot {
                     name: "python".to_string(),
                     version: None,
+                    extras: std::collections::BTreeMap::new(),
                 },
                 RuntMetadata {
                     schema_version: "1".to_string(),
@@ -935,6 +939,7 @@ pub(crate) fn build_new_notebook_metadata(
         kernelspec: Some(kernelspec),
         language_info: Some(language_info),
         runt,
+        extras: std::collections::BTreeMap::new(),
     }
 }
 

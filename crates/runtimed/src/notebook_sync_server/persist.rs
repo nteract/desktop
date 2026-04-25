@@ -63,34 +63,24 @@ pub(crate) async fn save_notebook_to_disk(
         },
     };
 
-    // Read existing .ipynb as raw bytes (used for metadata preservation and
-    // content-hash guard to skip no-op writes).
+    // Read existing .ipynb as raw bytes. Used for two things: the
+    // content-hash guard further down (skip no-op writes), and the
+    // `nbformat_minor` floor (not carried in the doc today).
+    // We no longer read metadata from disk — the doc carries unknown
+    // top-level keys as extras, so everything round-trips through
+    // the snapshot.
     let existing_raw: Option<Vec<u8>> = match tokio::fs::read(&notebook_path).await {
         Ok(bytes) => Some(bytes),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
         Err(e) => {
             warn!(
                 "[notebook-sync] Failed to read existing notebook {:?}: {}, \
-                 will create new without preserving metadata",
+                 will create new",
                 notebook_path, e
             );
             None
         }
     };
-    let existing: Option<serde_json::Value> =
-        existing_raw
-            .as_ref()
-            .and_then(|bytes| match serde_json::from_slice(bytes) {
-                Ok(value) => Some(value),
-                Err(e) => {
-                    warn!(
-                        "[notebook-sync] Existing notebook at {:?} has invalid JSON ({}), \
-                     will overwrite without preserving metadata",
-                        notebook_path, e
-                    );
-                    None
-                }
-            });
 
     // Read cells, metadata, and per-cell execution_ids from the doc.
     let (cells, metadata_snapshot, cell_execution_ids) = {
@@ -152,19 +142,17 @@ pub(crate) async fn save_notebook_to_disk(
         resolved_outputs_by_cell.insert(cell.id.clone(), resolved);
     }
 
-    // Build metadata by merging synced snapshot onto existing
-    let mut metadata = existing
+    // Metadata comes entirely from the doc. No disk rescue; the
+    // snapshot carries unknown keys as extras.
+    let metadata = metadata_snapshot
         .as_ref()
-        .and_then(|nb| nb.get("metadata"))
-        .cloned()
-        .unwrap_or(serde_json::json!({}));
-
-    if let Some(ref snapshot) = metadata_snapshot {
-        snapshot.merge_into_metadata_value(&mut metadata).ok();
-    }
+        .map(|s| serde_json::to_value(s).unwrap_or_else(|_| serde_json::json!({})))
+        .unwrap_or_else(|| serde_json::json!({}));
 
     // We always write cell IDs, so nbformat_minor is at least 5.
-    let existing_minor = existing
+    let existing_minor = existing_raw
+        .as_ref()
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(bytes).ok())
         .as_ref()
         .and_then(|nb| nb.get("nbformat_minor"))
         .and_then(|v| v.as_u64())

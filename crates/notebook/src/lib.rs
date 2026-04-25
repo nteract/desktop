@@ -517,6 +517,10 @@ async fn get_raw_metadata_additional(
 
 /// Reconstruct an nbformat Metadata from a NotebookMetadataSnapshot.
 /// Used to bridge sync-handle metadata to extraction functions that expect nbformat types.
+///
+/// Carries `extras` at all three levels (top, kernelspec, language_info) into
+/// `additional` so unknown keys (jupytext, colab, vscode, etc.) survive the
+/// nbformat round-trip used by the pyproject/pixi import commands.
 fn metadata_from_snapshot(
     snapshot: &notebook_doc::metadata::NotebookMetadataSnapshot,
 ) -> nbformat::v4::Metadata {
@@ -528,7 +532,11 @@ fn metadata_from_snapshot(
                 name: ks.name.clone(),
                 display_name: ks.display_name.clone(),
                 language: ks.language.clone(),
-                additional: std::collections::HashMap::new(),
+                additional: ks
+                    .extras
+                    .iter()
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect(),
             }),
         language_info: snapshot
             .language_info
@@ -537,35 +545,33 @@ fn metadata_from_snapshot(
                 name: li.name.clone(),
                 version: li.version.clone(),
                 codemirror_mode: None,
-                additional: std::collections::HashMap::new(),
+                additional: li
+                    .extras
+                    .iter()
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect(),
             }),
         authors: None,
-        additional: std::collections::HashMap::new(),
+        additional: snapshot
+            .extras
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect(),
     };
-    // Serialize runt back to additional
-    if let Ok(runt_value) = serde_json::to_value(&snapshot.runt) {
-        metadata.additional.insert("runt".to_string(), runt_value);
+    // Serialize runt back to additional when it carries real data. Vanilla
+    // Jupyter notebooks (no runt key on disk) must not gain a synthetic
+    // runt blob here, or the import commands would churn them.
+    if !snapshot.runt.is_empty() {
+        if let Ok(runt_value) = serde_json::to_value(&snapshot.runt) {
+            metadata.additional.insert("runt".to_string(), runt_value);
+        }
     }
     metadata
 }
 
 /// Helper to create a default empty NotebookMetadataSnapshot.
 fn default_metadata_snapshot() -> notebook_doc::metadata::NotebookMetadataSnapshot {
-    notebook_doc::metadata::NotebookMetadataSnapshot {
-        kernelspec: None,
-        language_info: None,
-        runt: notebook_doc::metadata::RuntMetadata {
-            schema_version: "1".to_string(),
-            env_id: None,
-            uv: None,
-            conda: None,
-            pixi: None,
-            deno: None,
-            trust_signature: None,
-            trust_timestamp: None,
-            extra: std::collections::BTreeMap::new(),
-        },
-    }
+    notebook_doc::metadata::NotebookMetadataSnapshot::default()
 }
 
 /// Convert nbformat metadata into a `NotebookMetadataSnapshot`.
@@ -581,6 +587,11 @@ fn snapshot_from_nbformat(
         name: ks.name.clone(),
         display_name: ks.display_name.clone(),
         language: ks.language.clone(),
+        extras: ks
+            .additional
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect(),
     });
 
     let language_info = metadata
@@ -589,6 +600,11 @@ fn snapshot_from_nbformat(
         .map(|li| LanguageInfoSnapshot {
             name: li.name.clone(),
             version: li.version.clone(),
+            extras: li
+                .additional
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect(),
         });
 
     let convert_legacy_deno = |dd: crate::deno_env::DenoDependencies| DenoMetadata {
@@ -602,7 +618,13 @@ fn snapshot_from_nbformat(
         },
     };
 
+    // Track which top-level keys got absorbed into typed fields so we can
+    // strip them from extras. Otherwise `runt` (and the legacy `uv`/`conda`/
+    // `deno` fallbacks) would double-write at both depths on save.
+    let mut absorbed_keys: Vec<&str> = Vec::new();
+
     let runt = if let Some(runt_value) = metadata.additional.get("runt") {
+        absorbed_keys.push("runt");
         let mut runt_meta = serde_json::from_value::<RuntMetadata>(runt_value.clone())
             .unwrap_or_else(|_| RuntMetadata {
                 schema_version: "1".to_string(),
@@ -622,6 +644,7 @@ fn snapshot_from_nbformat(
                     serde_json::from_value::<crate::deno_env::DenoDependencies>(deno_value.clone())
                 {
                     runt_meta.deno = Some(convert_legacy_deno(dd));
+                    absorbed_keys.push("deno");
                 }
             }
         }
@@ -632,10 +655,16 @@ fn snapshot_from_nbformat(
             .additional
             .get("uv")
             .and_then(|v| serde_json::from_value::<UvInlineMetadata>(v.clone()).ok());
+        if uv.is_some() {
+            absorbed_keys.push("uv");
+        }
         let conda = metadata
             .additional
             .get("conda")
             .and_then(|v| serde_json::from_value::<CondaInlineMetadata>(v.clone()).ok());
+        if conda.is_some() {
+            absorbed_keys.push("conda");
+        }
         let deno = metadata
             .additional
             .get("deno")
@@ -643,7 +672,14 @@ fn snapshot_from_nbformat(
                 serde_json::from_value::<crate::deno_env::DenoDependencies>(v.clone()).ok()
             })
             .map(convert_legacy_deno);
+        if deno.is_some() {
+            absorbed_keys.push("deno");
+        }
 
+        // An empty RuntMetadata here means the nbformat had no runt-shaped
+        // data at all. is_empty() will return true and set_metadata_snapshot
+        // will skip the runt write on save, which is what vanilla Jupyter
+        // notebooks need to round-trip without a synthetic stamp.
         RuntMetadata {
             schema_version: "1".to_string(),
             env_id: None,
@@ -657,10 +693,18 @@ fn snapshot_from_nbformat(
         }
     };
 
+    let extras = metadata
+        .additional
+        .iter()
+        .filter(|(k, _)| !absorbed_keys.contains(&k.as_str()))
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+
     NotebookMetadataSnapshot {
         kernelspec,
         language_info,
         runt,
+        extras,
     }
 }
 
@@ -1119,6 +1163,200 @@ mod tests {
     #[test]
     fn reopen_action_ignores_reopen_events_when_a_window_is_visible() {
         assert_eq!(reopen_action(true, 1), None);
+    }
+
+    mod bridge_helper_extras {
+        use super::super::{metadata_from_snapshot, snapshot_from_nbformat};
+        use notebook_doc::metadata::{
+            KernelspecSnapshot, LanguageInfoSnapshot, NotebookMetadataSnapshot, RuntMetadata,
+        };
+        use serde_json::json;
+
+        #[test]
+        fn metadata_from_snapshot_carries_all_three_extras_levels() {
+            let snapshot = NotebookMetadataSnapshot {
+                kernelspec: Some(KernelspecSnapshot {
+                    name: "python3".to_string(),
+                    display_name: "Python 3".to_string(),
+                    language: Some("python".to_string()),
+                    extras: [("env".to_string(), json!({"FOO": "bar"}))]
+                        .into_iter()
+                        .collect(),
+                }),
+                language_info: Some(LanguageInfoSnapshot {
+                    name: "python".to_string(),
+                    version: Some("3.11".to_string()),
+                    extras: [("mimetype".to_string(), json!("text/x-python"))]
+                        .into_iter()
+                        .collect(),
+                }),
+                runt: RuntMetadata::default(),
+                extras: [
+                    (
+                        "jupytext".to_string(),
+                        json!({"formats": "ipynb,py:percent"}),
+                    ),
+                    ("colab".to_string(), json!({"provenance": []})),
+                ]
+                .into_iter()
+                .collect(),
+            };
+
+            let meta = metadata_from_snapshot(&snapshot);
+
+            assert_eq!(
+                meta.additional.get("jupytext"),
+                Some(&json!({"formats": "ipynb,py:percent"}))
+            );
+            assert_eq!(
+                meta.additional.get("colab"),
+                Some(&json!({"provenance": []}))
+            );
+            assert_eq!(
+                meta.kernelspec.as_ref().unwrap().additional.get("env"),
+                Some(&json!({"FOO": "bar"}))
+            );
+            assert_eq!(
+                meta.language_info
+                    .as_ref()
+                    .unwrap()
+                    .additional
+                    .get("mimetype"),
+                Some(&json!("text/x-python"))
+            );
+            // Vanilla runt -> must not appear as a synthetic stamp.
+            assert!(!meta.additional.contains_key("runt"));
+        }
+
+        #[test]
+        fn snapshot_from_nbformat_preserves_extras_and_strips_absorbed_keys() {
+            let mut additional = std::collections::HashMap::new();
+            additional.insert(
+                "jupytext".to_string(),
+                json!({"formats": "ipynb,py:percent"}),
+            );
+            additional.insert("vscode".to_string(), json!({"interpreter": "venv"}));
+            additional.insert(
+                "runt".to_string(),
+                json!({"schema_version": "1", "env_id": "uv-abc123"}),
+            );
+
+            let mut ks_additional = std::collections::HashMap::new();
+            ks_additional.insert("env".to_string(), json!({"FOO": "bar"}));
+            let mut li_additional = std::collections::HashMap::new();
+            li_additional.insert("mimetype".to_string(), json!("text/x-python"));
+
+            let metadata = nbformat::v4::Metadata {
+                kernelspec: Some(nbformat::v4::KernelSpec {
+                    name: "python3".to_string(),
+                    display_name: "Python 3".to_string(),
+                    language: Some("python".to_string()),
+                    additional: ks_additional,
+                }),
+                language_info: Some(nbformat::v4::LanguageInfo {
+                    name: "python".to_string(),
+                    version: Some("3.11".to_string()),
+                    codemirror_mode: None,
+                    additional: li_additional,
+                }),
+                authors: None,
+                additional,
+            };
+
+            let snapshot = snapshot_from_nbformat(&metadata);
+
+            assert_eq!(
+                snapshot.extras.get("jupytext"),
+                Some(&json!({"formats": "ipynb,py:percent"}))
+            );
+            assert_eq!(
+                snapshot.extras.get("vscode"),
+                Some(&json!({"interpreter": "venv"}))
+            );
+            // runt got absorbed into the typed field, must NOT leak into extras.
+            assert!(!snapshot.extras.contains_key("runt"));
+            assert_eq!(snapshot.runt.env_id.as_deref(), Some("uv-abc123"));
+
+            assert_eq!(
+                snapshot.kernelspec.as_ref().unwrap().extras.get("env"),
+                Some(&json!({"FOO": "bar"}))
+            );
+            assert_eq!(
+                snapshot
+                    .language_info
+                    .as_ref()
+                    .unwrap()
+                    .extras
+                    .get("mimetype"),
+                Some(&json!("text/x-python"))
+            );
+        }
+
+        #[test]
+        fn snapshot_from_nbformat_strips_legacy_uv_conda_deno_when_absorbed() {
+            let mut additional = std::collections::HashMap::new();
+            additional.insert("uv".to_string(), json!({"dependencies": ["pandas"]}));
+            additional.insert("conda".to_string(), json!({"channels": ["conda-forge"]}));
+            additional.insert("jupytext".to_string(), json!({"formats": "py"}));
+
+            let metadata = nbformat::v4::Metadata {
+                kernelspec: None,
+                language_info: None,
+                authors: None,
+                additional,
+            };
+
+            let snapshot = snapshot_from_nbformat(&metadata);
+
+            // Legacy uv/conda got folded into runt, must not also appear in extras.
+            assert!(!snapshot.extras.contains_key("uv"));
+            assert!(!snapshot.extras.contains_key("conda"));
+            assert!(snapshot.runt.uv.is_some());
+            assert!(snapshot.runt.conda.is_some());
+            // Unknown key survives.
+            assert_eq!(
+                snapshot.extras.get("jupytext"),
+                Some(&json!({"formats": "py"}))
+            );
+        }
+
+        #[test]
+        fn bridge_round_trip_preserves_unknown_keys_at_every_level() {
+            let original = NotebookMetadataSnapshot {
+                kernelspec: Some(KernelspecSnapshot {
+                    name: "python3".to_string(),
+                    display_name: "Python 3".to_string(),
+                    language: Some("python".to_string()),
+                    extras: [("env".to_string(), json!({"PATH": "/usr/bin"}))]
+                        .into_iter()
+                        .collect(),
+                }),
+                language_info: Some(LanguageInfoSnapshot {
+                    name: "python".to_string(),
+                    version: Some("3.11".to_string()),
+                    extras: [("file_extension".to_string(), json!(".py"))]
+                        .into_iter()
+                        .collect(),
+                }),
+                runt: RuntMetadata::default(),
+                extras: [("jupytext".to_string(), json!({"formats": "ipynb,py"}))]
+                    .into_iter()
+                    .collect(),
+            };
+
+            let meta = metadata_from_snapshot(&original);
+            let round_tripped = snapshot_from_nbformat(&meta);
+
+            assert_eq!(round_tripped.extras, original.extras);
+            assert_eq!(
+                round_tripped.kernelspec.as_ref().unwrap().extras,
+                original.kernelspec.as_ref().unwrap().extras
+            );
+            assert_eq!(
+                round_tripped.language_info.as_ref().unwrap().extras,
+                original.language_info.as_ref().unwrap().extras
+            );
+        }
     }
 }
 
