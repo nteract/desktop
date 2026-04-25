@@ -922,6 +922,83 @@ async fn test_save_notebook_to_disk_with_outputs() {
     } else {
         panic!("Expected code cell");
     }
+
+    // Runtime-only output_id must not hit disk. Check the raw bytes, since
+    // the typed `nbformat::v4::Output` would silently drop unknown fields.
+    assert!(
+        !content.contains("output_id"),
+        "saved notebook should not contain runtime-only output_id field, got:\n{content}"
+    );
+}
+
+/// Saves should produce byte-identical output twice in a row for the same
+/// state, and top-level + cell keys should be alphabetically sorted. This is
+/// the git-diff churn fix: a no-op save produces the same bytes, and edits
+/// produce minimal, stable diffs because key order is deterministic.
+#[tokio::test]
+async fn test_save_notebook_to_disk_produces_sorted_stable_output() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (room, notebook_path) = test_room_with_path(&tmp, "stable.ipynb");
+
+    let eid = "exec-stable-1";
+    {
+        let mut doc = room.doc.write().await;
+        doc.add_cell(0, "cell-alpha", "code").unwrap();
+        doc.update_source("cell-alpha", "x = 1").unwrap();
+        doc.set_execution_id("cell-alpha", Some(eid)).unwrap();
+        doc.add_cell(1, "cell-beta", "markdown").unwrap();
+        doc.update_source("cell-beta", "# heading").unwrap();
+    }
+    room.state
+        .with_doc(|sd| {
+            let output = serde_json::json!({
+                "output_type": "stream",
+                "name": "stdout",
+                "text": ["ok\n"],
+                "output_id": "runtime-only-uuid",
+            });
+            sd.create_execution(eid, "cell-alpha")?;
+            sd.set_execution_count(eid, 1)?;
+            sd.set_outputs(eid, &[output])?;
+            sd.set_execution_done(eid, true)?;
+            Ok(())
+        })
+        .unwrap();
+
+    save_notebook_to_disk(&room, None).await.unwrap();
+    let first = std::fs::read_to_string(&notebook_path).unwrap();
+
+    // Second save against unchanged state must produce identical bytes.
+    save_notebook_to_disk(&room, None).await.unwrap();
+    let second = std::fs::read_to_string(&notebook_path).unwrap();
+    assert_eq!(first, second, "consecutive saves must be byte-identical");
+
+    // Top-level key order: cells, metadata, nbformat, nbformat_minor.
+    let cells_pos = first.find("\"cells\"").expect("cells key present");
+    let metadata_pos = first.find("\"metadata\"").expect("metadata key present");
+    let nbformat_pos = first.find("\"nbformat\"").expect("nbformat key present");
+    let minor_pos = first
+        .find("\"nbformat_minor\"")
+        .expect("nbformat_minor key present");
+    assert!(
+        cells_pos < metadata_pos && metadata_pos < nbformat_pos && nbformat_pos < minor_pos,
+        "top-level keys not alphabetical in:\n{first}"
+    );
+
+    // Code cell keys: cell_type, execution_count, id, metadata, outputs, source.
+    let code_start = first.find("\"cell_type\": \"code\"").expect("code cell");
+    let slice = &first[code_start..];
+    let ct = slice.find("\"cell_type\"").unwrap();
+    let ec = slice.find("\"execution_count\"").unwrap();
+    let id = slice.find("\"id\"").unwrap();
+    let src = slice.find("\"source\"").unwrap();
+    assert!(ct < ec && ec < id && id < src, "code cell keys not sorted");
+
+    // Runtime-only output_id must not hit disk.
+    assert!(
+        !first.contains("output_id"),
+        "output_id leaked to disk:\n{first}"
+    );
 }
 
 #[test]

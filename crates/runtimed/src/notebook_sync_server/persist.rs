@@ -2,19 +2,60 @@ use serde::Serialize;
 
 use super::*;
 
+/// Recursively rebuild every `Value::Object` with its keys in sorted order.
+///
+/// Python `nbformat.write` emits `.ipynb` files via `json.dumps(sort_keys=True)`.
+/// Our daemon save path used to leave keys in insertion order (serde_json here
+/// runs with `preserve_order` via the workspace's feature set), which produced
+/// diffs against Jupyter-written files on every save. Applying the sort
+/// ourselves before the pretty-printer matches Jupyter byte-for-byte at every
+/// depth.
+fn sort_value_keys(value: serde_json::Value) -> serde_json::Value {
+    match value {
+        serde_json::Value::Object(map) => {
+            let mut entries: Vec<(String, serde_json::Value)> = map.into_iter().collect();
+            entries.sort_by(|a, b| a.0.cmp(&b.0));
+            let mut sorted = serde_json::Map::new();
+            for (k, v) in entries {
+                sorted.insert(k, sort_value_keys(v));
+            }
+            serde_json::Value::Object(sorted)
+        }
+        serde_json::Value::Array(items) => {
+            serde_json::Value::Array(items.into_iter().map(sort_value_keys).collect())
+        }
+        other => other,
+    }
+}
+
 /// Serialize a notebook JSON value with 1-space indent and trailing newline,
-/// matching the nbformat/Jupyter convention.
+/// matching the nbformat/Jupyter convention. Keys are sorted alphabetically
+/// at every depth.
 fn serialize_notebook_json(value: &serde_json::Value) -> Result<String, String> {
+    let sorted = sort_value_keys(value.clone());
     let mut buf = Vec::new();
     let formatter = serde_json::ser::PrettyFormatter::with_indent(b" ");
     let mut ser = serde_json::Serializer::with_formatter(&mut buf, formatter);
-    value
+    sorted
         .serialize(&mut ser)
         .map_err(|e| format!("Failed to serialize notebook: {e}"))?;
     let mut content =
         String::from_utf8(buf).map_err(|e| format!("Invalid UTF-8 in notebook: {e}"))?;
     content.push('\n');
     Ok(content)
+}
+
+/// Drop the daemon's runtime-only `output_id` field from a resolved output
+/// `Value` before it hits disk. `output_id` is a UUID minted per kernel
+/// execution used to address outputs in the in-memory index and to keep
+/// React keys stable. It is not part of the nbformat spec, and persisting
+/// it produces churn on every re-execution (fresh UUIDs per run) plus a
+/// round-trip surprise (the daemon re-mints IDs on load when missing, so
+/// the on-disk values are authoritative only until the next save).
+fn strip_runtime_only_output_fields(output: &mut serde_json::Value) {
+    if let Some(obj) = output.as_object_mut() {
+        obj.remove("output_id");
+    }
 }
 
 #[derive(Debug)]
@@ -183,7 +224,8 @@ pub(crate) async fn save_notebook_to_disk(
             let mut resolved_outputs = Vec::new();
             if let Some(outputs) = cell_outputs.get(&cell.id) {
                 for output in outputs {
-                    let output_value = resolve_cell_output(output, &room.blob_store).await;
+                    let mut output_value = resolve_cell_output(output, &room.blob_store).await;
+                    strip_runtime_only_output_fields(&mut output_value);
                     resolved_outputs.push(output_value);
                 }
             }
@@ -227,10 +269,10 @@ pub(crate) async fn save_notebook_to_disk(
 
     let cell_count = nb_cells.len();
     let notebook_json = serde_json::json!({
+        "cells": nb_cells,
+        "metadata": metadata,
         "nbformat": 4,
         "nbformat_minor": nbformat_minor,
-        "metadata": metadata,
-        "cells": nb_cells,
     });
 
     let content_with_newline =
@@ -535,10 +577,10 @@ pub(crate) async fn clone_notebook_to_disk(
     // Build the final notebook JSON
     let cell_count = nb_cells.len();
     let notebook_json = serde_json::json!({
+        "cells": nb_cells,
+        "metadata": metadata,
         "nbformat": 4,
         "nbformat_minor": nbformat_minor,
-        "metadata": metadata,
-        "cells": nb_cells,
     });
 
     let content_with_newline =
@@ -1170,4 +1212,124 @@ pub(crate) fn spawn_notebook_file_watcher(
     });
 
     shutdown_tx
+}
+
+#[cfg(test)]
+mod serialize_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn top_level_keys(v: &serde_json::Value) -> Vec<&str> {
+        v.as_object()
+            .expect("expected object")
+            .keys()
+            .map(String::as_str)
+            .collect()
+    }
+
+    #[test]
+    fn sort_value_keys_orders_top_level() {
+        let sorted = sort_value_keys(json!({
+            "zebra": 1,
+            "apple": 2,
+            "mango": 3,
+        }));
+        assert_eq!(top_level_keys(&sorted), vec!["apple", "mango", "zebra"]);
+    }
+
+    #[test]
+    fn sort_value_keys_recurses_into_objects_and_arrays() {
+        let sorted = sort_value_keys(json!({
+            "cells": [
+                { "zebra": 1, "apple": 2 },
+                { "mango": 3, "banana": 4 },
+            ]
+        }));
+        let cells = sorted.get("cells").unwrap().as_array().unwrap();
+        assert_eq!(top_level_keys(&cells[0]), vec!["apple", "zebra"]);
+        assert_eq!(top_level_keys(&cells[1]), vec!["banana", "mango"]);
+    }
+
+    #[test]
+    fn sort_value_keys_preserves_array_element_order() {
+        let sorted = sort_value_keys(json!({
+            "list": [3, 1, 2],
+        }));
+        let list = sorted.get("list").unwrap().as_array().unwrap();
+        let values: Vec<i64> = list.iter().map(|v| v.as_i64().unwrap()).collect();
+        assert_eq!(values, vec![3, 1, 2]);
+    }
+
+    #[test]
+    fn serialize_notebook_json_emits_sorted_keys_and_trailing_newline() {
+        let nb = json!({
+            "nbformat": 4,
+            "nbformat_minor": 5,
+            "cells": [
+                {
+                    "id": "cell-1",
+                    "cell_type": "code",
+                    "source": ["x = 1\n"],
+                    "outputs": [],
+                    "execution_count": 1,
+                    "metadata": {}
+                }
+            ],
+            "metadata": {}
+        });
+        let out = serialize_notebook_json(&nb).expect("serialize");
+
+        // Trailing newline
+        assert!(out.ends_with('\n'), "missing trailing newline");
+
+        // Top-level order: cells, metadata, nbformat, nbformat_minor
+        let cells_pos = out.find("\"cells\"").expect("cells key");
+        let metadata_pos = out.find("\"metadata\"").expect("metadata key");
+        let nbformat_pos = out.find("\"nbformat\"").expect("nbformat key");
+        let minor_pos = out.find("\"nbformat_minor\"").expect("nbformat_minor key");
+        assert!(cells_pos < metadata_pos, "cells must come before metadata");
+        assert!(
+            metadata_pos < nbformat_pos,
+            "metadata must come before nbformat"
+        );
+        assert!(
+            nbformat_pos < minor_pos,
+            "nbformat must come before nbformat_minor"
+        );
+
+        // Cell keys alphabetical: cell_type, execution_count, id, metadata, outputs, source
+        let ct = out.find("\"cell_type\"").unwrap();
+        let ec = out.find("\"execution_count\"").unwrap();
+        let id = out.find("\"id\"").unwrap();
+        let src = out.find("\"source\"").unwrap();
+        assert!(ct < ec && ec < id && id < src, "cell keys not alphabetical");
+    }
+
+    #[test]
+    fn strip_runtime_only_output_fields_removes_output_id() {
+        let mut out = json!({
+            "output_type": "stream",
+            "output_id": "abc-123",
+            "name": "stdout",
+            "text": "hello\n"
+        });
+        strip_runtime_only_output_fields(&mut out);
+        assert!(out.get("output_id").is_none());
+        assert_eq!(out.get("output_type").unwrap(), "stream");
+        assert_eq!(out.get("name").unwrap(), "stdout");
+    }
+
+    #[test]
+    fn strip_runtime_only_output_fields_is_noop_on_non_object() {
+        let mut s = json!("a string");
+        strip_runtime_only_output_fields(&mut s);
+        assert_eq!(s, json!("a string"));
+    }
+
+    #[test]
+    fn strip_runtime_only_output_fields_ok_when_absent() {
+        let mut out = json!({ "output_type": "stream", "name": "stdout" });
+        strip_runtime_only_output_fields(&mut out);
+        assert_eq!(out, json!({ "output_type": "stream", "name": "stdout" }));
+    }
 }
