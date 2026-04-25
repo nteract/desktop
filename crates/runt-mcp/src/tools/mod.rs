@@ -473,6 +473,27 @@ pub fn arg_string_array(request: &CallToolRequestParams, key: &str) -> Option<Ve
     Some(vec![])
 }
 
+/// Assert that a cell exists in the notebook, or return an `McpError`.
+///
+/// Call this early in any tool that takes a `cell_id` parameter so the agent
+/// gets a clear "Cell not found" message instead of a cryptic Automerge error
+/// or silent no-op.
+///
+/// Usage: `assert_cell_exists(&handle, cell_id)?;`
+pub fn assert_cell_exists(
+    handle: &notebook_sync::handle::DocHandle,
+    cell_id: &str,
+) -> Result<(), McpError> {
+    if handle.get_cell(cell_id).is_some() {
+        Ok(())
+    } else {
+        Err(McpError::invalid_params(
+            format!("Cell not found: {cell_id}"),
+            None,
+        ))
+    }
+}
+
 /// Helper: create a text error result.
 pub fn tool_error(msg: &str) -> Result<CallToolResult, McpError> {
     Ok(CallToolResult::error(vec![Content::text(msg.to_string())]))
