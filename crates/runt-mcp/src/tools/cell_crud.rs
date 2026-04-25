@@ -78,6 +78,10 @@ pub struct ClearOutputsParams {
 }
 
 /// Valid cell types per the nbformat spec.
+///
+/// TODO: promote to a shared `CellType` enum in `notebook-doc` so
+/// deserialization rejects invalid types at the boundary rather than
+/// requiring runtime checks in each consumer.
 const VALID_CELL_TYPES: &[&str] = &["code", "markdown", "raw"];
 
 /// Create a new cell, optionally executing it.

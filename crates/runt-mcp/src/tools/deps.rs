@@ -145,9 +145,12 @@ pub(crate) fn add_dep_for_manager(
                 .add_pixi_dependency(package)
                 .map_err(|e| format!("Failed to add pixi dependency: {e}"))
         }
-        PackageManager::Uv | PackageManager::Unknown(_) => handle
-            .add_uv_dependency(package)
-            .map_err(|e| format!("Failed to add uv dependency: {e}")),
+        PackageManager::Uv | PackageManager::Unknown(_) => {
+            notebook_doc::metadata::validate_package_specifier(package)?;
+            handle
+                .add_uv_dependency(package)
+                .map_err(|e| format!("Failed to add uv dependency: {e}"))
+        }
     }
 }
 
@@ -188,22 +191,6 @@ pub async fn add_dependency(
 
     // Detect list-like strings agents sometimes pass and split them.
     let packages = parse_package_param(raw_package);
-
-    // Validate each package spec is non-empty and has a plausible format.
-    for pkg in &packages {
-        let name = pkg.trim();
-        if name.is_empty() {
-            return tool_error(
-                "Empty package name. Provide a valid package specifier (e.g. \"pandas>=2.0\").",
-            );
-        }
-        // Package names must start with a letter or digit (PEP 508 / conda).
-        if !name.chars().next().is_some_and(|c| c.is_alphanumeric()) {
-            return tool_error(&format!(
-                "Invalid package specifier: \"{name}\". Package names must start with a letter or digit."
-            ));
-        }
-    }
 
     let (handle, notebook_id) =
         {
