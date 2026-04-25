@@ -751,6 +751,78 @@ pub async fn recv_typed_frame<R: AsyncRead + Unpin>(
     }
 }
 
+/// Cancel-safe wrapper around `recv_typed_frame`.
+///
+/// `recv_typed_frame` is built on `read_exact`, which is *not*
+/// cancel-safe — dropping the future mid-read silently consumes bytes
+/// from the underlying reader and the partial-read state is discarded.
+/// Putting `recv_typed_frame` directly inside a busy `tokio::select!`
+/// arm therefore desyncs the stream the moment another arm wins while
+/// a body read is in flight; the next iteration's length prefix is
+/// read from the middle of the previous payload.
+///
+/// `FramedReader` runs the read loop on a dedicated tokio task that
+/// owns the read half exclusively and publishes frames through a
+/// bounded mpsc channel. `FramedReader::recv()` is just an mpsc
+/// `recv()` — fully cancel-safe — so callers can place it in any
+/// `select!` without losing bytes.
+///
+/// On clean EOF the channel closes and `recv()` returns `None`.
+/// On a stream error the reader sends `Err(e)` once and then closes.
+pub struct FramedReader {
+    rx: tokio::sync::mpsc::Receiver<std::io::Result<TypedNotebookFrame>>,
+    handle: tokio::task::JoinHandle<()>,
+}
+
+impl FramedReader {
+    /// Spawn a reader task that owns `reader`. `capacity` bounds the
+    /// in-flight frame queue so a slow consumer applies backpressure
+    /// to the source.
+    pub fn spawn<R>(mut reader: R, capacity: usize) -> Self
+    where
+        R: AsyncRead + Unpin + Send + 'static,
+    {
+        let (tx, rx) = tokio::sync::mpsc::channel(capacity);
+        let handle = tokio::spawn(async move {
+            loop {
+                match recv_typed_frame(&mut reader).await {
+                    Ok(Some(frame)) => {
+                        if tx.send(Ok(frame)).await.is_err() {
+                            // Receiver dropped — caller is gone, stop reading.
+                            break;
+                        }
+                    }
+                    Ok(None) => break, // clean EOF, drop tx, channel closes
+                    Err(e) => {
+                        let _ = tx.send(Err(e)).await;
+                        break;
+                    }
+                }
+            }
+        });
+        Self { rx, handle }
+    }
+
+    /// Cancel-safe receive of the next frame.
+    ///
+    /// Returns `Some(Ok(frame))` for each successful frame,
+    /// `Some(Err(_))` once on a stream error, and `None` once the
+    /// reader task has finished (clean EOF or post-error close).
+    pub async fn recv(&mut self) -> Option<std::io::Result<TypedNotebookFrame>> {
+        self.rx.recv().await
+    }
+}
+
+impl Drop for FramedReader {
+    fn drop(&mut self) {
+        // Closing the receiver lets the task observe a closed channel
+        // on its next send and exit cleanly. Abort is a backstop for
+        // the case where the task is parked on `read_exact` with no
+        // bytes ever arriving (e.g. half-closed socket).
+        self.handle.abort();
+    }
+}
+
 /// Send a length-prefixed frame.
 ///
 /// Returns an error if the payload exceeds `MAX_FRAME_SIZE` (100 MiB).
@@ -1617,5 +1689,110 @@ mod tests {
             Some(PackageManager::Conda)
         );
         assert_eq!(LaunchSpec::Concrete(EnvSource::Deno).auto_scope(), None);
+    }
+
+    /// `recv_typed_frame` is built on `read_exact`, which is NOT cancel-
+    /// safe: dropping the future mid-read silently discards bytes
+    /// already pulled off the underlying reader.
+    ///
+    /// This test exercises the exact misuse pattern that desynced the
+    /// runtime-agent ↔ daemon channel under heavy stream output: a peer
+    /// loop puts `recv_typed_frame` in a `tokio::select!` arm next to a
+    /// high-frequency cancel-safe arm. When the cancel-safe arm wins
+    /// while a body read is in flight, the next iteration's
+    /// `recv_typed_frame` reads its 4-byte length prefix from the middle
+    /// of the previous payload and flags `frame too large` (production
+    /// repros saw 0x20202020 from indented kernel stdout and 0x6C6C6F6E
+    /// from "...loaded kernel_..." text).
+    ///
+    /// `FramedReader` is the structural fix: a dedicated reader task
+    /// owns the read half and publishes frames through an mpsc, whose
+    /// `recv()` is cancel-safe.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn framed_reader_does_not_desync_in_select_under_pressure() {
+        use tokio::io::duplex;
+        use tokio::sync::mpsc;
+        use tokio::time::{timeout, Duration};
+
+        // Tiny duplex buffer forces multi-poll reads, mirroring the real
+        // socket pressure that triggered the production desync.
+        let (server_side, client_side) = duplex(64);
+        let (_server_read, mut writer) = tokio::io::split(server_side);
+        let (reader, _client_write) = tokio::io::split(client_side);
+
+        const NUM_FRAMES: usize = 32;
+        const PAYLOAD_SIZE: usize = 4096;
+
+        let writer_task = tokio::spawn(async move {
+            for i in 0u64..NUM_FRAMES as u64 {
+                let mut payload = vec![0u8; PAYLOAD_SIZE];
+                payload[..8].copy_from_slice(&i.to_be_bytes());
+                for (j, b) in payload[8..].iter_mut().enumerate() {
+                    *b = (j & 0xFF) as u8;
+                }
+                send_typed_frame(&mut writer, NotebookFrameType::AutomergeSync, &payload)
+                    .await
+                    .expect("writer should not fail");
+            }
+        });
+
+        // Always-ready cancel-safe interrupter, simulating the real
+        // daemon pressure (state_changed_rx fires per kernel output).
+        let (interrupter_tx, mut interrupter_rx) = mpsc::unbounded_channel::<()>();
+        let pump_token = interrupter_tx.clone();
+        let pump_task = tokio::spawn(async move {
+            loop {
+                if pump_token.send(()).is_err() {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        });
+
+        let mut framed = FramedReader::spawn(reader, 16);
+
+        let mut received = 0u64;
+        let receive_loop = async {
+            while received < NUM_FRAMES as u64 {
+                tokio::select! {
+                    biased;
+                    Some(_) = interrupter_rx.recv() => {
+                        while interrupter_rx.try_recv().is_ok() {}
+                    }
+                    maybe = framed.recv() => {
+                        let frame = maybe
+                            .expect("channel should not close before NUM_FRAMES delivered")
+                            .expect("frame decode should not error mid-stream");
+                        assert_eq!(frame.frame_type, NotebookFrameType::AutomergeSync);
+                        assert_eq!(frame.payload.len(), PAYLOAD_SIZE);
+                        let seq = u64::from_be_bytes(frame.payload[..8].try_into().unwrap());
+                        assert_eq!(
+                            seq, received,
+                            "frame sequence desynced (expected {}, got {})",
+                            received, seq,
+                        );
+                        for (j, b) in frame.payload[8..].iter().enumerate() {
+                            assert_eq!(
+                                *b,
+                                (j & 0xFF) as u8,
+                                "payload corruption at offset {} of frame {}",
+                                j + 8,
+                                received,
+                            );
+                        }
+                        received += 1;
+                    }
+                }
+            }
+        };
+
+        timeout(Duration::from_secs(10), receive_loop)
+            .await
+            .expect("receive loop should complete within 10s");
+
+        pump_task.abort();
+        let _ = pump_task.await;
+        writer_task.await.expect("writer task panicked");
+        assert_eq!(received, NUM_FRAMES as u64);
     }
 }

@@ -153,10 +153,17 @@ struct SyncFrameContext<'a> {
 /// It is NEVER held across `.await` points (socket I/O).
 pub async fn run<R, W>(mut config: SyncTaskConfig, reader: R, writer: W)
 where
-    R: AsyncRead + Unpin,
+    R: AsyncRead + Unpin + Send + 'static,
     W: AsyncWrite + Unpin,
 {
-    let mut reader = tokio::io::BufReader::new(reader);
+    // Hand the read half to a dedicated FramedReader actor so the
+    // busy `select!` (and the `timeout(.., recv)` ack pattern) below
+    // stay cancel-safe. `recv_typed_frame`'s internal `read_exact`
+    // drops bytes mid-read whenever its future is cancelled — the
+    // exact failure mode that desyncs the wire under stream-output
+    // pressure.
+    let buffered = tokio::io::BufReader::new(reader);
+    let mut framed_reader = connection::FramedReader::spawn(buffered, 16);
     let mut writer = tokio::io::BufWriter::new(writer);
 
     let notebook_id = {
@@ -181,7 +188,7 @@ where
         enum SelectResult {
             Changed,
             Command(Option<SyncCommand>),
-            Frame(std::io::Result<Option<connection::TypedNotebookFrame>>),
+            Frame(Option<std::io::Result<connection::TypedNotebookFrame>>),
         }
 
         let select_result = tokio::select! {
@@ -200,8 +207,8 @@ where
             // Protocol command (request/response, confirm_sync, etc.)
             cmd = config.cmd_rx.recv() => SelectResult::Command(cmd),
 
-            // Incoming frame from daemon
-            frame = connection::recv_typed_frame(&mut reader) => SelectResult::Frame(frame),
+            // Incoming frame from daemon (cancel-safe: actor owns read_exact)
+            frame = framed_reader.recv() => SelectResult::Frame(frame),
         };
 
         match select_result {
@@ -233,13 +240,8 @@ where
                 }
 
                 // Wait briefly for an ack from the daemon (like sync_to_daemon)
-                match tokio::time::timeout(
-                    Duration::from_millis(500),
-                    connection::recv_typed_frame(&mut reader),
-                )
-                .await
-                {
-                    Ok(Ok(Some(frame))) => {
+                match tokio::time::timeout(Duration::from_millis(500), framed_reader.recv()).await {
+                    Ok(Some(Ok(frame))) => {
                         SyncFrameContext {
                             doc: &config.doc,
                             snapshot_tx: &config.snapshot_tx,
@@ -251,11 +253,11 @@ where
                         .handle_incoming_frame(&frame, &mut writer)
                         .await;
                     }
-                    Ok(Ok(None)) => {
+                    Ok(None) => {
                         info!("[notebook-sync] Connection closed for {}", notebook_id);
                         break;
                     }
-                    Ok(Err(e)) => {
+                    Ok(Some(Err(e))) => {
                         warn!("[notebook-sync] Socket error for {}: {}", notebook_id, e);
                         break;
                     }
@@ -283,7 +285,7 @@ where
                         broadcast_tx: req_broadcast_tx,
                     } => {
                         let result = send_request_impl(
-                            &mut reader,
+                            &mut framed_reader,
                             &mut writer,
                             req_broadcast_tx.as_ref(),
                             &request,
@@ -302,7 +304,7 @@ where
 
                     SyncCommand::ConfirmSync { reply } => {
                         let result = confirm_sync_impl(
-                            &mut reader,
+                            &mut framed_reader,
                             &mut writer,
                             &mut SyncFrameContext {
                                 doc: &config.doc,
@@ -319,7 +321,7 @@ where
 
                     SyncCommand::ConfirmStateSync { reply } => {
                         let result = confirm_state_sync_impl(
-                            &mut reader,
+                            &mut framed_reader,
                             &mut writer,
                             &mut SyncFrameContext {
                                 doc: &config.doc,
@@ -349,7 +351,7 @@ where
 
             // ─── Incoming frame from daemon ────────────────────────────────
             SelectResult::Frame(frame_result) => match frame_result {
-                Ok(Some(frame)) => {
+                Some(Ok(frame)) => {
                     SyncFrameContext {
                         doc: &config.doc,
                         snapshot_tx: &config.snapshot_tx,
@@ -361,14 +363,14 @@ where
                     .handle_incoming_frame(&frame, &mut writer)
                     .await;
                 }
-                Ok(None) => {
+                None => {
                     info!(
                         "[notebook-sync] Disconnected from daemon for {}, loop_count={}",
                         notebook_id, loop_count
                     );
                     break;
                 }
-                Err(e) => {
+                Some(Err(e)) => {
                     warn!(
                         "[notebook-sync] Socket error for {}: {}, loop_count={}",
                         notebook_id, e, loop_count
@@ -661,8 +663,8 @@ impl SyncFrameContext<'_> {
 ///
 /// While waiting, also processes AutomergeSync and Broadcast frames that arrive
 /// interleaved with the response.
-async fn send_request_impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
-    reader: &mut R,
+async fn send_request_impl<W: AsyncWrite + Unpin>(
+    framed: &mut connection::FramedReader,
     writer: &mut W,
     req_broadcast_tx: Option<&broadcast::Sender<NotebookBroadcast>>,
     request: &NotebookRequest,
@@ -685,7 +687,7 @@ async fn send_request_impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
     // Wait for a Response frame, processing other frames that arrive meanwhile
     let result = tokio::time::timeout(
         Duration::from_secs(timeout_secs),
-        wait_for_response(reader, writer, req_broadcast_tx, ctx),
+        wait_for_response(framed, writer, req_broadcast_tx, ctx),
     )
     .await;
 
@@ -697,17 +699,18 @@ async fn send_request_impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
 }
 
 /// Wait for a Response frame from the daemon, processing other frames.
-async fn wait_for_response<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
-    reader: &mut R,
+async fn wait_for_response<W: AsyncWrite + Unpin>(
+    framed: &mut connection::FramedReader,
     writer: &mut W,
     req_broadcast_tx: Option<&broadcast::Sender<NotebookBroadcast>>,
     ctx: &mut SyncFrameContext<'_>,
 ) -> Result<NotebookResponse, SyncError> {
     loop {
-        let frame = connection::recv_typed_frame(reader)
+        let frame = framed
+            .recv()
             .await
-            .map_err(SyncError::Io)?
-            .ok_or_else(|| SyncError::Protocol("Connection closed waiting for response".into()))?;
+            .ok_or_else(|| SyncError::Protocol("Connection closed waiting for response".into()))?
+            .map_err(SyncError::Io)?;
 
         match frame.frame_type {
             NotebookFrameType::Response => {
@@ -808,8 +811,8 @@ async fn wait_for_response<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
 ///
 /// Performs sync rounds until our local heads are in the peer's shared_heads,
 /// or until we've done 5 rounds (best-effort).
-async fn confirm_sync_impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
-    reader: &mut R,
+async fn confirm_sync_impl<W: AsyncWrite + Unpin>(
+    framed: &mut connection::FramedReader,
     writer: &mut W,
     ctx: &mut SyncFrameContext<'_>,
 ) -> Result<(), SyncError> {
@@ -840,21 +843,16 @@ async fn confirm_sync_impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
         }
 
         // Wait for response
-        match tokio::time::timeout(
-            Duration::from_millis(2000),
-            connection::recv_typed_frame(reader),
-        )
-        .await
-        {
-            Ok(Ok(Some(frame))) => {
+        match tokio::time::timeout(Duration::from_millis(2000), framed.recv()).await {
+            Ok(Some(Ok(frame))) => {
                 ctx.handle_incoming_frame(&frame, writer).await;
             }
-            Ok(Ok(None)) => {
+            Ok(None) => {
                 return Err(SyncError::Protocol(
                     "Connection closed during confirm_sync".into(),
                 ));
             }
-            Ok(Err(e)) => {
+            Ok(Some(Err(e))) => {
                 return Err(SyncError::Io(e));
             }
             Err(_) => {
@@ -880,8 +878,8 @@ async fn confirm_sync_impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
 /// The client never writes to the state doc, so there is no convergence
 /// to negotiate. We send our current heads (so the daemon can reply with
 /// anything we're missing) and then drain frames with a short timeout.
-async fn confirm_state_sync_impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
-    reader: &mut R,
+async fn confirm_state_sync_impl<W: AsyncWrite + Unpin>(
+    framed: &mut connection::FramedReader,
     writer: &mut W,
     ctx: &mut SyncFrameContext<'_>,
 ) -> Result<(), SyncError> {
@@ -898,21 +896,16 @@ async fn confirm_state_sync_impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
 
     // Drain up to 10 frames with a 200ms per-frame timeout.
     for _ in 0..10 {
-        match tokio::time::timeout(
-            Duration::from_millis(200),
-            connection::recv_typed_frame(reader),
-        )
-        .await
-        {
-            Ok(Ok(Some(frame))) => {
+        match tokio::time::timeout(Duration::from_millis(200), framed.recv()).await {
+            Ok(Some(Ok(frame))) => {
                 ctx.handle_incoming_frame(&frame, writer).await;
             }
-            Ok(Ok(None)) => {
+            Ok(None) => {
                 return Err(SyncError::Protocol(
                     "Connection closed during state sync flush".into(),
                 ));
             }
-            Ok(Err(e)) => {
+            Ok(Some(Err(e))) => {
                 return Err(SyncError::Io(e));
             }
             Err(_) => break, // timeout — done draining

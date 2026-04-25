@@ -1862,7 +1862,7 @@ impl Daemon {
         client_protocol_version: u8,
     ) -> anyhow::Result<()>
     where
-        S: AsyncRead + AsyncWrite + Unpin,
+        S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     {
         use crate::connection::{
             send_json_frame, NotebookConnectionInfo, PROTOCOL_V3, PROTOCOL_VERSION,
@@ -2215,7 +2215,7 @@ impl Daemon {
         client_protocol_version: u8,
     ) -> anyhow::Result<()>
     where
-        S: AsyncRead + AsyncWrite + Unpin,
+        S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     {
         use crate::connection::{
             send_json_frame, NotebookConnectionInfo, PROTOCOL_V3, PROTOCOL_VERSION,
