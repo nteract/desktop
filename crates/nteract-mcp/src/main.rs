@@ -163,16 +163,6 @@ async fn main() -> ExitCode {
     }
     info!("Validated {binary_name} is available");
 
-    // Resolve the daemon socket path for version tracking. The proxy
-    // spawns a long-lived `DaemonConnection` against this socket and
-    // uses its cached `DaemonInfo` to detect daemon upgrades.
-    let build_channel = if channel == "nightly" {
-        runt_workspace::BuildChannel::Nightly
-    } else {
-        runt_workspace::BuildChannel::Stable
-    };
-    let daemon_socket_path = Some(runt_workspace::socket_path_for_channel(build_channel));
-
     // Build child environment
     let mut child_env = HashMap::new();
     child_env.insert("NTERACT_CHANNEL".to_string(), channel.clone());
@@ -181,6 +171,11 @@ async fn main() -> ExitCode {
     // on every child restart. This is the core upgrade mechanism: the user
     // upgrades the nteract app (new runt binary), and the proxy picks it up
     // without needing to reinstall the MCPB extension.
+    //
+    // Daemon version tracking now flows through the child's MCP handshake
+    // (`runt mcp` stamps the daemon version into `ServerInfo.title`), so the
+    // proxy no longer opens its own daemon socket — that used to drag the
+    // full runtimed-client compile graph into every MCP process.
     let channel_for_resolve = channel.clone();
     let config = ProxyConfig {
         resolve_child_command: Box::new(move || {
@@ -196,7 +191,6 @@ async fn main() -> ExitCode {
             let _ = std::fs::create_dir_all(&dir);
             dir
         }),
-        daemon_socket_path,
         monitor_poll_interval_ms: 500,
     };
 

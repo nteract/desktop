@@ -29,6 +29,26 @@ use crate::version::ReconnectionEvent;
 /// target. Must match `runt_mcp::daemon_watch::REJOIN_ENV_VAR`.
 const REJOIN_ENV_VAR: &str = "NTERACT_MCP_REJOIN_NOTEBOOK";
 
+/// Extract the daemon version from a freshly-initialized child's MCP
+/// `ServerInfo`. `runt mcp` stamps the daemon version into
+/// `server_info.title` as `"nteract (daemon X.Y.Z)"` during its startup
+/// handshake. Returning `None` is expected whenever the daemon wasn't
+/// reachable when the child started — the proxy degrades to a generic
+/// "child restarted" reconnection banner in that case.
+fn extract_daemon_version(client: &child::RunningChild) -> Option<String> {
+    let title = client.peer_info()?.server_info.title.as_deref()?;
+    // Title format: "nteract (daemon X.Y.Z)".
+    let open = title.find("(daemon ")?;
+    let close = title.rfind(')')?;
+    let inner = title.get(open + "(daemon ".len()..close)?;
+    let v = inner.trim();
+    if v.is_empty() {
+        None
+    } else {
+        Some(v.to_string())
+    }
+}
+
 /// Configuration for the MCP proxy.
 pub struct ProxyConfig {
     /// Resolver that returns the path to the child binary.
@@ -44,18 +64,6 @@ pub struct ProxyConfig {
     pub server_name: String,
     /// Directory for tool cache (optional, enables optimistic tool serving).
     pub cache_dir: Option<PathBuf>,
-    /// Daemon socket path (optional, enables version tracking via a
-    /// long-lived [`DaemonConnection`]).
-    ///
-    /// When set, the proxy spawns a `DaemonConnection` supervisor in
-    /// [`McpProxy::new`]. The supervisor keeps a cached `DaemonInfo`
-    /// and emits `Upgraded` events when the daemon restarts with a
-    /// new pid/version. Replaces the old `daemon_info_path` field that
-    /// polled `daemon.json` on a timer.
-    ///
-    /// Defaults to `None` in tests and builds that don't need daemon-
-    /// version tracking.
-    pub daemon_socket_path: Option<PathBuf>,
     /// Child monitor polling interval in milliseconds (default: 500ms).
     /// Lower values detect child exit faster but use more CPU.
     pub monitor_poll_interval_ms: u64,
@@ -102,10 +110,6 @@ pub struct McpProxy {
     pub exit_signal: Arc<Notify>,
     /// Flag to prevent concurrent restarts (monitor + tool call racing).
     restart_in_progress: Arc<Mutex<bool>>,
-    /// Long-lived connection to the daemon for version tracking.
-    /// `None` when `ProxyConfig.daemon_socket_path` was `None` (tests
-    /// and minimal-mode builds).
-    daemon_connection: Option<Arc<runtimed_client::daemon_connection::DaemonConnection>>,
 }
 
 impl McpProxy {
@@ -122,21 +126,6 @@ impl McpProxy {
             info!("Loaded {} cached child tools", cached.len());
         }
 
-        // Spawn a long-lived daemon connection for version tracking.
-        // Replaces the old pattern of reading daemon.json on a timer.
-        // `None` is valid for tests and minimal-mode builds.
-        let daemon_connection = config.daemon_socket_path.as_ref().map(|p| {
-            Arc::new(runtimed_client::daemon_connection::DaemonConnection::spawn(
-                p.clone(),
-            ))
-        });
-
-        // Initial version: None at startup. The first version becomes
-        // known when the daemon connection fires its first `Connected`
-        // event, which the tool-list-handler and restart-detector pick
-        // up via state inspection.
-        let daemon_version: Option<String> = None;
-
         Self {
             state: Arc::new(RwLock::new(ProxyState {
                 child_client: None,
@@ -146,7 +135,7 @@ impl McpProxy {
                 last_notebook_id: None,
                 upstream_name: "unknown".to_string(),
                 upstream_title: None,
-                last_daemon_version: daemon_version,
+                last_daemon_version: None,
                 reconnection_message: None,
                 tool_list_changed_tx,
                 should_exit: false,
@@ -157,7 +146,6 @@ impl McpProxy {
             child_ready: Arc::new(Notify::new()),
             exit_signal: Arc::new(Notify::new()),
             restart_in_progress: Arc::new(Mutex::new(false)),
-            daemon_connection,
         }
     }
 
@@ -195,6 +183,12 @@ impl McpProxy {
         )
         .await?;
 
+        // Read the daemon version out of the child's ServerInfo.title
+        // before we move the client into state. `runt mcp` stamps the
+        // daemon version there during its startup handshake (see
+        // crates/runt-mcp/src/lib.rs::get_info).
+        let daemon_version = extract_daemon_version(&client);
+
         let mut state = self.state.write().await;
         state.child_client = Some(client);
         state.child_spawn_time = Some(Instant::now());
@@ -202,13 +196,7 @@ impl McpProxy {
         // Refresh tool cache from the new child
         self.refresh_tool_cache_locked(&mut state).await;
 
-        // Record current daemon version via the long-lived connection.
-        // `last_known_info` is non-blocking; if the connection hasn't
-        // finished its first handshake yet, version stays None and the
-        // next restart path will pick it up.
-        if let Some(ref conn) = self.daemon_connection {
-            state.last_daemon_version = conn.last_known_info().await.map(|i| i.version);
-        }
+        state.last_daemon_version = daemon_version;
 
         drop(state);
 
@@ -326,6 +314,10 @@ impl McpProxy {
         .await
         {
             Ok(client) => {
+                // Read new daemon version from the restarted child's
+                // ServerInfo.title before moving the client into state.
+                let new_version = extract_daemon_version(&client);
+
                 let mut state = self.state.write().await;
                 state.child_client = Some(client);
                 state.restart_count += 1;
@@ -360,14 +352,11 @@ impl McpProxy {
                     }
                 }
 
-                // Detect version change via the long-lived daemon
-                // connection. The supervisor task keeps `last_known_info`
-                // fresh via its heartbeat, so this read is a local cache
-                // hit — no socket I/O on the restart hot path.
-                let new_version = match self.daemon_connection.as_ref() {
-                    Some(conn) => conn.last_known_info().await.map(|i| i.version),
-                    None => None,
-                };
+                // The new child told us the daemon version it saw on its
+                // startup handshake. Compare it with what the previous
+                // child reported to detect a daemon upgrade across the
+                // restart. If either side is unknown we degrade to the
+                // generic ChildRestart banner below.
                 state.last_daemon_version = new_version.clone();
 
                 // Session rejoin is now the child's responsibility
@@ -954,7 +943,6 @@ mod tests {
             child_env: HashMap::new(),
             server_name: "test-proxy".to_string(),
             cache_dir: None,
-            daemon_socket_path: None,
             monitor_poll_interval_ms: 500,
         }
     }
@@ -966,7 +954,6 @@ mod tests {
             child_env: HashMap::new(),
             server_name: "test-proxy".to_string(),
             cache_dir: Some(dir.to_path_buf()),
-            daemon_socket_path: None,
             monitor_poll_interval_ms: 500,
         }
     }
@@ -1370,7 +1357,6 @@ mod tests {
             child_env: env,
             server_name: "nteract".to_string(),
             cache_dir: None,
-            daemon_socket_path: None,
             monitor_poll_interval_ms: 500,
         };
 
@@ -1381,31 +1367,43 @@ mod tests {
     // ── Version tracking at creation ──────────────────────────────────
 
     #[tokio::test]
-    async fn proxy_has_no_version_when_no_socket_path() {
+    async fn proxy_starts_with_no_daemon_version() {
+        // No child has handed us a ServerInfo yet, so we don't know the
+        // daemon version. Populated on init_child / restart_child from
+        // the child's MCP handshake.
         let proxy = McpProxy::new(test_config(), None);
         let state = proxy.state.read().await;
         assert!(state.last_daemon_version.is_none());
     }
 
-    #[tokio::test]
-    async fn proxy_has_no_version_when_socket_absent() {
-        // With a socket path that points nowhere, the DaemonConnection
-        // supervisor stays in Reconnecting state — last_known_info is
-        // None until a real daemon appears, which is the expected
-        // startup behavior.
-        let config = ProxyConfig {
-            resolve_child_command: Box::new(|| Ok(PathBuf::from("/nonexistent/runt"))),
-            child_args: vec!["mcp".to_string()],
-            child_env: HashMap::new(),
-            server_name: "test".to_string(),
-            cache_dir: None,
-            daemon_socket_path: Some(PathBuf::from("/nonexistent/runtimed.sock")),
-            monitor_poll_interval_ms: 500,
-        };
+    // ── extract_daemon_version title parsing ──────────────────────────
 
-        let proxy = McpProxy::new(config, None);
-        let state = proxy.state.read().await;
-        assert!(state.last_daemon_version.is_none());
+    #[test]
+    fn parse_daemon_version_from_title() {
+        assert_eq!(
+            parse_daemon_version_in_title("nteract (daemon 2.3.2)"),
+            Some("2.3.2")
+        );
+        assert_eq!(
+            parse_daemon_version_in_title("nteract (daemon 2.3.2+abc1234)"),
+            Some("2.3.2+abc1234")
+        );
+        assert_eq!(parse_daemon_version_in_title("nteract"), None);
+        assert_eq!(parse_daemon_version_in_title("nteract (daemon )"), None);
+    }
+
+    /// Pure version of `extract_daemon_version` without the RunningChild
+    /// wrapper, for unit testing the title parser.
+    fn parse_daemon_version_in_title(title: &str) -> Option<&str> {
+        let open = title.find("(daemon ")?;
+        let close = title.rfind(')')?;
+        let inner = title.get(open + "(daemon ".len()..close)?;
+        let v = inner.trim();
+        if v.is_empty() {
+            None
+        } else {
+            Some(v)
+        }
     }
 
     // ── Restart metrics ───────────────────────────────────────────────

@@ -13,7 +13,6 @@ tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 schemars = { workspace = true }
-runtimed-client = { path = "../runtimed-client" }
 tracing = "0.1"
 uuid = { workspace = true }
 

@@ -2663,7 +2663,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 child_env,
                 server_name: "nteract-dev".to_string(),
                 cache_dir: Some(project_root.join(".context")),
-                daemon_socket_path: None,
                 monitor_poll_interval_ms: 500,
             },
             tool_list_changed_tx,
