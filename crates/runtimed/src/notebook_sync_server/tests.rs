@@ -5941,8 +5941,18 @@ async fn test_clone_as_ephemeral_forks_cells_and_clears_outputs() {
         .expect("clone should have metadata");
     assert!(clone_snap.runt.env_id.is_some());
     assert_ne!(clone_snap.runt.env_id.as_deref(), Some("source-env-id"));
-    assert!(clone_snap.runt.trust_signature.is_none());
-    assert!(clone_snap.runt.trust_timestamp.is_none());
+    // Trust signature + timestamp copy through: the signature covers
+    // runt.uv/conda/pixi only, which we copy byte-for-byte, and the trust
+    // key is machine-local — so a same-machine clone of a trusted source
+    // stays trusted without re-prompting the user.
+    assert_eq!(
+        clone_snap.runt.trust_signature.as_deref(),
+        Some("hmac-sha256:deadbeef")
+    );
+    assert_eq!(
+        clone_snap.runt.trust_timestamp.as_deref(),
+        Some("2026-04-25T00:00:00Z")
+    );
 
     // Attachments copied.
     let clone_attachments = clone_room.nbformat_attachments_snapshot().await;
