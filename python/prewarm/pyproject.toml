@@ -1,6 +1,6 @@
 [project]
 name = "prewarm"
-version = "0.0.5"
+version = "0.0.6"
 description = "Warm up Python environments by importing packages and triggering side effects (font caches, C extensions, BLAS discovery)."
 readme = "README.md"
 license = "BSD-3-Clause"

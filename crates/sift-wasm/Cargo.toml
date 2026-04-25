@@ -1,6 +1,6 @@
 [package]
 name = "sift-wasm"
-version = "0.1.4"
+version = "0.1.5"
 edition.workspace = true
 description = "WASM bindings for nteract-predicate — used by @nteract/sift"
 repository.workspace = true
