@@ -18,7 +18,7 @@
  * 4. Assertions verify the manifest shape surfaced to the UI.
  */
 
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { VirtualAction, VirtualTimeScheduler } from "rxjs";
 import { describe, expect, it } from "vite-plus/test";
@@ -67,14 +67,6 @@ function loadStateDocBytes(scenario: string): Uint8Array | null {
   const path = resolve(FIXTURES_DIR, scenario, "state_doc.bin");
   if (!existsSync(path)) return null;
   return new Uint8Array(readFileSync(path));
-}
-
-function loadBroadcastFrames(scenario: string): Uint8Array[] {
-  const dir = resolve(FIXTURES_DIR, scenario);
-  const files = readdirSync(dir)
-    .filter((f) => f.startsWith("broadcast_") && f.endsWith(".bin"))
-    .sort();
-  return files.map((f) => new Uint8Array(readFileSync(resolve(dir, f))));
 }
 
 /** Resolve a ContentRef to its inline string, throwing on blob refs. */
@@ -226,44 +218,6 @@ describe("fixture-based integration: daemon-authored docs through WASM sync", ()
         expect(resolveInline(o.text)).toBe(expectedTexts[i]);
       }
 
-      h.dispose();
-    });
-
-    it("broadcasts arrive independently of sync frames", async () => {
-      const manifest = loadManifest("output_streaming");
-      const expectedIds = manifest.expected!.output_ids as string[];
-      const expectedTexts = manifest.expected!.output_texts as string[];
-
-      const broadcastFrames = loadBroadcastFrames("output_streaming");
-      const h = await setupFixtureSync("output_streaming");
-
-      await h.startAndCompleteSync();
-
-      const broadcasts: unknown[] = [];
-      const sub = h.engine.broadcasts$.subscribe((p) => broadcasts.push(p));
-
-      for (const frame of broadcastFrames) {
-        h.transport.deliver(Array.from(frame));
-      }
-
-      expect(broadcasts.length).toBe(expectedIds.length);
-      for (let i = 0; i < broadcasts.length; i++) {
-        const payload = broadcasts[i] as Record<string, unknown>;
-        expect(payload.event).toBe("output");
-        expect(payload.cell_id).toBe("cell-1");
-        expect(payload.output_type).toBe("stream");
-        expect(payload.output_index).toBe(i);
-        // output_json is the serialized inline manifest. Compare against the
-        // exact (id, text) pair the fixture generator wrote so a dropped /
-        // duplicated / reordered broadcast would fail here.
-        const parsed = JSON.parse(payload.output_json as string);
-        expect(parsed.output_type).toBe("stream");
-        expect(parsed.output_id).toBe(expectedIds[i]);
-        expect(parsed.name).toBe("stdout");
-        expect(resolveInline(parsed.text)).toBe(expectedTexts[i]);
-      }
-
-      sub.unsubscribe();
       h.dispose();
     });
   });

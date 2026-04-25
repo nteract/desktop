@@ -169,50 +169,16 @@ export interface EnvironmentYmlInfo {
 // Daemon Broadcast Types (Phase 8: Daemon-owned kernel execution)
 // =============================================================================
 
-/** Broadcast events from daemon for kernel operations */
+/** Broadcast events from daemon.
+ *
+ * Ephemeral, room-wide events that don't fit the request/response or
+ * CRDT-sync model. Kernel state, execution lifecycle, queue, and outputs
+ * all live in `RuntimeStateDoc` (frame `0x05`) — the dead `kernel_status`
+ * / `execution_*` / `output` / `queue_changed` / `outputs_cleared` /
+ * `display_update` / `kernel_error` / `env_sync_state` variants were
+ * removed once the doc became authoritative.
+ */
 export type DaemonBroadcast =
-  | {
-      event: "kernel_status";
-      status: string; // "starting" | "idle" | "busy" | "error" | "shutdown"
-      cell_id?: string;
-    }
-  | {
-      event: "execution_started";
-      cell_id: string;
-      execution_id: string;
-      execution_count: number;
-    }
-  | {
-      event: "output";
-      cell_id: string;
-      execution_id: string;
-      output_type: string; // "stream" | "display_data" | "execute_result" | "error"
-      output_json: string; // Serialized output in nbformat shape
-    }
-  | {
-      event: "display_update";
-      display_id: string;
-      data: Record<string, unknown>;
-      metadata: Record<string, unknown>;
-    }
-  | {
-      event: "execution_done";
-      cell_id: string;
-      execution_id: string;
-    }
-  | {
-      event: "queue_changed";
-      executing?: { cell_id: string; execution_id: string } | null;
-      queued: { cell_id: string; execution_id: string }[];
-    }
-  | {
-      event: "kernel_error";
-      error: string;
-    }
-  | {
-      event: "outputs_cleared";
-      cell_id: string;
-    }
   | {
       event: "comm";
       msg_type: string; // "comm_open" | "comm_msg" | "comm_close"
@@ -223,16 +189,6 @@ export type DaemonBroadcast =
       event: "env_progress";
       env_type: "conda" | "uv";
     } & EnvProgressPhase)
-  | {
-      event: "env_sync_state";
-      in_sync: boolean;
-      diff?: {
-        added: string[];
-        removed: string[];
-        channels_changed: boolean;
-        deno_changed: boolean;
-      };
-    }
   | {
       event: "notebook_autosaved";
       path: string;

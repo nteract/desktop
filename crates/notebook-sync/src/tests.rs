@@ -994,7 +994,7 @@ mod integration_tests {
             .expect("connect");
 
         let handle = conn.handle;
-        let mut broadcast_rx = conn.broadcast_rx;
+        let _broadcast_rx = conn.broadcast_rx;
 
         // Start a kernel
         let response = handle
@@ -1038,25 +1038,29 @@ mod integration_tests {
             other => panic!("Expected CellQueued, got: {:?}", other),
         }
 
-        // Wait for ExecutionDone via broadcast
+        // Poll RuntimeStateDoc until the cell leaves the queue. Lifecycle
+        // signals (ExecutionDone, KernelError) are no longer broadcast —
+        // they're written directly to the doc.
         let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
         let mut got_done = false;
 
         while tokio::time::Instant::now() < deadline {
-            match tokio::time::timeout(Duration::from_millis(500), broadcast_rx.recv()).await {
-                Ok(Some(NotebookBroadcast::ExecutionDone { cell_id, .. }))
-                    if cell_id == "cell-exec" =>
-                {
-                    got_done = true;
-                    break;
-                }
-                Ok(Some(_)) => continue, // other broadcasts
-                Ok(None) => break,       // channel closed
-                Err(_) => continue,      // timeout, keep waiting
+            handle.confirm_state_sync().await.expect("state sync");
+            let rs = handle.get_runtime_state().expect("runtime state");
+            let in_executing = rs
+                .queue
+                .executing
+                .as_ref()
+                .is_some_and(|e| e.cell_id == "cell-exec");
+            let in_queued = rs.queue.queued.iter().any(|e| e.cell_id == "cell-exec");
+            if !in_executing && !in_queued {
+                got_done = true;
+                break;
             }
+            tokio::time::sleep(Duration::from_millis(100)).await;
         }
 
-        assert!(got_done, "Did not receive ExecutionDone within 30s");
+        assert!(got_done, "Cell did not leave the queue within 30s");
 
         // Confirm sync to ensure outputs are in our doc
         handle

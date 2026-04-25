@@ -565,62 +565,16 @@ pub enum NotebookResponse {
 
 /// Broadcast messages from daemon to all peers in a room.
 ///
-/// These are sent proactively when kernel events occur, not as responses
-/// to specific requests. All connected windows receive these.
+/// Ephemeral, room-wide events that don't fit the request/response or
+/// CRDT-sync model: comm messages from the kernel, environment-launch
+/// progress, path renames, autosave acks. Kernel state, execution
+/// lifecycle, queue, and outputs all live in `RuntimeStateDoc` (frame
+/// type `0x05`) — they used to flow as broadcasts and the dead variants
+/// were removed once the doc became authoritative.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
 #[allow(clippy::large_enum_variant)]
 pub enum NotebookBroadcast {
-    /// Kernel status changed.
-    KernelStatus {
-        status: String,          // "starting", "idle", "busy", "error", "shutdown"
-        cell_id: Option<String>, // which cell triggered status change
-    },
-
-    /// Execution started for a cell.
-    ExecutionStarted {
-        cell_id: String,
-        execution_id: String,
-        execution_count: i64,
-    },
-
-    /// Output produced by a cell.
-    Output {
-        cell_id: String,
-        execution_id: String,
-        output_type: String, // "stream", "display_data", "execute_result", "error"
-        output_json: String, // Serialized Jupyter output content
-        /// If Some, this is an update to an existing output at the given index.
-        /// If None, this is a new output to append.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        output_index: Option<usize>,
-    },
-
-    /// Display output updated in place (update_display_data).
-    DisplayUpdate {
-        display_id: String,
-        data: serde_json::Value,
-        metadata: serde_json::Map<String, serde_json::Value>,
-    },
-
-    /// Execution completed for a cell.
-    ExecutionDone {
-        cell_id: String,
-        execution_id: String,
-    },
-
-    /// Queue state changed.
-    QueueChanged {
-        executing: Option<QueueEntry>,
-        queued: Vec<QueueEntry>,
-    },
-
-    /// Kernel error (failed to launch, crashed, etc.)
-    KernelError { error: String },
-
-    /// Outputs cleared for a cell.
-    OutputsCleared { cell_id: String },
-
     /// Comm message from kernel (ipywidgets protocol).
     /// Broadcast to all connected peers so all windows can display widgets.
     Comm {
@@ -641,19 +595,6 @@ pub enum NotebookBroadcast {
         env_type: String,
         #[serde(flatten)]
         phase: kernel_env::EnvProgressPhase,
-    },
-
-    /// Environment sync state changed.
-    ///
-    /// Broadcast when notebook metadata changes and differs from the
-    /// kernel's launched configuration. All connected windows can show
-    /// the sync UI in response.
-    EnvSyncState {
-        /// Whether the current metadata matches the launched config.
-        in_sync: bool,
-        /// What's different (for UI display). None if in_sync is true.
-        #[serde(skip_serializing_if = "Option::is_none")]
-        diff: Option<EnvSyncDiff>,
     },
 
     /// Sent when the room's `.ipynb` path changes (untitled→saved, save-as rename).
