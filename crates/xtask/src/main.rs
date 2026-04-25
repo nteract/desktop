@@ -104,10 +104,6 @@ fn main() {
             let release = args.iter().any(|a| a == "--release");
             cmd_dev_daemon(release);
         }
-        "dev-mcp" => {
-            let print_config = args.iter().any(|a| a == "--print-config");
-            cmd_dev_mcp(print_config);
-        }
         "run-mcp" | "mcp" => {
             let print_config = args.iter().any(|a| a == "--print-config");
             let release = args.iter().any(|a| a == "--release");
@@ -191,8 +187,6 @@ Daemon:
 MCP:
   run-mcp [--release]        Build and run the nteract-dev MCP supervisor (proxy + daemon + auto-restart)
   run-mcp --print-config     Print MCP client config JSON (for Zed, Claude, etc.)
-  dev-mcp                    Build Python bindings and launch nteract MCP server directly (no supervisor)
-  dev-mcp --print-config     Print MCP client config JSON (for Zed, Claude, etc.)
   mcp-inspector              Launch MCPJam Inspector UI to test runt mcp (MCP Apps)
 
 Linting:
@@ -1923,117 +1917,6 @@ fn cmd_mcp_inspector() {
 
     if !status.success() {
         exit(status.code().unwrap_or(1));
-    }
-}
-
-fn cmd_dev_mcp(print_config: bool) {
-    // Step 1: Build the runt CLI so we can query daemon status
-    if !Path::new(dev_runt_cli_binary()).exists() {
-        println!("Building runt CLI...");
-        run_cmd("cargo", &["build", "-p", "runt"]);
-    }
-
-    // Step 2: Resolve the socket path from the dev daemon
-    let socket_path = {
-        let mut command = Command::new(dev_runt_cli_binary());
-        command
-            .args(["daemon", "status", "--json"])
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        apply_worktree_env(&mut command, true);
-
-        let output = command.output().unwrap_or_else(|e| {
-            eprintln!("Failed to run runt daemon status: {e}");
-            eprintln!("Build the CLI first: cargo build -p runt");
-            exit(1);
-        });
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            eprintln!("runt daemon status failed:");
-            if !stderr.trim().is_empty() {
-                eprintln!("{}", stderr.trim());
-            }
-            exit(1);
-        }
-
-        let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap_or_else(|e| {
-            eprintln!("Failed to parse daemon status JSON: {e}");
-            exit(1);
-        });
-
-        let path = json
-            .get("socket_path")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or_else(|| {
-                eprintln!("No socket_path in daemon status output");
-                exit(1);
-            })
-            .to_string();
-
-        let running = json
-            .get("running")
-            .and_then(serde_json::Value::as_bool)
-            .unwrap_or(false);
-
-        if !running && !print_config {
-            eprintln!("Warning: dev daemon is not running.");
-            eprintln!("Start it first: cargo xtask dev-daemon");
-            eprintln!();
-        }
-
-        path
-    };
-
-    // Step 3: Sync Python workspace + build native bindings
-    ensure_python_env();
-    ensure_maturin_develop();
-
-    // Step 4: Print config or launch
-    let workspace_dir = fs::canonicalize(".").unwrap_or_else(|e| {
-        eprintln!("Failed to resolve workspace directory: {e}");
-        exit(1);
-    });
-
-    if print_config {
-        let config = serde_json::json!({
-            "command": "uv",
-            "args": ["run", "--no-sync", "--directory", workspace_dir.to_string_lossy(), "nteract"],
-            "env": {
-                "RUNTIMED_SOCKET_PATH": socket_path
-            }
-        });
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&config).unwrap_or_else(|e| {
-                eprintln!("Failed to serialize MCP config: {e}");
-                exit(1);
-            })
-        );
-    } else {
-        println!();
-        println!("Launching nteract MCP server...");
-        println!("Socket: {socket_path}");
-        println!();
-
-        let status = Command::new("uv")
-            .args([
-                "run",
-                "--no-sync",
-                "--directory",
-                &workspace_dir.to_string_lossy(),
-                "nteract",
-            ])
-            .env("RUNTIMED_SOCKET_PATH", &socket_path)
-            .status()
-            .unwrap_or_else(|e| {
-                eprintln!("Failed to launch nteract MCP server: {e}");
-                exit(1);
-            });
-
-        if !status.success() {
-            exit(status.code().unwrap_or(1));
-        }
     }
 }
 
