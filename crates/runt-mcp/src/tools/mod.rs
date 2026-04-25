@@ -11,15 +11,18 @@ use crate::NteractMcp;
 
 /// Acquire the active session's `DocHandle`, or early-return a "no session" tool error.
 /// Clones the handle and drops the session read-lock so other tools aren't blocked.
+///
+/// When the session was previously active but dropped, the error includes
+/// the *reason* (evicted, disconnected, switched) and the *notebook_id*
+/// so agents can recover in one turn via `connect_notebook`.
 macro_rules! require_handle {
     ($server:expr) => {{
         let guard = $server.session.read().await;
         match guard.as_ref() {
             Some(s) => s.handle.clone(),
             None => {
-                return $crate::tools::tool_error(
-                    "No active notebook session. Call connect_notebook or create_notebook first.",
-                )
+                drop(guard);
+                return $crate::tools::no_session_error($server).await;
             }
         }
     }};
@@ -471,6 +474,33 @@ pub fn arg_string_array(request: &CallToolRequestParams, key: &str) -> Option<Ve
     // Present but wrong type (number, bool, object, etc.)
     tracing::warn!("[mcp] Array param '{key}' has unexpected type: {}", val);
     Some(vec![])
+}
+
+/// Build a context-rich "no active session" error.
+///
+/// If we have drop context (from a previous session), the error message
+/// includes *why* the session was lost and *which notebook_id* to reconnect
+/// to — enabling agents to recover in one turn instead of wasting turns on
+/// `list_active_notebooks`.
+pub async fn no_session_error(server: &crate::NteractMcp) -> Result<CallToolResult, McpError> {
+    let drop_info = server.last_session_drop.read().await;
+    match drop_info.as_ref() {
+        Some(info) => {
+            let mut msg = format!("No active notebook session ({}). ", info.reason);
+            msg.push_str(&format!(
+                "Reconnect with: connect_notebook(notebook_id=\"{}\")",
+                info.notebook_id
+            ));
+            if let Some(ref path) = info.notebook_path {
+                msg.push_str(&format!(" — file: {path}"));
+            }
+            tool_error(&msg)
+        }
+        None => tool_error(
+            "No active notebook session. \
+             Call connect_notebook or create_notebook first.",
+        ),
+    }
 }
 
 /// Assert that a cell exists in the notebook, or return an `McpError`.

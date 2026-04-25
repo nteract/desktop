@@ -30,7 +30,7 @@ mod session;
 mod structured;
 pub mod tools;
 
-use session::NotebookSession;
+use session::{NotebookSession, SessionDropInfo};
 
 /// The nteract MCP server.
 pub struct NteractMcp {
@@ -38,6 +38,10 @@ pub struct NteractMcp {
     blob_base_url: Option<String>,
     blob_store_path: Option<PathBuf>,
     session: Arc<RwLock<Option<NotebookSession>>>,
+    /// Context from the most recently dropped session — allows error messages
+    /// to tell agents *why* the session was lost and *which notebook_id* to
+    /// reconnect to, instead of the generic "No active notebook session".
+    last_session_drop: Arc<RwLock<Option<SessionDropInfo>>>,
     /// The MCP client's display name, sniffed from the initialize handshake.
     /// Used as the peer label in notebook sessions so the notebook app shows
     /// "Claude Desktop" or "Claude Code" instead of the default "Inkwell".
@@ -64,6 +68,7 @@ impl NteractMcp {
             blob_base_url,
             blob_store_path,
             session: Arc::new(RwLock::new(None)),
+            last_session_drop: Arc::new(RwLock::new(None)),
             peer_label: Arc::new(RwLock::new("Inkwell".to_string())),
             no_show: false,
             daemon_version: None,
@@ -101,6 +106,11 @@ impl NteractMcp {
     /// Get the shared peer label (for the daemon watcher).
     pub fn peer_label_shared(&self) -> &Arc<RwLock<String>> {
         &self.peer_label
+    }
+
+    /// Get the shared session drop info (for the daemon watcher).
+    pub fn last_session_drop(&self) -> &Arc<RwLock<Option<SessionDropInfo>>> {
+        &self.last_session_drop
     }
 }
 

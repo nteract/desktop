@@ -25,7 +25,7 @@ use runtimed_client::daemon_connection::{DaemonConnection, DaemonEvent};
 use tokio::sync::{broadcast, RwLock};
 use tracing::{info, warn};
 
-use crate::session::NotebookSession;
+use crate::session::{NotebookSession, SessionDropInfo, SessionDropReason};
 
 /// Exit code when the daemon has been upgraded and the MCP server should
 /// restart. EX_TEMPFAIL (sysexits.h) — "temporary failure; try again."
@@ -121,6 +121,7 @@ pub async fn watch(
     socket_path: PathBuf,
     session: Arc<RwLock<Option<NotebookSession>>>,
     peer_label: Arc<RwLock<String>>,
+    last_session_drop: Arc<RwLock<Option<SessionDropInfo>>>,
 ) -> i32 {
     let mut rx = daemon_conn.subscribe();
     let mut initial_target: Option<String> = std::env::var(REJOIN_ENV_VAR).ok();
@@ -171,7 +172,14 @@ pub async fn watch(
             }
             WatchDecision::RejoinInitial(target) => {
                 info!("Performing initial rejoin to {target}");
-                let ok = rejoin(&socket_path, &session, &peer_label, Some(target)).await;
+                let ok = rejoin(
+                    &socket_path,
+                    &session,
+                    &peer_label,
+                    &last_session_drop,
+                    Some(target),
+                )
+                .await;
                 // Only clear the disconnect flag and consume the initial
                 // target if rejoin succeeded or the session was explicitly
                 // cleared (room evicted). If rejoin exhausted retries,
@@ -184,7 +192,14 @@ pub async fn watch(
             }
             WatchDecision::RejoinContinuation => {
                 info!("Daemon reachable, rejoining notebook session");
-                let ok = rejoin(&socket_path, &session, &peer_label, None).await;
+                let ok = rejoin(
+                    &socket_path,
+                    &session,
+                    &peer_label,
+                    &last_session_drop,
+                    None,
+                )
+                .await;
                 if ok {
                     was_disconnected = false;
                 }
@@ -229,6 +244,7 @@ async fn rejoin(
     socket_path: &Path,
     session: &Arc<RwLock<Option<NotebookSession>>>,
     peer_label: &Arc<RwLock<String>>,
+    last_session_drop: &Arc<RwLock<Option<SessionDropInfo>>>,
     override_target: Option<String>,
 ) -> bool {
     let (notebook_id, notebook_path) = match override_target {
@@ -264,6 +280,11 @@ async fn rejoin(
                         "Room {notebook_id} no longer exists in daemon; \
                          clearing session (notebook was evicted)"
                     );
+                    *last_session_drop.write().await = Some(SessionDropInfo {
+                        reason: SessionDropReason::Evicted,
+                        notebook_id: notebook_id.clone(),
+                        notebook_path: notebook_path.clone(),
+                    });
                     *session.write().await = None;
                     return true; // Session cleared intentionally
                 }

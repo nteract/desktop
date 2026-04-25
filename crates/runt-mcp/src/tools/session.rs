@@ -10,7 +10,7 @@ use serde::Deserialize;
 use runtimed_client::client::PoolClient;
 
 use crate::formatting;
-use crate::session::NotebookSession;
+use crate::session::{NotebookSession, SessionDropInfo, SessionDropReason};
 use crate::NteractMcp;
 
 /// Read the current session's notebook_id (if any) before replacing it.
@@ -61,6 +61,12 @@ async fn disconnect_previous_session(server: &NteractMcp, new_notebook_id: Optio
             "[mcp] Disconnecting previous session {} before notebook switch",
             old.notebook_id
         );
+        // Record the drop so "no session" errors can point agents back.
+        *server.last_session_drop.write().await = Some(SessionDropInfo {
+            reason: SessionDropReason::Switched,
+            notebook_id: old.notebook_id.clone(),
+            notebook_path: old.notebook_path.clone(),
+        });
         // Drop the old session — channels close, sync task shuts down,
         // daemon peer count decrements, eviction timer starts.
         // Kernel lifecycle is the daemon's responsibility.
@@ -592,16 +598,16 @@ pub async fn save_notebook(
     let path = arg_str(request, "path").map(resolve_path);
 
     // Need both handle and the notebook_id from the session.
-    let (handle, notebook_id) =
-        {
-            let guard = server.session.read().await;
-            match guard.as_ref() {
-                Some(s) => (s.handle.clone(), s.notebook_id.clone()),
-                None => return tool_error(
-                    "No active notebook session. Call connect_notebook or create_notebook first.",
-                ),
+    let (handle, notebook_id) = {
+        let guard = server.session.read().await;
+        match guard.as_ref() {
+            Some(s) => (s.handle.clone(), s.notebook_id.clone()),
+            None => {
+                drop(guard);
+                return super::no_session_error(server).await;
             }
-        };
+        }
+    };
 
     // The daemon decides whether a path is required (untitled rooms with
     // no existing path field return SaveError with a clear message). We no

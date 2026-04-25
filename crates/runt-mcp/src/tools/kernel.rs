@@ -34,16 +34,16 @@ pub async fn restart_kernel(
     server: &NteractMcp,
     _request: &CallToolRequestParams,
 ) -> Result<CallToolResult, McpError> {
-    let (handle, notebook_id) =
-        {
-            let guard = server.session.read().await;
-            match guard.as_ref() {
-                Some(s) => (s.handle.clone(), s.notebook_id.clone()),
-                None => return tool_error(
-                    "No active notebook session. Call connect_notebook or create_notebook first.",
-                ),
+    let (handle, notebook_id) = {
+        let guard = server.session.read().await;
+        match guard.as_ref() {
+            Some(s) => (s.handle.clone(), s.notebook_id.clone()),
+            None => {
+                drop(guard);
+                return super::no_session_error(server).await;
             }
-        };
+        }
+    };
 
     // Capture kernel_type from the *current* RuntimeState before shutdown.
     // After a daemon restart the fresh RuntimeStateDoc has kernel.name = "",
