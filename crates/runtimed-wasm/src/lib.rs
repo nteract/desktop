@@ -767,6 +767,24 @@ impl NotebookHandle {
         let Some(eid) = self.doc.get_execution_id(cell_id) else {
             return Vec::new();
         };
+
+        // Ghost-output guard (#2086): if the execution's captured source
+        // doesn't match the cell's current source, the user edited the cell
+        // after this execution was queued. Return empty to avoid showing
+        // stale output from a different version of the code.
+        if let Some(exec) = self.state_doc.get_execution(&eid) {
+            if let Some(ref captured) = exec.source {
+                let current = self
+                    .doc
+                    .get_cell(cell_id)
+                    .map(|c| c.source)
+                    .unwrap_or_default();
+                if captured != &current {
+                    return Vec::new();
+                }
+            }
+        }
+
         self.state_doc
             .get_outputs(&eid)
             .into_iter()

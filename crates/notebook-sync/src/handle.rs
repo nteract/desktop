@@ -468,10 +468,28 @@ impl DocHandle {
     ///
     /// Reads the cell's `execution_id` from the notebook doc, then looks up
     /// outputs in the RuntimeStateDoc — providing a transparent facade.
+    ///
+    /// Ghost-output guard (#2086): if the execution's captured source doesn't
+    /// match the cell's current source, the execution_id is stale (source was
+    /// edited after execution was queued). Returns `None` in that case so
+    /// callers never see outputs from a different version of the code.
     pub fn get_cell_outputs(&self, cell_id: &str) -> Option<Vec<serde_json::Value>> {
         let state = self.doc.lock().ok()?;
         // Read execution_id from the raw Automerge doc
         let eid = read_execution_id(&state.doc, cell_id)?;
+
+        // Ghost-output guard: verify the execution's captured source matches
+        // the cell's current source. If they differ, the user edited the cell
+        // after this execution was queued — return no outputs.
+        if let Some(exec) = state.state_doc.get_execution(&eid) {
+            if let Some(ref captured_source) = exec.source {
+                let current_source = read_cell_source(&state.doc, cell_id).unwrap_or_default();
+                if captured_source != &current_source {
+                    return None;
+                }
+            }
+        }
+
         let outputs = state.state_doc.get_outputs(&eid);
         if outputs.is_empty() {
             None
@@ -829,4 +847,12 @@ fn read_execution_id(doc: &AutoCommit, cell_id: &str) -> Option<String> {
         },
         _ => None,
     }
+}
+
+/// Read cell source text directly from a raw AutoCommit document.
+fn read_cell_source(doc: &AutoCommit, cell_id: &str) -> Option<String> {
+    let (_, cells_id) = doc.get(&automerge::ROOT, "cells").ok().flatten()?;
+    let (_, cell_obj) = doc.get(&cells_id, cell_id).ok().flatten()?;
+    let (_, source_id) = doc.get(&cell_obj, "source").ok().flatten()?;
+    doc.text(&source_id).ok()
 }

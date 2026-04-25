@@ -1423,15 +1423,16 @@ where
 
                                     // Ghost-output prevention (#2086): if a peer
                                     // edited cell source while an execution was
-                                    // in-flight, clear the execution_id pointer so
-                                    // the stale output won't be associated with the
-                                    // cell. The old execution's output remains in
-                                    // RuntimeStateDoc but the cell no longer points
-                                    // to it.
+                                    // in-flight OR already completed, clear the
+                                    // execution_id pointer so stale output won't
+                                    // be associated with the cell.
                                     //
-                                    // Also mark executions as failed for cells that
-                                    // were deleted — the kernel still runs the code
-                                    // but the cell no longer exists to display it.
+                                    // We compare the cell's current source against
+                                    // the captured source stored in the execution
+                                    // entry. This catches both the wide window
+                                    // (execution still running when source changes)
+                                    // and the tight window (execution already done
+                                    // by the time the sync frame arrives).
                                     if heads_before != heads_after {
                                         let changeset = diff_cells(
                                             doc.doc_mut(),
@@ -1441,18 +1442,28 @@ where
                                         for changed in &changeset.changed {
                                             if changed.fields.source {
                                                 if let Some(eid) = doc.get_execution_id(&changed.cell_id) {
-                                                    let is_active = room
+                                                    let source_mismatch = room
                                                         .state
                                                         .read(|sd| {
                                                             sd.get_execution(&eid).is_some_and(|exec| {
-                                                                exec.status == "queued" || exec.status == "running"
-                                                            })
+                                                                match &exec.source {
+                                                                    Some(captured) => {
+                                                                        let current = doc.get_cell(&changed.cell_id)
+                                                                            .map(|c| c.source)
+                                                                            .unwrap_or_default();
+                                                                        captured != &current
+                                                                    }
+                                                                    // No captured source — legacy execution,
+                                                                    // clear to be safe.
+                                                                    None => true,
+                                                                }
+                                                                })
                                                         })
                                                         .unwrap_or(false);
-                                                    if is_active {
+                                                    if source_mismatch {
                                                         debug!(
                                                             "[notebook-sync] Clearing stale execution_id {} for cell {} \
-                                                             (source edited while execution in-flight)",
+                                                             (source changed since execution was queued)",
                                                             eid, changed.cell_id
                                                         );
                                                         let _ = doc.set_execution_id(&changed.cell_id, None);

@@ -95,7 +95,15 @@ pub(crate) async fn save_notebook_to_disk(
         (cells, metadata_snapshot, eids)
     };
 
+    // Build cell_id → current_source map for ghost-output guard.
+    let cell_sources: HashMap<String, String> = cells
+        .iter()
+        .map(|c| (c.id.clone(), c.source.clone()))
+        .collect();
+
     // Read outputs and execution_count from RuntimeStateDoc keyed by execution_id.
+    // Ghost-output guard (#2086): skip outputs when the execution's captured
+    // source doesn't match the cell's current source (source edited since execution).
     let (cell_outputs, cell_execution_counts): (
         HashMap<String, Vec<serde_json::Value>>,
         HashMap<String, Option<i64>>,
@@ -106,11 +114,19 @@ pub(crate) async fn save_notebook_to_disk(
             let mut ec_map = HashMap::new();
             for (cell_id, eid) in &cell_execution_ids {
                 if let Some(eid) = eid.as_ref() {
-                    let outputs = sd.get_outputs(eid);
-                    if !outputs.is_empty() {
-                        outputs_map.insert(cell_id.clone(), outputs);
-                    }
                     if let Some(exec) = sd.get_execution(eid) {
+                        // Ghost-output guard: skip stale executions
+                        if let Some(ref captured) = exec.source {
+                            let current =
+                                cell_sources.get(cell_id).map(|s| s.as_str()).unwrap_or("");
+                            if captured != current {
+                                continue;
+                            }
+                        }
+                        let outputs = sd.get_outputs(eid);
+                        if !outputs.is_empty() {
+                            outputs_map.insert(cell_id.clone(), outputs);
+                        }
                         ec_map.insert(cell_id.clone(), exec.execution_count);
                     }
                 }
