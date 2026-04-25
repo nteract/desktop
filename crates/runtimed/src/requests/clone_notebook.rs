@@ -146,6 +146,17 @@ async fn seed_clone_from_source(
                     &cell.metadata,
                 )
                 .map_err(|e| format!("add_cell_full({}): {e}", cell.id))?;
+
+            // `add_cell_full` seeds an empty `resolved_assets` map. Markdown
+            // cells render via `cell.resolvedAssets` (attachment ref -> blob
+            // hash), so without this copy, inline images in cloned markdown
+            // cells would break until a save+reload rebuilt the map from
+            // the attachment cache.
+            if !cell.resolved_assets.is_empty() {
+                clone_doc
+                    .set_cell_resolved_assets(&cell.id, &cell.resolved_assets)
+                    .map_err(|e| format!("set_cell_resolved_assets({}): {e}", cell.id))?;
+            }
         }
 
         // Apply metadata with a fresh env_id. Trust signature + timestamp
