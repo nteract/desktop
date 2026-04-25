@@ -10,7 +10,7 @@ description: Develop, debug, and manage the runtimed daemon. Use when working on
 | Task | Command |
 |------|---------|
 | Start dev daemon | `cargo xtask dev-daemon` |
-| Install nightly (Linux/headless only) | `cargo xtask install-nightly` |
+| Install nightly (Linux/headless only) | `./scripts/install-nightly` |
 | Check status | `./target/debug/runt daemon status` |
 | Check status (JSON) | `./target/debug/runt daemon status --json` |
 | Tail logs | `./target/debug/runt daemon logs -f` |
@@ -46,7 +46,7 @@ The notebook app auto-connects to or starts the daemon. If unavailable, falls ba
 When you change daemon code and want the system service to pick it up on a cloud box or headless Linux machine:
 
 ```bash
-cargo xtask install-nightly
+./scripts/install-nightly
 ```
 
 Builds runtimed + runt + nteract-mcp (release), installs them to `~/.local/share/runt-nightly/bin/` with channel-suffixed names, writes + starts the systemd user unit on first install, upgrades in place on subsequent runs. On macOS it refuses by default — use the nteract Nightly app (it auto-updates). Pass `--on-macos` to override, `--replace-installed-app` if an app bundle is already present.
@@ -272,7 +272,7 @@ Check that uv/conda are installed and working.
 ## Stopping the Daemon
 
 - `./target/debug/runt daemon stop` — stops only your worktree's daemon
-- `cargo xtask install-nightly` — gracefully installs/reinstalls the full nightly stack (Linux/headless only; refuses on macOS by default)
+- `./scripts/install-nightly` — gracefully installs/reinstalls the full nightly stack (Linux/headless only; refuses on macOS by default)
 
 Avoid system-wide process killers (`pkill`, `killall`) — they affect every worktree and every other agent on the machine.
 

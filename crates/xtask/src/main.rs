@@ -84,22 +84,8 @@ fn main() {
             let sub_args: Vec<String> = args[1..].to_vec();
             cmd_e2e(sub_args);
         }
-        "build-e2e" => cmd_build_e2e(),
         "build-dmg" => cmd_build_dmg(),
         "build-app" => cmd_build_app(),
-        "install-nightly" => {
-            eprintln!("install-nightly is a shell script now.");
-            eprintln!();
-            eprintln!("Run it from the repo root:");
-            eprintln!();
-            eprintln!("    ./scripts/install-nightly");
-            eprintln!();
-            eprintln!(
-                "It was moved out of xtask so `cargo xtask lint` doesn't have to pay \
-                 runtimed-client's (~750 crate) compile cost."
-            );
-            exit(1);
-        }
         "dev-daemon" => {
             let release = args.iter().any(|a| a == "--release");
             cmd_dev_daemon(release);
@@ -886,11 +872,6 @@ fn cmd_run(notebook: Option<&str>) {
         Some(path) => run_cmd("./target/debug/notebook", &[path]),
         None => run_cmd("./target/debug/notebook", &[]),
     }
-}
-
-fn cmd_build_e2e() {
-    eprintln!("Note: 'build-e2e' is deprecated, use 'cargo xtask e2e build' instead.");
-    cmd_e2e_build();
 }
 
 fn print_e2e_help() {

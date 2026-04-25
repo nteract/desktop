@@ -6,7 +6,7 @@ The runtime daemon manages prewarmed Python environments, notebook document sync
 
 | Task | Command |
 |------|---------|
-| Install nightly from source (Linux/headless) | `cargo xtask install-nightly` |
+| Install nightly from source (Linux/headless) | `./scripts/install-nightly` |
 | Run daemon | `cargo run -p runtimed` |
 | Run with debug logs | `RUST_LOG=debug cargo run -p runtimed` |
 | Check status | `cargo run -p runt -- daemon status` |
@@ -97,7 +97,7 @@ The notebook app calls `ensure_daemon_via_sidecar()` (a private function in `cra
 On Linux cloud boxes and headless dev environments:
 
 ```bash
-cargo xtask install-nightly
+./scripts/install-nightly
 ```
 
 This builds `runtimed`, `runt`, and `nteract-mcp` in release mode and installs all three into `~/.local/share/runt-nightly/bin/` with channel-suffixed names (`runtimed-nightly`, `runt-nightly`, `nteract-mcp-nightly`). On first run it writes the systemd user unit and starts it; on subsequent runs it upgrades in place. After the initial install the command prints the follow-up `sudo ln -sf` symlink commands for `/usr/local/bin/` and the `sudo loginctl enable-linger` step that keeps the user service alive across logout.
