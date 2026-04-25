@@ -319,7 +319,7 @@ Use `nteract-dev` as the MCP server name for this source tree. Keep `nteract` fo
 
 ### MCP Server
 
-`nteract-dev` proxies the Rust-native `runt mcp` server (direct Automerge access, no Python overhead). It auto-builds `runt-cli` on startup and watches `crates/runt-mcp/src/` for hot reload.
+`nteract-dev` proxies the Rust-native `runt mcp` server (direct Automerge access, no Python overhead). It auto-builds `runt` on startup and watches `crates/runt-mcp/src/` for hot reload.
 
 `runt mcp` can also be run standalone (no proxy): `./target/debug/runt mcp`. It reads `RUNTIMED_SOCKET_PATH` for the daemon connection.
 
@@ -356,8 +356,8 @@ When `nteract-dev` is active, agents also get the full nteract tool suite. **Use
 ### Hot reload
 
 `nteract-dev` watches source directories and auto-restarts the child on changes:
-- **`crates/runt-mcp/src/`** → `cargo build -p runt-cli` + restart (Rust MCP mode)
-- **`crates/runtimed-client/src/`** → `cargo build -p runt-cli` + `maturin develop` + restart (shared code)
+- **`crates/runt-mcp/src/`** → `cargo build -p runt` + restart (Rust MCP mode)
+- **`crates/runtimed-client/src/`** → `cargo build -p runt` + `maturin develop` + restart (shared code)
 - **`crates/runtimed-py/src/`, `crates/runtimed/src/`** → `maturin develop` + `cargo build` + restart
 - **`python/nteract/src/`, `python/runtimed/src/`** → child restart (Python mode) or background `maturin develop` (Rust mode)
 
@@ -381,7 +381,7 @@ When `nteract-dev` is active, agents also get the full nteract tool suite. **Use
 | `notebook-doc` | Shared Automerge schema — cells, outputs, RuntimeStateDoc, PEP 723, MIME classification |
 | `notebook-protocol` | Wire types — requests, responses, broadcasts |
 | `notebook-sync` | Automerge sync client — `DocHandle`, per-cell Python accessors |
-| `runt-cli` | CLI (`runt` binary) — daemon management, kernel control, notebook launching, MCP server |
+| `runt` | CLI (`runt` binary) — daemon management, kernel control, notebook launching, MCP server |
 | `runt-mcp` | Rust-native MCP server — 26 tools for notebook interaction via `runt mcp` |
 | `runt-mcp-proxy` | Resilient proxy for `runt mcp` — child supervision, restart-with-retry, session tracking |
 | `runt-trust` | Notebook trust (HMAC-SHA256 over dependency metadata) |

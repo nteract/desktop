@@ -9,7 +9,7 @@ The repo keeps a shared semver source version across its release inputs, but CI 
 | Artifact | Where | Version source |
 |---|---|---|
 | nteract desktop app | GitHub Releases | `crates/notebook/tauri.conf.json` |
-| `runt` CLI | GitHub Releases | `crates/runt/Cargo.toml` (package name `runt-cli`) |
+| `runt` CLI | GitHub Releases | `crates/runt/Cargo.toml` |
 | `runtimed` daemon | Bundled in app + Python wheel | `crates/runtimed/Cargo.toml` |
 | `runtimed` Python package | PyPI | `python/runtimed/pyproject.toml` |
 | `nteract` Python package | PyPI | `python/nteract/pyproject.toml` |
@@ -142,7 +142,7 @@ The reusable `release-common.yml` accepts inputs from the nightly/stable callers
 
 Python wheels are always built (macOS arm64, Linux x64, Windows x64) and always published. `continue-on-error: true` on the PyPI step handles duplicate version conflicts (e.g., re-running a workflow).
 
-Desktop version is computed as `{runt-cli version}-{suffix}.{timestamp}` where suffix is `nightly` or `stable`. This is stamped into `tauri.conf.json` and `Cargo.toml` at build time — not committed.
+Desktop version is computed as `{runt version}-{suffix}.{timestamp}` where suffix is `nightly` or `stable`. This is stamped into `tauri.conf.json` and `Cargo.toml` at build time — not committed.
 
 ### Trusted Publishing
 

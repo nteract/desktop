@@ -21,7 +21,7 @@ graph TD
         ND["notebook-doc<br/><i>shared Automerge doc ops</i>"]
         RTC["runtimed-client<br/><i>shared client/runtime helpers</i>"]
         RD["runtimed (lib + bin)<br/><i>daemon</i>"]
-        RC["runt-cli (bin: runt)<br/><i>CLI</i>"]
+        RC["runt (bin: runt)<br/><i>CLI</i>"]
         NB["notebook (Tauri app)<br/><i>main app</i>"]
         XT["xtask<br/><i>build orchestrator</i>"]
         RWASM["runtimed-wasm<br/><i>WASM notebook doc ops</i>"]
@@ -76,7 +76,7 @@ here is what happens under the hood:
 ```mermaid
 graph LR
     A["1. pnpm install"] --> M["2. Build MCP widget HTML<br/>crates/runt-mcp/assets/_output.html"]
-    M --> R["3. cargo build<br/>-p runtimed -p runt-cli -p mcp-supervisor -p notebook"]
+    M --> R["3. cargo build<br/>-p runtimed -p runt -p mcp-supervisor -p notebook"]
     R --> E["4. Copy sidecar binaries<br/>for Tauri bundling"]
     E --> P["5. In parallel:<br/>uv sync + maturin develop<br/>and pnpm frontend build"]
     P --> F["6. cargo tauri build<br/>or debug link step"]
@@ -93,7 +93,7 @@ Shows only the Cargo `path` dependencies between workspace members:
 graph BT
     RD["runtimed"]
     RTC["runtimed-client"]
-    RC["runt-cli"]
+    RC["runt"]
     NB["notebook"]
     ND["notebook-doc"]
     NP["notebook-protocol"]

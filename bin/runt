@@ -14,7 +14,7 @@ BINARY="$REPO_ROOT/target/debug/runt"
 
 if [ ! -f "$BINARY" ]; then
     echo "runt not built yet — building..." >&2
-    cargo build --manifest-path "$REPO_ROOT/Cargo.toml" -p runt-cli
+    cargo build --manifest-path "$REPO_ROOT/Cargo.toml" -p runt
 fi
 
 exec "$BINARY" "$@"

@@ -11,7 +11,7 @@ For commands and dev workflows, see `CLAUDE.md` → "Build System" and run `carg
 
 Three phases:
 
-1. **Single Rust compilation** — `cargo build -p runtimed -p runt-cli -p mcp-supervisor -p notebook` in one invocation (workspace feature unification happens once, so the final tauri step doesn't recompile). Sidecars (`runtimed`, `runt`) are copied to `crates/notebook/binaries/` for Tauri bundling.
+1. **Single Rust compilation** — `cargo build -p runtimed -p runt -p mcp-supervisor -p notebook` in one invocation (workspace feature unification happens once, so the final tauri step doesn't recompile). Sidecars (`runtimed`, `runt`) are copied to `crates/notebook/binaries/` for Tauri bundling.
 
 2. **Frontend + Python bindings in parallel** — `pnpm build` (TypeScript + Vite) and `maturin develop` (Python `.so`) run concurrently. Both must finish before phase 3.
 
@@ -37,7 +37,7 @@ Shared:
 
 App binaries:
 - `notebook` (Tauri) → `runtimed-client`, `notebook-doc`, `notebook-protocol`, `notebook-sync`, `runt-trust`, `runt-workspace`
-- `runt-cli` → `runtimed-client`, `notebook-doc`, `runt-workspace`, `kernel-env`, `runt-mcp`
+- `runt` → `runtimed-client`, `notebook-doc`, `runt-workspace`, `kernel-env`, `runt-mcp`
 - `runtimed` → `runtimed-client`, `notebook-doc`, `notebook-protocol`, `kernel-launch`, `kernel-env`, `runt-trust`, `runt-workspace`
 - `runtimed-py` → `runtimed-client`, `notebook-doc`, `notebook-protocol`, `kernel-env`, `notebook-sync`, `runt-workspace`
 - `runtimed-wasm` → `notebook-doc`

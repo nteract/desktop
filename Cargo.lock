@@ -6934,7 +6934,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "runt-cli"
+name = "runt"
 version = "2.3.2"
 dependencies = [
  "anyhow",

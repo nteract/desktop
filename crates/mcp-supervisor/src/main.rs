@@ -317,7 +317,7 @@ fn binary_fingerprint(project_root: &Path, name: &str) -> BinaryFingerprint {
 }
 
 /// Snapshot both binaries `up rebuild=true` touches: the daemon
-/// (`runtimed`) and the MCP child host (`runt`, via `runt-cli`).
+/// (`runtimed`) and the MCP child host (`runt`).
 /// Returns a tuple of fingerprints; `None` in either slot means the
 /// binary didn't exist at snapshot time.
 fn managed_binary_fingerprints(project_root: &Path) -> (BinaryFingerprint, BinaryFingerprint) {
@@ -343,13 +343,13 @@ fn fingerprint_changed(before: &BinaryFingerprint, after: &BinaryFingerprint) ->
 ///
 /// Returns `true` on success, `false` on failure.
 fn run_cargo_build_daemon(project_root: &Path) -> bool {
-    info!("Building daemon + CLI (cargo build -p runtimed -p runt-cli)...");
+    info!("Building daemon + CLI (cargo build -p runtimed -p runt)...");
     let mut cmd = std::process::Command::new("cargo");
     cmd.arg("build")
         .arg("-p")
         .arg("runtimed")
         .arg("-p")
-        .arg("runt-cli")
+        .arg("runt")
         .current_dir(project_root)
         .stdout(Stdio::null())
         .stderr(Stdio::inherit());
@@ -375,7 +375,7 @@ fn run_cargo_build_daemon(project_root: &Path) -> bool {
 /// Build the runt CLI binary (which includes runt-mcp).
 /// Respects release mode so the built binary matches what cargo_binary() resolves.
 fn build_runt_cli(project_root: &Path) -> bool {
-    let mut args = vec!["build", "-p", "runt-cli"];
+    let mut args = vec!["build", "-p", "runt"];
     if use_release_binaries() {
         args.push("--release");
     }
@@ -388,11 +388,11 @@ fn build_runt_cli(project_root: &Path) -> bool {
 
     match status {
         Ok(s) if s.success() => {
-            info!("cargo build -p runt-cli succeeded");
+            info!("cargo build -p runt succeeded");
             true
         }
         Ok(s) => {
-            error!("cargo build -p runt-cli failed with {s}");
+            error!("cargo build -p runt failed with {s}");
             false
         }
         Err(e) => {
@@ -948,9 +948,9 @@ impl Supervisor {
 
         match kind {
             ChangeKind::RustMcpChanged => {
-                info!("Rust MCP files changed, building runt-cli...");
+                info!("Rust MCP files changed, building runt...");
                 if !build_runt_cli(&project_root) {
-                    error!("cargo build -p runt-cli failed, keeping current child");
+                    error!("cargo build -p runt failed, keeping current child");
                     return;
                 }
                 if !skip_maturin {
@@ -962,7 +962,7 @@ impl Supervisor {
             }
             ChangeKind::RustChanged => {
                 info!(
-                    "Rust binding files changed, building runt-cli{}...",
+                    "Rust binding files changed, building runt{}...",
                     if skip_maturin {
                         ""
                     } else {
@@ -970,7 +970,7 @@ impl Supervisor {
                     }
                 );
                 if !build_runt_cli(&project_root) {
-                    error!("cargo build -p runt-cli failed, keeping current child");
+                    error!("cargo build -p runt failed, keeping current child");
                     return;
                 }
                 if !skip_maturin && !run_maturin_develop(&project_root) {
@@ -1140,9 +1140,9 @@ impl Supervisor {
         //
         // Snapshot *both* managed binaries before cargo build.
         // `run_cargo_build_daemon` actually compiles `runtimed` AND
-        // `runt-cli` (the MCP child host) in one invocation; they can
+        // `runt` (the MCP child host) in one invocation; they can
         // change independently on the same rebuild call — editing
-        // `crates/runt-mcp/src/**` relinks runt-cli while leaving
+        // `crates/runt-mcp/src/**` relinks runt while leaving
         // runtimed untouched. We gate daemon restart on the runtimed
         // fingerprint and child restart on the runt fingerprint, so a
         // rebuild that updates only one triggers only the restart it
@@ -1167,9 +1167,9 @@ impl Supervisor {
             child_changed_by_rebuild = fingerprint_changed(&child_before, &child_after);
             report.push(
                 match (daemon_changed_by_rebuild, child_changed_by_rebuild) {
-                    (true, true) => "rebuild: daemon + runt-cli binaries built".into(),
-                    (true, false) => "rebuild: daemon binary built (runt-cli fresh)".into(),
-                    (false, true) => "rebuild: runt-cli binary built (daemon fresh)".into(),
+                    (true, true) => "rebuild: daemon + runt binaries built".into(),
+                    (true, false) => "rebuild: daemon binary built (runt fresh)".into(),
+                    (false, true) => "rebuild: runt binary built (daemon fresh)".into(),
                     (false, false) => "rebuild: no binary changes (cargo fresh)".into(),
                 },
             );
@@ -1282,9 +1282,9 @@ impl Supervisor {
         // Restart the MCP child when any of:
         //  - child isn't running (can't skip),
         //  - daemon restarted (need fresh child tied to new daemon),
-        //  - runt-cli binary changed (the child IS runt-cli; stale
-        //    bytes otherwise — matches the file-watcher's existing
-        //    rule for `crates/runt-mcp/src/**` changes).
+        //  - runt binary changed (the child IS runt; stale bytes
+        //    otherwise — matches the file-watcher's existing rule for
+        //    `crates/runt-mcp/src/**` changes).
         let child_healthy = {
             let state = self.state.read().await;
             if let Some(ref proxy) = state.proxy {
@@ -1306,7 +1306,7 @@ impl Supervisor {
             match self.restart_child().await {
                 Ok(()) => {
                     let reason = if child_changed_by_rebuild && !needs_daemon_restart {
-                        "child: restarted (runt-cli binary changed)"
+                        "child: restarted (runt binary changed)"
                     } else {
                         "child: restarted"
                     };
@@ -1817,7 +1817,7 @@ impl ServerHandler for Supervisor {
                     state.project_root.clone()
                 };
 
-                // 1. Rebuild daemon binary and CLI (cargo build -p runtimed -p runt-cli)
+                // 1. Rebuild daemon binary and CLI (cargo build -p runtimed -p runt)
                 if !run_cargo_build_daemon(&project_root) {
                     return Ok(CallToolResult::success(vec![Content::text(
                         "cargo build -p runtimed failed — check the supervisor logs for details",
@@ -2013,7 +2013,7 @@ impl ServerHandler for Supervisor {
                     }
                     return Ok(CallToolResult::success(vec![Content::text(format!(
                         "Cannot switch to {mode} mode — missing binaries:\n  {}\n\
-                         Build them first with: cargo build {}-p runtimed -p runt-cli",
+                         Build them first with: cargo build {}-p runtimed -p runt",
                         missing.join("\n  "),
                         profile_flag
                     ))]));
@@ -2273,7 +2273,7 @@ fn classify_change(path: &Path, project_root: &Path) -> Option<ChangeKind> {
         return Some(ChangeKind::RustChanged);
     }
 
-    // Rust MCP server files only (needs cargo build -p runt-cli, no maturin)
+    // Rust MCP server files only (needs cargo build -p runt, no maturin)
     if rel_str.starts_with("crates/runt-mcp/src/") && rel_str.ends_with(".rs") {
         return Some(ChangeKind::RustMcpChanged);
     }
@@ -2562,7 +2562,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let pr = project_root.clone();
                 let build_ok = tokio::task::spawn_blocking(move || {
                     std::process::Command::new("cargo")
-                        .args(["build", "-p", "runt-cli"])
+                        .args(["build", "-p", "runt"])
                         .current_dir(&pr)
                         .status()
                         .map(|s| s.success())
@@ -2617,7 +2617,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .await
                 .unwrap_or(false);
             if !build_ok {
-                error!("Failed to build runt-cli — MCP server will not work");
+                error!("Failed to build runt — MCP server will not work");
                 child_ready.notify_waiters();
                 return;
             }

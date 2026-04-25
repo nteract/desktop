@@ -807,7 +807,7 @@ fn cmd_build(rust_only: bool) {
             "-p",
             "runtimed",
             "-p",
-            "runt-cli",
+            "runt",
             "-p",
             "nteract-mcp",
             "-p",
@@ -1779,7 +1779,7 @@ fn cmd_mcp(print_config: bool, release: bool) {
     if release {
         println!("Building runtimed (release) for supervisor...");
         run_cmd("cargo", &["build", "--release", "-p", "runtimed"]);
-        run_cmd("cargo", &["build", "--release", "-p", "runt-cli"]);
+        run_cmd("cargo", &["build", "--release", "-p", "runt"]);
     }
 
     if print_config {
@@ -1848,9 +1848,9 @@ fn cmd_mcp(print_config: bool, release: bool) {
 fn cmd_mcp_inspector() {
     require_pnpm();
 
-    // Build runt-cli so it's ready when the inspector spawns it
+    // Build runt so it's ready when the inspector spawns it
     println!("Building runt CLI...");
-    run_cmd("cargo", &["build", "-p", "runt-cli"]);
+    run_cmd("cargo", &["build", "-p", "runt"]);
 
     ensure_pnpm_install();
 
@@ -1921,7 +1921,7 @@ fn cmd_dev_mcp(print_config: bool) {
     // Step 1: Build the runt CLI so we can query daemon status
     if !Path::new(dev_runt_cli_binary()).exists() {
         println!("Building runt CLI...");
-        run_cmd("cargo", &["build", "-p", "runt-cli"]);
+        run_cmd("cargo", &["build", "-p", "runt"]);
     }
 
     // Step 2: Resolve the socket path from the dev daemon
@@ -1935,7 +1935,7 @@ fn cmd_dev_mcp(print_config: bool) {
 
         let output = command.output().unwrap_or_else(|e| {
             eprintln!("Failed to run runt daemon status: {e}");
-            eprintln!("Build the CLI first: cargo build -p runt-cli");
+            eprintln!("Build the CLI first: cargo build -p runt");
             exit(1);
         });
 
@@ -2457,7 +2457,7 @@ fn run_cmd_ok(cmd: &str, args: &[&str]) -> bool {
 /// If `release` is false, builds in debug mode (faster for development).
 fn build_runtimed_daemon(release: bool) {
     build_external_binary("runtimed", "runtimed", release);
-    build_external_binary("runt-cli", "runt", release);
+    build_external_binary("runt", "runt", release);
     build_external_binary("nteract-mcp", "nteract-mcp", release);
 }
 
@@ -3008,8 +3008,8 @@ fn cmd_sync_tool_cache(check: bool) {
     let manifest_nightly = Path::new("mcpb/manifest.nightly.json");
     let manifest_stable = Path::new("mcpb/manifest.stable.json");
 
-    eprintln!("Building runt-cli (release)...");
-    run_cmd("cargo", &["build", "--release", "-p", "runt-cli"]);
+    eprintln!("Building runt (release)...");
+    run_cmd("cargo", &["build", "--release", "-p", "runt"]);
 
     eprintln!("Dumping tool list from runt mcp...");
     let runt_bin = Path::new("target/release/runt");

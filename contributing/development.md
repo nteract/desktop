@@ -326,7 +326,7 @@ cargo xtask run-mcp
 
 This:
 1. Starts the dev daemon if not running
-2. Builds `runt-cli` and spawns `runt mcp` as a child process
+2. Builds `runt` and spawns `runt mcp` as a child process
 3. Proxies all tool calls + adds the dev tools (`up`, `down`, `status`, `logs`, `vite_logs`)
 4. Watches source files and hot-reloads on changes
 
@@ -387,8 +387,8 @@ These tools are always available, even when the child `runt mcp` is down:
 `python/nteract/src/`, `python/runtimed/src/`, `crates/runtimed-py/src/`, and
 `crates/runtimed/src/`:
 
-- **`crates/runt-mcp/src/`** → `cargo build -p runt-cli`, then child restart
-- **`crates/runtimed-client/src/`** → `cargo build -p runt-cli` + `maturin develop`, then child restart
+- **`crates/runt-mcp/src/`** → `cargo build -p runt`, then child restart
+- **`crates/runtimed-client/src/`** → `cargo build -p runt` + `maturin develop`, then child restart
 - **Python changes** → child restarts automatically
 - **Daemon / bindings Rust changes** → `maturin develop` runs first, then child restarts
 - **Behavior changes** take effect immediately on the next tool call
