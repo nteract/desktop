@@ -457,13 +457,14 @@ checksum = "4288f83726785267c6f2ef073a3d83dc3f9b81464e9f99898240cced85fce35a"
 
 [[package]]
 name = "async-rust-lsp"
-version = "0.2.2"
+version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f38bd32e1e07fef4e4fd210444cf5d5123407c0a1dc35be064af367c3318edfe"
+checksum = "79cfc076dad6403ecdbe15a362cecac5fa0e49e91c57e941d4aceecbf5dc4781"
 dependencies = [
  "serde",
  "serde_json",
  "tokio",
+ "toml 0.8.2",
  "tower-lsp",
  "tracing",
  "tracing-appender",
