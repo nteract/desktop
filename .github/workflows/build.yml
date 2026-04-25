@@ -157,12 +157,14 @@ jobs:
         run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
 
       - name: Build runtimed-wasm
-        run: wasm-pack build crates/runtimed-wasm --target web --out-dir ../../apps/notebook/src/wasm/runtimed-wasm
+        # Must match `cargo xtask wasm runtimed` so the up-to-date check
+        # below diffs against artifacts produced by the same profile.
+        run: wasm-pack build crates/runtimed-wasm --target web --profile wasm-release --out-dir ../../apps/notebook/src/wasm/runtimed-wasm
 
       - name: Check WASM bindings are up to date
         run: |
           git diff --exit-code -- apps/notebook/src/wasm/runtimed-wasm/ ':!*.wasm' || {
-            echo "::error::Checked-in WASM bindings are stale. Run: wasm-pack build crates/runtimed-wasm --target web --out-dir ../../apps/notebook/src/wasm/runtimed-wasm"
+            echo "::error::Checked-in WASM bindings are stale. Run: cargo xtask wasm runtimed"
             exit 1
           }
 
