@@ -271,11 +271,7 @@ pub async fn move_cell(
 
     assert_cell_exists(&handle, cell_id)?;
     if let Some(anchor) = after_cell_id {
-        if handle.get_cell(anchor).is_none() {
-            return tool_error(&format!(
-                "Anchor cell not found: {anchor}. Pass null/omit after_cell_id to move to the start."
-            ));
-        }
+        assert_cell_exists(&handle, anchor)?;
     }
 
     handle
