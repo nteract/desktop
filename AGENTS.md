@@ -35,23 +35,21 @@ The `.envrc` file sets:
 - `PATH_add bin` — adds `bin/runt` wrapper to PATH (shadows system `runt`)
 - `export RUNTIMED_DEV=1` — enables per-worktree daemon isolation
 - `export RUNTIMED_WORKSPACE_PATH="$(pwd)"` — pins daemon to this worktree
-- `export RUSTC_WRAPPER=sccache` (if installed) — routes direct cargo through sccache
-- `export CARGO_INCREMENTAL=0` (if sccache installed) — matches xtask so both share cache keys
+- `export CARGO_TARGET_AARCH64_APPLE_DARWIN_RUSTFLAGS="-C link-arg=-fuse-ld=lld"` (if `ld64.lld` is installed) — uses LLVM's lld linker on macOS arm64
 
 **Verify it works:**
 ```bash
 cd /path/to/nteract/desktop
 echo $RUNTIMED_DEV              # Should print "1"
 echo $RUNTIMED_WORKSPACE_PATH   # Should print the repo path
-echo $RUSTC_WRAPPER             # Should print "sccache" when sccache is on PATH
 which runt                      # Should be repo/bin/runt (not /usr/local/bin/runt)
 ```
 
-**Install sccache:**
-```bash
-brew install sccache
-```
-Optional but strongly recommended. `cargo xtask` paths already wire sccache in; putting it in `.envrc` makes direct `cargo build` / `cargo check` / `cargo test` share the same cache instead of cold-compiling every crate.
+### Build cache story
+
+Local dev uses cargo's incremental cache. Tight edit-check loops on one crate reuse rustc's per-function incremental artifacts and run in seconds. No extra setup required.
+
+sccache is not wired on by default locally. It can't cache incremental builds, so turning it on forces `CARGO_INCREMENTAL=0` and loses the edit-loop speedup. It's still useful for CI (fresh target dir every run) and for the rare cross-worktree case. If you want it locally, opt in with `NTERACT_SCCACHE=1` and install with `brew install sccache`.
 
 ### lld linker (macOS arm64)
 
