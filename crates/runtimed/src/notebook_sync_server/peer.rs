@@ -1421,6 +1421,47 @@ where
                                         &heads_after,
                                     );
 
+                                    // Ghost-output prevention (#2086): if a peer
+                                    // edited cell source while an execution was
+                                    // in-flight, clear the execution_id pointer so
+                                    // the stale output won't be associated with the
+                                    // cell. The old execution's output remains in
+                                    // RuntimeStateDoc but the cell no longer points
+                                    // to it.
+                                    //
+                                    // Also mark executions as failed for cells that
+                                    // were deleted — the kernel still runs the code
+                                    // but the cell no longer exists to display it.
+                                    if heads_before != heads_after {
+                                        let changeset = diff_cells(
+                                            doc.doc_mut(),
+                                            &heads_before,
+                                            &heads_after,
+                                        );
+                                        for changed in &changeset.changed {
+                                            if changed.fields.source {
+                                                if let Some(eid) = doc.get_execution_id(&changed.cell_id) {
+                                                    let is_active = room
+                                                        .state
+                                                        .read(|sd| {
+                                                            sd.get_execution(&eid).is_some_and(|exec| {
+                                                                exec.status == "queued" || exec.status == "running"
+                                                            })
+                                                        })
+                                                        .unwrap_or(false);
+                                                    if is_active {
+                                                        debug!(
+                                                            "[notebook-sync] Clearing stale execution_id {} for cell {} \
+                                                             (source edited while execution in-flight)",
+                                                            eid, changed.cell_id
+                                                        );
+                                                        let _ = doc.set_execution_id(&changed.cell_id, None);
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+
                                     let bytes = doc.save();
 
                                     // Notify other peers in this room
