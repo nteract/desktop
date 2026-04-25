@@ -6069,3 +6069,99 @@ async fn test_clone_as_ephemeral_rejects_invalid_uuid() {
         other => panic!("Expected Error, got {other:?}"),
     }
 }
+
+#[tokio::test]
+async fn test_save_round_trips_unknown_top_level_metadata() {
+    // Regression test for Codex F3 on PR #2192: unknown top-level
+    // metadata keys (jupytext, colab, etc.) must survive save.
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (room, notebook_path) = test_room_with_path(&tmp, "with-jupytext.ipynb");
+
+    std::fs::write(
+        &notebook_path,
+        r#"{
+ "cells": [],
+ "metadata": {
+  "kernelspec": {"name": "python3", "display_name": "Python 3", "language": "python"},
+  "language_info": {"name": "python", "version": "3.11.5"},
+  "jupytext": {"paired_paths": [["x.py", "py:percent"]]},
+  "colab": {"kernel": {"name": "python3"}}
+ },
+ "nbformat": 4,
+ "nbformat_minor": 5
+}"#,
+    )
+    .unwrap();
+
+    {
+        let mut doc = room.doc.write().await;
+        crate::notebook_sync_server::load_notebook_from_disk(
+            &mut doc,
+            &notebook_path,
+            &room.blob_store,
+        )
+        .await
+        .unwrap();
+    }
+
+    save_notebook_to_disk(&room, None).await.unwrap();
+
+    let written = std::fs::read_to_string(&notebook_path).unwrap();
+    let nb: serde_json::Value = serde_json::from_str(&written).unwrap();
+
+    assert_eq!(
+        nb["metadata"]["jupytext"],
+        serde_json::json!({"paired_paths": [["x.py", "py:percent"]]}),
+        "jupytext key must survive save round-trip"
+    );
+    assert_eq!(
+        nb["metadata"]["colab"],
+        serde_json::json!({"kernel": {"name": "python3"}}),
+        "colab key must survive save round-trip"
+    );
+}
+
+#[tokio::test]
+async fn test_save_does_not_stamp_synthetic_runt_on_vanilla_notebook() {
+    // Vanilla Jupyter notebook: no metadata.runt. Save must NOT add
+    // `runt: { schema_version: "1" }` — that would churn every
+    // git-tracked Jupyter notebook the user opens.
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (room, notebook_path) = test_room_with_path(&tmp, "vanilla.ipynb");
+
+    std::fs::write(
+        &notebook_path,
+        r#"{
+ "cells": [],
+ "metadata": {
+  "kernelspec": {"name": "python3", "display_name": "Python 3", "language": "python"},
+  "language_info": {"name": "python", "version": "3.11.5"}
+ },
+ "nbformat": 4,
+ "nbformat_minor": 5
+}"#,
+    )
+    .unwrap();
+
+    {
+        let mut doc = room.doc.write().await;
+        crate::notebook_sync_server::load_notebook_from_disk(
+            &mut doc,
+            &notebook_path,
+            &room.blob_store,
+        )
+        .await
+        .unwrap();
+    }
+
+    save_notebook_to_disk(&room, None).await.unwrap();
+
+    let written = std::fs::read_to_string(&notebook_path).unwrap();
+    let nb: serde_json::Value = serde_json::from_str(&written).unwrap();
+
+    assert!(
+        !nb["metadata"].as_object().unwrap().contains_key("runt"),
+        "vanilla notebook save must not stamp metadata.runt, got: {}",
+        nb["metadata"]
+    );
+}
