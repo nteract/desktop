@@ -834,6 +834,7 @@ async fn run_mcp_server(no_show: bool) -> Result<()> {
     // Grab shared state handles before serving (serve consumes the server)
     let session = server.session().clone();
     let peer_label = server.peer_label_shared().clone();
+    let last_session_drop = server.last_session_drop().clone();
 
     let transport = rmcp::transport::io::stdio();
     let handle = server.serve(transport).await?;
@@ -851,7 +852,14 @@ async fn run_mcp_server(no_show: bool) -> Result<()> {
     );
     let watch_socket = socket_path;
     let watch_handle = tokio::spawn(async move {
-        runt_mcp::daemon_watch::watch(daemon_conn, watch_socket, session, peer_label).await
+        runt_mcp::daemon_watch::watch(
+            daemon_conn,
+            watch_socket,
+            session,
+            peer_label,
+            last_session_drop,
+        )
+        .await
     });
 
     tokio::spawn(async {
