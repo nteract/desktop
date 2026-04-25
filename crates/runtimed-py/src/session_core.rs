@@ -1545,38 +1545,8 @@ pub(crate) async fn collect_outputs(
             break;
         }
 
-        // Also drain broadcasts for KernelError as a fallback signal
-        {
-            let mut st = state.lock().await;
-            if let Some(broadcast_rx) = st.broadcast_rx.as_mut() {
-                match tokio::time::timeout(
-                    std::time::Duration::from_millis(50),
-                    broadcast_rx.recv(),
-                )
-                .await
-                {
-                    Ok(Some(NotebookBroadcast::ExecutionDone {
-                        cell_id: msg_cell_id,
-                        execution_id: msg_exec_id,
-                    })) => {
-                        if msg_cell_id == cell_id
-                            && execution_id.is_none_or(|eid| eid == msg_exec_id)
-                        {
-                            log::debug!("[session_core] ExecutionDone broadcast for {}", cell_id);
-                            break;
-                        }
-                    }
-                    Ok(Some(NotebookBroadcast::KernelError { error })) => {
-                        log::debug!("[session_core] KernelError: {}", error);
-                        kernel_error = Some(error);
-                        break;
-                    }
-                    Ok(Some(_)) => {} // ignore other broadcasts
-                    Ok(None) => return Err(to_py_err("Broadcast channel closed")),
-                    Err(_) => {} // timeout — loop back and re-check doc
-                }
-            }
-        }
+        // Yield briefly so we don't spin-poll the doc.
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
 
     // KernelError: return immediately without touching the doc

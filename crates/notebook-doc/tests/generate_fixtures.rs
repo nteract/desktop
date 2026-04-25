@@ -18,7 +18,7 @@
 //!   cargo test -p notebook-doc --test generate_fixtures -- --nocapture
 
 use automerge::transaction::Transactable;
-use notebook_doc::{frame_types, NotebookDoc};
+use notebook_doc::NotebookDoc;
 use runtime_doc::RuntimeStateDoc;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -132,15 +132,6 @@ fn fixtures_dir() -> PathBuf {
     PathBuf::from(manifest_dir).join("../../packages/runtimed/tests/fixtures")
 }
 
-/// Frame: [type_byte, ...json_bytes]
-fn make_broadcast_frame(broadcast: &Value) -> Vec<u8> {
-    let json_bytes = serde_json::to_vec(broadcast).unwrap();
-    let mut frame = Vec::with_capacity(1 + json_bytes.len());
-    frame.push(frame_types::BROADCAST);
-    frame.extend_from_slice(&json_bytes);
-    frame
-}
-
 /// Clear and recreate a scenario directory so stale files from previous runs
 /// (e.g. renamed or removed broadcast frames) don't linger.
 fn clean_scenario_dir(name: &str) -> PathBuf {
@@ -170,21 +161,6 @@ fn write_scenario(
     .unwrap();
     fs::write(dir.join("doc.bin"), daemon.save()).unwrap();
     fs::write(dir.join("state_doc.bin"), state_doc.doc_mut().save()).unwrap();
-}
-
-/// Write a scenario with broadcast frame files alongside the doc.
-fn write_scenario_with_broadcasts(
-    name: &str,
-    daemon: &mut NotebookDoc,
-    state_doc: &mut RuntimeStateDoc,
-    test_manifest: &Value,
-    broadcast_frames: &[Vec<u8>],
-) {
-    write_scenario(name, daemon, state_doc, test_manifest);
-    let dir = fixtures_dir().join(name);
-    for (i, frame) in broadcast_frames.iter().enumerate() {
-        fs::write(dir.join(format!("broadcast_{i:03}.bin")), frame).unwrap();
-    }
 }
 
 /// Attach a list of inline manifest objects to an execution and link the
@@ -248,22 +224,6 @@ fn scenario_output_streaming() {
         &manifests,
     );
 
-    // Broadcast frames carry the inline manifest JSON for each output.
-    let broadcast_frames: Vec<Vec<u8>> = manifests
-        .iter()
-        .enumerate()
-        .map(|(i, manifest)| {
-            make_broadcast_frame(&json!({
-                "event": "output",
-                "cell_id": "cell-1",
-                "execution_id": "exec-001",
-                "output_type": "stream",
-                "output_json": serde_json::to_string(manifest).unwrap(),
-                "output_index": i,
-            }))
-        })
-        .collect();
-
     let test_manifest = json!({
         "scenario": scenario,
         "description": "Daemon creates cell, executes, streams 3 stdout lines as inline manifests",
@@ -277,13 +237,7 @@ fn scenario_output_streaming() {
         }
     });
 
-    write_scenario_with_broadcasts(
-        scenario,
-        &mut daemon,
-        &mut state_doc,
-        &test_manifest,
-        &broadcast_frames,
-    );
+    write_scenario(scenario, &mut daemon, &mut state_doc, &test_manifest);
 }
 
 #[test]

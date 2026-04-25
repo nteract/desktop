@@ -58,16 +58,14 @@ export { type PoolState, type RuntimePoolState, DEFAULT_POOL_STATE } from "./poo
 // Broadcast types
 export {
   type CommBroadcast,
-  type DisplayUpdateBroadcast,
+  type EnvProgressBroadcast,
   isCommBroadcast,
-  isDisplayUpdateBroadcast,
-  isKernelErrorBroadcast,
-  isOutputBroadcast,
-  isOutputsClearedBroadcast,
-  type KernelErrorBroadcast,
+  isEnvProgressBroadcast,
+  isNotebookAutosavedBroadcast,
+  isPathChangedBroadcast,
   type KnownBroadcast,
-  type OutputBroadcast,
-  type OutputsClearedBroadcast,
+  type NotebookAutosavedBroadcast,
+  type PathChangedBroadcast,
 } from "./broadcast-types";
 
 // Comm diffing

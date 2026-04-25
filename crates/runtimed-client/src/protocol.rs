@@ -530,63 +530,20 @@ mod tests {
     }
 
     #[test]
-    fn test_notebook_broadcast_output() {
-        let broadcast = NotebookBroadcast::Output {
-            cell_id: "cell-1".into(),
-            execution_id: "exec-1".into(),
-            output_type: "stream".into(),
-            output_json: r#"{"name":"stdout","text":"hello\n"}"#.into(),
-            output_index: None,
+    fn test_notebook_broadcast_path_changed() {
+        let broadcast = NotebookBroadcast::PathChanged {
+            path: Some("/tmp/foo.ipynb".into()),
         };
         let json = serde_json::to_string(&broadcast).unwrap();
-        assert!(json.contains("output"));
-        assert!(json.contains("cell-1"));
-        // output_index is None, so it should be skipped in serialization
-        assert!(!json.contains("output_index"));
+        assert!(json.contains("path_changed"));
+        assert!(json.contains("/tmp/foo.ipynb"));
 
         let parsed: NotebookBroadcast = serde_json::from_str(&json).unwrap();
         match parsed {
-            NotebookBroadcast::Output {
-                cell_id,
-                output_type,
-                output_index,
-                ..
-            } => {
-                assert_eq!(cell_id, "cell-1");
-                assert_eq!(output_type, "stream");
-                assert_eq!(output_index, None);
+            NotebookBroadcast::PathChanged { path } => {
+                assert_eq!(path.as_deref(), Some("/tmp/foo.ipynb"));
             }
             _ => panic!("unexpected broadcast type"),
         }
-
-        // Test with output_index set
-        let broadcast_with_index = NotebookBroadcast::Output {
-            cell_id: "cell-2".into(),
-            execution_id: "exec-2".into(),
-            output_type: "stream".into(),
-            output_json: r#"{"name":"stdout","text":"hello\n"}"#.into(),
-            output_index: Some(0),
-        };
-        let json_with_index = serde_json::to_string(&broadcast_with_index).unwrap();
-        assert!(json_with_index.contains("output_index"));
-
-        let parsed_with_index: NotebookBroadcast = serde_json::from_str(&json_with_index).unwrap();
-        match parsed_with_index {
-            NotebookBroadcast::Output { output_index, .. } => {
-                assert_eq!(output_index, Some(0));
-            }
-            _ => panic!("unexpected broadcast type"),
-        }
-    }
-
-    #[test]
-    fn test_notebook_broadcast_kernel_status() {
-        let broadcast = NotebookBroadcast::KernelStatus {
-            status: "busy".into(),
-            cell_id: Some("cell-1".into()),
-        };
-        let json = serde_json::to_string(&broadcast).unwrap();
-        assert!(json.contains("kernel_status"));
-        assert!(json.contains("busy"));
     }
 }

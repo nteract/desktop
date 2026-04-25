@@ -8,26 +8,6 @@
 
 // ── Broadcast interfaces ────────────────────────────────────────────
 
-export interface OutputBroadcast {
-  event: "output";
-  cell_id: string;
-  execution_id: string;
-  output_type: string;
-  output_json: string;
-}
-
-export interface DisplayUpdateBroadcast {
-  event: "display_update";
-  display_id: string;
-  data: Record<string, unknown>;
-  metadata: Record<string, unknown>;
-}
-
-export interface OutputsClearedBroadcast {
-  event: "outputs_cleared";
-  cell_id: string;
-}
-
 export interface CommBroadcast {
   event: "comm";
   msg_type: string;
@@ -35,18 +15,31 @@ export interface CommBroadcast {
   buffers: number[][];
 }
 
-export interface KernelErrorBroadcast {
-  event: "kernel_error";
-  error: string;
+export interface EnvProgressBroadcast {
+  event: "env_progress";
+  env_type: string;
+  // Phase-specific fields are flattened on the wire; carry them through
+  // as a permissive index so the daemon can extend the shape without
+  // breaking subscribers.
+  [key: string]: unknown;
+}
+
+export interface PathChangedBroadcast {
+  event: "path_changed";
+  path: string | null;
+}
+
+export interface NotebookAutosavedBroadcast {
+  event: "notebook_autosaved";
+  path: string;
 }
 
 /** Union of all known broadcast types with an `event` field. */
 export type KnownBroadcast =
-  | OutputBroadcast
-  | DisplayUpdateBroadcast
-  | OutputsClearedBroadcast
   | CommBroadcast
-  | KernelErrorBroadcast;
+  | EnvProgressBroadcast
+  | PathChangedBroadcast
+  | NotebookAutosavedBroadcast;
 
 // ── Type guards ─────────────────────────────────────────────────────
 
@@ -59,22 +52,20 @@ function hasBroadcastEvent(payload: unknown): payload is { event: string } {
   );
 }
 
-export function isOutputBroadcast(payload: unknown): payload is OutputBroadcast {
-  return hasBroadcastEvent(payload) && payload.event === "output";
-}
-
-export function isDisplayUpdateBroadcast(payload: unknown): payload is DisplayUpdateBroadcast {
-  return hasBroadcastEvent(payload) && payload.event === "display_update";
-}
-
-export function isOutputsClearedBroadcast(payload: unknown): payload is OutputsClearedBroadcast {
-  return hasBroadcastEvent(payload) && payload.event === "outputs_cleared";
-}
-
 export function isCommBroadcast(payload: unknown): payload is CommBroadcast {
   return hasBroadcastEvent(payload) && payload.event === "comm";
 }
 
-export function isKernelErrorBroadcast(payload: unknown): payload is KernelErrorBroadcast {
-  return hasBroadcastEvent(payload) && payload.event === "kernel_error";
+export function isEnvProgressBroadcast(payload: unknown): payload is EnvProgressBroadcast {
+  return hasBroadcastEvent(payload) && payload.event === "env_progress";
+}
+
+export function isPathChangedBroadcast(payload: unknown): payload is PathChangedBroadcast {
+  return hasBroadcastEvent(payload) && payload.event === "path_changed";
+}
+
+export function isNotebookAutosavedBroadcast(
+  payload: unknown,
+): payload is NotebookAutosavedBroadcast {
+  return hasBroadcastEvent(payload) && payload.event === "notebook_autosaved";
 }
