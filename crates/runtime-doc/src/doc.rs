@@ -281,6 +281,11 @@ pub struct RuntimeState {
     /// Active comm channels keyed by comm_id.
     #[serde(default)]
     pub comms: HashMap<String, CommDocEntry>,
+    /// Daemon-observed project file context (see [`ProjectContext`]).
+    /// Flows through the normal sync path so WASM / Python / MCP
+    /// consumers read it alongside the rest of runtime state.
+    #[serde(default)]
+    pub project_context: ProjectContext,
 }
 
 use crate::RuntimeStateError;
@@ -1782,8 +1787,13 @@ impl RuntimeStateDoc {
                 observed_at: self.read_str(&pc, "observed_at"),
             },
             "detected" => {
-                let kind = ProjectFileKind::parse(&self.read_str(&pc, "kind"))
-                    .unwrap_or(ProjectFileKind::PyprojectToml);
+                // Unparseable kind on a "detected" entry means the doc was
+                // written by a future version or corrupted. Degrade to
+                // Pending so consumers don't act on kind-specific logic
+                // (e.g., "ah, this is a pyproject.toml, apply uv…").
+                let Some(kind) = ProjectFileKind::parse(&self.read_str(&pc, "kind")) else {
+                    return ProjectContext::Pending;
+                };
                 ProjectContext::Detected {
                     project_file: ProjectFile {
                         kind,
@@ -2323,6 +2333,7 @@ impl RuntimeStateDoc {
             path,
             executions,
             comms,
+            project_context: self.project_context(),
         }
     }
 
@@ -5409,6 +5420,58 @@ mod tests {
                 observed_at: "t1".into(),
             }
         );
+        Ok(())
+    }
+
+    #[test]
+    fn read_state_exposes_project_context() -> Result<(), RuntimeStateError> {
+        // Snapshot consumers (WASM, Python, MCP) read via read_state().
+        // The field has to travel through that path; a separate accessor
+        // would go unnoticed by every existing client.
+        let mut doc = RuntimeStateDoc::new();
+        let ctx = ProjectContext::Detected {
+            project_file: ProjectFile {
+                kind: ProjectFileKind::PyprojectToml,
+                absolute_path: "/abs/pyproject.toml".into(),
+                relative_to_notebook: "../pyproject.toml".into(),
+            },
+            parsed: ProjectFileParsed::default(),
+            observed_at: "t0".into(),
+        };
+        doc.set_project_context(&ctx)?;
+        assert_eq!(doc.read_state().project_context, ctx);
+        Ok(())
+    }
+
+    #[test]
+    fn read_state_project_context_defaults_to_pending() {
+        // A freshly scaffolded doc and an un-scaffolded (new_empty) doc
+        // both report `Pending`. Nothing between the scaffold and the
+        // first daemon write should look like `Detected`.
+        assert_eq!(
+            RuntimeStateDoc::new().read_state().project_context,
+            ProjectContext::Pending
+        );
+        assert_eq!(
+            RuntimeStateDoc::new_empty().read_state().project_context,
+            ProjectContext::Pending
+        );
+    }
+
+    #[test]
+    fn project_context_unparseable_kind_degrades_to_pending() -> Result<(), RuntimeStateError> {
+        // A future schema version or a corrupt frame could leave
+        // `state="detected"` with a `kind` string we don't recognise.
+        // Silently mapping that to PyprojectToml would mislead consumers
+        // into kind-specific logic. Degrade to Pending instead.
+        let mut doc = RuntimeStateDoc::new();
+        let pc = doc.scaffold_map("project_context")?;
+        doc.doc.put(&pc, "state", "detected")?;
+        doc.doc.put(&pc, "kind", "some_future_kind")?;
+        doc.doc.put(&pc, "absolute_path", "/abs/future")?;
+        doc.doc.put(&pc, "relative_to_notebook", "../future")?;
+        doc.doc.put(&pc, "observed_at", "t0")?;
+        assert_eq!(doc.project_context(), ProjectContext::Pending);
         Ok(())
     }
 }

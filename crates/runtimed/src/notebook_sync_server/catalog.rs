@@ -63,6 +63,12 @@ pub async fn get_or_create_room(
         rooms_guard.insert(uuid, room.clone());
     }
 
+    // Record the notebook's project-file context on the runtime-state doc.
+    // Single-writer invariant: only the daemon writes this key, and only
+    // during room creation. Refreshes on save-as / move are follow-up
+    // work; see issue #2208.
+    super::project_context::populate_project_context_on_open(&room, path.as_deref());
+
     // Insert into path_index (under a separate lock per the locking convention).
     if let Some(ref p) = path {
         match path_index.lock().await.insert(p.clone(), uuid) {

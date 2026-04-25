@@ -144,6 +144,58 @@ export interface ExecutionTransition {
   execution_count: number | null;
 }
 
+/**
+ * Kind of project file the daemon walked up and found for the notebook.
+ * Mirrors `runtime_doc::ProjectFileKind`.
+ */
+export type ProjectFileKind = "PyprojectToml" | "PixiToml" | "EnvironmentYml";
+
+/** Pointer to the project file on the daemon's disk. */
+export interface ProjectFile {
+  kind: ProjectFileKind;
+  absolute_path: string;
+  relative_to_notebook: string;
+}
+
+/**
+ * Kind-specific parsed extras. Discriminated by `kind`; matches the
+ * Rust `ProjectFileExtras` tagged enum.
+ */
+export type ProjectFileExtras =
+  | { kind: "None" }
+  | { kind: "Pixi"; channels: string[]; pypi_dependencies: string[] }
+  | { kind: "EnvironmentYml"; pip: string[] };
+
+/** Snapshot of the daemon's parse of a detected project file. */
+export interface ProjectFileParsed {
+  dependencies: string[];
+  requires_python: string | null;
+  prerelease: string | null;
+  extras: ProjectFileExtras;
+}
+
+/**
+ * Daemon-observed project-file context for a notebook, discriminated
+ * by `state`. Matches the Rust `ProjectContext` tagged enum. Untitled
+ * notebooks and fresh peers see `Pending` until the first daemon write
+ * arrives via sync.
+ */
+export type ProjectContext =
+  | { state: "Pending" }
+  | { state: "NotFound"; observed_at: string }
+  | {
+      state: "Detected";
+      project_file: ProjectFile;
+      parsed: ProjectFileParsed;
+      observed_at: string;
+    }
+  | {
+      state: "Unreadable";
+      path: string;
+      reason: string;
+      observed_at: string;
+    };
+
 export interface RuntimeState {
   kernel: KernelState;
   queue: QueueState;
@@ -157,6 +209,11 @@ export interface RuntimeState {
   path: string | null;
   executions: Record<string, ExecutionState>;
   comms: Record<string, CommDocEntry>;
+  /**
+   * Daemon-observed project file context. Clients read this instead of
+   * walking the filesystem themselves.
+   */
+  project_context: ProjectContext;
 }
 
 // ── Defaults ─────────────────────────────────────────────────────────
@@ -190,6 +247,7 @@ export const DEFAULT_RUNTIME_STATE: RuntimeState = {
   path: null,
   executions: {},
   comms: {},
+  project_context: { state: "Pending" },
 };
 
 // ── Utilities ────────────────────────────────────────────────────────

@@ -1029,6 +1029,11 @@ pub struct PyRuntimeState {
     pub executions: std::collections::HashMap<String, PyExecutionState>,
     /// Active comm channels keyed by comm_id.
     pub comms: std::collections::HashMap<String, PyCommDocEntry>,
+    /// Daemon-observed project-file context, serialised as a JSON
+    /// string. Shape mirrors the Rust `ProjectContext` tagged enum so
+    /// adding variants upstream doesn't require a bindings rev. Empty
+    /// string when the field is missing from the doc (old peer).
+    pub project_context_json: String,
 }
 
 #[pymethods]
@@ -1138,6 +1143,8 @@ impl From<runtime_doc::RuntimeState> for PyRuntimeState {
                     )
                 })
                 .collect(),
+            project_context_json: serde_json::to_string(&rs.project_context)
+                .unwrap_or_else(|_| String::new()),
         }
     }
 }
