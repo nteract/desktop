@@ -104,6 +104,10 @@ notify-debouncer-mini = { workspace = true }
 # Fast JSON parsing for notebook loading
 jiter = { workspace = true }
 
+# pyproject.toml parsing for ProjectContext (handles PEP 508 specs with
+# commas inside bracket groups, which the prior line-scanner mangled).
+toml = "1"
+
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 nix = { version = "0.31", features = ["signal", "process"] }

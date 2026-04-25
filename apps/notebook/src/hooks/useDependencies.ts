@@ -67,15 +67,39 @@ export interface PyProjectInfo {
 const PYPROJECT: ProjectFileKind = "PyprojectToml";
 
 /**
- * Narrow `ProjectContext.Detected` to the pyproject case. Returns the
- * raw `project_file` + `parsed` for any consumer that needs the full
- * CRDT shape; higher-level helpers below pick off the pieces the UI
- * actually uses.
+ * Derive `PyProjectInfo` + `PyProjectDeps` from a `ProjectContext`. Pure;
+ * exported for tests. Returns both `null` when the context is not a
+ * Detected pyproject.toml.
  */
-function detectedPyproject(ctx: ProjectContext) {
-  if (ctx.state !== "Detected") return null;
-  if (ctx.project_file.kind !== PYPROJECT) return null;
-  return ctx;
+export function derivePyproject(ctx: ProjectContext): {
+  pyprojectInfo: PyProjectInfo | null;
+  pyprojectDeps: PyProjectDeps | null;
+} {
+  if (ctx.state !== "Detected" || ctx.project_file.kind !== PYPROJECT) {
+    return { pyprojectInfo: null, pyprojectDeps: null };
+  }
+  const { project_file, parsed } = ctx;
+  const shared = {
+    path: project_file.absolute_path,
+    relative_path: project_file.relative_to_notebook,
+    project_name: null,
+    requires_python: parsed.requires_python,
+  };
+  return {
+    pyprojectInfo: {
+      ...shared,
+      has_dependencies: parsed.dependencies.length > 0,
+      dependency_count: parsed.dependencies.length,
+      has_dev_dependencies: parsed.dev_dependencies.length > 0,
+      has_venv: false,
+    },
+    pyprojectDeps: {
+      ...shared,
+      dependencies: parsed.dependencies,
+      dev_dependencies: parsed.dev_dependencies,
+      index_url: null,
+    },
+  };
 }
 
 export function useDependencies() {
@@ -163,34 +187,10 @@ export function useDependencies() {
   // Derive pyproject info + deps from RuntimeState.project_context. The
   // daemon writes this field on notebook open and on save-as; clients
   // read it via the normal Automerge sync. See issue #2208.
-  const { pyprojectInfo, pyprojectDeps } = useMemo(() => {
-    const ctx = runtimeState.project_context;
-    const detected = detectedPyproject(ctx);
-    if (!detected) {
-      return { pyprojectInfo: null, pyprojectDeps: null };
-    }
-    const { project_file, parsed } = detected;
-    const info: PyProjectInfo = {
-      path: project_file.absolute_path,
-      relative_path: project_file.relative_to_notebook,
-      project_name: null,
-      has_dependencies: parsed.dependencies.length > 0,
-      dependency_count: parsed.dependencies.length,
-      has_dev_dependencies: parsed.dev_dependencies.length > 0,
-      requires_python: parsed.requires_python,
-      has_venv: false,
-    };
-    const deps: PyProjectDeps = {
-      path: project_file.absolute_path,
-      relative_path: project_file.relative_to_notebook,
-      project_name: null,
-      dependencies: parsed.dependencies,
-      dev_dependencies: parsed.dev_dependencies,
-      requires_python: parsed.requires_python,
-      index_url: null,
-    };
-    return { pyprojectInfo: info, pyprojectDeps: deps };
-  }, [runtimeState.project_context]);
+  const { pyprojectInfo, pyprojectDeps } = useMemo(
+    () => derivePyproject(runtimeState.project_context),
+    [runtimeState.project_context],
+  );
 
   // Import dependencies from pyproject.toml into notebook metadata.
   // Reads from the synced CRDT snapshot and writes via the existing

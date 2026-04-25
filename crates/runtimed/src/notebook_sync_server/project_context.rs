@@ -17,12 +17,12 @@
 //! Filesystem watches for external project-file edits or for the
 //! notebook being moved out from under us are still follow-up work.
 //!
-//! Parsing is line-based on purpose. Adding `toml` / `serde_yaml` /
-//! `pathdiff` to `runtimed` just for the commit-2 extraction round
-//! costs more than it buys: the values we surface are simple (dep
-//! lists, channels, pip sublist, requires-python), and matching the
-//! existing repo style (`extract_pyproject_deps`, `pixi_toml_has_ipykernel`)
-//! keeps the dep graph flat.
+//! pyproject.toml goes through the `toml` crate; pixi.toml and
+//! environment.yml still use line-scan for the handful of fields we
+//! surface. We reach for real parsing when the format's grammar bites
+//! back (PEP 508 extras like `requests[security,socks]>=2` contain
+//! commas inside brackets, which a line scanner can't unambiguously
+//! split).
 
 use std::path::Path;
 use std::sync::Arc;
@@ -175,113 +175,63 @@ fn parse_detected(
 }
 
 /// pyproject.toml: extract `[project].dependencies`,
-/// `[project].requires-python`, and `[tool.uv.dev-dependencies]`.
+/// `[project].requires-python`, and `[tool.uv].dev-dependencies`.
 ///
-/// A tiny state machine over `(current_table, in_list)`. Each table
-/// header flips `current_table`; two assignments inside `[project]` and
-/// `[tool.uv]` collect string-array entries either inline (single-line
-/// `x = ["a", "b"]`) or across a multi-line list.
+/// Uses real TOML parsing via `serde`. PEP 508 specs such as
+/// `requests[security,socks]>=2` include commas inside bracket groups,
+/// which earlier line-scanning extraction could not distinguish from
+/// list separators. A parse failure falls back to an empty
+/// `ProjectFileParsed` rather than propagating — the caller already has
+/// `ProjectContext::Unreadable` for genuinely broken project files, and
+/// we only hit this arm on well-formed TOML.
 fn parse_pyproject_toml(content: &str) -> ProjectFileParsed {
-    let mut current_table = String::new();
-    let mut in_list_for: Option<ListTarget> = None;
-    let mut deps: Vec<String> = Vec::new();
-    let mut dev_deps: Vec<String> = Vec::new();
-    let mut requires_python: Option<String> = None;
+    #[derive(serde::Deserialize, Default)]
+    struct Root {
+        #[serde(default)]
+        project: ProjectTable,
+        #[serde(default)]
+        tool: ToolTable,
+    }
 
-    for line in content.lines() {
-        let trimmed = line.trim();
+    #[derive(serde::Deserialize, Default)]
+    struct ProjectTable {
+        #[serde(default)]
+        dependencies: Vec<String>,
+        #[serde(rename = "requires-python", default)]
+        requires_python: Option<String>,
+    }
 
-        if let Some(header) = trimmed.strip_prefix('[').and_then(|s| s.strip_suffix(']')) {
-            current_table = header.to_string();
-            in_list_for = None;
-            continue;
-        }
+    #[derive(serde::Deserialize, Default)]
+    struct ToolTable {
+        #[serde(default)]
+        uv: ToolUv,
+    }
 
-        // Mid-list continuation.
-        if let Some(target) = in_list_for {
-            if trimmed == "]" || trimmed.starts_with(']') {
-                in_list_for = None;
-                continue;
-            }
-            if let Some(entry) = extract_quoted_entry(trimmed) {
-                match target {
-                    ListTarget::Deps => deps.push(entry),
-                    ListTarget::DevDeps => dev_deps.push(entry),
-                }
-            }
-            continue;
-        }
+    #[derive(serde::Deserialize, Default)]
+    struct ToolUv {
+        #[serde(rename = "dev-dependencies", default)]
+        dev_dependencies: Vec<String>,
+    }
 
-        // [project] fields.
-        if current_table == "project" {
-            if let Some(value) = trimmed.strip_prefix("requires-python") {
-                if let Some(v) = extract_toml_string_value(value) {
-                    requires_python = Some(v);
-                }
-                continue;
-            }
-            if let Some(rest) = strip_assignment_start(trimmed, "dependencies") {
-                absorb_list_entry(rest, &mut deps, &mut in_list_for, ListTarget::Deps);
-                continue;
-            }
-        }
-
-        // [tool.uv].dev-dependencies. PEP 735 also puts dev deps under
-        // [dependency-groups.dev] — worth following up if we find uv
-        // projects using that style in the wild.
-        if current_table == "tool.uv" {
-            if let Some(rest) = strip_assignment_start(trimmed, "dev-dependencies") {
-                absorb_list_entry(rest, &mut dev_deps, &mut in_list_for, ListTarget::DevDeps);
-                continue;
+    match toml::from_str::<Root>(content) {
+        Ok(root) => ProjectFileParsed {
+            dependencies: root.project.dependencies,
+            dev_dependencies: root.tool.uv.dev_dependencies,
+            requires_python: root.project.requires_python,
+            prerelease: None,
+            extras: ProjectFileExtras::None,
+        },
+        Err(e) => {
+            debug!("[notebook-sync] pyproject.toml parse skipped: {}", e);
+            ProjectFileParsed {
+                dependencies: Vec::new(),
+                dev_dependencies: Vec::new(),
+                requires_python: None,
+                prerelease: None,
+                extras: ProjectFileExtras::None,
             }
         }
     }
-
-    ProjectFileParsed {
-        dependencies: deps,
-        dev_dependencies: dev_deps,
-        requires_python,
-        prerelease: None,
-        extras: ProjectFileExtras::None,
-    }
-}
-
-/// Which list we're currently collecting mid-stream.
-#[derive(Debug, Clone, Copy)]
-enum ListTarget {
-    Deps,
-    DevDeps,
-}
-
-/// Match `<key> = ...` at the start of a line and return the tail past
-/// the `=`. Rejects prefixes that happen to share the key's name (e.g.
-/// `dependencies-extra = ...`).
-fn strip_assignment_start<'a>(line: &'a str, key: &str) -> Option<&'a str> {
-    let rest = line.strip_prefix(key)?;
-    let rest = rest.trim_start();
-    rest.strip_prefix('=').map(str::trim_start)
-}
-
-/// Absorb the right-hand side of a list assignment. Handles the inline
-/// form (`= ["a", "b"]`), the multi-line form (`= [` opener), and the
-/// "empty-trailing-lines before `[`" variant that some formatters emit.
-fn absorb_list_entry(
-    rhs: &str,
-    dest: &mut Vec<String>,
-    in_list_for: &mut Option<ListTarget>,
-    target: ListTarget,
-) {
-    let Some(after_bracket) = rhs.strip_prefix('[') else {
-        return;
-    };
-    if let Some(inner) = after_bracket.strip_suffix(']') {
-        push_string_entries(inner, dest);
-        return;
-    }
-    // Multi-line list: walk following lines until the closing bracket.
-    // The line with the `[` may still hold one entry before newline.
-    push_string_entries(after_bracket, dest);
-    *in_list_for = Some(target);
 }
 
 /// Commit-2 pixi parsing keeps the easy signals: channels (top-level
@@ -423,20 +373,6 @@ fn extract_environment_yml_pip(content: &str) -> Vec<String> {
     pip
 }
 
-fn extract_toml_string_value(assignment_tail: &str) -> Option<String> {
-    let eq_tail = assignment_tail.trim_start();
-    let eq_tail = eq_tail.strip_prefix('=')?.trim_start();
-    let (quote, rest) = if let Some(rest) = eq_tail.strip_prefix('"') {
-        ('"', rest)
-    } else if let Some(rest) = eq_tail.strip_prefix('\'') {
-        ('\'', rest)
-    } else {
-        return None;
-    };
-    let end = rest.find(quote)?;
-    Some(rest[..end].to_string())
-}
-
 fn extract_quoted_entry(line: &str) -> Option<String> {
     let trimmed = line.trim().trim_end_matches(',').trim();
     let (quote, rest) = if let Some(rest) = trimmed.strip_prefix('"') {
@@ -507,6 +443,57 @@ mod tests {
         assert_eq!(parsed.dependencies, vec!["pandas>=2.0", "numpy"]);
         assert_eq!(parsed.requires_python.as_deref(), Some(">=3.11"));
         assert_eq!(parsed.extras, ProjectFileExtras::None);
+    }
+
+    #[test]
+    fn build_context_pyproject_preserves_pep508_extras() {
+        // PEP 508 specs can nest brackets with commas. A line-scan
+        // parser used to split "requests[security,socks]>=2" into two
+        // pieces on the inner comma. The toml-backed parser keeps the
+        // spec verbatim.
+        let temp = TempDir::new().unwrap();
+        write(
+            temp.path(),
+            "pyproject.toml",
+            "[project]\nname = \"demo\"\ndependencies = [\n    \"requests[security,socks]>=2\",\n    \"httpx[http2]>=0.27\",\n    \"numpy\",\n]\n",
+        );
+        let notebook = write(temp.path(), "demo.ipynb", "{}");
+
+        let ctx = build_context(&notebook);
+        let ProjectContext::Detected { parsed, .. } = ctx else {
+            panic!("expected Detected");
+        };
+        assert_eq!(
+            parsed.dependencies,
+            vec![
+                "requests[security,socks]>=2".to_string(),
+                "httpx[http2]>=0.27".to_string(),
+                "numpy".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn build_context_pyproject_preserves_env_marker_specs() {
+        // Environment markers — "; python_version < '3.11'" — must
+        // survive intact. Line-scanning used to truncate at the
+        // semicolon under some multi-line formatters.
+        let temp = TempDir::new().unwrap();
+        write(
+            temp.path(),
+            "pyproject.toml",
+            "[project]\nname = \"demo\"\ndependencies = [\n    \"tomli ; python_version < '3.11'\",\n]\n",
+        );
+        let notebook = write(temp.path(), "demo.ipynb", "{}");
+
+        let ctx = build_context(&notebook);
+        let ProjectContext::Detected { parsed, .. } = ctx else {
+            panic!("expected Detected");
+        };
+        assert_eq!(
+            parsed.dependencies,
+            vec!["tomli ; python_version < '3.11'".to_string()]
+        );
     }
 
     #[test]

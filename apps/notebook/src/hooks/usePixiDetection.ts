@@ -21,33 +21,6 @@ export interface PixiInfo {
   channels: string[];
 }
 
-/**
- * Narrow `ProjectContext.Detected` to the pixi case and pull out the
- * parsed extras. Any non-pixi state returns `null`.
- */
-interface DetectedPixi {
-  absolute_path: string;
-  relative_path: string;
-  dependencies: string[];
-  requires_python: string | null;
-  channels: string[];
-  pypi_dependencies: string[];
-}
-
-function detectedPixi(ctx: ProjectContext): DetectedPixi | null {
-  if (ctx.state !== "Detected") return null;
-  if (ctx.project_file.kind !== "PixiToml") return null;
-  const { channels, pypi_dependencies } = pixiExtras(ctx.parsed.extras);
-  return {
-    absolute_path: ctx.project_file.absolute_path,
-    relative_path: ctx.project_file.relative_to_notebook,
-    dependencies: ctx.parsed.dependencies,
-    requires_python: ctx.parsed.requires_python,
-    channels,
-    pypi_dependencies,
-  };
-}
-
 function pixiExtras(extras: ProjectFileExtras): {
   channels: string[];
   pypi_dependencies: string[];
@@ -56,6 +29,29 @@ function pixiExtras(extras: ProjectFileExtras): {
     return { channels: extras.channels, pypi_dependencies: extras.pypi_dependencies };
   }
   return { channels: [], pypi_dependencies: [] };
+}
+
+/**
+ * Derive `PixiInfo` from a `ProjectContext`. Pure; exported for tests.
+ *
+ * Returns `null` for every non-Detected state and for Detected pointing
+ * at a non-pixi project file.
+ */
+export function derivePixiInfo(ctx: ProjectContext): PixiInfo | null {
+  if (ctx.state !== "Detected") return null;
+  if (ctx.project_file.kind !== "PixiToml") return null;
+  const { channels, pypi_dependencies } = pixiExtras(ctx.parsed.extras);
+  return {
+    path: ctx.project_file.absolute_path,
+    relative_path: ctx.project_file.relative_to_notebook,
+    workspace_name: null,
+    has_dependencies: ctx.parsed.dependencies.length > 0,
+    dependency_count: ctx.parsed.dependencies.length,
+    has_pypi_dependencies: pypi_dependencies.length > 0,
+    pypi_dependency_count: pypi_dependencies.length,
+    python: ctx.parsed.requires_python,
+    channels,
+  };
 }
 
 /**
@@ -68,21 +64,10 @@ function pixiExtras(extras: ProjectFileExtras): {
  */
 export function usePixiDetection() {
   const runtimeState = useRuntimeState();
-  const pixiInfo = useMemo<PixiInfo | null>(() => {
-    const detected = detectedPixi(runtimeState.project_context);
-    if (!detected) return null;
-    return {
-      path: detected.absolute_path,
-      relative_path: detected.relative_path,
-      workspace_name: null,
-      has_dependencies: detected.dependencies.length > 0,
-      dependency_count: detected.dependencies.length,
-      has_pypi_dependencies: detected.pypi_dependencies.length > 0,
-      pypi_dependency_count: detected.pypi_dependencies.length,
-      python: detected.requires_python,
-      channels: detected.channels,
-    };
-  }, [runtimeState.project_context]);
+  const pixiInfo = useMemo<PixiInfo | null>(
+    () => derivePixiInfo(runtimeState.project_context),
+    [runtimeState.project_context],
+  );
 
   return {
     pixiInfo,
