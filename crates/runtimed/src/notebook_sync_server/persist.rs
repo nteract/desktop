@@ -186,9 +186,21 @@ pub(crate) async fn save_notebook_to_disk(
     .map_err(|e| SaveError::Unrecoverable(format!("Failed to build v4 notebook: {e}")))?;
     let cell_count = v4_notebook.cells.len();
 
-    let content_with_newline =
-        nbformat::serialize_notebook(&nbformat::Notebook::V4(v4_notebook))
-            .map_err(|e| SaveError::Retryable(format!("Failed to serialize notebook: {e}")))?;
+    // Collect raw-cell attachments (markdown attachments are already on the
+    // typed v4::Cell::Markdown variant; raw cells lose theirs in typed
+    // conversion and get re-injected during serialize).
+    let raw_attachments: HashMap<String, serde_json::Value> = cells
+        .iter()
+        .filter(|c| c.cell_type == "raw")
+        .filter_map(|c| {
+            nbformat_attachments
+                .get(&c.id)
+                .map(|att| (c.id.clone(), att.clone()))
+        })
+        .collect();
+
+    let content_with_newline = serialize_v4_notebook(&v4_notebook, &raw_attachments)
+        .map_err(|e| SaveError::Retryable(format!("Failed to serialize notebook: {e}")))?;
 
     // Content-hash guard: skip the write if the serialized bytes match what is
     // already on disk. Prevents no-op autosaves from dirtying the working tree.
@@ -467,7 +479,17 @@ pub(crate) async fn clone_notebook_to_disk(
     .map_err(|e| format!("Failed to build v4 notebook: {e}"))?;
     let cell_count = v4_notebook.cells.len();
 
-    let content_with_newline = nbformat::serialize_notebook(&nbformat::Notebook::V4(v4_notebook))
+    let raw_attachments: HashMap<String, serde_json::Value> = cells
+        .iter()
+        .filter(|c| c.cell_type == "raw")
+        .filter_map(|c| {
+            nbformat_attachments
+                .get(&c.id)
+                .map(|att| (c.id.clone(), att.clone()))
+        })
+        .collect();
+
+    let content_with_newline = serialize_v4_notebook(&v4_notebook, &raw_attachments)
         .map_err(|e| format!("Failed to serialize notebook: {e}"))?;
 
     // Write to disk

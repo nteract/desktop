@@ -78,6 +78,102 @@ pub(crate) fn build_v4_notebook(
     })
 }
 
+/// Serialize a `v4::Notebook` to the Jupyter-canonical `.ipynb` string,
+/// re-injecting raw-cell attachments that the typed conversion had to drop.
+///
+/// nbformat 2.2.0's `v4::Cell::Raw` variant has no `attachments` field even
+/// though the Jupyter v4.5 schema permits one. To preserve round-trip, we
+/// go through `serde_json::to_value` (the same entry point
+/// `nbformat::serialize_notebook` uses internally), inject attachments onto
+/// matching raw cells, then apply the same sort-keys + pretty-print pipeline
+/// that `nbformat::serialize_notebook` applies. Output is byte-identical to
+/// `nbformat::serialize_notebook` for notebooks with no raw-cell attachments.
+///
+/// Remove this wrapper (and call `nbformat::serialize_notebook` directly)
+/// once upstream exposes `Cell::Raw::attachments`.
+pub(crate) fn serialize_v4_notebook(
+    notebook: &nbformat::v4::Notebook,
+    raw_cell_attachments: &HashMap<String, Value>,
+) -> Result<String, NbformatConvertError> {
+    let mut value = serde_json::to_value(notebook)
+        .map_err(|e| NbformatConvertError::InvalidMetadata(format!("to_value failed: {e}")))?;
+
+    if !raw_cell_attachments.is_empty() {
+        inject_raw_cell_attachments(&mut value, raw_cell_attachments);
+    }
+
+    serialize_value_with_sorted_keys(&value)
+}
+
+/// Walk the serialized-notebook `Value`, find every `"raw"` cell by id, and
+/// attach the stashed attachments map. Cells without a matching attachments
+/// entry are left alone.
+fn inject_raw_cell_attachments(
+    notebook_value: &mut Value,
+    raw_cell_attachments: &HashMap<String, Value>,
+) {
+    let Some(cells) = notebook_value
+        .get_mut("cells")
+        .and_then(Value::as_array_mut)
+    else {
+        return;
+    };
+    for cell in cells {
+        let Some(obj) = cell.as_object_mut() else {
+            continue;
+        };
+        if obj.get("cell_type").and_then(Value::as_str) != Some("raw") {
+            continue;
+        }
+        let Some(id) = obj.get("id").and_then(Value::as_str) else {
+            continue;
+        };
+        if let Some(attachments) = raw_cell_attachments.get(id) {
+            obj.insert("attachments".to_string(), attachments.clone());
+        }
+    }
+}
+
+/// Mirror `nbformat::serialize_notebook`'s output pipeline for a raw
+/// `Value`: sort keys at every depth, 1-space indent, trailing newline.
+/// Covered by a byte-level test against a known-good expected output.
+///
+/// Returns `NbformatConvertError::InvalidMetadata` on the extraordinarily
+/// unlikely event that serde_json fails to serialize an in-memory `Value`
+/// or produces non-UTF-8 output. Neither has a realistic failure mode but
+/// the `Result` keeps clippy happy and avoids any panic in the save path.
+fn serialize_value_with_sorted_keys(value: &Value) -> Result<String, NbformatConvertError> {
+    fn sort_keys(v: Value) -> Value {
+        match v {
+            Value::Object(map) => {
+                let mut entries: Vec<(String, Value)> = map.into_iter().collect();
+                entries.sort_by(|a, b| a.0.cmp(&b.0));
+                let mut sorted = serde_json::Map::new();
+                for (k, v) in entries {
+                    sorted.insert(k, sort_keys(v));
+                }
+                Value::Object(sorted)
+            }
+            Value::Array(items) => Value::Array(items.into_iter().map(sort_keys).collect()),
+            other => other,
+        }
+    }
+
+    use serde::Serialize as _;
+    let sorted = sort_keys(value.clone());
+    let mut buf = Vec::new();
+    let formatter = serde_json::ser::PrettyFormatter::with_indent(b" ");
+    let mut ser = serde_json::Serializer::with_formatter(&mut buf, formatter);
+    sorted
+        .serialize(&mut ser)
+        .map_err(|e| NbformatConvertError::InvalidMetadata(format!("serialize failed: {e}")))?;
+    let mut out = String::from_utf8(buf).map_err(|e| {
+        NbformatConvertError::InvalidMetadata(format!("non-UTF-8 in serialized notebook: {e}"))
+    })?;
+    out.push('\n');
+    Ok(out)
+}
+
 /// Convert a single `CellSnapshot` plus resolved outputs into `v4::Cell`.
 fn cell_to_v4(
     cell: &CellSnapshot,
@@ -115,18 +211,11 @@ fn cell_to_v4(
             attachments: attachments.cloned(),
         }),
         "raw" => {
-            // Known limitation: nbformat 2.1.0's v4::Cell::Raw does not carry
-            // an `attachments` field, even though the Jupyter v4.5 schema
-            // permits it. If the source cell had attachments we log and drop
-            // them rather than reshuffling into metadata (which would mislead
-            // the reader). Tracked upstream; see runtimed/runtimed.
-            if attachments.is_some() {
-                tracing::warn!(
-                    "[nbformat-convert] Raw cell '{}' has attachments; \
-                     nbformat v4 Raw variant lacks an attachments field, dropping on save.",
-                    cell.id
-                );
-            }
+            // nbformat 2.2.0's v4::Cell::Raw has no attachments slot even
+            // though the Jupyter v4.5 schema permits one. `serialize_v4_notebook`
+            // re-injects raw-cell attachments onto the serialized output for
+            // the notebooks that need them. Remove both sides once upstream
+            // exposes Raw::attachments.
             Ok(Cell::Raw {
                 id,
                 metadata,
@@ -542,5 +631,113 @@ mod tests {
             }
             other => panic!("expected V4 notebook, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn serialize_v4_notebook_matches_nbformat_on_fast_path() {
+        // With no raw-cell attachments to inject, `serialize_v4_notebook`
+        // should produce byte-identical output to `nbformat::serialize_notebook`.
+        // This pins the "fast path" invariant — a notebook that went through
+        // our wrapper and a notebook that went straight through the crate
+        // must be indistinguishable.
+        let cells = vec![cell_snapshot("cell-1", "code", "x = 1")];
+        let outputs: HashMap<String, Vec<Value>> = HashMap::new();
+        let exec_counts: HashMap<String, Option<i64>> = HashMap::new();
+        let attachments: HashMap<String, Value> = HashMap::new();
+        let metadata = json!({});
+
+        let nb = build_v4_notebook(&cells, &outputs, &exec_counts, &attachments, &metadata, 5)
+            .expect("build");
+
+        let via_wrapper = serialize_v4_notebook(&nb, &HashMap::new()).expect("serialize wrapper");
+        let via_crate =
+            nbformat::serialize_notebook(&nbformat::Notebook::V4(nb)).expect("serialize crate");
+
+        assert_eq!(via_wrapper, via_crate);
+    }
+
+    #[test]
+    fn serialize_v4_notebook_injects_raw_cell_attachments() {
+        let cells = vec![cell_snapshot("raw-1", "raw", "some raw content")];
+        let outputs: HashMap<String, Vec<Value>> = HashMap::new();
+        let exec_counts: HashMap<String, Option<i64>> = HashMap::new();
+        let attachments: HashMap<String, Value> = HashMap::new();
+        let metadata = json!({});
+
+        let nb = build_v4_notebook(&cells, &outputs, &exec_counts, &attachments, &metadata, 5)
+            .expect("build");
+
+        let mut raw_att = HashMap::new();
+        raw_att.insert(
+            "raw-1".to_string(),
+            json!({
+                "image.png": { "image/png": "base64data" }
+            }),
+        );
+
+        let serialized = serialize_v4_notebook(&nb, &raw_att).expect("serialize");
+
+        // Parse the output and verify the attachments landed on the raw cell.
+        let parsed: Value = serde_json::from_str(&serialized).expect("parse roundtrip");
+        let cell0 = &parsed["cells"][0];
+        assert_eq!(cell0["cell_type"], "raw");
+        assert_eq!(
+            cell0["attachments"],
+            json!({ "image.png": { "image/png": "base64data" } })
+        );
+
+        // Keys still alphabetical — including the injected `attachments`.
+        let att_pos = serialized.find("\"attachments\"").unwrap();
+        let ct_pos = serialized.find("\"cell_type\"").unwrap();
+        let id_pos = serialized.find("\"id\"").unwrap();
+        assert!(att_pos < ct_pos && ct_pos < id_pos);
+    }
+
+    #[test]
+    fn serialize_v4_notebook_ignores_attachments_for_non_matching_id() {
+        let cells = vec![cell_snapshot("raw-1", "raw", "content")];
+        let outputs: HashMap<String, Vec<Value>> = HashMap::new();
+        let exec_counts: HashMap<String, Option<i64>> = HashMap::new();
+        let attachments: HashMap<String, Value> = HashMap::new();
+        let metadata = json!({});
+
+        let nb = build_v4_notebook(&cells, &outputs, &exec_counts, &attachments, &metadata, 5)
+            .expect("build");
+
+        let mut raw_att = HashMap::new();
+        raw_att.insert(
+            "some-other-id".to_string(),
+            json!({ "file.txt": { "text/plain": "hi" } }),
+        );
+
+        let serialized = serialize_v4_notebook(&nb, &raw_att).expect("serialize");
+        assert!(!serialized.contains("attachments"));
+    }
+
+    #[test]
+    fn serialize_v4_notebook_does_not_attach_to_markdown_cells() {
+        // Markdown cells already have attachments handled via v4::Cell::Markdown's
+        // typed slot. We must NOT also inject raw-cell attachments onto a
+        // markdown cell that happens to share an id.
+        let cells = vec![cell_snapshot("cell-1", "markdown", "# hi")];
+        let outputs: HashMap<String, Vec<Value>> = HashMap::new();
+        let exec_counts: HashMap<String, Option<i64>> = HashMap::new();
+        let attachments: HashMap<String, Value> = HashMap::new();
+        let metadata = json!({});
+
+        let nb = build_v4_notebook(&cells, &outputs, &exec_counts, &attachments, &metadata, 5)
+            .expect("build");
+
+        let mut raw_att = HashMap::new();
+        raw_att.insert(
+            "cell-1".to_string(),
+            json!({ "wrong.txt": { "text/plain": "no" } }),
+        );
+
+        let serialized = serialize_v4_notebook(&nb, &raw_att).expect("serialize");
+        assert!(
+            !serialized.contains("wrong.txt"),
+            "raw-cell attachments must not be injected onto markdown cells"
+        );
     }
 }
