@@ -22,6 +22,7 @@ Make the Automerge `NotebookDoc` carry all top-level metadata keys, typed or not
 - `LanguageInfoSnapshot` gains the same. Standard Jupyter `language_info` fields (`codemirror_mode`, `mimetype`, `file_extension`, `nbconvert_exporter`, `pygments_lexer`) currently vanish. The existing comment on `merge_into_metadata_value` in metadata.rs already flags this ("preserve fields we don't track, like codemirror_mode").
 - `NotebookDoc::set_metadata_snapshot` writes extras as siblings of `kernelspec`/`language_info`/`runt` under the `metadata` Automerge Map, each as its own JSON value (one `update_json_at_key` per entry).
 - `NotebookDoc::get_metadata_snapshot` reads the three typed keys, then enumerates the rest of the `metadata` Map and collects them into `extras`.
+- `get_metadata_snapshot_from_doc` (the free-function variant in `crates/notebook-doc/src/lib.rs` used by `NotebookSnapshot::from_doc` in notebook-sync and `DocHandle::get_notebook_metadata`) gets the same scan. Without this, the Python bindings and frontend sync snapshot keep dropping extras even after the `&self` method is fixed.
 - `NotebookDoc::set_metadata_snapshot` guards against the caller inserting a known-key collision (`kernelspec`, `language_info`, `runt`) into top-level `extras`: logs an `error!` with the colliding key and drops it before writing.
 - `save_notebook_to_disk` stops reading the existing `.ipynb` to recover metadata. The snapshot round-trip carries everything.
 - `clone_notebook::seed_clone_from_source` benefits automatically since it copies the typed snapshot.
@@ -160,20 +161,68 @@ pub struct LanguageInfoSnapshot {
 
 Both `KernelspecSnapshot` and `LanguageInfoSnapshot` gain `Default` as a side-effect of `BTreeMap: Default`. That lines up with other recently-added `Default`s on the nbformat side.
 
-**`from_metadata_value`** switches from manual per-field extraction to `serde_json::from_value::<Self>(value.clone())` once the new flattened extras fields are in place. That's where the flatten payoff lands — serde does the "known fields go to typed slots, unknowns go to extras" dispatch automatically for all three levels at once.
+**`NotebookMetadataSnapshot.runt`** gets `#[serde(default)]` and `#[serde(skip_serializing_if = "RuntMetadata::is_empty")]` so vanilla Jupyter notebooks (no `metadata.runt` key) deserialize cleanly *and* round-trip without the daemon stamping a `runt: { schema_version: "1" }` blob into every notebook on first save.
 
-The legacy `uv`/`conda` fallback becomes a one-line post-processing step: if the resulting `runt.uv` / `runt.conda` is `None` and the incoming value had top-level `uv` / `conda`, fold them into `runt`. Explicitly strip them from `extras` after, otherwise they'd serialize twice on save (once inside `runt`, once as a top-level sibling).
+```rust
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct NotebookMetadataSnapshot {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kernelspec: Option<KernelspecSnapshot>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub language_info: Option<LanguageInfoSnapshot>,
+
+    #[serde(default, skip_serializing_if = "RuntMetadata::is_empty")]
+    pub runt: RuntMetadata,
+
+    #[serde(default, flatten)]
+    pub extras: std::collections::BTreeMap<String, serde_json::Value>,
+}
+```
+
+**`RuntMetadata::is_empty`** is a small helper that returns true when every field is at its default:
+
+```rust
+impl RuntMetadata {
+    /// Returns true when this metadata carries no daemon-relevant state.
+    /// Used by `skip_serializing_if` so vanilla Jupyter notebooks don't
+    /// get a synthetic `runt: { schema_version: "1" }` stamped on first
+    /// save, which would churn git-tracked notebooks.
+    pub fn is_empty(&self) -> bool {
+        self.env_id.is_none()
+            && self.uv.is_none()
+            && self.conda.is_none()
+            && self.pixi.is_none()
+            && self.deno.is_none()
+            && self.trust_signature.is_none()
+            && self.trust_timestamp.is_none()
+            && self.extra.is_empty()
+            && self.schema_version == default_schema_version()
+    }
+}
+
+fn default_schema_version() -> String {
+    "1".to_string()
+}
+```
+
+`schema_version` was already defaulting to `"1"` via `Default`; this just names the default so `is_empty` can check against it.
+
+**`from_metadata_value`** becomes a single `serde_json::from_value` call plus a legacy `uv`/`conda` fallback:
 
 ```rust
 pub fn from_metadata_value(metadata: &serde_json::Value) -> Self {
     // Serde handles kernelspec / language_info / runt as typed fields
-    // with their own extras, and drops everything else into top-level
-    // extras. A malformed input just produces a default snapshot.
+    // with their own sub-extras, and drops everything else into
+    // top-level extras. `#[serde(default)]` on `runt` means a notebook
+    // without it (the common case for Jupyter-written files) still
+    // deserializes cleanly.
     let mut snapshot: Self = serde_json::from_value(metadata.clone())
         .unwrap_or_default();
 
     // Legacy fallback: if runt.uv / runt.conda weren't populated,
-    // try the legacy top-level paths.
+    // try the top-level keys. Strip from extras so save doesn't
+    // emit them at both depths.
     if snapshot.runt.uv.is_none() {
         if let Some(raw_uv) = snapshot.extras.remove("uv") {
             snapshot.runt.uv = serde_json::from_value(raw_uv).ok();
@@ -189,18 +238,10 @@ pub fn from_metadata_value(metadata: &serde_json::Value) -> Self {
 }
 ```
 
-One real behavioral change to name: **partial-failure tolerance.**
-
-Today's manual code extracts each field via `.get("kernelspec").and_then(from_value::<KernelspecSnapshot>).ok()`, so a malformed `kernelspec` doesn't prevent `language_info` or `runt` from being captured. With `serde_json::from_value::<Self>(..).unwrap_or_default()`, a malformed value anywhere inside the metadata object triggers the `unwrap_or_default()` and we lose everything.
-
-Two mitigations worth considering:
-
-1. **Manual per-field deserialize plus an extras pass at the end.** Keeps today's per-field tolerance. Loses the "one serde call does it all" clarity.
-2. **Trust serde.** The only way `from_value` fails here is malformed input JSON, which means a corrupted or non-Jupyter `.ipynb`. The rest of the load path already assumes valid JSON. Losing a few metadata fields on a truly malformed notebook is acceptable.
-
-I'd go with option 2 and note it in a comment. If this bites in practice we can add the per-field tolerance back, but it's premature optimization for a failure mode that hasn't been reported.
-
-If user disagrees: fall back to option 1 during implementation, keeping today's `.and_then(..)` per-field pattern for the three typed fields and adding a separate extras scan over the raw `metadata` object (filtering out the known keys explicitly).
+Behavioral notes:
+- Missing `runt` (vanilla Jupyter notebook) deserializes to an `is_empty()` `RuntMetadata`, which `skip_serializing_if` drops on save. No daemon stamp on unrelated notebooks.
+- `runt` present and non-empty: round-trips unchanged.
+- Malformed field anywhere in the metadata object (e.g. `kernelspec: 42`) fails the whole `from_value` call and `unwrap_or_default()` fires, producing an empty snapshot. This is a behavior change from today's per-field tolerance; judged acceptable because the "one malformed field, siblings intact" failure mode is rare and has never been reported, while the cleaner single-call path is easier to audit and maintain.
 
 **`merge_into_metadata_value`** needs to also write extras. Currently it sets only the three typed keys on the target value. After the change, it iterates `extras` and sets each one via direct `obj.insert`. Callers today (if any remain) that relied on merging with a pre-populated target continue to work — extras just fill in more siblings.
 
@@ -272,6 +313,43 @@ pub fn get_metadata_snapshot(&self) -> Option<metadata::NotebookMetadataSnapshot
     None
 }
 ```
+
+**`get_metadata_snapshot_from_doc`** (the free-function variant at `crates/notebook-doc/src/lib.rs:1930`, callable from anywhere holding an `&AutoCommit`) gets the same scan. `NotebookSnapshot::from_doc` in notebook-sync routes through it, and the Python-binding `DocHandle::get_notebook_metadata` pulls its value from a `NotebookSnapshot`. If this function skips the extras scan while the `&self` method does it, daemon save/clone preserves extras but Python and the frontend sync snapshot silently drop them (Codex P2 review on PR #2198).
+
+```rust
+pub fn get_metadata_snapshot_from_doc(
+    doc: &AutoCommit,
+) -> Option<metadata::NotebookMetadataSnapshot> {
+    let meta_id = /* unchanged: locate the metadata Map */;
+
+    let kernelspec = /* unchanged */;
+    let language_info = /* unchanged */;
+    let runt = /* unchanged */;
+
+    let mut extras = std::collections::BTreeMap::new();
+    for key in doc.keys(&meta_id) {
+        if matches!(key.as_str(), "kernelspec" | "language_info" | "runt") {
+            continue;
+        }
+        if let Some(value) = read_json_value(doc, &meta_id, &key) {
+            extras.insert(key, value);
+        }
+    }
+
+    if kernelspec.is_some() || language_info.is_some() || runt.is_some()
+        || !extras.is_empty() {
+        return Some(metadata::NotebookMetadataSnapshot {
+            kernelspec,
+            language_info,
+            runt: runt.unwrap_or_default(),
+            extras,
+        });
+    }
+    None
+}
+```
+
+Consider factoring the shared scan into a small helper (`fn scan_metadata_extras(doc: &AutoCommit, meta_id: &ObjId) -> BTreeMap<...>`) so the method and the free function stay in sync. Decide at implementation time based on how clean the call sites end up.
 
 ### `crates/runtimed/src/notebook_sync_server/persist.rs`
 
@@ -379,9 +457,11 @@ No change required. `seed_clone_from_source` already does `doc.get_metadata_snap
 
 ### Unit (`crates/notebook-doc/src/lib.rs`)
 
-- `set_get_metadata_snapshot_round_trips_extras` — set a snapshot with `extras: {"jupytext": {...}, "colab": {...}}`; get back equal snapshot.
+- `set_get_metadata_snapshot_round_trips_extras` — set a snapshot with `extras: {"jupytext": {...}, "colab": {...}}`; get back equal snapshot via `NotebookDoc::get_metadata_snapshot`.
+- `get_metadata_snapshot_from_doc_reads_extras` — set a snapshot via `NotebookDoc::set_metadata_snapshot`; read back via the free-function `get_metadata_snapshot_from_doc`; assert extras land in the returned snapshot. Guards the notebook-sync / Python-bindings path.
 - `set_metadata_snapshot_drops_extras_collision_with_kernelspec` — insert `"kernelspec"` into extras; assert log emits (captured via a test-mode layer or just assert the doc's `kernelspec` Map was not overwritten); typed `kernelspec` stays intact.
 - `get_metadata_snapshot_returns_none_when_empty` — unchanged baseline test.
+- `vanilla_notebook_save_does_not_stamp_runt` — build a snapshot with `RuntMetadata::default()` (what a vanilla Jupyter notebook produces after `from_metadata_value`); `serde_json::to_value(&snapshot)` must NOT contain a `runt` key. This pins the no-stamp behavior so a future `#[serde(skip_serializing_if)]` removal gets caught.
 
 ### Integration (`crates/runtimed/src/notebook_sync_server/tests.rs`)
 
