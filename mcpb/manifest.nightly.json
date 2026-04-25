@@ -109,14 +109,6 @@
       "name": "clear_outputs"
     },
     {
-      "description": "Add tags to a cell.",
-      "name": "add_cell_tags"
-    },
-    {
-      "description": "Remove tags from a cell.",
-      "name": "remove_cell_tags"
-    },
-    {
       "description": "Execute a code cell.",
       "name": "execute_cell"
     },
@@ -147,10 +139,6 @@
     {
       "description": "Get the notebook's declared dependencies.",
       "name": "get_dependencies"
-    },
-    {
-      "description": "Hot-install new dependencies. restart_kernel() if this fails.",
-      "name": "sync_environment"
     },
     {
       "description": "Replace literal text in a cell. Use context_before/context_after to disambiguate repeated matches.",

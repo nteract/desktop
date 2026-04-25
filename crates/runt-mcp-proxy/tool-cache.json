@@ -454,68 +454,6 @@
     "name": "clear_outputs"
   },
   {
-    "annotations": {
-      "destructiveHint": false,
-      "idempotentHint": true,
-      "openWorldHint": false
-    },
-    "description": "Add tags to a cell.",
-    "inputSchema": {
-      "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "properties": {
-        "cell_id": {
-          "description": "ID of the cell.",
-          "type": "string"
-        },
-        "tags": {
-          "description": "Tags to add.",
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
-        }
-      },
-      "required": [
-        "cell_id",
-        "tags"
-      ],
-      "title": "AddCellTagsParams",
-      "type": "object"
-    },
-    "name": "add_cell_tags"
-  },
-  {
-    "annotations": {
-      "destructiveHint": true,
-      "idempotentHint": true,
-      "openWorldHint": false
-    },
-    "description": "Remove tags from a cell.",
-    "inputSchema": {
-      "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "properties": {
-        "cell_id": {
-          "description": "ID of the cell.",
-          "type": "string"
-        },
-        "tags": {
-          "description": "Tags to remove.",
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
-        }
-      },
-      "required": [
-        "cell_id",
-        "tags"
-      ],
-      "title": "RemoveCellTagsParams",
-      "type": "object"
-    },
-    "name": "remove_cell_tags"
-  },
-  {
     "_meta": {
       "ui": {
         "resourceUri": "ui://nteract/output.html"
@@ -718,20 +656,6 @@
       "type": "object"
     },
     "name": "get_dependencies"
-  },
-  {
-    "annotations": {
-      "destructiveHint": false,
-      "openWorldHint": true
-    },
-    "description": "Hot-install new dependencies. restart_kernel() if this fails.",
-    "inputSchema": {
-      "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "description": "Empty params for tools that take no arguments.",
-      "title": "EmptyParams",
-      "type": "object"
-    },
-    "name": "sync_environment"
   },
   {
     "_meta": {

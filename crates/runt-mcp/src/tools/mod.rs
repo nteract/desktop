@@ -184,29 +184,6 @@ pub fn all_tools() -> Vec<Tool> {
                 .idempotent(true)
                 .open_world(false),
         ),
-        // -- Cell metadata --
-        Tool::new(
-            "add_cell_tags",
-            "Add tags to a cell.",
-            schema_for::<cell_meta::AddCellTagsParams>(),
-        )
-        .annotate(
-            ToolAnnotations::new()
-                .destructive(false)
-                .idempotent(true)
-                .open_world(false),
-        ),
-        Tool::new(
-            "remove_cell_tags",
-            "Remove tags from a cell.",
-            schema_for::<cell_meta::RemoveCellTagsParams>(),
-        )
-        .annotate(
-            ToolAnnotations::new()
-                .destructive(true)
-                .idempotent(true)
-                .open_world(false),
-        ),
         // -- Execution --
         Tool::new(
             "execute_cell",
@@ -278,12 +255,6 @@ pub fn all_tools() -> Vec<Tool> {
             schema_for::<deps::GetDependenciesParams>(),
         )
         .annotate(ToolAnnotations::new().read_only(true).open_world(false)),
-        Tool::new(
-            "sync_environment",
-            "Hot-install new dependencies. restart_kernel() if this fails.",
-            schema_for::<EmptyParams>(),
-        )
-        .annotate(ToolAnnotations::new().destructive(false).open_world(true)),
         // -- Editing --
         Tool::new(
             "replace_match",
@@ -332,12 +303,12 @@ pub async fn dispatch(
         "delete_cell" => cell_crud::delete_cell(server, request).await,
         "move_cell" => cell_crud::move_cell(server, request).await,
         "clear_outputs" => cell_crud::clear_outputs(server, request).await,
-        // Cell metadata
+        // Hidden from tool listing but still callable for backwards compat
         "add_cell_tags" => cell_meta::add_cell_tags(server, request).await,
         "remove_cell_tags" => cell_meta::remove_cell_tags(server, request).await,
-        // Hidden from tool listing but still callable for backwards compat
         "set_cells_source_hidden" => cell_meta::set_cells_source_hidden(server, request).await,
         "set_cells_outputs_hidden" => cell_meta::set_cells_outputs_hidden(server, request).await,
+        "sync_environment" => deps::sync_environment(server, request).await,
         // Execution
         "execute_cell" => execution::execute_cell(server, request).await,
         "run_all_cells" => execution::run_all_cells(server, request).await,
@@ -349,7 +320,6 @@ pub async fn dispatch(
         "add_dependency" => deps::add_dependency(server, request).await,
         "remove_dependency" => deps::remove_dependency(server, request).await,
         "get_dependencies" => deps::get_dependencies(server, request).await,
-        "sync_environment" => deps::sync_environment(server, request).await,
         // Editing
         "replace_match" => editing::replace_match(server, request).await,
         "replace_regex" => editing::replace_regex(server, request).await,
