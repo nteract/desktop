@@ -20,6 +20,7 @@ members = [
     "crates/mcp-supervisor",
     "crates/runt-mcp",
     "crates/runt-mcp-proxy",
+    "crates/runt-store",
     "crates/nteract-mcp",
     "crates/repr-llm",
     "crates/nteract-predicate",
