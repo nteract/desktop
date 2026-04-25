@@ -473,21 +473,24 @@ pub fn arg_string_array(request: &CallToolRequestParams, key: &str) -> Option<Ve
     Some(vec![])
 }
 
-/// Guard: return a `tool_error` if the cell does not exist in the notebook.
+/// Assert that a cell exists in the notebook, or return an `McpError`.
 ///
 /// Call this early in any tool that takes a `cell_id` parameter so the agent
 /// gets a clear "Cell not found" message instead of a cryptic Automerge error
 /// or silent no-op.
 ///
-/// Usage: `if let Some(err) = cell_not_found(&handle, cell_id) { return err; }`
-pub fn cell_not_found(
+/// Usage: `assert_cell_exists(&handle, cell_id)?;`
+pub fn assert_cell_exists(
     handle: &notebook_sync::handle::DocHandle,
     cell_id: &str,
-) -> Option<Result<CallToolResult, McpError>> {
+) -> Result<(), McpError> {
     if handle.get_cell(cell_id).is_some() {
-        None
+        Ok(())
     } else {
-        Some(tool_error(&format!("Cell not found: {cell_id}")))
+        Err(McpError::invalid_params(
+            format!("Cell not found: {cell_id}"),
+            None,
+        ))
     }
 }
 
