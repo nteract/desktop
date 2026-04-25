@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use automerge::sync;
 use tokio::io::{AsyncRead, AsyncWrite};
-use tokio::sync::{broadcast, RwLock};
+use tokio::sync::{RwLock, broadcast};
 use tracing::{info, warn};
 
 use crate::connection;
@@ -38,7 +38,7 @@ pub(crate) fn is_connection_closed(e: &anyhow::Error) -> bool {
 /// 2. Watch loop: wait for changes (from other peers or from this client),
 ///    exchange sync messages to propagate
 pub async fn handle_settings_sync_connection<R, W>(
-    mut reader: R,
+    reader: R,
     mut writer: W,
     settings: Arc<RwLock<SettingsDoc>>,
     changed_tx: broadcast::Sender<()>,
@@ -47,7 +47,7 @@ pub async fn handle_settings_sync_connection<R, W>(
     json_path: PathBuf,
 ) -> anyhow::Result<()>
 where
-    R: AsyncRead + Unpin,
+    R: AsyncRead + Unpin + Send + 'static,
     W: AsyncWrite + Unpin,
 {
     let mut peer_state = sync::State::new();
@@ -65,12 +65,14 @@ where
         }
     }
 
+    let mut framed_reader = connection::RawFrameReader::spawn(reader, 16);
+
     // Phase 2: Exchange messages until sync is complete, then watch for changes
     loop {
         tokio::select! {
             // Incoming message from this client
-            result = connection::recv_frame(&mut reader) => {
-                match result? {
+            result = framed_reader.recv() => {
+                match result.transpose()? {
                     Some(data) => {
                         let message = sync::Message::decode(&data)
                             .map_err(|e| anyhow::anyhow!("decode error: {}", e))?;

@@ -27,7 +27,7 @@
 //! - `0x03`: NotebookBroadcast (JSON)
 //! - `0x07`: SessionControl (JSON, server-originated)
 
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::fmt;
 use std::str::FromStr;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
@@ -878,6 +878,56 @@ pub async fn recv_frame<R: AsyncRead + Unpin>(reader: &mut R) -> std::io::Result
     recv_frame_with_limit(reader, MAX_FRAME_SIZE).await
 }
 
+/// Cancel-safe wrapper around raw length-prefixed `recv_frame`.
+///
+/// Like `FramedReader` for typed notebook frames, this keeps the
+/// `read_exact` state inside a dedicated task so callers can wait for
+/// raw frames in `select!` or `timeout` without desynchronizing the
+/// underlying stream on cancellation.
+pub struct RawFrameReader {
+    rx: tokio::sync::mpsc::Receiver<std::io::Result<Vec<u8>>>,
+    handle: tokio::task::JoinHandle<()>,
+}
+
+impl RawFrameReader {
+    /// Spawn a reader task that owns `reader`. `capacity` bounds the
+    /// in-flight frame queue so slow consumers apply backpressure.
+    pub fn spawn<R>(mut reader: R, capacity: usize) -> Self
+    where
+        R: AsyncRead + Unpin + Send + 'static,
+    {
+        let (tx, rx) = tokio::sync::mpsc::channel(capacity);
+        let handle = tokio::spawn(async move {
+            loop {
+                match recv_frame(&mut reader).await {
+                    Ok(Some(frame)) => {
+                        if tx.send(Ok(frame)).await.is_err() {
+                            break;
+                        }
+                    }
+                    Ok(None) => break,
+                    Err(e) => {
+                        let _ = tx.send(Err(e)).await;
+                        break;
+                    }
+                }
+            }
+        });
+        Self { rx, handle }
+    }
+
+    /// Cancel-safe receive of the next raw frame.
+    pub async fn recv(&mut self) -> Option<std::io::Result<Vec<u8>>> {
+        self.rx.recv().await
+    }
+}
+
+impl Drop for RawFrameReader {
+    fn drop(&mut self) {
+        self.handle.abort();
+    }
+}
+
 /// Receive a length-prefixed frame with the control/handshake size limit
 /// (64 KiB). Use this for handshake and JSON request/response traffic to
 /// prevent oversized frames from forcing large allocations.
@@ -1463,9 +1513,11 @@ mod tests {
                 .unwrap(),
             PackageManager::Conda
         );
-        assert!(PackageManager::Unknown("poetry".to_string())
-            .resolve()
-            .is_err());
+        assert!(
+            PackageManager::Unknown("poetry".to_string())
+                .resolve()
+                .is_err()
+        );
     }
 
     // -----------------------------------------------------------
@@ -1712,7 +1764,7 @@ mod tests {
     async fn framed_reader_does_not_desync_in_select_under_pressure() {
         use tokio::io::duplex;
         use tokio::sync::mpsc;
-        use tokio::time::{timeout, Duration};
+        use tokio::time::{Duration, timeout};
 
         // Tiny duplex buffer forces multi-poll reads, mirroring the real
         // socket pressure that triggered the production desync.
@@ -1794,5 +1846,51 @@ mod tests {
         let _ = pump_task.await;
         writer_task.await.expect("writer task panicked");
         assert_eq!(received, NUM_FRAMES as u64);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn raw_frame_reader_survives_timeout_during_partial_frame() {
+        use tokio::io::{AsyncWriteExt, duplex};
+        use tokio::time::{Duration, timeout};
+
+        let (server_side, client_side) = duplex(16);
+        let (_server_read, mut writer) = tokio::io::split(server_side);
+        let (reader, _client_write) = tokio::io::split(client_side);
+
+        let mut payload = vec![0u8; 1024];
+        for (i, b) in payload.iter_mut().enumerate() {
+            *b = (i & 0xFF) as u8;
+        }
+        let expected = payload.clone();
+
+        let writer_task = tokio::spawn(async move {
+            let len = (payload.len() as u32).to_be_bytes();
+            writer.write_all(&len).await.expect("write length");
+            writer
+                .write_all(&payload[..32])
+                .await
+                .expect("write prefix");
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            writer
+                .write_all(&payload[32..])
+                .await
+                .expect("write suffix");
+            writer.flush().await.expect("flush");
+        });
+
+        let mut framed = RawFrameReader::spawn(reader, 4);
+
+        timeout(Duration::from_millis(10), framed.recv())
+            .await
+            .expect_err("raw frame should not be complete yet");
+
+        let frame = timeout(Duration::from_secs(1), framed.recv())
+            .await
+            .expect("frame should arrive")
+            .expect("reader should stay open")
+            .expect("frame decode should succeed");
+        assert_eq!(frame, expected);
+
+        writer_task.await.expect("writer task panicked");
     }
 }

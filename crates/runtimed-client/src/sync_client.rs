@@ -15,8 +15,8 @@ use tokio::io::{AsyncRead, AsyncWrite};
 
 use crate::connection::{self, Handshake};
 use crate::settings_doc::{
-    read_nested_list, split_comma_list, ColorTheme, CondaDefaults, PixiDefaults, SyncedSettings,
-    ThemeMode, UvDefaults,
+    ColorTheme, CondaDefaults, PixiDefaults, SyncedSettings, ThemeMode, UvDefaults,
+    read_nested_list, split_comma_list,
 };
 
 /// Error type for sync client operations.
@@ -39,10 +39,11 @@ pub enum SyncClientError {
 ///
 /// Holds a local Automerge document replica that stays in sync with the
 /// daemon's canonical copy via the Automerge sync protocol.
-pub struct SyncClient<S> {
+pub struct SyncClient<W> {
     doc: AutoCommit,
     peer_state: sync::State,
-    stream: S,
+    framed_reader: connection::RawFrameReader,
+    writer: tokio::io::WriteHalf<W>,
 }
 
 #[cfg(unix)]
@@ -106,13 +107,13 @@ impl SyncClient<tokio::net::windows::named_pipe::NamedPipeClient> {
     }
 }
 
-impl<S> SyncClient<S>
+impl<W> SyncClient<W>
 where
-    S: AsyncRead + AsyncWrite + Unpin,
+    W: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
     /// Initialize the client by sending the handshake and performing
     /// the initial sync exchange.
-    async fn init(mut stream: S) -> Result<Self, SyncClientError> {
+    async fn init(mut stream: W) -> Result<Self, SyncClientError> {
         // Send preamble (magic bytes + protocol version)
         connection::send_preamble(&mut stream)
             .await
@@ -125,34 +126,31 @@ where
 
         let mut doc = AutoCommit::new();
         let mut peer_state = sync::State::new();
+        let (reader, mut writer) = tokio::io::split(stream);
+        let mut framed_reader = connection::RawFrameReader::spawn(reader, 16);
 
         // The server sends first -- receive and apply
-        match connection::recv_frame(&mut stream).await? {
-            Some(data) => {
+        match recv_raw_frame(&mut framed_reader).await {
+            Ok(data) => {
                 let message = sync::Message::decode(&data)
                     .map_err(|e| SyncClientError::SyncError(format!("decode: {}", e)))?;
                 doc.sync()
                     .receive_sync_message(&mut peer_state, message)
                     .map_err(|e| SyncClientError::SyncError(format!("receive: {}", e)))?;
             }
-            None => return Err(SyncClientError::Disconnected),
+            Err(e) => return Err(e),
         }
 
         // Send our sync message back (to complete the handshake)
         if let Some(msg) = doc.sync().generate_sync_message(&mut peer_state) {
-            connection::send_frame(&mut stream, &msg.encode()).await?;
+            connection::send_frame(&mut writer, &msg.encode()).await?;
         }
 
         // There might be more rounds needed -- keep going until no more messages
         loop {
             // Try to receive with a short timeout (the server may not have more to say)
-            match tokio::time::timeout(
-                Duration::from_millis(100),
-                connection::recv_frame(&mut stream),
-            )
-            .await
-            {
-                Ok(Ok(Some(data))) => {
+            match tokio::time::timeout(Duration::from_millis(100), framed_reader.recv()).await {
+                Ok(Some(Ok(data))) => {
                     let message = sync::Message::decode(&data)
                         .map_err(|e| SyncClientError::SyncError(format!("decode: {}", e)))?;
                     doc.sync()
@@ -160,11 +158,11 @@ where
                         .map_err(|e| SyncClientError::SyncError(format!("receive: {}", e)))?;
 
                     if let Some(msg) = doc.sync().generate_sync_message(&mut peer_state) {
-                        connection::send_frame(&mut stream, &msg.encode()).await?;
+                        connection::send_frame(&mut writer, &msg.encode()).await?;
                     }
                 }
-                Ok(Ok(None)) => return Err(SyncClientError::Disconnected),
-                Ok(Err(e)) => return Err(SyncClientError::ConnectionFailed(e)),
+                Ok(Some(Err(e))) => return Err(SyncClientError::ConnectionFailed(e)),
+                Ok(None) => return Err(SyncClientError::Disconnected),
                 Err(_) => break, // Timeout -- initial sync is done
             }
         }
@@ -175,7 +173,8 @@ where
         Ok(Self {
             doc,
             peer_state,
-            stream,
+            framed_reader,
+            writer,
         })
     }
 
@@ -322,7 +321,7 @@ where
     /// Generate and send sync message to daemon.
     async fn sync_to_daemon(&mut self) -> Result<(), SyncClientError> {
         if let Some(msg) = self.doc.sync().generate_sync_message(&mut self.peer_state) {
-            connection::send_frame(&mut self.stream, &msg.encode()).await?;
+            connection::send_frame(&mut self.writer, &msg.encode()).await?;
         }
         Ok(())
     }
@@ -332,25 +331,31 @@ where
     /// Blocks until a sync message arrives, applies it, and returns the
     /// updated settings snapshot.
     pub async fn recv_changes(&mut self) -> Result<SyncedSettings, SyncClientError> {
-        match connection::recv_frame(&mut self.stream).await? {
-            Some(data) => {
-                let message = sync::Message::decode(&data)
-                    .map_err(|e| SyncClientError::SyncError(format!("decode: {}", e)))?;
-                self.doc
-                    .sync()
-                    .receive_sync_message(&mut self.peer_state, message)
-                    .map_err(|e| SyncClientError::SyncError(format!("receive: {}", e)))?;
+        let data = recv_raw_frame(&mut self.framed_reader).await?;
+        let message = sync::Message::decode(&data)
+            .map_err(|e| SyncClientError::SyncError(format!("decode: {}", e)))?;
+        self.doc
+            .sync()
+            .receive_sync_message(&mut self.peer_state, message)
+            .map_err(|e| SyncClientError::SyncError(format!("receive: {}", e)))?;
 
-                // Send ack if needed
-                if let Some(msg) = self.doc.sync().generate_sync_message(&mut self.peer_state) {
-                    connection::send_frame(&mut self.stream, &msg.encode()).await?;
-                }
-
-                Ok(self.get_all())
-            }
-            None => Err(SyncClientError::Disconnected),
+        // Send ack if needed
+        if let Some(msg) = self.doc.sync().generate_sync_message(&mut self.peer_state) {
+            connection::send_frame(&mut self.writer, &msg.encode()).await?;
         }
+
+        Ok(self.get_all())
     }
+}
+
+async fn recv_raw_frame(
+    framed_reader: &mut connection::RawFrameReader,
+) -> Result<Vec<u8>, SyncClientError> {
+    framed_reader
+        .recv()
+        .await
+        .ok_or(SyncClientError::Disconnected)?
+        .map_err(SyncClientError::ConnectionFailed)
 }
 
 /// Extract all settings from an Automerge document.
