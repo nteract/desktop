@@ -2692,15 +2692,33 @@ fn run_frontend_build(debug_bundle: bool) {
     }
 }
 
-/// Set `RUSTC_WRAPPER=sccache` when sccache is available.
+/// Set `RUSTC_WRAPPER=sccache` for CI runs. Off for local dev by default.
 ///
-/// Skips detection entirely if `RUSTC_WRAPPER` is already set in the
-/// environment (respects existing tooling). Detection runs `sccache
-/// --version` once and caches the result for the lifetime of the process.
+/// sccache can't cache incremental builds, so turning it on forces
+/// `CARGO_INCREMENTAL=0` and loses cargo's per-function incremental
+/// speedup. That's fine in CI (fresh target dir every run) and bad
+/// locally (the incremental cache is already warm).
+///
+/// Enabled when `CI=1`/`CI=true` is set. Overridable in either
+/// direction:
+///
+/// - `NTERACT_SCCACHE=1` forces sccache on even for local runs.
+/// - `NTERACT_SCCACHE=0` forces it off even in CI.
+/// - An existing `RUSTC_WRAPPER` is always respected.
 fn apply_sccache_env(command: &mut Command) {
     if env::var_os("RUSTC_WRAPPER").is_some() {
         return;
     }
+
+    let want_sccache = match env::var("NTERACT_SCCACHE").as_deref() {
+        Ok("1") | Ok("true") => true,
+        Ok("0") | Ok("false") => false,
+        _ => matches!(env::var("CI").as_deref(), Ok("1") | Ok("true")),
+    };
+    if !want_sccache {
+        return;
+    }
+
     static AVAILABLE: OnceLock<bool> = OnceLock::new();
     let available = *AVAILABLE.get_or_init(|| {
         let found = Command::new("sccache")
