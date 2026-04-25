@@ -11,13 +11,15 @@ For commands and dev workflows, see `CLAUDE.md` → "Build System" and run `carg
 
 Three phases:
 
-1. **Single Rust compilation** — `cargo build -p runtimed -p runt -p mcp-supervisor -p notebook` in one invocation (workspace feature unification happens once, so the final tauri step doesn't recompile). Sidecars (`runtimed`, `runt`) are copied to `crates/notebook/binaries/` for Tauri bundling.
+1. **Single Rust compilation** — `cargo build -p runtimed -p runt -p mcp-supervisor -p notebook` in one invocation (workspace feature unification happens once, so the final tauri step doesn't recompile). Sidecars (`runtimed`, `runt`, `nteract-mcp`) are copied to `crates/notebook/binaries/` for Tauri bundling.
 
-2. **Frontend + Python bindings in parallel** — `pnpm build` (TypeScript + Vite) and `maturin develop` (Python `.so`) run concurrently. Both must finish before phase 3.
+2. **Frontend build** — `pnpm build` (TypeScript + Vite). Must finish before phase 3.
 
 3. **Tauri link** — `cargo tauri build --debug --no-bundle` links the notebook binary with embedded frontend assets. Rust is cached from phase 1.
 
 `--rust-only` skips the frontend build in phase 2 and reuses existing `apps/notebook/dist/`.
+
+Python bindings (`maturin develop`) are no longer part of `cargo xtask build`. Run `cargo xtask integration` (builds bindings for pytest), use the nteract-dev MCP `up rebuild=true` tool, or invoke `maturin develop` directly under `crates/runtimed-py/` when you need the `.so`. CI builds them explicitly.
 
 ## Key constraints
 
