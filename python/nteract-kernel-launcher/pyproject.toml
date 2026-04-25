@@ -1,6 +1,6 @@
 [project]
 name = "nteract-kernel-launcher"
-version = "0.2.1"
+version = "0.2.2"
 description = "IPKernelApp subclass that wires nteract DataFrame formatters, buffer hooks, and the 'Enhanced Data Experience' bootstrap extension into a superpowered IPython kernel."
 readme = "README.md"
 license = "BSD-3-Clause"
