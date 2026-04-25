@@ -32,7 +32,7 @@
 use std::collections::HashMap;
 
 use nbformat::v4::{Cell, CellId, CellMetadata, Metadata, MultilineString, Notebook, Output};
-use serde_json::{json, Value};
+use serde_json::Value;
 
 use notebook_doc::CellSnapshot;
 
@@ -222,10 +222,12 @@ fn metadata_value_to_v4(value: &Value) -> Result<Metadata, NbformatConvertError>
 
 /// Deserialize a cell's metadata `Value` into `v4::CellMetadata`. Unknown
 /// fields land in `CellMetadata::additional` via `#[serde(flatten)]`.
-/// Null or empty-object inputs both produce an all-None `CellMetadata`.
+/// Null inputs produce an all-None `CellMetadata` via `Default`.
 fn cell_metadata_value_to_v4(value: &Value) -> Result<CellMetadata, NbformatConvertError> {
-    let normalized = if value.is_null() { &json!({}) } else { value };
-    serde_json::from_value::<CellMetadata>(normalized.clone())
+    if value.is_null() {
+        return Ok(CellMetadata::default());
+    }
+    serde_json::from_value::<CellMetadata>(value.clone())
         .map_err(|e| NbformatConvertError::InvalidCellMetadata(e.to_string()))
 }
 

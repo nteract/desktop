@@ -35,7 +35,7 @@ dirs = "6"
 
 # Jupyter kernel management
 jupyter-protocol = { workspace = true }
-nbformat = "2.1.0"
+nbformat = "2.2.0"
 runtimelib = { workspace = true, features = ["tokio-runtime", "aws-lc-rs"] }
 petname = "2"
 chrono = { version = "0.4", default-features = false, features = ["std", "clock", "serde"] }
