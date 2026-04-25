@@ -656,7 +656,7 @@ impl Drop for WarmingGuard {
 
 /// The pool daemon state.
 pub struct Daemon {
-    config: DaemonConfig,
+    pub(crate) config: DaemonConfig,
     uv_pool: Mutex<Pool>,
     conda_pool: Mutex<Pool>,
     pixi_pool: Mutex<Pool>,
@@ -678,13 +678,13 @@ pub struct Daemon {
     pool_ready_conda: Notify,
     pool_ready_pixi: Notify,
     /// Content-addressed blob store.
-    blob_store: Arc<BlobStore>,
+    pub(crate) blob_store: Arc<BlobStore>,
     /// HTTP port for the blob server (set after startup).
     blob_port: Mutex<Option<u16>>,
     /// When the daemon process began. Reported via Ping for diagnostics.
     started_at: chrono::DateTime<chrono::Utc>,
     /// Per-notebook Automerge sync rooms.
-    notebook_rooms: NotebookRooms,
+    pub(crate) notebook_rooms: NotebookRooms,
     /// Secondary index: canonical .ipynb path → room UUID.
     /// Kept in sync with `notebook_rooms` by `get_or_create_room` (insert)
     /// and the eviction loop (remove). Queried by `find_room_by_path`.
