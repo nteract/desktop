@@ -823,16 +823,11 @@ fn cmd_build(rust_only: bool) {
     copy_sidecar_binary("runt", false);
     copy_sidecar_binary("nteract-mcp", false);
 
-    // Phase 2: Run independent tasks in parallel.
-    // - Python env sync + maturin develop (builds .so for MCP server)
-    // - Frontend build (pnpm/vite, completely independent of Rust)
-    let mut handles: Vec<thread::JoinHandle<()>> = Vec::new();
-
-    handles.push(thread::spawn(|| {
-        ensure_python_env();
-        ensure_maturin_develop();
-    }));
-
+    // Phase 2: Build the frontend. Python bindings are no longer part of
+    // the default build — `runt mcp` is Rust-native, and agents iterating
+    // on runtimed-py should use `cargo xtask integration` (which runs
+    // `maturin develop`) or rebuild via the nteract-dev MCP (`up
+    // rebuild=true`). CI still runs maturin explicitly in build.yml.
     if rust_only {
         let dist_dir = Path::new("apps/notebook/dist");
         if !dist_dir.exists() {
@@ -842,17 +837,8 @@ fn cmd_build(rust_only: bool) {
         }
         println!("Skipping frontend build (--rust-only), reusing existing assets");
     } else {
-        handles.push(thread::spawn(|| {
-            println!("Building frontend (notebook)...");
-            run_frontend_build(true);
-        }));
-    }
-
-    for handle in handles {
-        handle.join().unwrap_or_else(|_| {
-            eprintln!("A parallel build task panicked");
-            exit(1);
-        });
+        println!("Building frontend (notebook)...");
+        run_frontend_build(true);
     }
 
     // Phase 3: Tauri build. With all Rust already compiled and frontend
