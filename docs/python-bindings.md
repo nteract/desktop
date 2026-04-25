@@ -7,8 +7,8 @@ The `runtimed` Python package provides programmatic access to the notebook daemo
 ## Installation
 
 ```bash
-# From PyPI
-pip install runtimed
+# From PyPI (pre-release channel — stable is paused, see #2217)
+pip install --pre runtimed
 
 # From source (inside the python/runtimed package directory)
 cd python/runtimed

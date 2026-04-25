@@ -9,10 +9,11 @@ Python bindings for the [nteract](https://nteract.io) runtime daemon. Execute co
 ## Installation
 
 ```bash
-pip install runtimed
+pip install --pre runtimed
+# or: uv pip install --prerelease allow runtimed
 ```
 
-The stable release matches the [nteract desktop stable app](https://nteract.io). If you're running the nightly desktop app, install the pre-release to match: `pip install --pre runtimed` (or `uv pip install --prerelease allow runtimed`). The nightly build automatically discovers the nightly daemon socket.
+Only pre-release wheels are being published while the library surface settles. The stable channel is frozen at the last-shipped release; the `--pre` channel tracks the nightly desktop app and discovers the nightly daemon socket automatically. See [#2217](https://github.com/nteract/desktop/issues/2217) for context.
 
 `Client()` and the high-level Python API use `default_socket_path()` by default. That helper respects `RUNTIMED_SOCKET_PATH`, so exported test or MCP sockets take precedence over the package's default channel.
 
