@@ -1,21 +1,4 @@
-use serde::Serialize;
-
 use super::*;
-
-/// Serialize a notebook JSON value with 1-space indent and trailing newline,
-/// matching the nbformat/Jupyter convention.
-fn serialize_notebook_json(value: &serde_json::Value) -> Result<String, String> {
-    let mut buf = Vec::new();
-    let formatter = serde_json::ser::PrettyFormatter::with_indent(b" ");
-    let mut ser = serde_json::Serializer::with_formatter(&mut buf, formatter);
-    value
-        .serialize(&mut ser)
-        .map_err(|e| format!("Failed to serialize notebook: {e}"))?;
-    let mut content =
-        String::from_utf8(buf).map_err(|e| format!("Invalid UTF-8 in notebook: {e}"))?;
-    content.push('\n');
-    Ok(content)
-}
 
 #[derive(Debug)]
 pub(crate) enum SaveError {
@@ -148,61 +131,25 @@ pub(crate) async fn save_notebook_to_disk(
 
     let nbformat_attachments = room.nbformat_attachments_snapshot().await;
 
-    // Reconstruct cells as JSON. Cell IDs are always written — pre-4.5
-    // notebooks loaded without IDs got fresh UUIDs minted at parse time.
-    let mut nb_cells = Vec::new();
+    // Resolve outputs from the blob store. `resolve_cell_output` returns
+    // Jupyter-shape JSON (daemon-runtime shape: includes `output_id`, etc.).
+    // The nbformat conversion layer strips runtime-only fields before
+    // handing values to the typed v4 deserializer.
+    let mut resolved_outputs_by_cell: HashMap<String, Vec<serde_json::Value>> =
+        HashMap::with_capacity(cells.len());
     for cell in &cells {
-        // Use metadata from the Automerge doc (populated during notebook load)
-        let cell_meta = cell.metadata.clone();
-
-        // Parse source into multiline array format (split_inclusive('\n'))
-        let source_lines: Vec<String> = if cell.source.is_empty() {
-            vec![]
-        } else {
-            let mut lines = Vec::new();
-            let mut remaining = cell.source.as_str();
-            while let Some(pos) = remaining.find('\n') {
-                lines.push(remaining[..=pos].to_string());
-                remaining = &remaining[pos + 1..];
-            }
-            if !remaining.is_empty() {
-                lines.push(remaining.to_string());
-            }
-            lines
-        };
-
-        let mut cell_json = serde_json::json!({
-            "id": cell.id,
-            "cell_type": cell.cell_type,
-            "source": source_lines,
-            "metadata": cell_meta,
-        });
-
-        if cell.cell_type == "code" {
-            // Resolve outputs from RuntimeStateDoc (keyed by execution_id)
-            let mut resolved_outputs = Vec::new();
-            if let Some(outputs) = cell_outputs.get(&cell.id) {
-                for output in outputs {
-                    let output_value = resolve_cell_output(output, &room.blob_store).await;
-                    resolved_outputs.push(output_value);
-                }
-            }
-            cell_json["outputs"] = serde_json::Value::Array(resolved_outputs);
-
-            // Resolve execution_count from RuntimeStateDoc (source of truth)
-            let exec_count: serde_json::Value = cell_execution_counts
-                .get(&cell.id)
-                .and_then(|ec| *ec)
-                .map(|n| serde_json::Value::Number(serde_json::Number::from(n)))
-                .unwrap_or(serde_json::Value::Null);
-            cell_json["execution_count"] = exec_count;
-        } else if matches!(cell.cell_type.as_str(), "markdown" | "raw") {
-            if let Some(attachments) = nbformat_attachments.get(&cell.id) {
-                cell_json["attachments"] = attachments.clone();
-            }
+        if cell.cell_type != "code" {
+            continue;
         }
-
-        nb_cells.push(cell_json);
+        let Some(outputs) = cell_outputs.get(&cell.id) else {
+            continue;
+        };
+        let mut resolved = Vec::with_capacity(outputs.len());
+        for output in outputs {
+            let output_value = resolve_cell_output(output, &room.blob_store).await;
+            resolved.push(output_value);
+        }
+        resolved_outputs_by_cell.insert(cell.id.clone(), resolved);
     }
 
     // Build metadata by merging synced snapshot onto existing
@@ -216,25 +163,44 @@ pub(crate) async fn save_notebook_to_disk(
         snapshot.merge_into_metadata_value(&mut metadata).ok();
     }
 
-    // Build the final notebook JSON.
     // We always write cell IDs, so nbformat_minor is at least 5.
     let existing_minor = existing
         .as_ref()
         .and_then(|nb| nb.get("nbformat_minor"))
         .and_then(|v| v.as_u64())
-        .unwrap_or(5);
+        .unwrap_or(5) as i32;
     let nbformat_minor = std::cmp::max(existing_minor, 5);
 
-    let cell_count = nb_cells.len();
-    let notebook_json = serde_json::json!({
-        "nbformat": 4,
-        "nbformat_minor": nbformat_minor,
-        "metadata": metadata,
-        "cells": nb_cells,
-    });
+    // Build a typed v4::Notebook. The conversion layer enforces nbformat
+    // schema invariants (cell id validity, output typing, metadata shape) —
+    // structural bugs become compile/deserialize errors instead of silent
+    // on-disk drift.
+    let v4_notebook = build_v4_notebook(
+        &cells,
+        &resolved_outputs_by_cell,
+        &cell_execution_counts,
+        &nbformat_attachments,
+        &metadata,
+        nbformat_minor,
+    )
+    .map_err(|e| SaveError::Unrecoverable(format!("Failed to build v4 notebook: {e}")))?;
+    let cell_count = v4_notebook.cells.len();
 
-    let content_with_newline =
-        serialize_notebook_json(&notebook_json).map_err(SaveError::Retryable)?;
+    // Collect raw-cell attachments (markdown attachments are already on the
+    // typed v4::Cell::Markdown variant; raw cells lose theirs in typed
+    // conversion and get re-injected during serialize).
+    let raw_attachments: HashMap<String, serde_json::Value> = cells
+        .iter()
+        .filter(|c| c.cell_type == "raw")
+        .filter_map(|c| {
+            nbformat_attachments
+                .get(&c.id)
+                .map(|att| (c.id.clone(), att.clone()))
+        })
+        .collect();
+
+    let content_with_newline = serialize_v4_notebook(&v4_notebook, &raw_attachments)
+        .map_err(|e| SaveError::Retryable(format!("Failed to serialize notebook: {e}")))?;
 
     // Content-hash guard: skip the write if the serialized bytes match what is
     // already on disk. Prevents no-op autosaves from dirtying the working tree.
@@ -471,42 +437,6 @@ pub(crate) async fn clone_notebook_to_disk(
     // Generate fresh env_id for the cloned notebook
     let new_env_id = uuid::Uuid::new_v4().to_string();
 
-    // Build cells with cleared outputs and execution counts, but preserved metadata
-    let mut nb_cells = Vec::new();
-    for cell in &cells {
-        // Parse source into multiline array format using split_inclusive
-        let source_lines: Vec<String> = if cell.source.is_empty() {
-            vec![]
-        } else {
-            cell.source
-                .split_inclusive('\n')
-                .map(|s| s.to_string())
-                .collect()
-        };
-
-        // Use metadata from the Automerge doc (populated during notebook load)
-        let cell_meta = cell.metadata.clone();
-
-        let mut cell_json = serde_json::json!({
-            "id": cell.id,
-            "cell_type": cell.cell_type,
-            "source": source_lines,
-            "metadata": cell_meta,
-        });
-
-        if cell.cell_type == "code" {
-            // Clear outputs and execution_count for cloned notebook
-            cell_json["outputs"] = serde_json::json!([]);
-            cell_json["execution_count"] = serde_json::Value::Null;
-        } else if matches!(cell.cell_type.as_str(), "markdown" | "raw") {
-            if let Some(att) = nbformat_attachments.get(&cell.id) {
-                cell_json["attachments"] = att.clone();
-            }
-        }
-
-        nb_cells.push(cell_json);
-    }
-
     // Build metadata: start with existing notebook metadata to preserve unknown fields,
     // then apply snapshot with fresh env_id
     let mut metadata = existing
@@ -529,20 +459,38 @@ pub(crate) async fn clone_notebook_to_disk(
         .as_ref()
         .and_then(|nb| nb.get("nbformat_minor"))
         .and_then(|v| v.as_u64())
-        .unwrap_or(5);
+        .unwrap_or(5) as i32;
     let nbformat_minor = std::cmp::max(existing_minor, 5);
 
-    // Build the final notebook JSON
-    let cell_count = nb_cells.len();
-    let notebook_json = serde_json::json!({
-        "nbformat": 4,
-        "nbformat_minor": nbformat_minor,
-        "metadata": metadata,
-        "cells": nb_cells,
-    });
+    // Clone-to-disk clears all outputs and execution counts; empty maps
+    // cause `build_v4_notebook` to emit `outputs: []` and
+    // `execution_count: null` for every code cell.
+    let empty_outputs: HashMap<String, Vec<serde_json::Value>> = HashMap::new();
+    let empty_exec_counts: HashMap<String, Option<i64>> = HashMap::new();
 
-    let content_with_newline =
-        serialize_notebook_json(&notebook_json).map_err(|e| e.to_string())?;
+    let v4_notebook = build_v4_notebook(
+        &cells,
+        &empty_outputs,
+        &empty_exec_counts,
+        &nbformat_attachments,
+        &metadata,
+        nbformat_minor,
+    )
+    .map_err(|e| format!("Failed to build v4 notebook: {e}"))?;
+    let cell_count = v4_notebook.cells.len();
+
+    let raw_attachments: HashMap<String, serde_json::Value> = cells
+        .iter()
+        .filter(|c| c.cell_type == "raw")
+        .filter_map(|c| {
+            nbformat_attachments
+                .get(&c.id)
+                .map(|att| (c.id.clone(), att.clone()))
+        })
+        .collect();
+
+    let content_with_newline = serialize_v4_notebook(&v4_notebook, &raw_attachments)
+        .map_err(|e| format!("Failed to serialize notebook: {e}"))?;
 
     // Write to disk
     tokio::fs::write(&clone_path, content_with_newline)
