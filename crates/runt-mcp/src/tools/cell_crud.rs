@@ -77,6 +77,9 @@ pub struct ClearOutputsParams {
     pub cell_ids: Option<Vec<String>>,
 }
 
+/// Valid cell types per the nbformat spec.
+const VALID_CELL_TYPES: &[&str] = &["code", "markdown", "raw"];
+
 /// Create a new cell, optionally executing it.
 pub async fn create_cell(
     server: &NteractMcp,
@@ -84,6 +87,13 @@ pub async fn create_cell(
 ) -> Result<CallToolResult, McpError> {
     let source = arg_str(request, "source").unwrap_or("");
     let cell_type = arg_str(request, "cell_type").unwrap_or("code");
+
+    if !VALID_CELL_TYPES.contains(&cell_type) {
+        return tool_error(&format!(
+            "Invalid cell_type: \"{cell_type}\". Must be one of: {}",
+            VALID_CELL_TYPES.join(", ")
+        ));
+    }
     let index = request
         .arguments
         .as_ref()
@@ -197,6 +207,12 @@ pub async fn set_cell(
         crate::presence::emit_cursor(&handle, cell_id, end_line, end_col, &peer_label).await;
     }
     if let Some(ct) = cell_type {
+        if !VALID_CELL_TYPES.contains(&ct) {
+            return tool_error(&format!(
+                "Invalid cell_type: \"{ct}\". Must be one of: {}",
+                VALID_CELL_TYPES.join(", ")
+            ));
+        }
         handle
             .set_cell_type(cell_id, ct)
             .map_err(|e| McpError::internal_error(format!("Failed to set cell type: {e}"), None))?;
@@ -255,6 +271,20 @@ pub async fn move_cell(
     let handle = require_handle!(server);
 
     let after_cell_id = arg_str(request, "after_cell_id");
+
+    // Validate the cell being moved exists
+    if handle.get_cell(cell_id).is_none() {
+        return tool_error(&format!("Cell not found: {cell_id}"));
+    }
+
+    // Validate the anchor cell exists (if specified)
+    if let Some(anchor) = after_cell_id {
+        if handle.get_cell(anchor).is_none() {
+            return tool_error(&format!(
+                "Anchor cell not found: {anchor}. Pass null/omit after_cell_id to move to the start."
+            ));
+        }
+    }
 
     handle
         .move_cell(cell_id, after_cell_id)
