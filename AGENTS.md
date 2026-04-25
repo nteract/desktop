@@ -44,6 +44,16 @@ echo $RUNTIMED_WORKSPACE_PATH   # Should print the repo path
 which runt                      # Should be repo/bin/runt (not /usr/local/bin/runt)
 ```
 
+### lld linker (macOS arm64)
+
+`.cargo/config.toml` links macOS arm64 builds through LLVM's `lld`. Install it once:
+
+```bash
+brew install lld
+```
+
+Without it, `cargo build` on arm64 Macs fails at link time. The rustflag is scoped to `aarch64-apple-darwin`; Intel and Linux use their platform defaults.
+
 ### MCP Server Configuration
 
 **Three MCP servers** should be configured:
