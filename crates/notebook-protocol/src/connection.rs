@@ -375,9 +375,15 @@ struct FrameSizeLimits {
 ///   Initial sync of a notebook with many cells / lots of accumulated
 ///   ephemeral state can be many MB; outputs are blob-offloaded but
 ///   the doc itself can still be large.
-/// - **NotebookRequest**: 1 MiB. Every variant is small (cell IDs,
-///   metadata snapshots, completion requests). `SendComm` slider
-///   values are bytes, not megabytes. Headroom for SetMetadataSnapshot.
+/// - **NotebookRequest**: 16 MiB. Most variants are tiny (cell IDs,
+///   metadata snapshots, completion requests) — they sit well under the
+///   256 KiB warn so growth on them still surfaces. The cap exists for
+///   one outlier: `SendComm` carries the same comm envelope shape as
+///   `NotebookBroadcast::Comm`, including custom-message buffers from
+///   `model.send(content, callbacks, buffers)`. JSON-encoding `Vec<Vec<u8>>`
+///   inflates binary by ~4×, so a 256 KiB widget buffer becomes ~1 MiB
+///   on the wire. Tightens once `SendComm.buffers` and
+///   `NotebookBroadcast::Comm.buffers` both move through the blob store.
 /// - **NotebookResponse**: 64 MiB. `Response::DocBytes` returns a full
 ///   Automerge doc dump; `Response::NotebookState` carries
 ///   inspect-notebook output. Both can legitimately be large.
@@ -396,7 +402,7 @@ fn frame_size_limits(type_byte: u8) -> FrameSizeLimits {
             warn: 16 * MIB,
         },
         frame_types::REQUEST => FrameSizeLimits {
-            cap: MIB,
+            cap: 16 * MIB,
             warn: 256 * KIB,
         },
         frame_types::RESPONSE => FrameSizeLimits {
@@ -1366,8 +1372,9 @@ mod tests {
 
     #[tokio::test]
     async fn typed_frame_rejects_oversized_request() {
-        // Requests carry small JSON envelopes. A multi-MiB length header
-        // on the Request channel is parser confusion or corruption.
+        // The Request cap rejects payloads that exceed the channel's
+        // legitimate worst case (today: a SendComm envelope with widget
+        // buffers that JSON-expand from binary).
         let cap = frame_size_limits(notebook_doc::frame_types::REQUEST).cap;
         let body_len: u32 = (cap as u32) + 1;
         let total_len: u32 = body_len + 1;
@@ -1377,6 +1384,27 @@ mod tests {
         let mut cursor = std::io::Cursor::new(buf);
         let err = recv_typed_frame(&mut cursor).await.unwrap_err();
         assert!(err.to_string().contains("too large for type 0x01"));
+    }
+
+    #[tokio::test]
+    async fn typed_frame_allows_sendcomm_with_widget_buffers() {
+        // Custom comm messages from `model.send(content, callbacks, buffers)`
+        // ride `NotebookRequest::SendComm`. JSON-encoding `Vec<Vec<u8>>`
+        // expands binary by ~4×, so a 256 KiB widget buffer becomes
+        // ~1 MiB on the wire. The Request cap must accommodate this.
+        // 4 MiB simulates a buffer roughly equivalent to a 1 MiB binary
+        // payload after JSON expansion — a realistic moderate-size
+        // custom widget message.
+        let big_payload = vec![0x42u8; 4 * 1024 * 1024];
+        let mut buf = Vec::new();
+        send_typed_frame(&mut buf, NotebookFrameType::Request, &big_payload)
+            .await
+            .unwrap();
+
+        let mut cursor = std::io::Cursor::new(buf);
+        let frame = recv_typed_frame(&mut cursor).await.unwrap().unwrap();
+        assert_eq!(frame.frame_type, NotebookFrameType::Request);
+        assert_eq!(frame.payload.len(), big_payload.len());
     }
 
     #[tokio::test]
