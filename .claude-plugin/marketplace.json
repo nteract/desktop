@@ -8,13 +8,13 @@
       "name": "nteract",
       "source": "./plugins/nteract",
       "description": "nteract notebooks in Claude Code.",
-      "version": "0.1.2"
+      "version": "0.1.3"
     },
     {
       "name": "nightly",
       "source": "./plugins/nightly",
       "description": "nteract notebooks (nightly channel) in Claude Code.",
-      "version": "0.1.2"
+      "version": "0.1.3"
     }
   ]
 }
