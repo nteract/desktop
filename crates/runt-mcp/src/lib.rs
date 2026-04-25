@@ -44,6 +44,12 @@ pub struct NteractMcp {
     peer_label: Arc<RwLock<String>>,
     /// When true, the `show_notebook` tool is not registered (headless environments).
     no_show: bool,
+    /// Daemon version, if it was reachable during startup. Surfaced to the
+    /// parent proxy via `ServerInfo.server_info.title` so the proxy can
+    /// detect daemon upgrades across child restarts without holding its
+    /// own `DaemonConnection` (which would drag the runtimed-client
+    /// compile graph into `mcp-supervisor`).
+    daemon_version: Option<String>,
 }
 
 impl NteractMcp {
@@ -60,6 +66,7 @@ impl NteractMcp {
             session: Arc::new(RwLock::new(None)),
             peer_label: Arc::new(RwLock::new("Inkwell".to_string())),
             no_show: false,
+            daemon_version: None,
         }
     }
 
@@ -72,6 +79,13 @@ impl NteractMcp {
         let mut server = Self::new(socket_path, blob_base_url, blob_store_path);
         server.no_show = true;
         server
+    }
+
+    /// Set the daemon version to report in `ServerInfo.server_info.title`.
+    /// Called by the `runt mcp` binary after a best-effort daemon query.
+    pub fn with_daemon_version(mut self, version: Option<String>) -> Self {
+        self.daemon_version = version;
+        self
     }
 
     /// Get the peer label for notebook connections.
@@ -100,6 +114,15 @@ impl ServerHandler for NteractMcp {
             serde_json::from_value(serde_json::json!({})).unwrap(),
         );
 
+        // Stamp the daemon version into `server_info.title` so the parent
+        // proxy can detect daemon upgrades across child restarts by diffing
+        // `peer_info()` before vs after. The proxy doesn't need its own
+        // DaemonConnection — the child already has one.
+        let mut impl_info = Implementation::new("nteract", env!("CARGO_PKG_VERSION"));
+        if let Some(ref v) = self.daemon_version {
+            impl_info.title = Some(format!("nteract (daemon {v})"));
+        }
+
         ServerInfo::new(
             ServerCapabilities::builder()
                 .enable_tools()
@@ -107,7 +130,7 @@ impl ServerHandler for NteractMcp {
                 .enable_extensions_with(extensions)
                 .build(),
         )
-        .with_server_info(Implementation::new("nteract", env!("CARGO_PKG_VERSION")))
+        .with_server_info(impl_info)
         .with_instructions(
             "nteract MCP server for Jupyter notebooks. \
              Each connection has one active notebook session. \
