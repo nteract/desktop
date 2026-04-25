@@ -12,10 +12,9 @@
 import { describe, expect, it } from "vite-plus/test";
 import {
   isCommBroadcast,
-  isDisplayUpdateBroadcast,
-  isKernelErrorBroadcast,
-  isOutputBroadcast,
-  isOutputsClearedBroadcast,
+  isEnvProgressBroadcast,
+  isNotebookAutosavedBroadcast,
+  isPathChangedBroadcast,
 } from "../src/broadcast-types";
 
 // All guards share `hasBroadcastEvent` — exercise the invalid-payload
@@ -24,21 +23,20 @@ const INVALID_PAYLOADS: Array<[string, unknown]> = [
   ["null", null],
   ["undefined", undefined],
   ["number", 42],
-  ["string", "output"],
+  ["string", "comm"],
   ["boolean", true],
-  ["array", ["output"]],
+  ["array", ["comm"]],
   ["empty object", {}],
-  ["object missing `event`", { cell_id: "c1", output_type: "stream" }],
+  ["object missing `event`", { msg_type: "comm_msg" }],
   ["event is not a string", { event: 7 }],
-  ["event is an object", { event: { nested: "output" } }],
+  ["event is an object", { event: { nested: "comm" } }],
 ];
 
 const GUARDS = [
-  ["isOutputBroadcast", isOutputBroadcast, "output"],
-  ["isDisplayUpdateBroadcast", isDisplayUpdateBroadcast, "display_update"],
-  ["isOutputsClearedBroadcast", isOutputsClearedBroadcast, "outputs_cleared"],
   ["isCommBroadcast", isCommBroadcast, "comm"],
-  ["isKernelErrorBroadcast", isKernelErrorBroadcast, "kernel_error"],
+  ["isEnvProgressBroadcast", isEnvProgressBroadcast, "env_progress"],
+  ["isPathChangedBroadcast", isPathChangedBroadcast, "path_changed"],
+  ["isNotebookAutosavedBroadcast", isNotebookAutosavedBroadcast, "notebook_autosaved"],
 ] as const;
 
 describe("broadcast type guards", () => {
@@ -59,7 +57,7 @@ describe("broadcast type guards", () => {
     it("rejects payloads with a different event discriminator", () => {
       // The point of having separate guards is that only the matching
       // one fires. A guard that returns true for the wrong event would
-      // cross-wire kernel errors into the output stream (or similar).
+      // cross-wire env progress into the comm stream (or similar).
       const otherEvents = GUARDS.filter(([, , e]) => e !== event).map(([, , e]) => e);
       for (const other of otherEvents) {
         expect(guard({ event: other })).toBe(false);

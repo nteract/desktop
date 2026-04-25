@@ -33,15 +33,13 @@ import {
 
 import {
   type CommBroadcast,
-  type DisplayUpdateBroadcast,
-  type KernelErrorBroadcast,
-  type OutputBroadcast,
-  type OutputsClearedBroadcast,
+  type EnvProgressBroadcast,
+  type NotebookAutosavedBroadcast,
+  type PathChangedBroadcast,
   isCommBroadcast,
-  isDisplayUpdateBroadcast,
-  isKernelErrorBroadcast,
-  isOutputBroadcast,
-  isOutputsClearedBroadcast,
+  isEnvProgressBroadcast,
+  isNotebookAutosavedBroadcast,
+  isPathChangedBroadcast,
 } from "./broadcast-types";
 import { type CellChangeset, mergeChangesets } from "./cell-changeset";
 import {
@@ -300,20 +298,17 @@ export class SyncEngine {
 
   // ── Typed broadcast observables ──────────────────────────────────
 
-  /** Output produced for a cell (includes manifest hash for blob resolution). */
-  readonly outputBroadcasts$: Observable<OutputBroadcast>;
-
-  /** Display data update by display_id. */
-  readonly displayUpdates$: Observable<DisplayUpdateBroadcast>;
-
-  /** Outputs cleared for a cell (from another window/peer). */
-  readonly outputsCleared$: Observable<OutputsClearedBroadcast>;
-
   /** Custom comm messages (buttons, model.send()). */
   readonly commBroadcasts$: Observable<CommBroadcast>;
 
-  /** Detailed kernel error message. */
-  readonly kernelErrors$: Observable<KernelErrorBroadcast>;
+  /** Environment install/solve/download progress. */
+  readonly envProgress$: Observable<EnvProgressBroadcast>;
+
+  /** Notebook room's `.ipynb` path changed (saved untitled, etc.). */
+  readonly pathChanged$: Observable<PathChangedBroadcast>;
+
+  /** Autosave completed — frontends use this to clear the dirty flag. */
+  readonly notebookAutosaved$: Observable<NotebookAutosavedBroadcast>;
 
   /**
    * Comm state projection from RuntimeStateDoc.
@@ -374,11 +369,10 @@ export class SyncEngine {
     this.outputIdChanges$ = this._outputIdChanges$.asObservable();
 
     // Typed broadcast sub-observables (derived from broadcasts$)
-    this.outputBroadcasts$ = this.broadcasts$.pipe(filter(isOutputBroadcast));
-    this.displayUpdates$ = this.broadcasts$.pipe(filter(isDisplayUpdateBroadcast));
-    this.outputsCleared$ = this.broadcasts$.pipe(filter(isOutputsClearedBroadcast));
     this.commBroadcasts$ = this.broadcasts$.pipe(filter(isCommBroadcast));
-    this.kernelErrors$ = this.broadcasts$.pipe(filter(isKernelErrorBroadcast));
+    this.envProgress$ = this.broadcasts$.pipe(filter(isEnvProgressBroadcast));
+    this.pathChanged$ = this.broadcasts$.pipe(filter(isPathChangedBroadcast));
+    this.notebookAutosaved$ = this.broadcasts$.pipe(filter(isNotebookAutosavedBroadcast));
   }
 
   // ── Lifecycle ────────────────────────────────────────────────────
