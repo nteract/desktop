@@ -129,6 +129,24 @@ pub struct QueueEntry {
     pub execution_id: String,
 }
 
+/// Reference to a blob in the daemon's blob store.
+///
+/// Same JSON shape as the inline `ContentRef::Blob` variant used in output
+/// manifests: `{"blob": "<sha256>", "size": <bytes>, "media_type": "..."}`.
+/// Carried over the wire so consumers fetch the bytes from the blob HTTP
+/// server (`GET /blob/{hash}`) instead of receiving them inline.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BlobRef {
+    pub blob: String,
+    pub size: u64,
+    #[serde(default = "default_buffer_media_type")]
+    pub media_type: String,
+}
+
+fn default_buffer_media_type() -> String {
+    "application/octet-stream".to_string()
+}
+
 /// Typed environment kind for sync operations.
 ///
 /// Replaces string-based env_type ("uv", "conda") with a discriminated union
@@ -596,9 +614,11 @@ pub enum NotebookBroadcast {
         msg_type: String,
         /// Message content (comm_id, data, target_name, etc.)
         content: serde_json::Value,
-        /// Binary buffers (base64-encoded when serialized to JSON)
+        /// Binary buffers, offloaded to the blob store. Consumers fetch the
+        /// bytes via the daemon's blob HTTP server. Empty for messages that
+        /// carry no buffers (most non-`comm_msg` types).
         #[serde(default)]
-        buffers: Vec<Vec<u8>>,
+        buffers: Vec<BlobRef>,
     },
 
     /// Environment progress update during kernel launch.

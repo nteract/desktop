@@ -548,4 +548,31 @@ mod tests {
             _ => panic!("unexpected broadcast type"),
         }
     }
+
+    #[test]
+    fn test_notebook_broadcast_comm_with_buffer_refs() {
+        use notebook_protocol::protocol::BlobRef;
+        let broadcast = NotebookBroadcast::Comm {
+            msg_type: "comm_msg".into(),
+            content: serde_json::json!({"comm_id": "abc"}),
+            buffers: vec![BlobRef {
+                blob: "deadbeef".into(),
+                size: 42,
+                media_type: "application/octet-stream".into(),
+            }],
+        };
+        let json = serde_json::to_string(&broadcast).unwrap();
+        assert!(json.contains("deadbeef"));
+        assert!(json.contains("\"size\":42"));
+
+        let parsed: NotebookBroadcast = serde_json::from_str(&json).unwrap();
+        match parsed {
+            NotebookBroadcast::Comm { buffers, .. } => {
+                assert_eq!(buffers.len(), 1);
+                assert_eq!(buffers[0].blob, "deadbeef");
+                assert_eq!(buffers[0].size, 42);
+            }
+            _ => panic!("unexpected broadcast type"),
+        }
+    }
 }

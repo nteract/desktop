@@ -412,16 +412,44 @@ function AppContent() {
 
     // Custom comm messages (buttons, model.send()) are ephemeral events
     // delivered via broadcast, not CRDT state. Route to WidgetStore.
+    //
+    // Buffers ride as `BlobRef[]` ({ blob, size, media_type }). Fetch them
+    // from the daemon's blob HTTP server and hand the resolved
+    // ArrayBuffer[] to the existing widget-store contract. A follow-up
+    // moves the fetch into the iframe sandbox so widget binary stops
+    // materializing in the parent webview at all (matching the output
+    // bytes path).
     const customSub = engine.commBroadcasts$.subscribe((broadcast) => {
       const content = broadcast.content as Record<string, unknown> | undefined;
       const data = content?.data as Record<string, unknown> | undefined;
-      if (data?.method === "custom") {
-        const commId = content?.comm_id as string;
-        const inner = (data?.content as Record<string, unknown>) ?? {};
-        const buffers = (broadcast as { buffers?: number[][] }).buffers;
-        const arrayBuffers = buffers?.map((arr: number[]) => new Uint8Array(arr).buffer);
-        widgetStore.emitCustomMessage(commId, inner, arrayBuffers);
+      if (data?.method !== "custom") return;
+      const commId = content?.comm_id as string;
+      const inner = (data?.content as Record<string, unknown>) ?? {};
+      const refs = (broadcast as { buffers?: { blob: string; size: number }[] }).buffers ?? [];
+      if (refs.length === 0) {
+        widgetStore.emitCustomMessage(commId, inner, undefined);
+        return;
       }
+      const port = getBlobPort();
+      if (port === null) {
+        // Blob port not yet resolved — drop buffers, deliver content only.
+        // This is a rare race on first connect; comms after the first
+        // daemon:ready always have a port.
+        widgetStore.emitCustomMessage(commId, inner, undefined);
+        return;
+      }
+      Promise.all(
+        refs.map((ref) =>
+          fetch(`http://127.0.0.1:${port}/blob/${ref.blob}`).then((r) => r.arrayBuffer()),
+        ),
+      )
+        .then((arrayBuffers) => {
+          widgetStore.emitCustomMessage(commId, inner, arrayBuffers);
+        })
+        .catch((err) => {
+          logger.warn("[comm] failed to fetch widget buffers:", err);
+          widgetStore.emitCustomMessage(commId, inner, undefined);
+        });
     });
 
     return () => {

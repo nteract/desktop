@@ -1751,10 +1751,19 @@ impl KernelConnection for JupyterKernel {
                                     }
 
                                     if method != Some("update") {
+                                        let buffer_refs = if buffers.is_empty() {
+                                            Vec::new()
+                                        } else {
+                                            crate::output_prep::store_buffers_as_refs(
+                                                &buffers,
+                                                &blob_store,
+                                            )
+                                            .await
+                                        };
                                         let _ = broadcast_tx.send(NotebookBroadcast::Comm {
                                             msg_type: message.header.msg_type.clone(),
                                             content: content.clone(),
-                                            buffers: buffers.clone(),
+                                            buffers: buffer_refs,
                                         });
                                     }
                                 }

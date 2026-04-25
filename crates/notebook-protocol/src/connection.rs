@@ -387,10 +387,11 @@ struct FrameSizeLimits {
 /// - **NotebookResponse**: 64 MiB. `Response::DocBytes` returns a full
 ///   Automerge doc dump; `Response::NotebookState` carries
 ///   inspect-notebook output. Both can legitimately be large.
-/// - **NotebookBroadcast**: 16 MiB. `Comm.buffers` carries kernel-sourced
-///   widget buffer bytes and is the only path where kernel-controlled
-///   bytes still ride raw on a non-CRDT frame. Tightens further once
-///   that path moves through the blob store.
+/// - **NotebookBroadcast**: 16 MiB. `Comm.buffers` is now `Vec<BlobRef>`
+///   (kernel-side runtime agent puts buffers in the blob store before
+///   broadcasting). The cap stays loose in this revision pending a
+///   follow-up that drops it to 1 MiB along with the matching tightening
+///   on Request once `SendComm.buffers` is also offloaded.
 /// - **Presence**: 1 MiB. CBOR cursor + selection per peer.
 /// - **PoolStateSync**: 1 MiB. The pool doc is bounded.
 /// - **SessionControl**: 1 MiB. JSON readiness frames are tiny.

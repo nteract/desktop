@@ -13,6 +13,7 @@ use serde::Serialize;
 
 use crate::blob_store::BlobStore;
 use crate::output_store::{self, OutputManifest, DEFAULT_INLINE_THRESHOLD};
+use notebook_protocol::protocol::BlobRef;
 use runtime_doc::RuntimeStateDoc;
 
 /// Store widget buffers in the blob store and replace values in the state
@@ -82,6 +83,40 @@ pub(crate) async fn store_widget_buffers(
     }
 
     (modified, used_paths)
+}
+
+/// Store widget buffers in the blob store and return a parallel list of
+/// `BlobRef` entries, preserving order.
+///
+/// For the broadcast path (`NotebookBroadcast::Comm.buffers`), buffers ride
+/// alongside the message content rather than being embedded in a state dict
+/// at known paths. This helper is the simpler counterpart to
+/// `store_widget_buffers` for that use case.
+///
+/// Buffers that fail to store are skipped (logged at warn). The returned
+/// `Vec` is therefore at most as long as the input — frontends should not
+/// assume length-equality.
+pub(crate) async fn store_buffers_as_refs(
+    buffers: &[Vec<u8>],
+    blob_store: &BlobStore,
+) -> Vec<BlobRef> {
+    let mut refs = Vec::with_capacity(buffers.len());
+    for buf in buffers {
+        match blob_store.put(buf, "application/octet-stream").await {
+            Ok(hash) => refs.push(BlobRef {
+                blob: hash,
+                size: buf.len() as u64,
+                media_type: "application/octet-stream".to_string(),
+            }),
+            Err(e) => {
+                tracing::warn!(
+                    "[kernel-manager] Failed to store comm broadcast buffer: {}",
+                    e
+                );
+            }
+        }
+    }
+    refs
 }
 
 /// Navigate into a JSON value by key (object) or index (array).
