@@ -24,12 +24,6 @@ pub struct GetCellParams {
     /// text — the response can grow large and will consume context budget.
     #[serde(default)]
     pub full_output: Option<bool>,
-    /// Read outputs from a specific execution instead of the cell's current
-    /// pointer. Returned by `execute_cell`, `set_cell(and_run=true)`, and
-    /// `run_all_cells`. Useful when the cell has been re-executed and you
-    /// need outputs from an earlier run.
-    #[serde(default)]
-    pub execution_id: Option<String>,
 }
 
 #[allow(dead_code)]
@@ -64,7 +58,6 @@ pub async fn get_cell(
     let cell_id = arg_str(request, "cell_id")
         .ok_or_else(|| McpError::invalid_params("Missing required parameter: cell_id", None))?;
     let full_output = arg_bool(request, "full_output").unwrap_or(false);
-    let explicit_eid = arg_str(request, "execution_id");
 
     let handle = require_handle!(server);
 
@@ -75,52 +68,20 @@ pub async fn get_cell(
         None => return tool_error(&format!("Cell not found: {cell_id}")),
     };
 
-    // When an explicit execution_id is provided, bypass the cell's current
-    // pointer and read outputs directly from RuntimeStateDoc. This lets
-    // agents read outputs for a specific execution even after the cell has
-    // been re-executed.
-    let (raw_outputs, ec, status, display_eid) = if let Some(eid) = explicit_eid {
-        let state = handle
-            .get_runtime_state()
-            .ok()
-            .and_then(|rs| rs.executions.get(eid).cloned());
-        match state {
-            Some(exec) => {
-                // Safety: verify the execution belongs to this cell
-                if exec.cell_id != cell_id {
-                    return tool_error(&format!(
-                        "Execution {eid} belongs to cell {}, not {cell_id}",
-                        exec.cell_id
-                    ));
-                }
-                let ec_str = exec
-                    .execution_count
-                    .map(|c| c.to_string())
-                    .unwrap_or_default();
-                let status = Some(exec.status.clone());
-                (exec.outputs, ec_str, status, Some(eid.to_string()))
-            }
-            None => {
-                return tool_error(&format!(
-                    "Execution not found: {eid}. It may have been evicted from RuntimeStateDoc."
-                ));
-            }
-        }
-    } else {
-        // Default path: use cell's current execution_id pointer
-        let ec = get_cell_execution_count_from_runtime(&handle, cell_id);
-        let mut raw_outputs = handle.get_cell_outputs(cell_id).unwrap_or_default();
+    // Get execution_count from RuntimeStateDoc (the source of truth)
+    let ec = get_cell_execution_count_from_runtime(&handle, cell_id);
 
-        // If the cell has been executed but outputs haven't synced yet,
-        // force a sync round-trip to process pending RuntimeStateSync frames.
-        if raw_outputs.is_empty() && !ec.is_empty() {
-            let _ = handle.confirm_sync().await;
-            raw_outputs = handle.get_cell_outputs(cell_id).unwrap_or_default();
-        }
+    // Outputs live in RuntimeStateDoc keyed by execution_id. Fetch them
+    // via the dedicated lookup rather than reading a (now-gone) field
+    // on CellSnapshot.
+    let mut raw_outputs = handle.get_cell_outputs(cell_id).unwrap_or_default();
 
-        let status = get_cell_status(&handle, cell_id);
-        (raw_outputs, ec, status, None)
-    };
+    // If the cell has been executed but outputs haven't synced yet,
+    // force a sync round-trip to process pending RuntimeStateSync frames.
+    if raw_outputs.is_empty() && !ec.is_empty() {
+        let _ = handle.confirm_sync().await;
+        raw_outputs = handle.get_cell_outputs(cell_id).unwrap_or_default();
+    }
 
     // Resolve outputs (with widget state synthesis). `get_cell` is the
     // only tool that honors `full_output=true`; all other paths hardcode
@@ -141,6 +102,9 @@ pub async fn get_cell(
     )
     .await;
 
+    // Get execution status from RuntimeState
+    let status = get_cell_status(&handle, cell_id);
+
     let ec_display = if ec.is_empty() {
         None
     } else {
@@ -151,7 +115,7 @@ pub async fn get_cell(
         &cell.cell_type,
         ec_display,
         status.as_deref(),
-        display_eid.as_deref(),
+        None,
     );
 
     // Include tags if present

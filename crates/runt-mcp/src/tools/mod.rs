@@ -207,28 +207,6 @@ pub fn all_tools() -> Vec<Tool> {
                 .idempotent(true)
                 .open_world(false),
         ),
-        Tool::new(
-            "set_cells_source_hidden",
-            "Hide or show cell source.",
-            schema_for::<cell_meta::SetCellsSourceHiddenParams>(),
-        )
-        .annotate(
-            ToolAnnotations::new()
-                .destructive(false)
-                .idempotent(true)
-                .open_world(false),
-        ),
-        Tool::new(
-            "set_cells_outputs_hidden",
-            "Hide or show cell outputs.",
-            schema_for::<cell_meta::SetCellsOutputsHiddenParams>(),
-        )
-        .annotate(
-            ToolAnnotations::new()
-                .destructive(false)
-                .idempotent(true)
-                .open_world(false),
-        ),
         // -- Execution --
         Tool::new(
             "execute_cell",
@@ -357,8 +335,6 @@ pub async fn dispatch(
         // Cell metadata
         "add_cell_tags" => cell_meta::add_cell_tags(server, request).await,
         "remove_cell_tags" => cell_meta::remove_cell_tags(server, request).await,
-        "set_cells_source_hidden" => cell_meta::set_cells_source_hidden(server, request).await,
-        "set_cells_outputs_hidden" => cell_meta::set_cells_outputs_hidden(server, request).await,
         // Execution
         "execute_cell" => execution::execute_cell(server, request).await,
         "run_all_cells" => execution::run_all_cells(server, request).await,
