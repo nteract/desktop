@@ -1,6 +1,6 @@
 [alias]
 xtask = "run --package xtask --"
-runt = "run --package runt-cli --"
+runt = "run --package runt --"
 
 [env]
 TS_RS_EXPORT_DIR = { value = "src/bindings", relative = true }

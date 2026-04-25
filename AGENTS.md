@@ -35,14 +35,23 @@ The `.envrc` file sets:
 - `PATH_add bin` — adds `bin/runt` wrapper to PATH (shadows system `runt`)
 - `export RUNTIMED_DEV=1` — enables per-worktree daemon isolation
 - `export RUNTIMED_WORKSPACE_PATH="$(pwd)"` — pins daemon to this worktree
+- `export RUSTC_WRAPPER=sccache` (if installed) — routes direct cargo through sccache
+- `export CARGO_INCREMENTAL=0` (if sccache installed) — matches xtask so both share cache keys
 
 **Verify it works:**
 ```bash
 cd /path/to/nteract/desktop
 echo $RUNTIMED_DEV              # Should print "1"
 echo $RUNTIMED_WORKSPACE_PATH   # Should print the repo path
+echo $RUSTC_WRAPPER             # Should print "sccache" when sccache is on PATH
 which runt                      # Should be repo/bin/runt (not /usr/local/bin/runt)
 ```
+
+**Install sccache:**
+```bash
+brew install sccache
+```
+Optional but strongly recommended. `cargo xtask` paths already wire sccache in; putting it in `.envrc` makes direct `cargo build` / `cargo check` / `cargo test` share the same cache instead of cold-compiling every crate.
 
 ### lld linker (macOS arm64)
 
