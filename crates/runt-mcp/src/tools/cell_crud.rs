@@ -194,6 +194,16 @@ pub async fn set_cell(
     }
 
     if let Some(src) = source {
+        // Reject empty source — agents accidentally wiping code is a common
+        // silent-corruption pattern. Use delete_cell to intentionally remove
+        // a cell, or omit 'source' to leave it unchanged.
+        if src.is_empty() {
+            return tool_error(
+                "Cell source cannot be empty. \
+                 Use delete_cell to remove the cell, \
+                 or omit 'source' to leave it unchanged.",
+            );
+        }
         handle
             .update_source(cell_id, src)
             .map_err(|e| McpError::internal_error(format!("Failed to update source: {e}"), None))?;
