@@ -13,11 +13,26 @@
 
 // ── Broadcast interfaces ────────────────────────────────────────────
 
+/**
+ * Reference to a binary blob in the daemon's blob store. Mirrors the
+ * Rust `BlobRef` struct in `notebook-protocol`. Consumers fetch the
+ * bytes via `GET http://127.0.0.1:<blob_port>/blob/<hash>`.
+ */
+export interface BlobRef {
+  blob: string;
+  size: number;
+  media_type: string;
+}
+
 export interface CommBroadcast {
   event: "comm";
   msg_type: string;
   content: Record<string, unknown>;
-  buffers: number[][];
+  /**
+   * Widget binary buffers, offloaded to the blob store. Empty for
+   * messages that carry no buffers.
+   */
+  buffers: BlobRef[];
 }
 
 export interface EnvProgressBroadcast {

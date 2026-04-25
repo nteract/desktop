@@ -425,7 +425,7 @@ function AppContent() {
       if (data?.method !== "custom") return;
       const commId = content?.comm_id as string;
       const inner = (data?.content as Record<string, unknown>) ?? {};
-      const refs = (broadcast as { buffers?: { blob: string; size: number }[] }).buffers ?? [];
+      const refs = broadcast.buffers ?? [];
       if (refs.length === 0) {
         widgetStore.emitCustomMessage(commId, inner, undefined);
         return;
