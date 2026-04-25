@@ -6,6 +6,153 @@ pub struct StreamOutputState {
     pub blob_hash: String,
 }
 
+/// Project file the daemon picked for a notebook, identified by location
+/// and kind. The parsed contents live under [`ProjectFileParsed`], carried
+/// in the same [`ProjectContext::Detected`] state so every sync'd client
+/// sees the same snapshot without an IPC round trip.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ProjectFileKind {
+    PyprojectToml,
+    PixiToml,
+    EnvironmentYml,
+}
+
+impl ProjectFileKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::PyprojectToml => "pyproject_toml",
+            Self::PixiToml => "pixi_toml",
+            Self::EnvironmentYml => "environment_yml",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "pyproject_toml" => Some(Self::PyprojectToml),
+            "pixi_toml" => Some(Self::PixiToml),
+            "environment_yml" => Some(Self::EnvironmentYml),
+            _ => None,
+        }
+    }
+}
+
+/// Pointer to a project file on the daemon's disk.
+///
+/// `absolute_path` is the file itself (not its parent). `relative_to_notebook`
+/// is a display-friendly path that clients can render without re-walking
+/// the filesystem - e.g. `"../pyproject.toml"`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProjectFile {
+    pub kind: ProjectFileKind,
+    pub absolute_path: String,
+    pub relative_to_notebook: String,
+}
+
+/// Parsed snapshot the daemon took when it wrote a [`ProjectContext::Detected`]
+/// entry. Clients treat this as a time-stamped view: the file on disk can drift
+/// when the user edits it externally, and there is no round-trip RPC to refresh
+/// it synchronously. The daemon rewrites the snapshot on notebook open and on
+/// whatever future triggers we add (file watch, save-as).
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct ProjectFileParsed {
+    /// Declared dependencies, in the form the source file used
+    /// (e.g. `"pandas>=2.0"`, `"numpy"`, `"pip:requests"`).
+    #[serde(default)]
+    pub dependencies: Vec<String>,
+    /// `requires-python` / Python constraint, when the file carries one.
+    #[serde(default)]
+    pub requires_python: Option<String>,
+    /// uv's `--prerelease` strategy, when configured.
+    #[serde(default)]
+    pub prerelease: Option<String>,
+    /// Kind-specific extras the three formats carry (conda channels,
+    /// environment.yml pip sub-list, pixi PyPI deps, ...).
+    #[serde(default)]
+    pub extras: ProjectFileExtras,
+}
+
+/// Kind-specific parsed fields that do not fit the common shape.
+///
+/// Kept as a tagged enum so each variant only names fields it actually owns,
+/// and adding a future kind (e.g. `conda-lock.yml`) is a closed-enum extension.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(tag = "kind")]
+pub enum ProjectFileExtras {
+    /// pyproject.toml has no kind-specific extras today.
+    #[default]
+    None,
+    /// pixi-specific fields parsed out of `pixi.toml`.
+    Pixi {
+        #[serde(default)]
+        channels: Vec<String>,
+        /// Dependencies under `[pypi-dependencies]`, kept separate from
+        /// conda-style entries under `dependencies`.
+        #[serde(default)]
+        pypi_dependencies: Vec<String>,
+    },
+    /// `environment.yml` carries a pip sub-list that is not a conda dep.
+    EnvironmentYml {
+        #[serde(default)]
+        pip: Vec<String>,
+    },
+}
+
+/// Daemon-observed project context for a notebook. Written by the daemon
+/// on notebook open and on any future refresh triggers we wire up. Clients
+/// read; the frontend in particular reads this in place of walking the
+/// filesystem itself.
+///
+/// Lifetime lines up with the enclosing [`RuntimeStateDoc`]: the field
+/// survives kernel death. It goes stale when the notebook file moves on
+/// disk, which the daemon does not currently re-walk for. The `observed_at`
+/// timestamp lets clients honestly surface "as of T" rather than imply
+/// live truth.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state")]
+pub enum ProjectContext {
+    /// Daemon has not walked yet. Initial state after notebook open and
+    /// the state clients see before the first daemon write arrives via sync.
+    #[default]
+    Pending,
+
+    /// Daemon walked, no project file in any parent directory.
+    NotFound {
+        /// When the daemon last confirmed "nothing here."
+        observed_at: String,
+    },
+
+    /// Daemon walked and found a project file. `parsed` is the snapshot
+    /// taken when this entry was written; `observed_at` is the truth
+    /// timestamp.
+    Detected {
+        project_file: ProjectFile,
+        parsed: ProjectFileParsed,
+        observed_at: String,
+    },
+
+    /// Daemon walked, a file was there, but parsing failed. Distinct
+    /// from `NotFound` so the UI can surface "your pyproject.toml is
+    /// malformed" instead of silently showing nothing.
+    Unreadable {
+        path: String,
+        reason: String,
+        observed_at: String,
+    },
+}
+
+impl ProjectContext {
+    /// Variant name as a static string. Written to the CRDT `state` key
+    /// and consumed by [`parse`](Self::parse) when reading.
+    pub fn variant_str(&self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::NotFound { .. } => "not_found",
+            Self::Detected { .. } => "detected",
+            Self::Unreadable { .. } => "unreadable",
+        }
+    }
+}
+
 /// Observable activity of a running kernel.
 ///
 /// Only meaningful when the runtime lifecycle is [`RuntimeLifecycle::Running`].
@@ -516,5 +663,124 @@ mod tests {
             resolve_lifecycle("Running", "Idle", "idle", ""),
             RuntimeLifecycle::Running(KernelActivity::Idle)
         );
+    }
+
+    // ── ProjectFileKind ─────────────────────────────────────────────
+
+    #[test]
+    fn project_file_kind_as_str_round_trips_through_parse() {
+        let kinds = [
+            ProjectFileKind::PyprojectToml,
+            ProjectFileKind::PixiToml,
+            ProjectFileKind::EnvironmentYml,
+        ];
+        for k in kinds {
+            assert_eq!(ProjectFileKind::parse(k.as_str()), Some(k));
+        }
+    }
+
+    #[test]
+    fn project_file_kind_rejects_unknown_strings() {
+        assert_eq!(ProjectFileKind::parse(""), None);
+        assert_eq!(ProjectFileKind::parse("PyprojectToml"), None); // case sensitive
+        assert_eq!(ProjectFileKind::parse("bogus"), None);
+    }
+
+    // ── ProjectContext default / variant_str ────────────────────────
+
+    #[test]
+    fn project_context_default_is_pending() {
+        assert_eq!(ProjectContext::default(), ProjectContext::Pending);
+    }
+
+    #[test]
+    fn project_context_variant_str() {
+        assert_eq!(ProjectContext::Pending.variant_str(), "pending");
+        assert_eq!(
+            ProjectContext::NotFound {
+                observed_at: "t".into(),
+            }
+            .variant_str(),
+            "not_found"
+        );
+        assert_eq!(
+            ProjectContext::Detected {
+                project_file: ProjectFile {
+                    kind: ProjectFileKind::PyprojectToml,
+                    absolute_path: "/abs/pyproject.toml".into(),
+                    relative_to_notebook: "../pyproject.toml".into(),
+                },
+                parsed: ProjectFileParsed::default(),
+                observed_at: "t".into(),
+            }
+            .variant_str(),
+            "detected"
+        );
+        assert_eq!(
+            ProjectContext::Unreadable {
+                path: "/abs/pyproject.toml".into(),
+                reason: "parse error".into(),
+                observed_at: "t".into(),
+            }
+            .variant_str(),
+            "unreadable"
+        );
+    }
+
+    // ── ProjectContext serde round-trip ─────────────────────────────
+
+    #[test]
+    fn project_context_serde_tagged_round_trip() -> Result<(), serde_json::Error> {
+        let detected = ProjectContext::Detected {
+            project_file: ProjectFile {
+                kind: ProjectFileKind::PyprojectToml,
+                absolute_path: "/abs/pyproject.toml".into(),
+                relative_to_notebook: "../pyproject.toml".into(),
+            },
+            parsed: ProjectFileParsed {
+                dependencies: vec!["pandas>=2.0".into(), "numpy".into()],
+                requires_python: Some(">=3.10".into()),
+                prerelease: None,
+                extras: ProjectFileExtras::None,
+            },
+            observed_at: "2026-04-25T12:00:00Z".into(),
+        };
+        let json = serde_json::to_string(&detected)?;
+        assert!(json.contains(r#""state":"Detected""#));
+        let back: ProjectContext = serde_json::from_str(&json)?;
+        assert_eq!(back, detected);
+
+        let not_found = ProjectContext::NotFound {
+            observed_at: "2026-04-25T12:00:00Z".into(),
+        };
+        let json = serde_json::to_string(&not_found)?;
+        assert!(json.contains(r#""state":"NotFound""#));
+        let back: ProjectContext = serde_json::from_str(&json)?;
+        assert_eq!(back, not_found);
+
+        let pending = ProjectContext::Pending;
+        let json = serde_json::to_string(&pending)?;
+        assert_eq!(json, r#"{"state":"Pending"}"#);
+        let back: ProjectContext = serde_json::from_str(&json)?;
+        assert_eq!(back, pending);
+
+        Ok(())
+    }
+
+    #[test]
+    fn project_file_extras_pixi_round_trip() -> Result<(), serde_json::Error> {
+        let extras = ProjectFileExtras::Pixi {
+            channels: vec!["conda-forge".into()],
+            pypi_dependencies: vec!["requests".into()],
+        };
+        let json = serde_json::to_string(&extras)?;
+        let back: ProjectFileExtras = serde_json::from_str(&json)?;
+        assert_eq!(back, extras);
+        Ok(())
+    }
+
+    #[test]
+    fn project_file_extras_default_is_none_variant() {
+        assert_eq!(ProjectFileExtras::default(), ProjectFileExtras::None);
     }
 }
