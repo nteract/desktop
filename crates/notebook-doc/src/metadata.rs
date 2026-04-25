@@ -229,46 +229,45 @@ impl NotebookMetadataSnapshot {
     ///
     /// Extracts `kernelspec`, `language_info`, and `runt` (with fallback to
     /// legacy `uv`/`conda` top-level keys).
+    /// Build a snapshot from raw notebook metadata JSON (from an `.ipynb`).
+    ///
+    /// Uses `serde_json::from_value::<Self>` so all three snapshot levels
+    /// (top, kernelspec, language_info) populate their `extras` bags in
+    /// one pass. `#[serde(default)]` on `runt` means vanilla Jupyter
+    /// notebooks (no `metadata.runt` key) deserialize cleanly.
+    ///
+    /// After the serde pass, runs one legacy fallback: if `runt.uv` or
+    /// `runt.conda` is unset but a top-level `uv` or `conda` exists (old
+    /// pre-`runt.*` notebooks), fold them into `runt` and remove from
+    /// extras so save doesn't emit them at both depths.
+    ///
+    /// Malformed input (serde_json::from_value fails for any reason)
+    /// produces a default snapshot. Today's per-field tolerance is
+    /// sacrificed for a cleaner single-call shape; malformed notebooks
+    /// are rare enough that silent partial success hides more bugs than
+    /// it saves data.
     pub fn from_metadata_value(metadata: &serde_json::Value) -> Self {
-        let kernelspec = metadata
-            .get("kernelspec")
-            .and_then(|v| serde_json::from_value::<KernelspecSnapshot>(v.clone()).ok());
+        let mut snapshot: NotebookMetadataSnapshot =
+            serde_json::from_value(metadata.clone()).unwrap_or_default();
 
-        let language_info = metadata
-            .get("language_info")
-            .and_then(|v| serde_json::from_value::<LanguageInfoSnapshot>(v.clone()).ok());
-
-        let runt = metadata
-            .get("runt")
-            .and_then(|v| serde_json::from_value::<RuntMetadata>(v.clone()).ok())
-            .unwrap_or_else(|| {
-                // Fallback: try legacy top-level uv/conda keys
-                let uv = metadata
-                    .get("uv")
-                    .and_then(|v| serde_json::from_value::<UvInlineMetadata>(v.clone()).ok());
-                let conda = metadata
-                    .get("conda")
-                    .and_then(|v| serde_json::from_value::<CondaInlineMetadata>(v.clone()).ok());
-
-                RuntMetadata {
-                    schema_version: "1".to_string(),
-                    env_id: None,
-                    uv,
-                    conda,
-                    pixi: None,
-                    deno: None,
-                    trust_signature: None,
-                    trust_timestamp: None,
-                    extra: std::collections::BTreeMap::new(),
-                }
-            });
-
-        NotebookMetadataSnapshot {
-            kernelspec,
-            language_info,
-            runt,
-            extras: std::collections::BTreeMap::new(),
+        // Legacy fallback: older notebooks stored uv/conda at the top
+        // level (not inside runt). Fold them into runt.* if typed runt
+        // didn't already carry them. Always strip from extras so save
+        // doesn't emit them at both depths.
+        let legacy_uv = snapshot.extras.remove("uv");
+        let legacy_conda = snapshot.extras.remove("conda");
+        if snapshot.runt.uv.is_none() {
+            if let Some(raw_uv) = legacy_uv {
+                snapshot.runt.uv = serde_json::from_value(raw_uv).ok();
+            }
         }
+        if snapshot.runt.conda.is_none() {
+            if let Some(raw_conda) = legacy_conda {
+                snapshot.runt.conda = serde_json::from_value(raw_conda).ok();
+            }
+        }
+
+        snapshot
     }
 
     /// Merge this snapshot into a mutable JSON object representing the full
@@ -1801,5 +1800,132 @@ mod nested_extras_tests {
         assert_eq!(out["codemirror_mode"], v["codemirror_mode"]);
         assert_eq!(out["mimetype"], v["mimetype"]);
         assert_eq!(out["pygments_lexer"], v["pygments_lexer"]);
+    }
+}
+
+#[cfg(test)]
+mod from_metadata_value_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn vanilla_jupyter_notebook_deserializes() {
+        let v = json!({
+            "kernelspec": {
+                "name": "python3",
+                "display_name": "Python 3 (ipykernel)",
+                "language": "python",
+            },
+            "language_info": {
+                "name": "python",
+                "version": "3.11.5",
+            },
+        });
+        let snap = NotebookMetadataSnapshot::from_metadata_value(&v);
+        assert!(snap.kernelspec.is_some());
+        assert!(snap.language_info.is_some());
+        assert!(snap.runt.is_empty());
+        assert!(snap.extras.is_empty());
+    }
+
+    #[test]
+    fn unknown_top_level_keys_become_extras() {
+        let v = json!({
+            "kernelspec": {"name": "python3", "display_name": "Python 3"},
+            "jupytext": {"paired_paths": [["x.py", "py:percent"]]},
+            "colab": {"kernel": {"name": "python3"}},
+        });
+        let snap = NotebookMetadataSnapshot::from_metadata_value(&v);
+        assert!(snap.extras.contains_key("jupytext"));
+        assert!(snap.extras.contains_key("colab"));
+        assert!(!snap.extras.contains_key("kernelspec"));
+    }
+
+    #[test]
+    fn legacy_top_level_uv_is_absorbed_into_runt() {
+        let v = json!({
+            "uv": {"dependencies": ["pandas"]},
+        });
+        let snap = NotebookMetadataSnapshot::from_metadata_value(&v);
+        assert!(snap.runt.uv.is_some());
+        assert_eq!(snap.runt.uv.as_ref().unwrap().dependencies, vec!["pandas"]);
+        assert!(
+            !snap.extras.contains_key("uv"),
+            "legacy uv must be folded into runt, not left in extras"
+        );
+    }
+
+    #[test]
+    fn legacy_top_level_conda_is_absorbed_into_runt() {
+        let v = json!({
+            "conda": {
+                "dependencies": ["numpy"],
+                "channels": ["conda-forge"],
+            },
+        });
+        let snap = NotebookMetadataSnapshot::from_metadata_value(&v);
+        assert!(snap.runt.conda.is_some());
+        assert_eq!(
+            snap.runt.conda.as_ref().unwrap().dependencies,
+            vec!["numpy"]
+        );
+        assert!(!snap.extras.contains_key("conda"));
+    }
+
+    #[test]
+    fn runt_wins_when_both_typed_and_legacy_present() {
+        let v = json!({
+            "runt": {
+                "schema_version": "1",
+                "uv": {"dependencies": ["fresh"]},
+            },
+            "uv": {"dependencies": ["stale"]},
+        });
+        let snap = NotebookMetadataSnapshot::from_metadata_value(&v);
+        assert_eq!(
+            snap.runt.uv.as_ref().unwrap().dependencies,
+            vec!["fresh"],
+            "runt.uv must win over legacy top-level uv"
+        );
+        assert!(!snap.extras.contains_key("uv"));
+    }
+
+    #[test]
+    fn full_round_trip_preserves_all_levels() {
+        let v = json!({
+            "kernelspec": {
+                "name": "python3",
+                "display_name": "Python 3",
+                "language": "python",
+                "env": {"A": "1"},
+            },
+            "language_info": {
+                "name": "python",
+                "version": "3.11.5",
+                "codemirror_mode": {"name": "ipython", "version": 3},
+                "file_extension": ".py",
+            },
+            "runt": {
+                "schema_version": "1",
+                "uv": {"dependencies": ["pandas"]},
+            },
+            "jupytext": {"paired_paths": [["x.py", "py:percent"]]},
+            "vscode": {"extension": {"id": "ms-python.python"}},
+        });
+        let snap = NotebookMetadataSnapshot::from_metadata_value(&v);
+        let out = serde_json::to_value(&snap).unwrap();
+
+        assert_eq!(out["kernelspec"]["env"], v["kernelspec"]["env"]);
+        assert_eq!(
+            out["language_info"]["codemirror_mode"],
+            v["language_info"]["codemirror_mode"]
+        );
+        assert_eq!(
+            out["language_info"]["file_extension"],
+            v["language_info"]["file_extension"]
+        );
+        assert_eq!(out["runt"]["uv"], v["runt"]["uv"]);
+        assert_eq!(out["jupytext"], v["jupytext"]);
+        assert_eq!(out["vscode"], v["vscode"]);
     }
 }
