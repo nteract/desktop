@@ -1,9 +1,10 @@
-//! Execution tools: execute_cell, run_all_cells.
+//! Execution tools: execute_cell, run_all_cells, get_results.
 
 use std::time::Duration;
 
 use rmcp::model::{CallToolRequestParams, CallToolResult};
 use rmcp::ErrorData as McpError;
+use runtimed_client::output_resolver;
 use schemars::JsonSchema;
 use serde::Deserialize;
 
@@ -33,6 +34,18 @@ pub struct RunAllCellsParams {
     /// If false, queue cells and return immediately.
     #[serde(default)]
     pub wait: Option<bool>,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct GetResultsParams {
+    /// The execution ID returned by `execute_cell`, `set_cell(and_run=true)`,
+    /// `create_cell(and_run=true)`, or `run_all_cells`.
+    pub execution_id: String,
+    /// Return unabridged output text (like `get_cell(full_output=true)`).
+    /// Default: false (preview mode to protect context budget).
+    #[serde(default)]
+    pub full_output: Option<bool>,
 }
 
 /// Execute a cell and return results (with structured content for MCP Apps).
@@ -275,5 +288,132 @@ pub async fn run_all_cells(
         call_result.structured_content = Some(wrapper);
     }
 
+    Ok(call_result)
+}
+
+/// Get outputs for a specific execution by ID.
+///
+/// Standalone read-only tool — no cell_id needed. Looks up the execution
+/// in RuntimeStateDoc, renders status prominently so agents know whether
+/// outputs are partial (still running) or complete.
+pub async fn get_results(
+    server: &NteractMcp,
+    request: &CallToolRequestParams,
+) -> Result<CallToolResult, McpError> {
+    let execution_id = arg_str(request, "execution_id").ok_or_else(|| {
+        McpError::invalid_params("Missing required parameter: execution_id", None)
+    })?;
+    let full_output = arg_bool(request, "full_output").unwrap_or(false);
+
+    let handle = require_handle!(server);
+
+    let runtime_state = handle.get_runtime_state().map_err(|_| {
+        McpError::internal_error("Failed to read RuntimeStateDoc".to_string(), None)
+    })?;
+
+    let exec = match runtime_state.executions.get(execution_id) {
+        Some(e) => e,
+        None => {
+            return tool_error(&format!(
+                "Execution not found: {execution_id}. \
+                 It may have been evicted when the notebook room closed."
+            ));
+        }
+    };
+
+    // Determine display status with clear indication of completeness
+    let (display_status, is_terminal) = match exec.status.as_str() {
+        "done" => ("done", true),
+        "error" if exec.execution_count.is_none() => ("cancelled", true),
+        "error" => ("error", true),
+        "running" => ("running (partial — outputs may be incomplete)", false),
+        "queued" => ("queued (no outputs yet)", false),
+        other => (other, false),
+    };
+
+    let ec_str = exec.execution_count.map(|c| c.to_string());
+
+    // Build header with execution state front and center
+    let header = formatting::format_cell_header(
+        &exec.cell_id,
+        "code",
+        ec_str.as_deref(),
+        Some(display_status),
+        Some(execution_id),
+    );
+
+    // Resolve outputs from the execution's manifests
+    let comms = Some(&runtime_state.comms);
+    let outputs = if !exec.outputs.is_empty() {
+        output_resolver::resolve_cell_outputs_for_llm(
+            &exec.outputs,
+            output_resolver::ResolveCtx {
+                blob_base_url: server.blob_base_url.as_deref(),
+                blob_store_path: server.blob_store_path.as_deref(),
+                comms,
+                length: if full_output {
+                    output_resolver::OutputLength::Full
+                } else {
+                    output_resolver::OutputLength::Preview
+                },
+            },
+        )
+        .await
+    } else {
+        Vec::new()
+    };
+
+    let mut items = vec![rmcp::model::Content::text(header)];
+
+    if !is_terminal && outputs.is_empty() {
+        // No outputs yet — make it crystal clear
+        items.push(rmcp::model::Content::text(format!(
+            "Status: {display_status}. No outputs available yet."
+        )));
+    } else if !is_terminal {
+        items.push(rmcp::model::Content::text(format!(
+            "⚠ Status: {display_status}. Outputs below may be incomplete."
+        )));
+        items.extend(formatting::outputs_to_content_items(&outputs));
+    } else {
+        items.extend(formatting::outputs_to_content_items(&outputs));
+    }
+
+    // Build structured content from the execution's output manifests
+    let cell = handle.get_cell(&exec.cell_id);
+    let mut structured_content = if let Some(snap) = cell {
+        if exec.outputs.is_empty() {
+            None
+        } else {
+            let wrapped = crate::structured::cell_structured_content_from_manifests(
+                &snap.id,
+                &snap.cell_type,
+                &snap.source,
+                &exec.outputs,
+                exec.execution_count,
+                display_status,
+                &server.blob_base_url,
+            );
+            wrapped.get("cell").cloned().map(|mut cell_data| {
+                if let Some(obj) = cell_data.as_object_mut() {
+                    obj.insert(
+                        "execution_id".to_string(),
+                        serde_json::Value::String(execution_id.to_string()),
+                    );
+                }
+                // Wrap as top-level with blob_base_url
+                let mut top = serde_json::json!({ "cell": cell_data });
+                if let Some(base) = &server.blob_base_url {
+                    top["blob_base_url"] = serde_json::Value::String(base.clone());
+                }
+                top
+            })
+        }
+    } else {
+        None
+    };
+
+    let mut call_result = rmcp::model::CallToolResult::success(items);
+    call_result.structured_content = structured_content.take();
     Ok(call_result)
 }

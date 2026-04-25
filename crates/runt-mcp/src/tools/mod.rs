@@ -244,6 +244,15 @@ pub fn all_tools() -> Vec<Tool> {
         )
         .annotate(ToolAnnotations::new().destructive(true).open_world(true))
         .with_meta(app_tool_meta()),
+        Tool::new(
+            "get_results",
+            "Get outputs for an execution by ID. Returns status (done/error/running/queued) \
+             so you know if outputs are complete. Use the execution_id from execute_cell, \
+             set_cell(and_run), or run_all_cells.",
+            schema_for::<execution::GetResultsParams>(),
+        )
+        .annotate(ToolAnnotations::new().read_only(true).open_world(false))
+        .with_meta(app_tool_meta()),
         // -- Kernel --
         Tool::new(
             "interrupt_kernel",
@@ -353,6 +362,7 @@ pub async fn dispatch(
         // Execution
         "execute_cell" => execution::execute_cell(server, request).await,
         "run_all_cells" => execution::run_all_cells(server, request).await,
+        "get_results" => execution::get_results(server, request).await,
         // Kernel
         "interrupt_kernel" => kernel::interrupt_kernel(server, request).await,
         "restart_kernel" => kernel::restart_kernel(server, request).await,
