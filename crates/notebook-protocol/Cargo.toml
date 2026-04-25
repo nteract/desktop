@@ -1,6 +1,6 @@
 [package]
 name = "notebook-protocol"
-version = "0.2.2"
+version = "0.2.3"
 edition.workspace = true
 description = "Shared wire protocol types for notebook sync (client and server)"
 repository.workspace = true
