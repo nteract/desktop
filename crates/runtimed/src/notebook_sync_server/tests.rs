@@ -490,6 +490,7 @@ fn snapshot_with_uv(deps: Vec<String>) -> NotebookMetadataSnapshot {
             trust_timestamp: None,
             extra: std::collections::BTreeMap::new(),
         },
+        extras: std::collections::BTreeMap::new(),
     }
 }
 
@@ -513,6 +514,7 @@ fn snapshot_with_conda(deps: Vec<String>) -> NotebookMetadataSnapshot {
             trust_timestamp: None,
             extra: std::collections::BTreeMap::new(),
         },
+        extras: std::collections::BTreeMap::new(),
     }
 }
 
@@ -532,6 +534,7 @@ fn snapshot_empty() -> NotebookMetadataSnapshot {
             trust_timestamp: None,
             extra: std::collections::BTreeMap::new(),
         },
+        extras: std::collections::BTreeMap::new(),
     }
 }
 
@@ -593,6 +596,7 @@ fn test_check_inline_deps_uv_priority() {
             trust_timestamp: None,
             extra: std::collections::BTreeMap::new(),
         },
+        extras: std::collections::BTreeMap::new(),
     };
     use notebook_protocol::connection::{EnvSource, PackageManager};
     assert_eq!(
@@ -627,6 +631,7 @@ fn test_check_inline_deps_deno() {
             trust_timestamp: None,
             extra: std::collections::BTreeMap::new(),
         },
+        extras: std::collections::BTreeMap::new(),
     };
     use notebook_protocol::connection::EnvSource;
     assert_eq!(check_inline_deps(&snapshot), Some(EnvSource::Deno));
@@ -741,10 +746,20 @@ async fn test_save_notebook_to_disk_preserves_unknown_metadata() {
         .unwrap();
     }
 
-    // Add a cell and save
+    // Load from disk first (populates doc with extras + runt). Then
+    // edit + save. The doc is the source of truth for metadata; the
+    // save path no longer reads the on-disk file to rescue unknown
+    // keys, so they must be in the doc.
     {
         let mut doc = room.doc.write().await;
-        doc.add_cell(0, "cell1", "code").unwrap();
+        crate::notebook_sync_server::load_notebook_from_disk(
+            &mut doc,
+            &notebook_path,
+            &room.blob_store,
+        )
+        .await
+        .unwrap();
+        doc.add_cell(1, "cell1", "code").unwrap();
         doc.update_source("cell1", "x = 1").unwrap();
     }
 
@@ -755,7 +770,7 @@ async fn test_save_notebook_to_disk_preserves_unknown_metadata() {
     let saved: serde_json::Value = serde_json::from_str(&content).unwrap();
     let metadata = saved.get("metadata").unwrap();
 
-    // custom_extension should be preserved
+    // custom_extension should be preserved (via top-level extras)
     assert!(
         metadata.get("custom_extension").is_some(),
         "custom_extension should be preserved"
@@ -765,18 +780,19 @@ async fn test_save_notebook_to_disk_preserves_unknown_metadata() {
         Some(&serde_json::json!("value"))
     );
 
-    // jupyter should be preserved
+    // jupyter should be preserved (via top-level extras)
     assert!(
         metadata.get("jupyter").is_some(),
         "jupyter metadata should be preserved"
     );
 
-    // trust_signature in runt should be preserved (deep-merge)
+    // trust_signature in runt should be preserved (the typed runt
+    // field round-trips trust_signature explicitly).
     let runt = metadata.get("runt").unwrap();
     assert_eq!(
         runt.get("trust_signature"),
         Some(&serde_json::json!("abc123")),
-        "trust_signature should be preserved via deep-merge"
+        "trust_signature should be preserved"
     );
 }
 
@@ -3396,8 +3412,16 @@ async fn test_check_and_update_trust_state_no_deps() {
             .unwrap();
     }
 
-    // Write an empty metadata snapshot (no dependencies).
-    let snapshot = snapshot_empty();
+    // Write a minimal snapshot with a kernelspec so get_metadata_snapshot
+    // returns Some (post-refactor: empty runt alone produces a None
+    // snapshot because no keys get written to the doc).
+    let mut snapshot = snapshot_empty();
+    snapshot.kernelspec = Some(crate::notebook_metadata::KernelspecSnapshot {
+        name: "python3".to_string(),
+        display_name: "Python 3".to_string(),
+        language: Some("python".to_string()),
+        extras: std::collections::BTreeMap::new(),
+    });
     {
         let mut doc = room.doc.write().await;
         doc.set_metadata_snapshot(&snapshot).unwrap();
@@ -3476,8 +3500,16 @@ async fn test_check_and_update_trust_state_idempotent() {
             .unwrap();
     }
 
-    // Write an empty metadata snapshot to trigger Untrusted → NoDependencies.
-    let snapshot = snapshot_empty();
+    // Write a minimal snapshot with a kernelspec so get_metadata_snapshot
+    // returns Some (post-refactor: empty runt alone produces a None
+    // snapshot because no keys get written to the doc).
+    let mut snapshot = snapshot_empty();
+    snapshot.kernelspec = Some(crate::notebook_metadata::KernelspecSnapshot {
+        name: "python3".to_string(),
+        display_name: "Python 3".to_string(),
+        language: Some("python".to_string()),
+        extras: std::collections::BTreeMap::new(),
+    });
     {
         let mut doc = room.doc.write().await;
         doc.set_metadata_snapshot(&snapshot).unwrap();
