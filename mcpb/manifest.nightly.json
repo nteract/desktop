@@ -105,10 +105,6 @@
       "name": "move_cell"
     },
     {
-      "description": "Clear cell outputs.",
-      "name": "clear_outputs"
-    },
-    {
       "description": "Execute a code cell.",
       "name": "execute_cell"
     },

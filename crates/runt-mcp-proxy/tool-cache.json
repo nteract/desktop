@@ -428,32 +428,6 @@
     "name": "move_cell"
   },
   {
-    "annotations": {
-      "destructiveHint": true,
-      "idempotentHint": true,
-      "openWorldHint": false
-    },
-    "description": "Clear cell outputs.",
-    "inputSchema": {
-      "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "properties": {
-        "cell_ids": {
-          "description": "Cell IDs to clear outputs for. If omitted or empty, clears outputs for ALL cells (destructive).",
-          "items": {
-            "type": "string"
-          },
-          "type": [
-            "array",
-            "null"
-          ]
-        }
-      },
-      "title": "ClearOutputsParams",
-      "type": "object"
-    },
-    "name": "clear_outputs"
-  },
-  {
     "_meta": {
       "ui": {
         "resourceUri": "ui://nteract/output.html"

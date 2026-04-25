@@ -173,17 +173,6 @@ pub fn all_tools() -> Vec<Tool> {
                 .idempotent(true)
                 .open_world(false),
         ),
-        Tool::new(
-            "clear_outputs",
-            "Clear cell outputs.",
-            schema_for::<cell_crud::ClearOutputsParams>(),
-        )
-        .annotate(
-            ToolAnnotations::new()
-                .destructive(true)
-                .idempotent(true)
-                .open_world(false),
-        ),
         // -- Execution --
         Tool::new(
             "execute_cell",
@@ -302,8 +291,8 @@ pub async fn dispatch(
         "set_cell" => cell_crud::set_cell(server, request).await,
         "delete_cell" => cell_crud::delete_cell(server, request).await,
         "move_cell" => cell_crud::move_cell(server, request).await,
-        "clear_outputs" => cell_crud::clear_outputs(server, request).await,
         // Hidden from tool listing but still callable for backwards compat
+        "clear_outputs" => cell_crud::clear_outputs(server, request).await,
         "add_cell_tags" => cell_meta::add_cell_tags(server, request).await,
         "remove_cell_tags" => cell_meta::remove_cell_tags(server, request).await,
         "set_cells_source_hidden" => cell_meta::set_cells_source_hidden(server, request).await,
