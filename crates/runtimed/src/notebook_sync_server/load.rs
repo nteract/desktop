@@ -3,6 +3,7 @@ use super::*;
 pub(crate) struct ParsedIpynbCells {
     pub cells: Vec<CellSnapshot>,
     pub outputs_by_cell: HashMap<String, Vec<serde_json::Value>>,
+    pub attachments: HashMap<String, serde_json::Value>,
 }
 
 /// Parse cells from a Jupyter notebook JSON object.
@@ -13,9 +14,11 @@ pub(crate) struct ParsedIpynbCells {
 /// The source field can be either a string or an array of strings (lines).
 /// We normalize it to a single string.
 ///
-/// For older notebooks (pre-nbformat 4.5) that don't have cell IDs, we generate
-/// stable fallback IDs based on the cell index. This prevents data loss when
-/// merging changes from externally-generated notebooks.
+/// For older notebooks (pre-nbformat 4.5) without cell IDs we mint a fresh
+/// UUID per cell. The next save writes those UUIDs back, upgrading the file
+/// to nbformat 4.5. Positional `__external_cell_N` IDs were briefly used
+/// here and caused source/cell-type desync when the autosave-write-watch
+/// loop renumbered them by position — see issue and review notes.
 ///
 /// Positions are generated incrementally using fractional indexing.
 pub(crate) fn parse_cells_from_ipynb(json: &serde_json::Value) -> Option<ParsedIpynbCells> {
@@ -23,21 +26,18 @@ pub(crate) fn parse_cells_from_ipynb(json: &serde_json::Value) -> Option<ParsedI
 
     let cells_json = json.get("cells").and_then(|c| c.as_array())?;
 
-    // Generate positions incrementally
     let mut prev_position: Option<FractionalIndex> = None;
     let mut outputs_by_cell: HashMap<String, Vec<serde_json::Value>> = HashMap::new();
+    let mut attachments: HashMap<String, serde_json::Value> = HashMap::new();
 
     let parsed_cells = cells_json
         .iter()
-        .enumerate()
-        .map(|(index, cell)| {
-            // Use existing ID or generate a stable fallback based on index
-            // This handles older notebooks (pre-nbformat 4.5) without cell IDs
+        .map(|cell| {
             let id = cell
                 .get("id")
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string())
-                .unwrap_or_else(|| format!("__external_cell_{}", index));
+                .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
 
             let cell_type = cell
                 .get("cell_type")
@@ -45,7 +45,6 @@ pub(crate) fn parse_cells_from_ipynb(json: &serde_json::Value) -> Option<ParsedI
                 .unwrap_or("code")
                 .to_string();
 
-            // Generate position incrementally (O(1) per cell, not O(n²))
             let position = match &prev_position {
                 None => FractionalIndex::default(),
                 Some(prev) => FractionalIndex::new_after(prev),
@@ -53,7 +52,6 @@ pub(crate) fn parse_cells_from_ipynb(json: &serde_json::Value) -> Option<ParsedI
             let position_str = position.to_string();
             prev_position = Some(position);
 
-            // Source can be a string or array of strings
             let source = match cell.get("source") {
                 Some(serde_json::Value::String(s)) => s.clone(),
                 Some(serde_json::Value::Array(arr)) => arr
@@ -64,15 +62,11 @@ pub(crate) fn parse_cells_from_ipynb(json: &serde_json::Value) -> Option<ParsedI
                 _ => String::new(),
             };
 
-            // Execution count: number or null
             let execution_count = match cell.get("execution_count") {
                 Some(serde_json::Value::Number(n)) => n.to_string(),
                 _ => "null".to_string(),
             };
 
-            // Outputs travel alongside the snapshot, not on it — they're
-            // destined for RuntimeStateDoc, keyed by execution_id, once the
-            // caller mints a synthetic execution for this cell.
             let outputs: Vec<serde_json::Value> = cell
                 .get("outputs")
                 .and_then(|v| v.as_array())
@@ -82,7 +76,12 @@ pub(crate) fn parse_cells_from_ipynb(json: &serde_json::Value) -> Option<ParsedI
                 outputs_by_cell.insert(id.clone(), outputs);
             }
 
-            // Cell metadata (preserves all fields, normalize to object)
+            if let Some(att) = cell.get("attachments") {
+                if att.is_object() {
+                    attachments.insert(id.clone(), att.clone());
+                }
+            }
+
             let metadata = match cell.get("metadata") {
                 Some(v) if v.is_object() => v.clone(),
                 _ => serde_json::json!({}),
@@ -103,37 +102,8 @@ pub(crate) fn parse_cells_from_ipynb(json: &serde_json::Value) -> Option<ParsedI
     Some(ParsedIpynbCells {
         cells: parsed_cells,
         outputs_by_cell,
+        attachments,
     })
-}
-
-/// Parse nbformat attachment payloads from a .ipynb JSON value.
-///
-/// Returns a map of `cell_id -> attachments JSON object` for any cell carrying attachments.
-pub(crate) fn parse_nbformat_attachments_from_ipynb(
-    json: &serde_json::Value,
-) -> HashMap<String, serde_json::Value> {
-    let Some(cells_json) = json.get("cells").and_then(|c| c.as_array()) else {
-        return HashMap::new();
-    };
-
-    cells_json
-        .iter()
-        .enumerate()
-        .filter_map(|(index, cell)| {
-            let id = cell
-                .get("id")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string())
-                .unwrap_or_else(|| format!("__external_cell_{}", index));
-
-            let attachments = cell.get("attachments")?;
-            if attachments.is_object() {
-                Some((id, attachments.clone()))
-            } else {
-                None
-            }
-        })
-        .collect()
 }
 
 /// Parse notebook metadata from a .ipynb JSON value.
@@ -190,8 +160,6 @@ pub(crate) struct ParsedStreamingNotebook {
     pub cells: Vec<StreamingCell>,
     pub metadata: Option<NotebookMetadataSnapshot>,
     pub attachments: NbformatAttachmentMap,
-    /// Original nbformat_minor from the file (0 if absent).
-    pub nbformat_minor: u32,
 }
 type StreamingLoadBatchEntry = (usize, StreamingCell, Vec<serde_json::Value>, ResolvedAssets);
 
@@ -274,13 +242,6 @@ pub(crate) fn parse_notebook_jiter(bytes: &[u8]) -> Result<ParsedStreamingNotebo
         NotebookMetadataSnapshot::from_metadata_value(&serde_meta)
     });
 
-    let nbformat_minor = jobj_get(obj, "nbformat_minor")
-        .and_then(|v| match v {
-            jiter::JsonValue::Int(n) => u32::try_from(*n).ok(),
-            _ => None,
-        })
-        .unwrap_or(0);
-
     let cells_arr = match jobj_get(obj, "cells") {
         Some(jiter::JsonValue::Array(arr)) => arr,
         Some(_) => return Err("'cells' is not an array".to_string()),
@@ -289,7 +250,6 @@ pub(crate) fn parse_notebook_jiter(bytes: &[u8]) -> Result<ParsedStreamingNotebo
                 cells: vec![],
                 metadata,
                 attachments: HashMap::new(),
-                nbformat_minor,
             })
         }
     };
@@ -299,7 +259,7 @@ pub(crate) fn parse_notebook_jiter(bytes: &[u8]) -> Result<ParsedStreamingNotebo
 
     let mut cells = Vec::with_capacity(cells_arr.len());
     let mut attachments = HashMap::new();
-    for (index, cell) in cells_arr.iter().enumerate() {
+    for cell in cells_arr.iter() {
         let cell_obj = match cell {
             jiter::JsonValue::Object(obj) => obj,
             _ => continue,
@@ -310,7 +270,7 @@ pub(crate) fn parse_notebook_jiter(bytes: &[u8]) -> Result<ParsedStreamingNotebo
                 jiter::JsonValue::Str(s) => Some(s.to_string()),
                 _ => None,
             })
-            .unwrap_or_else(|| format!("__external_cell_{}", index));
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
 
         let cell_type = jobj_get(cell_obj, "cell_type")
             .and_then(|v| match v {
@@ -382,7 +342,6 @@ pub(crate) fn parse_notebook_jiter(bytes: &[u8]) -> Result<ParsedStreamingNotebo
         cells,
         metadata,
         attachments,
-        nbformat_minor,
     })
 }
 
@@ -484,9 +443,6 @@ where
         .map_err(|e| format!("Failed to read notebook: {}", e))?;
 
     let parsed = parse_notebook_jiter(&bytes)?;
-    room.persistence
-        .original_nbformat_minor
-        .store(parsed.nbformat_minor, Ordering::Relaxed);
     let cells = parsed.cells;
     let metadata = parsed.metadata;
     let nbformat_attachments = parsed.attachments;
@@ -734,9 +690,9 @@ pub(crate) async fn load_notebook_from_disk_with_state_doc(
     let ParsedIpynbCells {
         cells,
         outputs_by_cell,
+        attachments: nbformat_attachments,
     } = parse_cells_from_ipynb(&json)
         .ok_or_else(|| "Failed to parse cells from notebook".to_string())?;
-    let nbformat_attachments = parse_nbformat_attachments_from_ipynb(&json);
 
     // Populate cells in the doc
     for (i, cell) in cells.iter().enumerate() {

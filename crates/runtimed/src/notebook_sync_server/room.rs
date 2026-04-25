@@ -113,10 +113,6 @@ pub struct RoomPersistence {
     /// Whether a streaming load is in progress for this room.
     /// Prevents two connections from both attempting to load from disk.
     is_loading: AtomicBool,
-    /// Original nbformat_minor from the loaded .ipynb file (0 = unknown/new).
-    /// Used on save to decide whether to emit cell IDs (4.5+ requires them,
-    /// pre-4.5 files should not get synthetic IDs injected).
-    pub original_nbformat_minor: AtomicU32,
 }
 
 /// The debounced `.automerge` persist channels. See `spawn_persist_debouncer`.
@@ -142,7 +138,6 @@ impl RoomPersistence {
             watcher_shutdown_tx: Mutex::new(None),
             nbformat_attachments: RwLock::new(HashMap::new()),
             is_loading: AtomicBool::new(false),
-            original_nbformat_minor: AtomicU32::new(0),
         }
     }
 
@@ -161,7 +156,6 @@ impl RoomPersistence {
             watcher_shutdown_tx: Mutex::new(None),
             nbformat_attachments: RwLock::new(HashMap::new()),
             is_loading: AtomicBool::new(false),
-            original_nbformat_minor: AtomicU32::new(0),
         }
     }
 
