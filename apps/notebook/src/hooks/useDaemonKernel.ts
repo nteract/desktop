@@ -22,7 +22,7 @@ import {
   type RuntimeStatusKey,
   statusKeyToLegacyStatus,
 } from "runtimed";
-import { getBlobPort, refreshBlobPort, resetBlobPort } from "../lib/blob-port";
+import { refreshBlobPort, resetBlobPort } from "../lib/blob-port";
 import { logger } from "../lib/logger";
 import { subscribeBroadcast } from "../lib/notebook-frame-bus";
 import {
@@ -31,17 +31,7 @@ import {
   resetRuntimeState,
   useRuntimeState,
 } from "../lib/runtime-state";
-import type { DaemonBroadcast, JupyterOutput } from "../types";
-import { resolveOutputValue } from "./useManifestResolver";
-
-// ── Output widget manifest resolution ───────────────────────────────
-
-/**
- * Resolve Output widget manifest hashes to JupyterOutput objects.
- *
- * Output widget manifest resolution is now handled in App.tsx via
- * SyncEngine.commChanges$ (the unresolvedOutputs field on ResolvedComm).
- */
+import type { DaemonBroadcast } from "../types";
 
 // ── Hook types ──────────────────────────────────────────────────────
 
@@ -52,8 +42,6 @@ export type { DaemonQueueState } from "runtimed";
 interface UseDaemonKernelOptions {
   /** NotebookClient for sending kernel commands via transport. */
   client: NotebookClient;
-  /** Called when an output is produced for a cell (optional — for OutputWidget capture). */
-  onOutput?: (cellId: string, output: JupyterOutput) => void;
   /** Called when execution count is set for a cell */
   onExecutionCount: (cellId: string, count: number) => void;
   /** Called when execution completes for a cell */
@@ -62,28 +50,14 @@ interface UseDaemonKernelOptions {
   onStatusChange?: (status: KernelStatus, cellId?: string) => void;
   /** Called when queue state changes */
   onQueueChange?: (state: DaemonQueueState) => void;
-  /** Called on kernel error */
-  onKernelError?: (error: string) => void;
-  /** Called when a display_data output should be updated by display_id */
-  onUpdateDisplayData?: (
-    displayId: string,
-    data: Record<string, unknown>,
-    metadata: Record<string, unknown>,
-  ) => void;
-  /** Called when outputs are cleared for a cell (broadcast from another window) */
-  onClearOutputs?: (cellId: string) => void;
 }
 
 export function useDaemonKernel({
   client,
-  onOutput,
   onExecutionCount,
   onExecutionDone,
   onStatusChange,
   onQueueChange,
-  onKernelError,
-  onUpdateDisplayData,
-  onClearOutputs,
 }: UseDaemonKernelOptions) {
   // ── State from RuntimeStateDoc (daemon-authoritative) ─────────────
   const runtimeState = useRuntimeState();
@@ -152,24 +126,16 @@ export function useDaemonKernel({
 
   // ── Callbacks in refs (avoid effect re-runs) ──────────────────────
   const callbacksRef = useRef({
-    onOutput,
     onExecutionCount,
     onExecutionDone,
     onStatusChange,
     onQueueChange,
-    onKernelError,
-    onUpdateDisplayData,
-    onClearOutputs,
   });
   callbacksRef.current = {
-    onOutput,
     onExecutionCount,
     onExecutionDone,
     onStatusChange,
     onQueueChange,
-    onKernelError,
-    onUpdateDisplayData,
-    onClearOutputs,
   };
 
   // ── Fire callbacks when derived state changes ─────────────────────
@@ -239,71 +205,11 @@ export function useDaemonKernel({
       const broadcast = payload as DaemonBroadcast;
 
       switch (broadcast.event) {
-        case "output": {
-          if (!callbacksRef.current.onOutput) break;
-          const cellId = broadcast.cell_id;
-          const outputJson = broadcast.output_json;
-
-          const resolveWithRetry = async (retried = false) => {
-            let port = getBlobPort();
-            if (!port) {
-              port = await refreshBlobPort();
-            }
-            if (!port) {
-              logger.error("[daemon-kernel] Blob port unavailable, cannot resolve output");
-              return;
-            }
-            // Parse the broadcast JSON string into a manifest/output object
-            let parsedOutput: unknown;
-            try {
-              parsedOutput = JSON.parse(outputJson);
-            } catch {
-              logger.warn("[daemon-kernel] Failed to parse output_json from broadcast");
-              return;
-            }
-            const output = await resolveOutputValue(parsedOutput, port);
-            if (cancelled) return;
-            if (output) {
-              callbacksRef.current.onOutput?.(cellId, output);
-            } else if (!retried) {
-              logger.debug("[daemon-kernel] Output resolution failed, refreshing port");
-              resetBlobPort();
-              await resolveWithRetry(true);
-            } else {
-              logger.error("[daemon-kernel] Failed to resolve output for cell:", cellId);
-            }
-          };
-
-          resolveWithRetry().catch((e) => {
-            logger.error("[daemon-kernel] Failed to resolve output:", e);
-          });
-          break;
-        }
-
-        case "display_update": {
-          callbacksRef.current.onUpdateDisplayData?.(
-            broadcast.display_id,
-            broadcast.data,
-            broadcast.metadata,
-          );
-          break;
-        }
-
-        case "outputs_cleared": {
-          callbacksRef.current.onClearOutputs?.(broadcast.cell_id);
-          break;
-        }
-
         // Custom comm messages (buttons, model.send()) are now handled
         // by the SyncEngine.commBroadcasts$ subscriber in App.tsx.
 
         case "env_progress":
           break;
-
-        case "kernel_error": {
-          callbacksRef.current.onKernelError?.(broadcast.error);
-          break;
-        }
 
         default: {
           const event = (broadcast as { event?: string }).event;

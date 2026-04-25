@@ -913,7 +913,7 @@ mod integration_tests {
     use std::path::PathBuf;
     use std::time::Duration;
 
-    use notebook_protocol::protocol::{NotebookBroadcast, NotebookRequest, NotebookResponse};
+    use notebook_protocol::protocol::{NotebookRequest, NotebookResponse};
 
     /// Get the daemon socket path for the current worktree.
     fn daemon_socket_path() -> PathBuf {

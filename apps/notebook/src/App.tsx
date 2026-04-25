@@ -169,9 +169,7 @@ function AppContent() {
     dirty,
     setDirty,
 
-    updateOutputByDisplayId,
     applyExecutionCountFromDaemon,
-    clearOutputsFromDaemon,
     setCellSourceHidden,
     setCellOutputsHidden,
     flushSync,
@@ -329,8 +327,6 @@ function AppContent() {
     client: notebookClient,
     onExecutionCount: handleExecutionCount,
     onExecutionDone: handleExecutionDone,
-    onUpdateDisplayData: updateOutputByDisplayId,
-    onClearOutputs: clearOutputsFromDaemon,
   });
 
   // Derive values from daemon kernel
