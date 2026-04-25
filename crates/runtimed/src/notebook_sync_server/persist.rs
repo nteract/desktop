@@ -385,8 +385,6 @@ pub(crate) async fn finalize_untitled_promotion(room: &Arc<NotebookRoom>, canoni
     );
 }
 
-/// Updates path_index and room.identity.path when a file-backed room is saved to a
-
 /// Resolve a single cell output — handles both manifest hashes and raw JSON.
 async fn resolve_cell_output(
     output: &serde_json::Value,
