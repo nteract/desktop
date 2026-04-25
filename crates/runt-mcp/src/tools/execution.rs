@@ -67,6 +67,17 @@ pub async fn execute_cell(
 
     assert_cell_exists(&handle, cell_id)?;
 
+    // Only code cells can be executed. Markdown/raw cells get queued by the
+    // daemon but the kernel never processes them, so the agent would see
+    // "running" forever with no outputs. Fail early with a clear message.
+    let cell_type = handle.get_cell_type(cell_id).unwrap_or_default();
+    if cell_type != "code" {
+        return tool_error(&format!(
+            "Cannot execute cell '{cell_id}' of type '{cell_type}'. \
+             Only 'code' cells can be executed."
+        ));
+    }
+
     let peer_label = server.get_peer_label().await;
     crate::presence::emit_focus(&handle, cell_id, &peer_label).await;
 
