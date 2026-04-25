@@ -138,6 +138,33 @@ async fn collect_runtime_info(handle: &notebook_sync::handle::DocHandle) -> serd
             }
         }
     }
+
+    // When the kernel is "starting", poll briefly to catch fast error
+    // transitions. The daemon's auto-launch sets Resolving synchronously,
+    // then runs checks (e.g. missing_conda_env_yml_name) that may flip
+    // to Error within milliseconds. Without this, create_notebook returns
+    // kernel_status "starting" and the agent never learns about the error
+    // unless it polls again. 10 × 50ms = 500ms ceiling — long enough for
+    // filesystem-only checks, short enough to not delay legitimate builds.
+    let status = info
+        .get("kernel_status")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    if status == "starting" {
+        for _ in 0..10 {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            let updated = read_runtime_info(handle);
+            let new_status = updated
+                .get("kernel_status")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            if new_status != "starting" {
+                info = updated;
+                break;
+            }
+        }
+    }
+
     info
 }
 
