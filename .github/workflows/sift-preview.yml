@@ -41,7 +41,8 @@ jobs:
         run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
 
       - name: Build sift-wasm
-        run: wasm-pack build crates/sift-wasm --target web --release
+        # Match `cargo xtask wasm sift` so demo panics show real symbols.
+        run: wasm-pack build crates/sift-wasm --target web --profile wasm-release
 
       - uses: voidzero-dev/setup-vp@v1
         with:
