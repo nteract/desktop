@@ -26,17 +26,23 @@ use runtime_doc::RuntimeLifecycle;
 /// 3. Fires `runtime_agent_connected` to unblock LaunchKernel
 /// 4. Enters a sync loop relaying frames bidirectionally
 pub async fn handle_runtime_agent_sync_connection<R, W>(
-    mut reader: R,
+    reader: R,
     mut writer: W,
     room: Arc<NotebookRoom>,
     notebook_id: String,
     runtime_agent_id: String,
 ) where
-    R: tokio::io::AsyncRead + Unpin + Send,
+    R: tokio::io::AsyncRead + Unpin + Send + 'static,
     W: tokio::io::AsyncWrite + Unpin + Send,
 {
-    use notebook_protocol::connection::{recv_typed_frame, send_typed_frame, NotebookFrameType};
+    use notebook_protocol::connection::{send_typed_frame, FramedReader, NotebookFrameType};
     use notebook_protocol::protocol::RuntimeAgentResponse;
+
+    // Frames are received on a dedicated task so the busy `select!`
+    // below stays cancel-safe — `recv_typed_frame`'s internal
+    // `read_exact` calls would otherwise drop bytes mid-read whenever
+    // another arm wins, desyncing the runtime-agent ↔ daemon stream.
+    let mut framed_reader = FramedReader::spawn(reader, 16);
 
     info!(
         "[notebook-sync] Runtime agent sync connection: notebook={} runtime_agent={}",
@@ -139,73 +145,72 @@ pub async fn handle_runtime_agent_sync_connection<R, W>(
 
     loop {
         tokio::select! {
-            // Frames from runtime agent
-            frame = recv_typed_frame(&mut reader) => {
-                match frame {
-                    Ok(Some(typed_frame)) => {
-                        match typed_frame.frame_type {
-                            NotebookFrameType::AutomergeSync => {
-                                if let Ok(msg) = automerge::sync::Message::decode(&typed_frame.payload) {
-                                    let mut doc = room.doc.write().await;
-                                    if doc.receive_sync_message(&mut doc_sync_state, msg).is_ok() {
-                                        let _ = room.broadcasts.changed_tx.send(());
-                                    }
-                                    // Send sync reply
-                                    if let Some(reply) = doc.generate_sync_message(&mut doc_sync_state) {
-                                        let encoded = reply.encode();
-                                        let _ = send_typed_frame(
-                                            &mut writer,
-                                            NotebookFrameType::AutomergeSync,
-                                            &encoded,
-                                        ).await;
-                                    }
-                                }
-                            }
-                            NotebookFrameType::RuntimeStateSync => {
-                                if let Ok(msg) = automerge::sync::Message::decode(&typed_frame.payload) {
-                                    let reply_encoded = room.state.with_doc(|sd| {
-                                        if let Ok(changed) = sd.receive_sync_message_with_changes(
-                                            &mut state_sync_state, msg,
-                                        ) {
-                                            if changed {
-                                                // Notification handled by with_doc heads check
-                                            }
-                                        }
-                                        Ok(sd.generate_sync_message(&mut state_sync_state)
-                                            .map(|reply| reply.encode()))
-                                    }).ok().flatten();
-                                    if let Some(encoded) = reply_encoded {
-                                        let _ = send_typed_frame(
-                                            &mut writer,
-                                            NotebookFrameType::RuntimeStateSync,
-                                            &encoded,
-                                        ).await;
-                                    }
-                                }
-                            }
-                            NotebookFrameType::Response => {
-                                if let Ok(envelope) = serde_json::from_slice::<
-                                    notebook_protocol::protocol::RuntimeAgentResponseEnvelope,
-                                >(&typed_frame.payload) {
-                                    if let Some(reply) = pending_replies.remove(&envelope.id) {
-                                        let _ = reply.send(envelope.response);
-                                    } else {
-                                        debug!("[notebook-sync] Agent response for unknown id: {}", envelope.id);
-                                    }
-                                }
-                            }
-                            _ => {
-                                debug!("[notebook-sync] Agent sent unexpected frame type: {:?}", typed_frame.frame_type);
-                            }
-                        }
+            // Frames from runtime agent (cancel-safe via FramedReader actor)
+            maybe_frame = framed_reader.recv() => {
+                let typed_frame = match maybe_frame {
+                    Some(Ok(frame)) => frame,
+                    Some(Err(e)) => {
+                        info!("[notebook-sync] Agent disconnected: {}", e);
+                        break;
                     }
-                    Ok(None) => {
+                    None => {
                         info!("[notebook-sync] Agent disconnected (EOF)");
                         break;
                     }
-                    Err(e) => {
-                        info!("[notebook-sync] Agent disconnected: {}", e);
-                        break;
+                };
+                match typed_frame.frame_type {
+                    NotebookFrameType::AutomergeSync => {
+                        if let Ok(msg) = automerge::sync::Message::decode(&typed_frame.payload) {
+                            let mut doc = room.doc.write().await;
+                            if doc.receive_sync_message(&mut doc_sync_state, msg).is_ok() {
+                                let _ = room.broadcasts.changed_tx.send(());
+                            }
+                            // Send sync reply
+                            if let Some(reply) = doc.generate_sync_message(&mut doc_sync_state) {
+                                let encoded = reply.encode();
+                                let _ = send_typed_frame(
+                                    &mut writer,
+                                    NotebookFrameType::AutomergeSync,
+                                    &encoded,
+                                ).await;
+                            }
+                        }
+                    }
+                    NotebookFrameType::RuntimeStateSync => {
+                        if let Ok(msg) = automerge::sync::Message::decode(&typed_frame.payload) {
+                            let reply_encoded = room.state.with_doc(|sd| {
+                                if let Ok(changed) = sd.receive_sync_message_with_changes(
+                                    &mut state_sync_state, msg,
+                                ) {
+                                    if changed {
+                                        // Notification handled by with_doc heads check
+                                    }
+                                }
+                                Ok(sd.generate_sync_message(&mut state_sync_state)
+                                    .map(|reply| reply.encode()))
+                            }).ok().flatten();
+                            if let Some(encoded) = reply_encoded {
+                                let _ = send_typed_frame(
+                                    &mut writer,
+                                    NotebookFrameType::RuntimeStateSync,
+                                    &encoded,
+                                ).await;
+                            }
+                        }
+                    }
+                    NotebookFrameType::Response => {
+                        if let Ok(envelope) = serde_json::from_slice::<
+                            notebook_protocol::protocol::RuntimeAgentResponseEnvelope,
+                        >(&typed_frame.payload) {
+                            if let Some(reply) = pending_replies.remove(&envelope.id) {
+                                let _ = reply.send(envelope.response);
+                            } else {
+                                debug!("[notebook-sync] Agent response for unknown id: {}", envelope.id);
+                            }
+                        }
+                    }
+                    _ => {
+                        debug!("[notebook-sync] Agent sent unexpected frame type: {:?}", typed_frame.frame_type);
                     }
                 }
             }
@@ -326,7 +331,7 @@ pub async fn handle_runtime_agent_sync_connection<R, W>(
 /// is already communicated in the NotebookConnectionInfo response.
 #[allow(clippy::too_many_arguments)]
 pub async fn handle_notebook_sync_connection<R, W>(
-    mut reader: R,
+    reader: R,
     mut writer: W,
     room: Arc<NotebookRoom>,
     rooms: NotebookRooms,
@@ -346,7 +351,7 @@ pub async fn handle_notebook_sync_connection<R, W>(
     client_protocol_version: u8,
 ) -> anyhow::Result<()>
 where
-    R: AsyncRead + Unpin,
+    R: AsyncRead + Unpin + Send + 'static,
     W: AsyncWrite + Unpin,
 {
     // Set working_dir on the room if provided (for untitled notebook project detection)
@@ -545,7 +550,7 @@ where
     let peer_id = uuid::Uuid::new_v4().to_string();
 
     let result = run_sync_loop_v2(
-        &mut reader,
+        reader,
         &mut writer,
         &room,
         rooms.clone(),
@@ -1126,9 +1131,13 @@ where
 ///
 /// Handles both Automerge sync messages and NotebookRequest messages.
 /// This protocol supports daemon-owned kernel execution (Phase 8).
+///
+/// Takes `reader` by value because the post-streaming-load main loop
+/// hands it to a `FramedReader` actor; from that point the read half
+/// belongs to the dedicated reader task, not this select loop.
 #[allow(clippy::too_many_arguments)]
 async fn run_sync_loop_v2<R, W>(
-    reader: &mut R,
+    mut reader: R,
     writer: &mut W,
     room: &Arc<NotebookRoom>,
     _rooms: NotebookRooms,
@@ -1139,7 +1148,7 @@ async fn run_sync_loop_v2<R, W>(
     client_protocol_version: u8,
 ) -> anyhow::Result<()>
 where
-    R: AsyncRead + Unpin,
+    R: AsyncRead + Unpin + Send + 'static,
     W: AsyncWrite + Unpin,
 {
     // Subscribe before sending bootstrap traffic so any writes that land
@@ -1234,7 +1243,8 @@ where
     // frontend can observe progressive notebook-doc updates.
     if let Some(load_path) = needs_load {
         if room.try_start_loading() {
-            match streaming_load_cells(reader, writer, room, load_path, &mut peer_state).await {
+            match streaming_load_cells(&mut reader, writer, room, load_path, &mut peer_state).await
+            {
                 Ok(count) => {
                     room.finish_loading();
                     info!(
@@ -1356,14 +1366,24 @@ where
     let mut prune_interval = tokio::time::interval(prune_period);
     prune_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
+    // Hand the reader off to a dedicated FramedReader actor before
+    // entering the busy `select!` below. `recv_typed_frame`'s internal
+    // `read_exact` calls are NOT cancel-safe — putting them directly
+    // in a `select!` arm desyncs the framed stream the moment another
+    // arm wins mid-payload (see issue + production diagnostics).
+    let mut framed_reader = connection::FramedReader::spawn(reader, 16);
+
     // Phase 2: Exchange messages until sync is complete, then watch for changes
     loop {
         tokio::select! {
-            // Incoming message from this client
-            result = connection::recv_typed_frame(reader) => {
-                match result? {
-                    Some(frame) => {
-                        match frame.frame_type {
+            // Incoming message from this client (cancel-safe via FramedReader actor)
+            maybe_frame = framed_reader.recv() => {
+                let frame = match maybe_frame {
+                    Some(Ok(frame)) => frame,
+                    Some(Err(e)) => return Err(e.into()),
+                    None => return Ok(()), // clean EOF
+                };
+                match frame.frame_type {
                             NotebookFrameType::AutomergeSync => {
                                 // Handle Automerge sync message
                                 let message = sync::Message::decode(&frame.payload)
@@ -1762,12 +1782,6 @@ where
                                 );
                             }
                         }
-                    }
-                    None => {
-                        // Client disconnected
-                        return Ok(());
-                    }
-                }
             }
 
             // Another peer changed the document — push update to this client

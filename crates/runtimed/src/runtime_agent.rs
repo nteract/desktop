@@ -35,8 +35,7 @@ use std::sync::Arc;
 
 use notebook_doc::presence::PresenceState;
 use notebook_protocol::connection::{
-    recv_typed_frame, send_json_frame, send_preamble, send_typed_frame, Handshake,
-    NotebookFrameType,
+    send_json_frame, send_preamble, send_typed_frame, FramedReader, Handshake, NotebookFrameType,
 };
 use notebook_protocol::protocol::{RuntimeAgentRequest, RuntimeAgentResponse};
 use runtime_doc::RuntimeStateHandle;
@@ -75,10 +74,17 @@ pub async fn run_runtime_agent(
 
     // -- 1. Connect to daemon socket ----------------------------------------
 
-    let (mut reader, mut writer) =
+    let (reader, mut writer) =
         connect_and_handshake(&socket_path, &notebook_id, &runtime_agent_id, &blob_root).await?;
 
     info!("[runtime-agent] Connected to daemon, handshake sent");
+
+    // Hand the read half to a dedicated FramedReader actor so the busy
+    // `select!` below stays cancel-safe — `recv_typed_frame`'s
+    // `read_exact` calls would otherwise drop bytes mid-read whenever
+    // another arm wins, producing the runtime-agent ↔ daemon desync
+    // captured in production logs as `frame too large: 538976288 bytes`.
+    let mut framed_reader = FramedReader::spawn(reader, 16);
 
     // -- 2. Bootstrap RuntimeStateDoc ---------------------------------------
 
@@ -120,10 +126,10 @@ pub async fn run_runtime_agent(
 
     loop {
         tokio::select! {
-            // Read frames from daemon socket
-            frame = recv_typed_frame(&mut reader) => {
-                match frame {
-                    Ok(Some(typed_frame)) => {
+            // Read frames from daemon socket (cancel-safe via FramedReader actor)
+            maybe_frame = framed_reader.recv() => {
+                match maybe_frame {
+                    Some(Ok(typed_frame)) => {
                         match typed_frame.frame_type {
                             // RuntimeAgentRequest: envelope with correlation ID.
                             // Commands (fire-and-forget) get no response.
@@ -303,11 +309,7 @@ pub async fn run_runtime_agent(
                             }
                         }
                     }
-                    Ok(None) => {
-                        info!("[runtime-agent] Daemon disconnected (EOF)");
-                        break;
-                    }
-                    Err(e) => {
+                    Some(Err(e)) => {
                         // A framing error here means one of two things:
                         //   - the daemon half-closed the sync stream (clean),
                         //     which we treat as a disconnect,
@@ -325,6 +327,9 @@ pub async fn run_runtime_agent(
                              (kernel stays running)",
                             e
                         );
+                        // Drop the old framed reader before reconnecting so
+                        // its background task exits cleanly.
+                        drop(framed_reader);
                         match reconnect_with_backoff(
                             &socket_path,
                             &notebook_id,
@@ -334,7 +339,7 @@ pub async fn run_runtime_agent(
                         .await
                         {
                             Ok((new_reader, new_writer)) => {
-                                reader = new_reader;
+                                framed_reader = FramedReader::spawn(new_reader, 16);
                                 writer = new_writer;
                                 // The daemon creates a fresh sync state for
                                 // each connection; match that or the doc
@@ -355,6 +360,10 @@ pub async fn run_runtime_agent(
                                 break;
                             }
                         }
+                    }
+                    None => {
+                        info!("[runtime-agent] Daemon disconnected (EOF)");
+                        break;
                     }
                 }
             }

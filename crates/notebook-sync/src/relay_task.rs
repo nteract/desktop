@@ -73,10 +73,9 @@ struct PendingEntry {
 /// handles are dropped (command channel closes).
 pub async fn run<R, W>(mut config: RelayTaskConfig, reader: R, writer: W)
 where
-    R: AsyncRead + Unpin,
+    R: AsyncRead + Unpin + Send + 'static,
     W: AsyncWrite + Unpin,
 {
-    let mut reader = tokio::io::BufReader::new(reader);
     let mut writer = tokio::io::BufWriter::new(writer);
 
     let notebook_id = &config.notebook_id;
@@ -84,10 +83,20 @@ where
 
     info!("[relay] Started for {}", notebook_id);
 
+    // Hand the read half to a dedicated FramedReader actor so the busy
+    // `select!` below stays cancel-safe. `recv_typed_frame`'s internal
+    // `read_exact` calls drop bytes when the future is cancelled
+    // mid-read — production logs captured this as
+    // `frame too large: 1818192238 bytes` (mid-payload text from a
+    // streaming kernel output reinterpreted as a length prefix).
+    // BufReader stays for syscall coalescing inside the actor task.
+    let buffered = tokio::io::BufReader::new(reader);
+    let mut framed_reader = connection::FramedReader::spawn(buffered, 16);
+
     loop {
         enum SelectResult {
             Command(Option<RelayCommand>),
-            Frame(std::io::Result<Option<connection::TypedNotebookFrame>>),
+            Frame(Option<std::io::Result<connection::TypedNotebookFrame>>),
         }
 
         let select_result = tokio::select! {
@@ -95,7 +104,7 @@ where
             // Prioritize incoming daemon frames (sync, broadcast, presence,
             // responses) over outgoing commands. Keeping frames flowing
             // prevents head divergence; commands can wait a tick.
-            frame = connection::recv_typed_frame(&mut reader) => SelectResult::Frame(frame),
+            frame = framed_reader.recv() => SelectResult::Frame(frame),
             cmd = config.cmd_rx.recv() => SelectResult::Command(cmd),
         };
 
@@ -154,17 +163,17 @@ where
                 }
             },
 
-            SelectResult::Frame(Ok(Some(frame))) => {
+            SelectResult::Frame(Some(Ok(frame))) => {
                 route_incoming_frame(&frame, &mut pending, &config.frame_tx);
             }
 
-            SelectResult::Frame(Ok(None)) => {
-                info!("[relay] Daemon closed connection for {}", notebook_id);
+            SelectResult::Frame(Some(Err(e))) => {
+                warn!("[relay] Read error for {}: {}", notebook_id, e);
                 break;
             }
 
-            SelectResult::Frame(Err(e)) => {
-                warn!("[relay] Read error for {}: {}", notebook_id, e);
+            SelectResult::Frame(None) => {
+                info!("[relay] Daemon closed connection for {}", notebook_id);
                 break;
             }
         }
