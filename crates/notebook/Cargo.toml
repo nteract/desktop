@@ -12,7 +12,12 @@ workspace = true
 [lib]
 name = "notebook"
 path = "src/lib.rs"
-crate-type = ["lib", "staticlib", "cdylib"]
+# Desktop-only binary. The `notebook` bin is the single entry point;
+# the rlib exists so `main.rs` can call `notebook::run`. If a mobile
+# target (iOS/Android) is ever added, it needs `staticlib`/`cdylib`
+# under a target-cfg, not here. Unconditional mobile crate-types cost
+# a full extra linker pass per edit on every desktop build.
+crate-type = ["lib"]
 
 [[bin]]
 name = "notebook"
