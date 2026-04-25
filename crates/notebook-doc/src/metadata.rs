@@ -651,6 +651,24 @@ impl Default for RuntMetadata {
     }
 }
 
+impl RuntMetadata {
+    /// Returns true when this metadata carries no daemon-relevant state.
+    /// Used by `skip_serializing_if` so vanilla Jupyter notebooks don't
+    /// get a synthetic `runt: { schema_version: "1" }` stamped on first
+    /// save, which would churn git-tracked notebooks.
+    pub fn is_empty(&self) -> bool {
+        self.env_id.is_none()
+            && self.uv.is_none()
+            && self.conda.is_none()
+            && self.pixi.is_none()
+            && self.deno.is_none()
+            && self.trust_signature.is_none()
+            && self.trust_timestamp.is_none()
+            && self.extra.is_empty()
+            && self.schema_version == "1"
+    }
+}
+
 // ── Package name extraction ──────────────────────────────────────────
 
 /// Extract the base package name from a PEP 508 or conda dependency specifier.
@@ -1579,5 +1597,59 @@ mod tests {
         assert!(s.kernelspec.is_none());
         assert!(s.language_info.is_none());
         assert_eq!(s.runt.schema_version, "1");
+    }
+}
+
+#[cfg(test)]
+mod is_empty_tests {
+    use super::*;
+
+    #[test]
+    fn default_runt_is_empty() {
+        let runt = RuntMetadata::default();
+        assert!(
+            runt.is_empty(),
+            "freshly-defaulted RuntMetadata should be empty"
+        );
+    }
+
+    #[test]
+    fn runt_with_env_id_is_not_empty() {
+        let mut runt = RuntMetadata::default();
+        runt.env_id = Some("abc-123".to_string());
+        assert!(!runt.is_empty());
+    }
+
+    #[test]
+    fn runt_with_uv_is_not_empty() {
+        let mut runt = RuntMetadata::default();
+        runt.uv = Some(UvInlineMetadata {
+            dependencies: vec!["pandas".to_string()],
+            requires_python: None,
+            prerelease: None,
+        });
+        assert!(!runt.is_empty());
+    }
+
+    #[test]
+    fn runt_with_trust_signature_is_not_empty() {
+        let mut runt = RuntMetadata::default();
+        runt.trust_signature = Some("hmac-sha256:deadbeef".to_string());
+        assert!(!runt.is_empty());
+    }
+
+    #[test]
+    fn runt_with_extra_key_is_not_empty() {
+        let mut runt = RuntMetadata::default();
+        runt.extra
+            .insert("future_field".to_string(), serde_json::json!(42));
+        assert!(!runt.is_empty());
+    }
+
+    #[test]
+    fn runt_with_modified_schema_version_is_not_empty() {
+        let mut runt = RuntMetadata::default();
+        runt.schema_version = "2".to_string();
+        assert!(!runt.is_empty());
     }
 }
