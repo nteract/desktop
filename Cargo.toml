@@ -98,3 +98,15 @@ codegen-units = 1
 # recovery, automerge/automerge#1187). The binary size cost is ~2-5%
 # but prevents silent process death on shared notebooks.
 panic = "unwind"
+
+# WASM artifacts ship with symbols even in release. Stack traces from
+# panics in the browser console are otherwise opaque function indices
+# (`wasm[0]:0x12345`), which makes diagnosing field reports impossible.
+# Cost is a ~30-50% .wasm size hike from retained name section + DWARF;
+# we accept that for the diagnostic value. Used by `cargo xtask wasm`
+# via wasm-pack's `--profile wasm-release` flag. Daemon and CLI
+# binaries continue to use `[profile.release]` and stay stripped.
+[profile.wasm-release]
+inherits = "release"
+strip = false
+debug = "line-tables-only"

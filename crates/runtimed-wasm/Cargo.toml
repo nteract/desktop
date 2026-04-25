@@ -30,5 +30,10 @@ wasm-bindgen-test = "0.3"
 [package.metadata.wasm-pack.profile.release]
 wasm-opt = false
 
+# Mirror release config for the symbols-retaining profile used by
+# `cargo xtask wasm` (workspace-level `[profile.wasm-release]`).
+[package.metadata.wasm-pack.profile.wasm-release]
+wasm-opt = false
+
 [lints]
 workspace = true
