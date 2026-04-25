@@ -1,6 +1,6 @@
 [package]
 name = "notebook-sync"
-version = "0.2.2"
+version = "0.2.3"
 edition.workspace = true
 description = "Automerge-based notebook sync client with direct document access"
 repository.workspace = true
