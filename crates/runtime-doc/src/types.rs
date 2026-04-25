@@ -95,8 +95,11 @@ pub enum ProjectFileExtras {
         #[serde(default)]
         pypi_dependencies: Vec<String>,
     },
-    /// `environment.yml` carries a pip sub-list that is not a conda dep.
+    /// `environment.yml` carries conda channels and a pip sub-list
+    /// that lives outside the main `dependencies` array.
     EnvironmentYml {
+        #[serde(default)]
+        channels: Vec<String>,
         #[serde(default)]
         pip: Vec<String>,
     },

@@ -164,7 +164,7 @@ export interface ProjectFile {
 export type ProjectFileExtras =
   | { kind: "None" }
   | { kind: "Pixi"; channels: string[]; pypi_dependencies: string[] }
-  | { kind: "EnvironmentYml"; pip: string[] };
+  | { kind: "EnvironmentYml"; channels: string[]; pip: string[] };
 
 /** Snapshot of the daemon's parse of a detected project file. */
 export interface ProjectFileParsed {

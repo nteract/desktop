@@ -5384,6 +5384,7 @@ mod tests {
                 requires_python: None,
                 prerelease: None,
                 extras: ProjectFileExtras::EnvironmentYml {
+                    channels: vec!["conda-forge".into()],
                     pip: vec!["httpx".into()],
                 },
             },

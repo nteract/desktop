@@ -382,7 +382,10 @@ fn parse_environment_yml(path: &Path, content: &str) -> Result<ProjectFileParsed
         dev_dependencies: Vec::new(),
         requires_python: config.python,
         prerelease: None,
-        extras: ProjectFileExtras::EnvironmentYml { pip },
+        extras: ProjectFileExtras::EnvironmentYml {
+            channels: config.channels,
+            pip,
+        },
     })
 }
 
@@ -617,9 +620,10 @@ mod tests {
         assert_eq!(project_file.kind, ProjectFileKind::EnvironmentYml);
         assert!(parsed.dependencies.iter().any(|d| d == "numpy"));
         assert_eq!(parsed.requires_python.as_deref(), Some("3.11"));
-        let ProjectFileExtras::EnvironmentYml { pip } = parsed.extras else {
+        let ProjectFileExtras::EnvironmentYml { channels, pip } = parsed.extras else {
             panic!("expected EnvironmentYml extras");
         };
+        assert_eq!(channels, vec!["conda-forge".to_string()]);
         assert_eq!(pip, vec!["requests".to_string(), "flask".to_string()]);
     }
 
