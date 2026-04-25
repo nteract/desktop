@@ -2022,7 +2022,13 @@ async fn test_save_notebook_to_disk_preserves_nbformat_attachments_from_cache() 
 }
 
 #[tokio::test]
-async fn test_save_notebook_to_disk_preserves_raw_cell_attachments_from_cache() {
+async fn test_save_notebook_to_disk_drops_raw_cell_attachments() {
+    // nbformat 2.1.0's v4::Cell::Raw variant does not model an `attachments`
+    // field. Raw-cell attachments are a rarely-used extension point in the
+    // Jupyter v4.5 schema; the typed API drops them on save and logs a
+    // warning. This test pins the behavior so a future nbformat update that
+    // adds Raw::attachments will surface as a test diff instead of silently
+    // changing on-disk output.
     let tmp = tempfile::TempDir::new().unwrap();
     let (room, original_path) = test_room_with_path(&tmp, "raw.ipynb");
 
@@ -2047,13 +2053,12 @@ async fn test_save_notebook_to_disk_preserves_raw_cell_attachments_from_cache() 
 
     let content = std::fs::read_to_string(&original_path).unwrap();
     let notebook: serde_json::Value = serde_json::from_str(&content).unwrap();
-    assert_eq!(
-        notebook["cells"][0]["attachments"],
-        serde_json::json!({
-            "snippet.txt": {
-                "text/plain": "hello"
-            }
-        })
+    // Raw cells now omit the attachments field entirely. Verify via absence
+    // rather than asserting Null — the typed API doesn't emit unused fields.
+    assert!(
+        notebook["cells"][0].get("attachments").is_none(),
+        "Raw cell should not have an attachments field on disk, got: {}",
+        notebook["cells"][0]
     );
 }
 
