@@ -10,12 +10,7 @@
  */
 
 import { describe, expect, it } from "vite-plus/test";
-import {
-  isCommBroadcast,
-  isEnvProgressBroadcast,
-  isNotebookAutosavedBroadcast,
-  isPathChangedBroadcast,
-} from "../src/broadcast-types";
+import { isCommBroadcast, isEnvProgressBroadcast } from "../src/broadcast-types";
 
 // All guards share `hasBroadcastEvent` — exercise the invalid-payload
 // matrix once so every guard inherits the coverage.
@@ -35,8 +30,6 @@ const INVALID_PAYLOADS: Array<[string, unknown]> = [
 const GUARDS = [
   ["isCommBroadcast", isCommBroadcast, "comm"],
   ["isEnvProgressBroadcast", isEnvProgressBroadcast, "env_progress"],
-  ["isPathChangedBroadcast", isPathChangedBroadcast, "path_changed"],
-  ["isNotebookAutosavedBroadcast", isNotebookAutosavedBroadcast, "notebook_autosaved"],
 ] as const;
 
 describe("broadcast type guards", () => {

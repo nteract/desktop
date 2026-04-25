@@ -172,11 +172,9 @@ export interface EnvironmentYmlInfo {
 /** Broadcast events from daemon.
  *
  * Ephemeral, room-wide events that don't fit the request/response or
- * CRDT-sync model. Kernel state, execution lifecycle, queue, and outputs
- * all live in `RuntimeStateDoc` (frame `0x05`) — the dead `kernel_status`
- * / `execution_*` / `output` / `queue_changed` / `outputs_cleared` /
- * `display_update` / `kernel_error` / `env_sync_state` variants were
- * removed once the doc became authoritative.
+ * CRDT-sync model. Kernel state, execution lifecycle, queue, outputs,
+ * the notebook's `path`, and the `last_saved` timestamp all live in
+ * `RuntimeStateDoc` (frame `0x05`) — read them via `useRuntimeState()`.
  */
 export type DaemonBroadcast =
   | {
@@ -188,16 +186,7 @@ export type DaemonBroadcast =
   | ({
       event: "env_progress";
       env_type: "conda" | "uv";
-    } & EnvProgressPhase)
-  | {
-      event: "notebook_autosaved";
-      path: string;
-    }
-  | {
-      event: "path_changed";
-      /** New `.ipynb` path. `null` on an explicit "close file" rename (rare/future). */
-      path: string | null;
-    };
+    } & EnvProgressPhase);
 
 /** Response types from daemon notebook requests */
 export type DaemonNotebookResponse =

@@ -35,12 +35,17 @@ import {
 } from "../lib/notebook-executions";
 import { deleteOutputs, updateOutputsByDisplayId } from "../lib/notebook-outputs";
 import { cloneNotebookFile, openNotebookFile, saveNotebook } from "../lib/notebook-file-ops";
-import { emitBroadcast, emitPresence, subscribeBroadcast } from "../lib/notebook-frame-bus";
+import { emitBroadcast, emitPresence } from "../lib/notebook-frame-bus";
 import { notifyMetadataChanged, setNotebookHandle } from "../lib/notebook-metadata";
 import { type PoolState, resetPoolState, setPoolState } from "../lib/pool-state";
-import { getRuntimeState, resetRuntimeState, setRuntimeState } from "../lib/runtime-state";
+import {
+  getRuntimeState,
+  resetRuntimeState,
+  setRuntimeState,
+  useRuntimeState,
+} from "../lib/runtime-state";
 import { fromTauriEvent } from "../lib/tauri-rx";
-import type { DaemonBroadcast, JupyterOutput } from "../types";
+import type { JupyterOutput } from "../types";
 import init, { NotebookHandle } from "../wasm/runtimed-wasm/runtimed_wasm.js";
 
 // Module-level WASM init — runs before React renders.
@@ -88,7 +93,7 @@ export function useAutomergeNotebook() {
   const host = useNotebookHost();
   const cellIds = useCellIds();
   const [focusedCellId, setFocusedCellId] = useState<string | null>(null);
-  const [dirty, setDirty] = useState(false);
+  const [dirty, setDirtyState] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
 
@@ -97,6 +102,11 @@ export function useAutomergeNotebook() {
   const outputCacheRef = useRef<Map<string, JupyterOutput>>(new Map());
   const interactiveReadyRef = useRef(false);
   const latestSessionStatusRef = useRef<SessionStatus | null>(null);
+
+  // Local-edit timestamp. Bumped on every `setDirty(true)` and used to
+  // compute dirty against `runtimeState.last_saved` from the daemon.
+  const lastEditAtRef = useRef<number>(0);
+  const prevPathRef = useRef<string | null>(null);
 
   // SyncEngine and transport refs — stable across re-renders.
   const engineRef = useRef<SyncEngine | null>(null);
@@ -107,22 +117,39 @@ export function useAutomergeNotebook() {
     refreshBlobPort();
   }, []);
 
-  // Clear dirty state on daemon autosave. Also sync Tauri-side path state
-  // when the daemon broadcasts a path change (untitled→saved, save-as, or a
-  // peer renamed the notebook). The UUID is stable across all of this.
+  // ── Runtime-state-driven dirty + path tracking ────────────────────
+  //
+  // `last_saved` and `path` live on RuntimeStateDoc (frame 0x05). The
+  // daemon writes them on autosave / save-as. The frontend computes
+  // dirty from a local-edit timestamp vs. `last_saved`, and mirrors the
+  // path change to Tauri so the window title updates.
+  const runtimeState = useRuntimeState();
+  const lastSavedAt = runtimeState.last_saved ? Date.parse(runtimeState.last_saved) : Number.NaN;
+  const runtimePath = runtimeState.path ?? null;
+
   useEffect(() => {
-    return subscribeBroadcast((payload) => {
-      const broadcast = payload as DaemonBroadcast;
-      if (broadcast.event === "notebook_autosaved") {
-        setDirty(false);
-        host.notebook.markClean().catch(() => {});
-      } else if (broadcast.event === "path_changed") {
-        if (broadcast.path != null) {
-          host.notebook.applyPathChanged(broadcast.path).catch(() => {});
-        }
+    if (Number.isFinite(lastSavedAt) && lastSavedAt >= lastEditAtRef.current) {
+      setDirtyState(false);
+      host.notebook.markClean().catch(() => {});
+    }
+  }, [lastSavedAt, host]);
+
+  useEffect(() => {
+    if (runtimePath !== prevPathRef.current) {
+      prevPathRef.current = runtimePath;
+      if (runtimePath != null) {
+        host.notebook.applyPathChanged(runtimePath).catch(() => {});
       }
-    });
-  }, [host]);
+    }
+  }, [runtimePath, host]);
+
+  // Wrap setDirty so all callers (internal + external) stamp the
+  // local-edit timestamp when they mark the notebook dirty. The dirty
+  // → false transition fires from the `last_saved` effect above.
+  const setDirty = useCallback((next: boolean) => {
+    if (next) lastEditAtRef.current = Date.now();
+    setDirtyState(next);
+  }, []);
 
   // ── Core helpers ───────────────────────────────────────────────────
 

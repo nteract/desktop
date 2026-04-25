@@ -34,12 +34,8 @@ import {
 import {
   type CommBroadcast,
   type EnvProgressBroadcast,
-  type NotebookAutosavedBroadcast,
-  type PathChangedBroadcast,
   isCommBroadcast,
   isEnvProgressBroadcast,
-  isNotebookAutosavedBroadcast,
-  isPathChangedBroadcast,
 } from "./broadcast-types";
 import { type CellChangeset, mergeChangesets } from "./cell-changeset";
 import {
@@ -304,12 +300,6 @@ export class SyncEngine {
   /** Environment install/solve/download progress. */
   readonly envProgress$: Observable<EnvProgressBroadcast>;
 
-  /** Notebook room's `.ipynb` path changed (saved untitled, etc.). */
-  readonly pathChanged$: Observable<PathChangedBroadcast>;
-
-  /** Autosave completed — frontends use this to clear the dirty flag. */
-  readonly notebookAutosaved$: Observable<NotebookAutosavedBroadcast>;
-
   /**
    * Comm state projection from RuntimeStateDoc.
    *
@@ -371,8 +361,6 @@ export class SyncEngine {
     // Typed broadcast sub-observables (derived from broadcasts$)
     this.commBroadcasts$ = this.broadcasts$.pipe(filter(isCommBroadcast));
     this.envProgress$ = this.broadcasts$.pipe(filter(isEnvProgressBroadcast));
-    this.pathChanged$ = this.broadcasts$.pipe(filter(isPathChangedBroadcast));
-    this.notebookAutosaved$ = this.broadcasts$.pipe(filter(isNotebookAutosavedBroadcast));
   }
 
   // ── Lifecycle ────────────────────────────────────────────────────

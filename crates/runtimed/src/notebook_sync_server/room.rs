@@ -35,14 +35,13 @@ impl RoomIdentity {
 /// Per-room broadcast fan-out.
 ///
 /// Groups the four channels that distribute room-scoped events to peer sync
-/// loops: document-change notifications, kernel broadcasts (PathChanged,
-/// NotebookAutosaved, EnvProgress, Comm), and presence traffic. `presence`
+/// loops: document-change notifications, kernel broadcasts (EnvProgress,
+/// Comm), and presence traffic. `presence`
 /// holds the per-peer state that `presence_tx` relays between connections.
 pub struct RoomBroadcasts {
     /// Broadcast channel to notify all peers in this room of doc changes.
     pub changed_tx: broadcast::Sender<()>,
-    /// Broadcast channel for kernel events: PathChanged, NotebookAutosaved,
-    /// EnvProgress, and Comm (widget messages).
+    /// Broadcast channel for kernel events: EnvProgress and Comm (widget messages).
     pub kernel_broadcast_tx: broadcast::Sender<NotebookBroadcast>,
     /// Broadcast channel for presence frames (cursor, selection, kernel state).
     /// Carries raw presence bytes plus the peer_id to relay to other peers.
@@ -371,6 +370,12 @@ impl NotebookRoom {
         let (state_changed_tx, _) = broadcast::channel(16);
         let state = runtime_doc::RuntimeStateHandle::new(RuntimeStateDoc::new(), state_changed_tx);
 
+        // Seed path on the runtime-state doc so connecting peers see it via sync.
+        if let Some(p) = path.as_ref() {
+            let path_str = p.to_string_lossy().into_owned();
+            let _ = state.with_doc(|sd| sd.set_path(Some(&path_str)));
+        }
+
         let persistence = match persist_tx.zip(flush_request_tx) {
             Some((p, f)) => RoomPersistence::with_debouncer(p, f),
             None => RoomPersistence::ephemeral(),
@@ -445,6 +450,10 @@ impl NotebookRoom {
         };
         let (state_changed_tx, _) = broadcast::channel(16);
         let state = runtime_doc::RuntimeStateHandle::new(RuntimeStateDoc::new(), state_changed_tx);
+        if let Some(p) = path.as_ref() {
+            let path_str = p.to_string_lossy().into_owned();
+            let _ = state.with_doc(|sd| sd.set_path(Some(&path_str)));
+        }
         Self {
             id,
             doc: Arc::new(RwLock::new(doc)),

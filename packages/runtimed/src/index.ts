@@ -61,11 +61,7 @@ export {
   type EnvProgressBroadcast,
   isCommBroadcast,
   isEnvProgressBroadcast,
-  isNotebookAutosavedBroadcast,
-  isPathChangedBroadcast,
   type KnownBroadcast,
-  type NotebookAutosavedBroadcast,
-  type PathChangedBroadcast,
 } from "./broadcast-types";
 
 // Comm diffing

@@ -318,7 +318,7 @@ pub(crate) async fn save_notebook_to_disk(
 /// Transitions an untitled room to file-backed: claims path in path_index,
 /// updates room.identity.path, cleans up the stale `.automerge` persist file, spawns
 /// the `.ipynb` file watcher and autosave debouncer, clears ephemeral markers,
-/// and broadcasts `PathChanged`.
+/// and stamps the new path on the runtime-state doc (peers see it via sync).
 ///
 /// Returns `Ok(())` on success, or `Err(SaveErrorKind::PathAlreadyOpen)` if
 /// another room is already serving this canonical path.  On error the caller's
@@ -362,7 +362,8 @@ pub(crate) async fn try_claim_path(
 /// Finalize the untitled-to-file-backed transition AFTER the .ipynb has been
 /// written and path_index already holds the claim. This is the non-claim half
 /// of the promotion: path field update, persist file cleanup, file watcher +
-/// autosave debouncer spawn, ephemeral marker clear, and PathChanged broadcast.
+/// autosave debouncer spawn, ephemeral marker clear, and runtime-state doc
+/// `path` write.
 pub(crate) async fn finalize_untitled_promotion(room: &Arc<NotebookRoom>, canonical: PathBuf) {
     // Update room's path now that path_index owns it.
     *room.identity.path.write().await = Some(canonical.clone());
@@ -406,13 +407,11 @@ pub(crate) async fn finalize_untitled_promotion(room: &Arc<NotebookRoom>, canoni
         let _ = doc.delete_metadata("ephemeral");
     }
 
-    // Broadcast path change to all peers.
-    let _ = room
-        .broadcasts
-        .kernel_broadcast_tx
-        .send(NotebookBroadcast::PathChanged {
-            path: Some(canonical.to_string_lossy().into_owned()),
-        });
+    // Stamp the new path on the runtime-state doc; peers see it via sync.
+    let path_str = canonical.to_string_lossy().into_owned();
+    if let Err(e) = room.state.with_doc(|sd| sd.set_path(Some(&path_str))) {
+        warn!("[notebook-sync] set_path on promote failed: {}", e);
+    }
 
     info!(
         "[notebook-sync] Promoted untitled room {} to file-backed path {:?}",
@@ -876,19 +875,21 @@ fn spawn_autosave_debouncer_with_config(
 
                                     // Check if changes arrived during the save. If so,
                                     // keep last_receive set so we flush again soon —
-                                    // don't broadcast "clean" when the file is already stale.
+                                    // don't stamp last_saved while the file is stale.
                                     let changed_during_save =
                                         matches!(changed_rx.try_recv(), Ok(()) | Err(broadcast::error::TryRecvError::Lagged(_)));
                                     if changed_during_save {
                                         last_receive = Some(Instant::now());
                                     } else {
                                         last_receive = None;
-                                        // Broadcast to connected clients so they can clear dirty state
-                                        let _ = room.broadcasts.kernel_broadcast_tx.send(
-                                            NotebookBroadcast::NotebookAutosaved {
-                                                path,
-                                            },
-                                        );
+                                        // Stamp last_saved on the runtime-state doc.
+                                        // Frontends compute dirty = local_edit_at > last_saved.
+                                        let now = chrono::Utc::now().to_rfc3339();
+                                        if let Err(e) = room.state.with_doc(|sd| {
+                                            sd.set_last_saved(Some(&now))
+                                        }) {
+                                            warn!("[autosave] set_last_saved failed: {}", e);
+                                        }
                                     }
                                 }
                                 Err(ref e @ SaveError::Unrecoverable(_)) => {

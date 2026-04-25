@@ -11,7 +11,7 @@ use crate::notebook_sync_server::{
     canonical_target_path, finalize_untitled_promotion, format_notebook_cells,
     persist_notebook_bytes, save_notebook_to_disk, try_claim_path, NotebookRoom, SaveError,
 };
-use crate::protocol::{NotebookBroadcast, NotebookResponse};
+use crate::protocol::NotebookResponse;
 
 pub(crate) async fn handle(
     room: &Arc<NotebookRoom>,
@@ -146,12 +146,10 @@ pub(crate) async fn handle(
                 idx.remove(old);
             }
             *room.identity.path.write().await = Some(canonical.clone());
-            let _ = room
-                .broadcasts
-                .kernel_broadcast_tx
-                .send(NotebookBroadcast::PathChanged {
-                    path: Some(canonical.to_string_lossy().into_owned()),
-                });
+            let path_str = canonical.to_string_lossy().into_owned();
+            if let Err(e) = room.state.with_doc(|sd| sd.set_path(Some(&path_str))) {
+                tracing::warn!("[save_notebook] set_path failed: {}", e);
+            }
         }
         // If path didn't change, this is save-in-place: nothing else.
     }

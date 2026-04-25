@@ -4,6 +4,11 @@
  * Transport-agnostic versions of the broadcast payloads sent by the daemon
  * via frame type 0x03 (BROADCAST). Provides type guards for filtering
  * the untyped `broadcasts$` observable into typed sub-streams.
+ *
+ * Path changes and autosave timestamps used to be broadcasts; they are now
+ * fields on `RuntimeStateDoc` (`path`, `last_saved`) and reach clients via
+ * normal CRDT sync. Read them via `useRuntimeState()` instead of subscribing
+ * to broadcasts.
  */
 
 // ── Broadcast interfaces ────────────────────────────────────────────
@@ -24,22 +29,8 @@ export interface EnvProgressBroadcast {
   [key: string]: unknown;
 }
 
-export interface PathChangedBroadcast {
-  event: "path_changed";
-  path: string | null;
-}
-
-export interface NotebookAutosavedBroadcast {
-  event: "notebook_autosaved";
-  path: string;
-}
-
 /** Union of all known broadcast types with an `event` field. */
-export type KnownBroadcast =
-  | CommBroadcast
-  | EnvProgressBroadcast
-  | PathChangedBroadcast
-  | NotebookAutosavedBroadcast;
+export type KnownBroadcast = CommBroadcast | EnvProgressBroadcast;
 
 // ── Type guards ─────────────────────────────────────────────────────
 
@@ -58,14 +49,4 @@ export function isCommBroadcast(payload: unknown): payload is CommBroadcast {
 
 export function isEnvProgressBroadcast(payload: unknown): payload is EnvProgressBroadcast {
   return hasBroadcastEvent(payload) && payload.event === "env_progress";
-}
-
-export function isPathChangedBroadcast(payload: unknown): payload is PathChangedBroadcast {
-  return hasBroadcastEvent(payload) && payload.event === "path_changed";
-}
-
-export function isNotebookAutosavedBroadcast(
-  payload: unknown,
-): payload is NotebookAutosavedBroadcast {
-  return hasBroadcastEvent(payload) && payload.event === "notebook_autosaved";
 }
