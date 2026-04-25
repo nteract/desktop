@@ -49,7 +49,7 @@ which runt                      # Should be repo/bin/runt (not /usr/local/bin/ru
 **Three MCP servers** should be configured:
 
 1. **nteract-dev** (development, per-worktree daemon)
-   - Command: `cargo xtask run-mcp` (builds and runs the local `mcp-supervisor` binary)
+   - Command: `cargo run -p mcp-supervisor` (used by `.mcp.json`). Build cost is small now that the supervisor no longer links `runtimed-client` — first run after `cargo clean` takes a few seconds, warm runs are instant.
    - Working directory: `/path/to/nteract/desktop`
    - Env vars: Inherits from shell (direnv provides RUNTIMED_DEV, RUNTIMED_WORKSPACE_PATH)
    - Socket: `~/.cache/runt-nightly/worktrees/{hash}/runtimed.sock`
@@ -86,7 +86,7 @@ which runt                      # Should be repo/bin/runt (not /usr/local/bin/ru
 
 If your MCP client provides `up`, `down`, `status`, `logs`, `vite_logs` (provided by `nteract-dev`), **prefer those over manual terminal commands**. `nteract-dev` manages the dev daemon lifecycle for you — no env vars, no extra terminals.
 
-**Claude Code has nteract-dev locally** — the local dev environment connects Claude Code to the repo-local `nteract-dev` MCP entry via `cargo xtask run-mcp`. Codex app/CLI can use the same server when this repo's project-scoped `.codex/config.toml` is enabled in a trusted workspace. If your current environment does not expose these tools, use the manual `cargo xtask` commands below.
+**Claude Code has nteract-dev locally** — `.mcp.json` launches `cargo run -p mcp-supervisor` on session start. If your current environment does not expose these tools, use the manual `cargo xtask` commands below.
 
 | Instead of… | Use… |
 |-------------|------|
@@ -314,7 +314,7 @@ cargo xtask run-mcp --print-config
 
 Use `nteract-dev` as the MCP server name for this source tree. Keep `nteract` for the global/system-installed MCP server. In clients that namespace tools by server name, that keeps repo-local tools distinct from the global install.
 
-For Codex app/CLI, this repository also includes a project-scoped MCP config in `.codex/config.toml` that points at the same server using the `nteract-dev` entry name. The Codex config sets `cwd = "."` so GUI-launched sessions still start the supervisor from the repo root, and bumps the startup timeout because the first `cargo run -p mcp-supervisor` can take longer than the default while it builds.
+`.mcp.json` launches `cargo run -p mcp-supervisor`. The supervisor's compile graph is small — it no longer links `runtimed-client`, because the proxy now learns the daemon version from the child's MCP handshake instead of opening its own daemon socket. Cold builds take a few seconds, warm rebuilds are near-instant.
 
 ### MCP Server
 
