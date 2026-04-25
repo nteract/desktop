@@ -2257,32 +2257,69 @@ async fn save_notebook_as(
     Ok(())
 }
 
-/// Clone the current notebook for saving as a new file.
-/// The daemon handles generating fresh env_id and clearing outputs/execution counts.
+/// Fork the current notebook into a new ephemeral (in-memory only) notebook
+/// and open it in a new window. Daemon seeds cells + metadata; trust and
+/// outputs are cleared. The user can Save-As to persist later.
+///
+/// Returns the new notebook_id (UUID) for the frontend to reference.
 #[tauri::command]
-async fn clone_notebook_to_path(
-    path: String,
+async fn clone_notebook_to_ephemeral(
     window: tauri::Window,
+    app: tauri::AppHandle,
     registry: tauri::State<'_, WindowNotebookRegistry>,
-) -> Result<(), String> {
+) -> Result<String, String> {
     let notebook_sync = notebook_sync_for_window(&window, registry.inner())?;
 
-    // Clone via daemon - daemon reads from Automerge, clears outputs, generates fresh env_id
+    // Capture the source window's runtime + notebook_id from its context.
+    // The daemon doesn't return runtime — it's a client-side display/menu
+    // concern — and we need the notebook_id as the fork source.
+    let (source_runtime, source_notebook_id) = {
+        let contexts = registry
+            .inner()
+            .contexts
+            .lock()
+            .map_err(|e| e.to_string())?;
+        let ctx = contexts
+            .get(window.label())
+            .ok_or_else(|| format!("No context for window '{}'", window.label()))?;
+        let runtime = ctx.runtime.clone();
+        let id = ctx.notebook_id.lock().map_err(|e| e.to_string())?.clone();
+        if id.is_empty() {
+            return Err("Source notebook has no id yet — wait for daemon:ready".into());
+        }
+        (runtime, id)
+    };
+
     let sync_handle = notebook_sync.lock().await.clone();
     let handle = sync_handle.ok_or("Not connected to daemon")?;
 
-    match handle
-        .send_request(NotebookRequest::CloneNotebook { path })
+    let (clone_id, clone_working_dir) = match handle
+        .send_request(NotebookRequest::CloneAsEphemeral { source_notebook_id })
         .await
     {
-        Ok(NotebookResponse::NotebookCloned { path: cloned_path }) => {
-            info!("[clone] Notebook cloned via daemon to: {}", cloned_path);
-            Ok(())
+        Ok(NotebookResponse::NotebookCloned {
+            notebook_id,
+            working_dir,
+        }) => (notebook_id, working_dir),
+        Ok(NotebookResponse::Error { error }) => {
+            return Err(format!("Daemon clone failed: {error}"));
         }
-        Ok(NotebookResponse::Error { error }) => Err(format!("Daemon clone failed: {}", error)),
-        Ok(other) => Err(format!("Unexpected daemon response: {:?}", other)),
-        Err(e) => Err(format!("Daemon request failed: {}", e)),
-    }
+        Ok(other) => return Err(format!("Unexpected daemon response: {other:?}")),
+        Err(e) => return Err(format!("Daemon request failed: {e}")),
+    };
+
+    info!("[clone] Daemon forked into ephemeral room: {clone_id}");
+
+    // Open the new window attached to the just-created ephemeral room.
+    let working_dir_path = clone_working_dir.as_deref().map(PathBuf::from);
+    let mode = OpenMode::Attach {
+        notebook_id: clone_id.clone(),
+        working_dir: working_dir_path,
+        runtime: source_runtime.to_string(),
+    };
+    create_notebook_window_for_daemon(&app, registry.inner(), mode, None)?;
+
+    Ok(clone_id)
 }
 
 /// Open a notebook file in a new window within the current app process.
@@ -4315,7 +4352,7 @@ pub fn run(
             save_notebook,
             save_notebook_as,
             get_default_save_directory,
-            clone_notebook_to_path,
+            clone_notebook_to_ephemeral,
             open_notebook_in_new_window,
             // Daemon connection state (kernel ops now go through
             // `send_frame(0x01)` + the `notebook:frame` pending-map path,
