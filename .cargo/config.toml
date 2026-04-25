@@ -5,10 +5,6 @@ runt = "run --package runt --"
 [env]
 TS_RS_EXPORT_DIR = { value = "src/bindings", relative = true }
 
-# macOS arm64 developers link through LLVM's lld. Install with
-# `brew install lld` (provides ld64.lld). Apple's system ld also works;
-# switch to it by removing the rustflag locally. Intel and Linux targets
-# keep their platform defaults until we have measurements that justify
-# changing them.
-[target.aarch64-apple-darwin]
-rustflags = ["-C", "link-arg=-fuse-ld=lld"]
+# Linker rustflags live in .envrc, gated on `has ld64.lld`. Hard-coding
+# `-fuse-ld=lld` here broke CI runners that don't ship lld, so the rule
+# moved to an env-scoped direnv export. See `.envrc`.
