@@ -154,17 +154,36 @@ jobs:
           shared-key: ubuntu-wasm
 
       - name: Install wasm-pack
-        run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+        # Pin to 0.14.0+ — `--profile <NAME>` (used by `cargo xtask wasm`)
+        # only landed there. Older releases pass both `--release` and
+        # `--profile` to cargo, which now errors as a hard conflict.
+        # `init.sh` from rustwasm.github.io can serve a stale version,
+        # so install a pinned prebuilt binary instead.
+        uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-pack@0.14.0
 
       - name: Build runtimed-wasm
         # Must match `cargo xtask wasm runtimed` so the up-to-date check
         # below diffs against artifacts produced by the same profile.
         run: wasm-pack build crates/runtimed-wasm --target web --profile wasm-release --out-dir ../../apps/notebook/src/wasm/runtimed-wasm
 
-      - name: Check WASM bindings are up to date
+      - name: Check runtimed-wasm bindings are up to date
         run: |
           git diff --exit-code -- apps/notebook/src/wasm/runtimed-wasm/ ':!*.wasm' || {
-            echo "::error::Checked-in WASM bindings are stale. Run: cargo xtask wasm runtimed"
+            echo "::error::Checked-in runtimed-wasm bindings are stale. Run: cargo xtask wasm runtimed"
+            exit 1
+          }
+
+      - name: Build sift-wasm
+        # Must match `cargo xtask wasm sift` so the up-to-date check below
+        # diffs against artifacts produced by the same profile.
+        run: wasm-pack build crates/sift-wasm --target web --profile wasm-release
+
+      - name: Check sift-wasm bindings are up to date
+        run: |
+          git diff --exit-code -- crates/sift-wasm/pkg/ ':!*.wasm' || {
+            echo "::error::Checked-in sift-wasm bindings are stale. Run: cargo xtask wasm sift"
             exit 1
           }
 

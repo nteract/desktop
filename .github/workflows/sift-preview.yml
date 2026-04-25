@@ -38,7 +38,11 @@ jobs:
           shared-key: ubuntu-wasm
 
       - name: Install wasm-pack
-        run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+        # Pin to 0.14.0+ for `--profile <NAME>` support; see comment in
+        # `.github/workflows/build.yml`.
+        uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-pack@0.14.0
 
       - name: Build sift-wasm
         # Match `cargo xtask wasm sift` so demo panics show real symbols.
