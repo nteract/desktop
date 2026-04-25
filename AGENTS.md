@@ -206,6 +206,7 @@ Before diving into a subsystem, read the relevant guide:
 | Logging guidelines | `contributing/logging.md` |
 | Build dependencies | `contributing/build-dependencies.md` |
 | Releasing | `contributing/releasing.md` |
+| Branch / worktree / LFS cleanup | `contributing/branch-hygiene.md` |
 
 ## Code Formatting (Required Before Committing)
 
