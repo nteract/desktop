@@ -3390,8 +3390,8 @@ pub(crate) async fn handle_notebook_request(
             crate::requests::save_notebook::handle(room, &daemon, format_cells, path).await
         }
 
-        NotebookRequest::CloneNotebook { path } => {
-            crate::requests::clone_notebook::handle(room, path).await
+        NotebookRequest::CloneAsEphemeral { source_notebook_id } => {
+            crate::requests::clone_notebook::handle(&daemon, source_notebook_id).await
         }
 
         NotebookRequest::SyncEnvironment {} => {

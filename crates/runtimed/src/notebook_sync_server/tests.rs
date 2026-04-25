@@ -5809,3 +5809,206 @@ fn test_missing_conda_env_yml_name_prefix_with_python_is_not_missing() {
     };
     assert_eq!(missing_conda_env_yml_name(&detected), None);
 }
+
+// ---------------------------------------------------------------------------
+// CloneAsEphemeral handler tests
+// ---------------------------------------------------------------------------
+
+/// Build the minimum scaffolding the clone handler needs: a notebook_rooms
+/// map, a path_index, a docs_dir, and a blob store. Lets the handler run
+/// without a full `Daemon`.
+fn clone_test_scaffolding(
+    tmp: &tempfile::TempDir,
+) -> (
+    NotebookRooms,
+    Arc<tokio::sync::Mutex<PathIndex>>,
+    std::path::PathBuf,
+    Arc<BlobStore>,
+) {
+    let rooms: NotebookRooms = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+    let path_index = Arc::new(tokio::sync::Mutex::new(PathIndex::new()));
+    let docs_dir = tmp.path().join("docs");
+    std::fs::create_dir_all(&docs_dir).unwrap();
+    let blob_store = test_blob_store(tmp);
+    (rooms, path_index, docs_dir, blob_store)
+}
+
+#[tokio::test]
+async fn test_clone_as_ephemeral_forks_cells_and_clears_outputs() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (rooms, path_index, docs_dir, blob_store) = clone_test_scaffolding(&tmp);
+
+    // Build a file-backed source room with two cells + markdown attachments
+    // + stamped trust, registered in the rooms map.
+    let source_path = tmp.path().join("source.ipynb");
+    let source_uuid = Uuid::new_v4();
+    let source_room = get_or_create_room(
+        &rooms,
+        &path_index,
+        source_uuid,
+        Some(source_path.clone()),
+        &docs_dir,
+        blob_store.clone(),
+        false,
+    )
+    .await;
+
+    {
+        let mut doc = source_room.doc.write().await;
+        doc.add_cell(0, "code-1", "code").unwrap();
+        doc.update_source("code-1", "x = 1").unwrap();
+        doc.add_cell(1, "md-1", "markdown").unwrap();
+        doc.update_source("md-1", "# hello").unwrap();
+        // Stamp source metadata: env_id + trust signature + timestamp.
+        let mut snap = snapshot_empty();
+        snap.runt.env_id = Some("source-env-id".to_string());
+        snap.runt.trust_signature = Some("hmac-sha256:deadbeef".to_string());
+        snap.runt.trust_timestamp = Some("2026-04-25T00:00:00Z".to_string());
+        doc.set_metadata_snapshot(&snap).unwrap();
+    }
+    {
+        let mut cache = source_room.persistence.nbformat_attachments.write().await;
+        cache.insert(
+            "md-1".to_string(),
+            serde_json::json!({"image.png": {"image/png": "base64data"}}),
+        );
+    }
+
+    // Dispatch clone handler.
+    let response = crate::requests::clone_notebook::handle_inner(
+        &rooms,
+        &path_index,
+        &docs_dir,
+        blob_store.clone(),
+        source_uuid.to_string(),
+    )
+    .await;
+
+    // Response shape.
+    let (clone_id, clone_working_dir) = match response {
+        NotebookResponse::NotebookCloned {
+            notebook_id,
+            working_dir,
+        } => (notebook_id, working_dir),
+        other => panic!("Expected NotebookCloned, got {other:?}"),
+    };
+
+    // Working dir = source's parent.
+    assert_eq!(
+        clone_working_dir.as_deref(),
+        Some(tmp.path().to_string_lossy().as_ref())
+    );
+
+    // UUID differs.
+    let clone_uuid = Uuid::parse_str(&clone_id).unwrap();
+    assert_ne!(clone_uuid, source_uuid);
+
+    // Room is registered.
+    let clone_room = rooms
+        .lock()
+        .await
+        .get(&clone_uuid)
+        .cloned()
+        .expect("clone room should be registered");
+
+    // Ephemeral.
+    assert!(clone_room
+        .identity
+        .is_ephemeral
+        .load(std::sync::atomic::Ordering::Acquire));
+
+    // working_dir seeded on the room.
+    assert_eq!(
+        clone_room.identity.working_dir.read().await.as_deref(),
+        Some(tmp.path())
+    );
+
+    // Doc content: same cells, execution_count cleared on code cells.
+    let clone_cells = clone_room.doc.read().await.get_cells();
+    assert_eq!(clone_cells.len(), 2);
+    let cell_ids: Vec<&str> = clone_cells.iter().map(|c| c.id.as_str()).collect();
+    assert!(cell_ids.contains(&"code-1"));
+    assert!(cell_ids.contains(&"md-1"));
+    let code_cell = clone_cells.iter().find(|c| c.id == "code-1").unwrap();
+    assert_eq!(code_cell.execution_count, "null");
+
+    // Metadata: fresh env_id, trust cleared.
+    let clone_snap = clone_room
+        .doc
+        .read()
+        .await
+        .get_metadata_snapshot()
+        .expect("clone should have metadata");
+    assert!(clone_snap.runt.env_id.is_some());
+    assert_ne!(clone_snap.runt.env_id.as_deref(), Some("source-env-id"));
+    // Trust signature + timestamp copy through: the signature covers
+    // runt.uv/conda/pixi only, which we copy byte-for-byte, and the trust
+    // key is machine-local — so a same-machine clone of a trusted source
+    // stays trusted without re-prompting the user.
+    assert_eq!(
+        clone_snap.runt.trust_signature.as_deref(),
+        Some("hmac-sha256:deadbeef")
+    );
+    assert_eq!(
+        clone_snap.runt.trust_timestamp.as_deref(),
+        Some("2026-04-25T00:00:00Z")
+    );
+
+    // Attachments copied.
+    let clone_attachments = clone_room.nbformat_attachments_snapshot().await;
+    assert_eq!(
+        clone_attachments.get("md-1"),
+        Some(&serde_json::json!({"image.png": {"image/png": "base64data"}}))
+    );
+}
+
+#[tokio::test]
+async fn test_clone_as_ephemeral_rejects_unknown_source() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (rooms, path_index, docs_dir, blob_store) = clone_test_scaffolding(&tmp);
+
+    let bogus = Uuid::new_v4().to_string();
+    let response = crate::requests::clone_notebook::handle_inner(
+        &rooms,
+        &path_index,
+        &docs_dir,
+        blob_store,
+        bogus.clone(),
+    )
+    .await;
+
+    match response {
+        NotebookResponse::Error { error } => {
+            assert!(
+                error.contains("not found") || error.contains(&bogus),
+                "Expected 'not found' in error, got: {error}"
+            );
+        }
+        other => panic!("Expected Error, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn test_clone_as_ephemeral_rejects_invalid_uuid() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (rooms, path_index, docs_dir, blob_store) = clone_test_scaffolding(&tmp);
+
+    let response = crate::requests::clone_notebook::handle_inner(
+        &rooms,
+        &path_index,
+        &docs_dir,
+        blob_store,
+        "not-a-uuid".to_string(),
+    )
+    .await;
+
+    match response {
+        NotebookResponse::Error { error } => {
+            assert!(
+                error.contains("Invalid"),
+                "Expected 'Invalid' in error, got: {error}"
+            );
+        }
+        other => panic!("Expected Error, got {other:?}"),
+    }
+}

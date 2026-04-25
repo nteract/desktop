@@ -68,18 +68,18 @@ export async function openNotebookFile(host: NotebookHost): Promise<void> {
 }
 
 /**
- * Clone the current notebook to a new file and open it in a new window.
+ * Fork the current notebook into a new ephemeral (in-memory) notebook and
+ * open it in a new window. No file dialog — the daemon seeds a new room
+ * from the current doc, the window attaches to it. User can Save-As to
+ * persist later.
+ *
+ * The `host` parameter is retained for signature compatibility with the
+ * other file ops (save/open) but is currently unused; all state lookups
+ * happen server-side in the Tauri command.
  */
-export async function cloneNotebookFile(host: NotebookHost): Promise<void> {
+export async function cloneNotebookFile(_host: NotebookHost): Promise<void> {
   try {
-    const defaultDir = await invoke<string>("get_default_save_directory");
-    const filePath = await host.dialog.saveFile({
-      filters: [IPYNB_FILTER],
-      defaultPath: `${defaultDir}/Untitled-Clone.ipynb`,
-    });
-    if (!filePath) return;
-    await invoke("clone_notebook_to_path", { path: filePath });
-    await invoke("open_notebook_in_new_window", { path: filePath });
+    await invoke("clone_notebook_to_ephemeral");
   } catch (e) {
     logger.error("[notebook-file-ops] Clone failed:", e);
   }

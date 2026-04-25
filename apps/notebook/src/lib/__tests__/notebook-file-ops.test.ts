@@ -159,38 +159,33 @@ describe("openNotebookFile", () => {
 // ---------------------------------------------------------------------------
 
 describe("cloneNotebookFile", () => {
-  it("clones to the chosen path and opens in a new window", async () => {
-    mockInvoke.mockImplementation((cmd: string) => {
-      if (cmd === "get_default_save_directory") return "/home/user/notebooks";
-      return undefined;
-    });
-    mockSaveDialog.mockResolvedValueOnce("/home/user/notebooks/Clone.ipynb");
-
-    await cloneNotebookFile(stubHost);
-
-    expect(mockInvoke).toHaveBeenCalledWith(
-      "clone_notebook_to_path",
-      expect.objectContaining({ path: "/home/user/notebooks/Clone.ipynb" }),
-    );
-    expect(mockInvoke).toHaveBeenCalledWith(
-      "open_notebook_in_new_window",
-      expect.objectContaining({ path: "/home/user/notebooks/Clone.ipynb" }),
-    );
-  });
-
-  it("does nothing when the save dialog is cancelled", async () => {
-    mockInvoke.mockImplementation((cmd: string) => {
-      if (cmd === "get_default_save_directory") return "/tmp";
-      return undefined;
-    });
-    mockSaveDialog.mockResolvedValueOnce(null);
+  it("invokes clone_notebook_to_ephemeral once and opens no dialog", async () => {
+    mockInvoke.mockResolvedValueOnce("new-uuid-1234");
 
     await cloneNotebookFile(stubHost);
 
     const cloneCalls = mockInvoke.mock.calls.filter(
-      ([cmd]) => cmd === "clone_notebook_to_path",
+      ([cmd]) => cmd === "clone_notebook_to_ephemeral",
     );
-    expect(cloneCalls).toHaveLength(0);
+    expect(cloneCalls).toHaveLength(1);
+
+    // No dialog, no save-directory lookup, no legacy path construction.
+    expect(mockSaveDialog).not.toHaveBeenCalled();
+    expect(
+      mockInvoke.mock.calls.filter(
+        ([cmd]) => cmd === "get_default_save_directory",
+      ),
+    ).toHaveLength(0);
+    expect(
+      mockInvoke.mock.calls.filter(
+        ([cmd]) => cmd === "open_notebook_in_new_window",
+      ),
+    ).toHaveLength(0);
+    expect(
+      mockInvoke.mock.calls.filter(
+        ([cmd]) => cmd === "clone_notebook_to_path",
+      ),
+    ).toHaveLength(0);
   });
 
   it("does not throw on error", async () => {

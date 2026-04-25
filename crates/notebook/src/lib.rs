@@ -320,6 +320,15 @@ enum OpenMode {
         working_dir: Option<PathBuf>,
         notebook_id: Option<String>,
     },
+    /// Attach to a room the daemon has already created. Used by clone: after
+    /// `CloneAsEphemeral` seeds a new room, the new window attaches to it by
+    /// UUID via `Handshake::NotebookSync`. No create, no load, no session
+    /// restore — the room is addressable and the window just syncs.
+    Attach {
+        notebook_id: String,
+        working_dir: Option<PathBuf>,
+        runtime: String,
+    },
 }
 
 /// Git information for debug banner display.
@@ -749,6 +758,68 @@ async fn initialize_notebook_sync_create(
     setup_sync_receivers(
         window,
         info.notebook_id,
+        handle,
+        raw_frame_rx,
+        notebook_sync,
+        sync_generation,
+        current_generation,
+        ready_payload,
+    )
+    .await
+}
+
+/// Attach a new window to a daemon room that already exists.
+///
+/// Used by the clone flow: `CloneAsEphemeral` on the daemon creates the
+/// ephemeral room; the new window then opens its own connection with
+/// `Handshake::NotebookSync` via `connect_relay` and joins as a peer.
+/// No create, no load — the room is already materialized.
+async fn initialize_notebook_sync_attach(
+    window: tauri::WebviewWindow,
+    notebook_id: String,
+    runtime: String,
+    notebook_sync: SharedNotebookSync,
+    sync_generation: Arc<AtomicU64>,
+    notebook_id_arc: Arc<Mutex<String>>,
+) -> Result<(), String> {
+    let current_generation = sync_generation.fetch_add(1, Ordering::SeqCst) + 1;
+
+    let socket_path = runt_workspace::default_socket_path();
+    info!(
+        "[notebook-sync] Attaching to existing room: id={}, runtime={} ({})",
+        notebook_id,
+        runtime,
+        socket_path.display(),
+    );
+
+    let (frame_tx, raw_frame_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
+
+    let result = notebook_sync::connect::connect_relay(socket_path, notebook_id.clone(), frame_tx)
+        .await
+        .map_err(|e| format!("sync connect (attach): {}", e))?;
+
+    let handle = result.handle;
+
+    // Update notebook_id to match the room we just attached to.
+    if let Ok(mut id) = notebook_id_arc.lock() {
+        *id = notebook_id.clone();
+    }
+
+    // `connect_relay` does not return a NotebookConnectionInfo — the frontend
+    // receives the true cell_count via the initial Automerge sync. Populate
+    // the payload with sensible defaults for an ephemeral clone.
+    let ready_payload = DaemonReadyPayload {
+        notebook_id: notebook_id.clone(),
+        cell_count: 0,
+        needs_trust_approval: false,
+        ephemeral: true,
+        notebook_path: None,
+        runtime: Some(runtime),
+    };
+
+    setup_sync_receivers(
+        window,
+        notebook_id,
         handle,
         raw_frame_rx,
         notebook_sync,
@@ -2186,32 +2257,69 @@ async fn save_notebook_as(
     Ok(())
 }
 
-/// Clone the current notebook for saving as a new file.
-/// The daemon handles generating fresh env_id and clearing outputs/execution counts.
+/// Fork the current notebook into a new ephemeral (in-memory only) notebook
+/// and open it in a new window. Daemon seeds cells + metadata; trust and
+/// outputs are cleared. The user can Save-As to persist later.
+///
+/// Returns the new notebook_id (UUID) for the frontend to reference.
 #[tauri::command]
-async fn clone_notebook_to_path(
-    path: String,
+async fn clone_notebook_to_ephemeral(
     window: tauri::Window,
+    app: tauri::AppHandle,
     registry: tauri::State<'_, WindowNotebookRegistry>,
-) -> Result<(), String> {
+) -> Result<String, String> {
     let notebook_sync = notebook_sync_for_window(&window, registry.inner())?;
 
-    // Clone via daemon - daemon reads from Automerge, clears outputs, generates fresh env_id
+    // Capture the source window's runtime + notebook_id from its context.
+    // The daemon doesn't return runtime — it's a client-side display/menu
+    // concern — and we need the notebook_id as the fork source.
+    let (source_runtime, source_notebook_id) = {
+        let contexts = registry
+            .inner()
+            .contexts
+            .lock()
+            .map_err(|e| e.to_string())?;
+        let ctx = contexts
+            .get(window.label())
+            .ok_or_else(|| format!("No context for window '{}'", window.label()))?;
+        let runtime = ctx.runtime.clone();
+        let id = ctx.notebook_id.lock().map_err(|e| e.to_string())?.clone();
+        if id.is_empty() {
+            return Err("Source notebook has no id yet — wait for daemon:ready".into());
+        }
+        (runtime, id)
+    };
+
     let sync_handle = notebook_sync.lock().await.clone();
     let handle = sync_handle.ok_or("Not connected to daemon")?;
 
-    match handle
-        .send_request(NotebookRequest::CloneNotebook { path })
+    let (clone_id, clone_working_dir) = match handle
+        .send_request(NotebookRequest::CloneAsEphemeral { source_notebook_id })
         .await
     {
-        Ok(NotebookResponse::NotebookCloned { path: cloned_path }) => {
-            info!("[clone] Notebook cloned via daemon to: {}", cloned_path);
-            Ok(())
+        Ok(NotebookResponse::NotebookCloned {
+            notebook_id,
+            working_dir,
+        }) => (notebook_id, working_dir),
+        Ok(NotebookResponse::Error { error }) => {
+            return Err(format!("Daemon clone failed: {error}"));
         }
-        Ok(NotebookResponse::Error { error }) => Err(format!("Daemon clone failed: {}", error)),
-        Ok(other) => Err(format!("Unexpected daemon response: {:?}", other)),
-        Err(e) => Err(format!("Daemon request failed: {}", e)),
-    }
+        Ok(other) => return Err(format!("Unexpected daemon response: {other:?}")),
+        Err(e) => return Err(format!("Daemon request failed: {e}")),
+    };
+
+    info!("[clone] Daemon forked into ephemeral room: {clone_id}");
+
+    // Open the new window attached to the just-created ephemeral room.
+    let working_dir_path = clone_working_dir.as_deref().map(PathBuf::from);
+    let mode = OpenMode::Attach {
+        notebook_id: clone_id.clone(),
+        working_dir: working_dir_path,
+        runtime: source_runtime.to_string(),
+    };
+    create_notebook_window_for_daemon(&app, registry.inner(), mode, None)?;
+
+    Ok(clone_id)
 }
 
 /// Open a notebook file in a new window within the current app process.
@@ -2258,12 +2366,32 @@ fn create_notebook_window_for_daemon(
                 runtime_enum,
             )
         }
+        OpenMode::Attach {
+            runtime,
+            working_dir,
+            ..
+        } => {
+            // Cloned (attached) notebooks are untitled until Save-As.
+            let runtime_enum: Runtime = runtime.parse().unwrap_or(Runtime::Python);
+            (
+                "Untitled.ipynb".to_string(),
+                None,
+                working_dir.clone(),
+                runtime_enum,
+            )
+        }
     };
 
     // Generate a stable window label for the window-state plugin
     let label = custom_label.unwrap_or_else(|| {
         if let OpenMode::Create {
             notebook_id: Some(ref id),
+            ..
+        } = &mode
+        {
+            format!("notebook-{}", &id[..8.min(id.len())])
+        } else if let OpenMode::Attach {
+            notebook_id: ref id,
             ..
         } = &mode
         {
@@ -2312,6 +2440,7 @@ fn create_notebook_window_for_daemon(
         OpenMode::Create {
             notebook_id: None, ..
         } => String::new(),
+        OpenMode::Attach { notebook_id, .. } => notebook_id.clone(),
     };
 
     let context =
@@ -2375,6 +2504,23 @@ fn create_notebook_window_for_daemon(
                     runtime,
                     working_dir,
                     notebook_id,
+                    notebook_sync,
+                    sync_generation,
+                    notebook_id_arc,
+                )
+                .await
+            }
+            OpenMode::Attach {
+                notebook_id,
+                runtime,
+                // working_dir is already plumbed through the WindowContext
+                // above; the attach handshake itself doesn't carry it.
+                working_dir: _,
+            } => {
+                initialize_notebook_sync_attach(
+                    window,
+                    notebook_id,
+                    runtime,
                     notebook_sync,
                     sync_generation,
                     notebook_id_arc,
@@ -4098,6 +4244,10 @@ pub fn run(
             OpenMode::Create {
                 notebook_id: None, ..
             } => String::new(),
+            // Startup windows come from session restore (persisted .ipynb files
+            // or UUID-identified untitled notebooks). Attach is strictly a
+            // live-clone mode and is never serialized into session state.
+            OpenMode::Attach { notebook_id, .. } => notebook_id.clone(),
         };
         let context = create_window_context_for_daemon(
             match &sw.mode {
@@ -4202,7 +4352,7 @@ pub fn run(
             save_notebook,
             save_notebook_as,
             get_default_save_directory,
-            clone_notebook_to_path,
+            clone_notebook_to_ephemeral,
             open_notebook_in_new_window,
             // Daemon connection state (kernel ops now go through
             // `send_frame(0x01)` + the `notebook:frame` pending-map path,
@@ -4430,6 +4580,8 @@ pub fn run(
                                 OpenMode::Open { path } =>
                                     format!("open:{}", path.display()),
                                 OpenMode::Create { .. } => "create".into(),
+                                OpenMode::Attach { notebook_id, .. } =>
+                                    format!("attach:{}", notebook_id),
                             }
                         );
                         match (
@@ -4458,6 +4610,21 @@ pub fn run(
                                             rt,
                                             wd,
                                             id_hint,
+                                            context.notebook_sync,
+                                            context.sync_generation,
+                                            context.notebook_id,
+                                        )
+                                        .await
+                                    }
+                                    OpenMode::Attach {
+                                        notebook_id: id,
+                                        runtime: rt,
+                                        working_dir: _,
+                                    } => {
+                                        initialize_notebook_sync_attach(
+                                            window,
+                                            id,
+                                            rt,
                                             context.notebook_sync,
                                             context.sync_generation,
                                             context.notebook_id,
