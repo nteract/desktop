@@ -548,6 +548,7 @@ pub async fn build_execution_result(
         "code",
         result.execution_count.as_deref(),
         Some(&result.status),
+        result.execution_id.as_deref(),
     );
 
     let mut items = vec![Content::text(header)];
@@ -558,7 +559,7 @@ pub async fn build_execution_result(
     // Outputs live in RuntimeStateDoc, keyed by execution_id, so we fetch
     // them separately from the cell snapshot.
     let cell_snapshot = handle.get_cell(&result.cell_id);
-    let structured_content = if let Some(snap) = cell_snapshot {
+    let mut structured_content = if let Some(snap) = cell_snapshot {
         let outputs = handle.get_cell_outputs(&result.cell_id).unwrap_or_default();
         if outputs.is_empty() {
             None
@@ -584,6 +585,18 @@ pub async fn build_execution_result(
     };
 
     let mut call_result = CallToolResult::success(items);
+    // Inject execution_id into structured content so MCP App renderers
+    // can associate outputs with a specific execution.
+    if let Some(ref eid) = result.execution_id {
+        if let Some(ref mut sc) = structured_content {
+            if let Some(cell_obj) = sc.get_mut("cell").and_then(|c| c.as_object_mut()) {
+                cell_obj.insert(
+                    "execution_id".to_string(),
+                    serde_json::Value::String(eid.clone()),
+                );
+            }
+        }
+    }
     call_result.structured_content = structured_content;
     Ok(call_result)
 }

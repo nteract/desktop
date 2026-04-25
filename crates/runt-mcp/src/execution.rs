@@ -21,6 +21,11 @@ use tracing::warn;
 pub struct ExecutionResult {
     /// The cell ID that was executed.
     pub cell_id: String,
+    /// The execution ID assigned by the daemon (from `CellQueued`).
+    /// Agents can pass this to `get_cell(execution_id=...)` to read
+    /// outputs for this specific execution, bypassing the cell's
+    /// current pointer.
+    pub execution_id: Option<String>,
     /// Resolved outputs from the cell after execution.
     pub outputs: Vec<Output>,
     /// Execution count (e.g., "5" for In[5]).
@@ -65,6 +70,7 @@ pub async fn execute_and_wait(
         Err(_e) => {
             return ExecutionResult {
                 cell_id: cell_id.to_string(),
+                execution_id: None,
                 outputs: Vec::new(),
                 execution_count: None,
                 status: "error".to_string(),
@@ -155,6 +161,7 @@ pub async fn execute_and_wait(
 
     ExecutionResult {
         cell_id: cell_id.to_string(),
+        execution_id,
         outputs,
         execution_count,
         status: final_status,

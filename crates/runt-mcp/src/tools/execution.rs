@@ -216,11 +216,13 @@ pub async fn run_all_cells(
         };
 
         // Text content: cell header + output text items.
+        let eid = result.cell_execution_ids.get(&cell.id).map(|s| s.as_str());
         let cell_header = formatting::format_cell_header(
             &cell.id,
             "code",
             ec_str.as_deref(),
             Some(display_status),
+            eid,
         );
         content_items.push(rmcp::model::Content::text(cell_header));
         content_items.extend(formatting::outputs_to_content_items(&outputs));
@@ -245,7 +247,15 @@ pub async fn run_all_cells(
                     display_status,
                     &server.blob_base_url,
                 );
-                if let Some(cell_data) = wrapped.get("cell").cloned() {
+                if let Some(mut cell_data) = wrapped.get("cell").cloned() {
+                    if let Some(eid) = eid {
+                        if let Some(obj) = cell_data.as_object_mut() {
+                            obj.insert(
+                                "execution_id".to_string(),
+                                serde_json::Value::String(eid.to_string()),
+                            );
+                        }
+                    }
                     structured_cells.push(cell_data);
                 }
             }
