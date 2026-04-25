@@ -48,6 +48,19 @@
 //!   trust/
 //!     status: Str          ("trusted" | "untrusted" | "signature_invalid" | "no_dependencies")
 //!     needs_approval: bool
+//!   project_context/         Map (daemon-observed project-file context)
+//!     state: Str              ("pending" | "not_found" | "detected" | "unreadable")
+//!     observed_at: Str        (ISO timestamp, "" when state == "pending")
+//!     kind: Str               ("pyproject_toml" | "pixi_toml" | "environment_yml"; "" unless state == "detected")
+//!     absolute_path: Str      ("" unless state == "detected")
+//!     relative_to_notebook: Str ("" unless state == "detected")
+//!     unreadable_path: Str    ("" unless state == "unreadable")
+//!     unreadable_reason: Str  ("" unless state == "unreadable")
+//!     parsed/                 Map (present when state == "detected")
+//!       dependencies: List[Str]
+//!       requires_python: Str|null
+//!       prerelease: Str|null
+//!       extras: Str           (JSON-encoded ProjectFileExtras)
 //!   display_index/          Map (keyed by display_id)
 //!     {display_id}: List[Str]  (entries: "execution_id\0output_id")
 //!   comms/                 Map (keyed by comm_id)
@@ -69,7 +82,10 @@ use automerge::{
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-use crate::{KernelActivity, KernelErrorReason, RuntimeLifecycle, StreamOutputState};
+use crate::{
+    KernelActivity, KernelErrorReason, ProjectContext, ProjectFile, ProjectFileExtras,
+    ProjectFileKind, ProjectFileParsed, RuntimeLifecycle, StreamOutputState,
+};
 
 // ── Snapshot types for reading/comparing state ──────────────────────
 
@@ -354,6 +370,9 @@ impl RuntimeStateDoc {
         doc.put(&trust, "needs_approval", false)
             .expect("scaffold trust.needs_approval");
 
+        // project_context/ — daemon-observed project-file context
+        scaffold_project_context(&mut doc);
+
         // comms/ — keyed by comm_id, tracks widget state
         doc.put_object(&ROOT, "comms", ObjType::Map)
             .expect("scaffold comms");
@@ -441,6 +460,8 @@ impl RuntimeStateDoc {
             .expect("scaffold trust.status");
         doc.put(&trust, "needs_approval", false)
             .expect("scaffold trust.needs_approval");
+
+        scaffold_project_context(&mut doc);
 
         doc.put_object(&ROOT, "comms", ObjType::Map)
             .expect("scaffold comms");
@@ -1742,6 +1763,161 @@ impl RuntimeStateDoc {
         self.set_optional_str("path", path)
     }
 
+    // ── Project context ─────────────────────────────────────────────
+
+    /// Read the daemon-observed project context.
+    ///
+    /// Falls back to [`ProjectContext::Pending`] when the scaffolded map
+    /// is missing (e.g., a peer that did not run the scaffold) or when
+    /// the `state` tag is unparseable. Clients can treat `Pending` as
+    /// "we haven't heard yet" without distinguishing the two cases.
+    pub fn project_context(&self) -> ProjectContext {
+        let Some(pc) = self.get_map("project_context") else {
+            return ProjectContext::Pending;
+        };
+        let state = self.read_str(&pc, "state");
+        match state.as_str() {
+            "pending" | "" => ProjectContext::Pending,
+            "not_found" => ProjectContext::NotFound {
+                observed_at: self.read_str(&pc, "observed_at"),
+            },
+            "detected" => {
+                let kind = ProjectFileKind::parse(&self.read_str(&pc, "kind"))
+                    .unwrap_or(ProjectFileKind::PyprojectToml);
+                ProjectContext::Detected {
+                    project_file: ProjectFile {
+                        kind,
+                        absolute_path: self.read_str(&pc, "absolute_path"),
+                        relative_to_notebook: self.read_str(&pc, "relative_to_notebook"),
+                    },
+                    parsed: self.read_project_file_parsed(&pc),
+                    observed_at: self.read_str(&pc, "observed_at"),
+                }
+            }
+            "unreadable" => ProjectContext::Unreadable {
+                path: self.read_str(&pc, "unreadable_path"),
+                reason: self.read_str(&pc, "unreadable_reason"),
+                observed_at: self.read_str(&pc, "observed_at"),
+            },
+            _ => ProjectContext::Pending,
+        }
+    }
+
+    /// Write the daemon-observed project context.
+    ///
+    /// The daemon is the sole writer; no concurrent writers target this
+    /// key. All state fields are scalars except `parsed`, which we treat
+    /// as an atomic replace — the daemon writes the whole snapshot each
+    /// time it refreshes.
+    pub fn set_project_context(&mut self, ctx: &ProjectContext) -> Result<(), RuntimeStateError> {
+        let pc = self.scaffold_map("project_context")?;
+
+        self.doc.put(&pc, "state", ctx.variant_str())?;
+
+        // Clear every optional field, then fill per-variant. Keeps the
+        // scaffold shape stable regardless of which state we came from.
+        self.doc.put(&pc, "observed_at", "")?;
+        self.doc.put(&pc, "kind", "")?;
+        self.doc.put(&pc, "absolute_path", "")?;
+        self.doc.put(&pc, "relative_to_notebook", "")?;
+        self.doc.put(&pc, "unreadable_path", "")?;
+        self.doc.put(&pc, "unreadable_reason", "")?;
+        self.clear_project_file_parsed(&pc)?;
+
+        match ctx {
+            ProjectContext::Pending => {}
+            ProjectContext::NotFound { observed_at } => {
+                self.doc.put(&pc, "observed_at", observed_at.as_str())?;
+            }
+            ProjectContext::Detected {
+                project_file,
+                parsed,
+                observed_at,
+            } => {
+                self.doc.put(&pc, "observed_at", observed_at.as_str())?;
+                self.doc.put(&pc, "kind", project_file.kind.as_str())?;
+                self.doc
+                    .put(&pc, "absolute_path", project_file.absolute_path.as_str())?;
+                self.doc.put(
+                    &pc,
+                    "relative_to_notebook",
+                    project_file.relative_to_notebook.as_str(),
+                )?;
+                self.write_project_file_parsed(&pc, parsed)?;
+            }
+            ProjectContext::Unreadable {
+                path,
+                reason,
+                observed_at,
+            } => {
+                self.doc.put(&pc, "observed_at", observed_at.as_str())?;
+                self.doc.put(&pc, "unreadable_path", path.as_str())?;
+                self.doc.put(&pc, "unreadable_reason", reason.as_str())?;
+            }
+        }
+
+        Ok(())
+    }
+
+    fn read_project_file_parsed(&self, pc: &automerge::ObjId) -> ProjectFileParsed {
+        let parsed_obj = match self.doc.get(pc, "parsed").ok().flatten() {
+            Some((Value::Object(ObjType::Map), id)) => id,
+            _ => return ProjectFileParsed::default(),
+        };
+        let dependencies = self.read_str_list(&parsed_obj, "dependencies");
+        let requires_python = self.read_opt_str(&parsed_obj, "requires_python");
+        let prerelease = self.read_opt_str(&parsed_obj, "prerelease");
+        let extras_json = self.read_str(&parsed_obj, "extras");
+        let extras = if extras_json.is_empty() {
+            ProjectFileExtras::None
+        } else {
+            serde_json::from_str(&extras_json).unwrap_or(ProjectFileExtras::None)
+        };
+        ProjectFileParsed {
+            dependencies,
+            requires_python,
+            prerelease,
+            extras,
+        }
+    }
+
+    fn write_project_file_parsed(
+        &mut self,
+        pc: &automerge::ObjId,
+        parsed: &ProjectFileParsed,
+    ) -> Result<(), RuntimeStateError> {
+        let obj = self.doc.put_object(pc, "parsed", ObjType::Map)?;
+        let deps_list = self.doc.put_object(&obj, "dependencies", ObjType::List)?;
+        for (i, dep) in parsed.dependencies.iter().enumerate() {
+            self.doc.insert(&deps_list, i, dep.as_str())?;
+        }
+        match parsed.requires_python.as_deref() {
+            Some(s) => self.doc.put(&obj, "requires_python", s)?,
+            None => self.doc.put(&obj, "requires_python", ScalarValue::Null)?,
+        }
+        match parsed.prerelease.as_deref() {
+            Some(s) => self.doc.put(&obj, "prerelease", s)?,
+            None => self.doc.put(&obj, "prerelease", ScalarValue::Null)?,
+        }
+        let extras_json = serde_json::to_string(&parsed.extras).unwrap_or_else(|_| "{}".into());
+        self.doc.put(&obj, "extras", extras_json.as_str())?;
+        Ok(())
+    }
+
+    fn clear_project_file_parsed(
+        &mut self,
+        pc: &automerge::ObjId,
+    ) -> Result<(), RuntimeStateError> {
+        // Replace the `parsed` child with a fresh empty map. Single-writer
+        // invariant on project_context means this put_object is safe.
+        let obj = self.doc.put_object(pc, "parsed", ObjType::Map)?;
+        self.doc.put_object(&obj, "dependencies", ObjType::List)?;
+        self.doc.put(&obj, "requires_python", ScalarValue::Null)?;
+        self.doc.put(&obj, "prerelease", ScalarValue::Null)?;
+        self.doc.put(&obj, "extras", "")?;
+        Ok(())
+    }
+
     fn set_optional_str(
         &mut self,
         key: &'static str,
@@ -2349,6 +2525,43 @@ impl RuntimeStateDoc {
             foreign_comms: Some(foreign_comms),
         })
     }
+}
+
+/// Scaffold the `project_context` map in a fresh doc.
+///
+/// All scalar fields start empty; `state` starts at `"pending"`. The
+/// daemon is the sole writer in production; clients rely on sync to
+/// populate the real values.
+#[allow(clippy::expect_used)]
+fn scaffold_project_context(doc: &mut AutoCommit) {
+    let pc = doc
+        .put_object(&ROOT, "project_context", ObjType::Map)
+        .expect("scaffold project_context");
+    doc.put(&pc, "state", "pending")
+        .expect("scaffold project_context.state");
+    doc.put(&pc, "observed_at", "")
+        .expect("scaffold project_context.observed_at");
+    doc.put(&pc, "kind", "")
+        .expect("scaffold project_context.kind");
+    doc.put(&pc, "absolute_path", "")
+        .expect("scaffold project_context.absolute_path");
+    doc.put(&pc, "relative_to_notebook", "")
+        .expect("scaffold project_context.relative_to_notebook");
+    doc.put(&pc, "unreadable_path", "")
+        .expect("scaffold project_context.unreadable_path");
+    doc.put(&pc, "unreadable_reason", "")
+        .expect("scaffold project_context.unreadable_reason");
+    let parsed = doc
+        .put_object(&pc, "parsed", ObjType::Map)
+        .expect("scaffold project_context.parsed");
+    doc.put_object(&parsed, "dependencies", ObjType::List)
+        .expect("scaffold project_context.parsed.dependencies");
+    doc.put(&parsed, "requires_python", ScalarValue::Null)
+        .expect("scaffold project_context.parsed.requires_python");
+    doc.put(&parsed, "prerelease", ScalarValue::Null)
+        .expect("scaffold project_context.parsed.prerelease");
+    doc.put(&parsed, "extras", "")
+        .expect("scaffold project_context.parsed.extras");
 }
 
 /// Result of [`RuntimeStateDoc::receive_sync_and_foreign_comms`].
@@ -5045,6 +5258,156 @@ mod tests {
         assert_eq!(
             doc.read_state().kernel.lifecycle,
             RuntimeLifecycle::Launching
+        );
+        Ok(())
+    }
+
+    // ── Project context ─────────────────────────────────────────────
+
+    #[test]
+    fn project_context_scaffolds_as_pending() {
+        let doc = RuntimeStateDoc::new();
+        assert_eq!(doc.project_context(), ProjectContext::Pending);
+    }
+
+    #[test]
+    fn project_context_new_with_actor_scaffolds_as_pending() {
+        let doc = RuntimeStateDoc::new_with_actor("test-actor");
+        assert_eq!(doc.project_context(), ProjectContext::Pending);
+    }
+
+    #[test]
+    fn project_context_new_empty_is_pending_without_scaffold() {
+        // new_empty() doesn't scaffold at all. Readers should treat the
+        // missing map as Pending rather than panicking.
+        let doc = RuntimeStateDoc::new_empty();
+        assert_eq!(doc.project_context(), ProjectContext::Pending);
+    }
+
+    #[test]
+    fn project_context_round_trips_not_found() -> Result<(), RuntimeStateError> {
+        let mut doc = RuntimeStateDoc::new();
+        let ctx = ProjectContext::NotFound {
+            observed_at: "2026-04-25T12:00:00Z".into(),
+        };
+        doc.set_project_context(&ctx)?;
+        assert_eq!(doc.project_context(), ctx);
+        Ok(())
+    }
+
+    #[test]
+    fn project_context_round_trips_detected_pyproject() -> Result<(), RuntimeStateError> {
+        let mut doc = RuntimeStateDoc::new();
+        let ctx = ProjectContext::Detected {
+            project_file: ProjectFile {
+                kind: ProjectFileKind::PyprojectToml,
+                absolute_path: "/abs/pyproject.toml".into(),
+                relative_to_notebook: "../pyproject.toml".into(),
+            },
+            parsed: ProjectFileParsed {
+                dependencies: vec!["pandas>=2.0".into(), "numpy".into()],
+                requires_python: Some(">=3.10".into()),
+                prerelease: None,
+                extras: ProjectFileExtras::None,
+            },
+            observed_at: "2026-04-25T12:00:00Z".into(),
+        };
+        doc.set_project_context(&ctx)?;
+        assert_eq!(doc.project_context(), ctx);
+        Ok(())
+    }
+
+    #[test]
+    fn project_context_round_trips_detected_pixi_with_extras() -> Result<(), RuntimeStateError> {
+        let mut doc = RuntimeStateDoc::new();
+        let ctx = ProjectContext::Detected {
+            project_file: ProjectFile {
+                kind: ProjectFileKind::PixiToml,
+                absolute_path: "/abs/pixi.toml".into(),
+                relative_to_notebook: "pixi.toml".into(),
+            },
+            parsed: ProjectFileParsed {
+                dependencies: vec!["python=3.11".into()],
+                requires_python: None,
+                prerelease: None,
+                extras: ProjectFileExtras::Pixi {
+                    channels: vec!["conda-forge".into()],
+                    pypi_dependencies: vec!["requests".into()],
+                },
+            },
+            observed_at: "2026-04-25T12:00:00Z".into(),
+        };
+        doc.set_project_context(&ctx)?;
+        assert_eq!(doc.project_context(), ctx);
+        Ok(())
+    }
+
+    #[test]
+    fn project_context_round_trips_detected_environment_yml_with_pip(
+    ) -> Result<(), RuntimeStateError> {
+        let mut doc = RuntimeStateDoc::new();
+        let ctx = ProjectContext::Detected {
+            project_file: ProjectFile {
+                kind: ProjectFileKind::EnvironmentYml,
+                absolute_path: "/abs/environment.yml".into(),
+                relative_to_notebook: "../environment.yml".into(),
+            },
+            parsed: ProjectFileParsed {
+                dependencies: vec!["numpy".into(), "scipy".into()],
+                requires_python: None,
+                prerelease: None,
+                extras: ProjectFileExtras::EnvironmentYml {
+                    pip: vec!["httpx".into()],
+                },
+            },
+            observed_at: "2026-04-25T12:00:00Z".into(),
+        };
+        doc.set_project_context(&ctx)?;
+        assert_eq!(doc.project_context(), ctx);
+        Ok(())
+    }
+
+    #[test]
+    fn project_context_round_trips_unreadable() -> Result<(), RuntimeStateError> {
+        let mut doc = RuntimeStateDoc::new();
+        let ctx = ProjectContext::Unreadable {
+            path: "/abs/pyproject.toml".into(),
+            reason: "parse error at line 3".into(),
+            observed_at: "2026-04-25T12:00:00Z".into(),
+        };
+        doc.set_project_context(&ctx)?;
+        assert_eq!(doc.project_context(), ctx);
+        Ok(())
+    }
+
+    #[test]
+    fn project_context_transitions_clear_previous_fields() -> Result<(), RuntimeStateError> {
+        // Write Detected, then NotFound. The Detected-specific fields
+        // (kind, absolute_path, parsed.dependencies, ...) must all clear
+        // so the subsequent read doesn't show ghost data.
+        let mut doc = RuntimeStateDoc::new();
+        doc.set_project_context(&ProjectContext::Detected {
+            project_file: ProjectFile {
+                kind: ProjectFileKind::PyprojectToml,
+                absolute_path: "/abs/pyproject.toml".into(),
+                relative_to_notebook: "../pyproject.toml".into(),
+            },
+            parsed: ProjectFileParsed {
+                dependencies: vec!["pandas".into()],
+                requires_python: Some(">=3.10".into()),
+                prerelease: None,
+                extras: ProjectFileExtras::None,
+            },
+            observed_at: "t0".into(),
+        })?;
+        doc.set_project_context(&ProjectContext::NotFound {
+            observed_at: "t1".into(),
+        })?;
+        assert_eq!(
+            doc.project_context(),
+            ProjectContext::NotFound {
+                observed_at: "t1".into(),
+            }
         );
         Ok(())
     }
