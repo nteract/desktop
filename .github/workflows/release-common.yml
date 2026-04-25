@@ -1286,11 +1286,11 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@v7
 
-      # PyPI publish steps fail the release if they error. Nightly runs
-      # generate unique per-minute versions (e.g. 2.2.1a202604150406) so
-      # "version already exists" collisions shouldn't happen under normal
-      # scheduling. If they do happen, the right response is to fail loudly
-      # and investigate — not pretend the release shipped.
+      # PyPI publishes are gated to pre-releases (nightly) only. Stable
+      # publishes are paused while the `runtimed` / `nteract` / `dx`
+      # library surface is still in flux — see #2217. Pre-releases carry
+      # unique per-minute versions (e.g. 2.2.1a202604150406) so there's
+      # no collision risk.
       #
       # Trusted-publisher config on PyPI must include an entry for this
       # workflow (`release-common.yml`) per published project. Missing
@@ -1298,12 +1298,15 @@ jobs:
       # project 'X'". Fix at https://pypi.org/manage/project/{name}/settings/publishing/.
 
       - name: Publish runtimed to PyPI
+        if: inputs.github_release_prerelease
         run: uv publish --trusted-publishing always ./wheels/*.whl
 
       - name: Publish nteract to PyPI
+        if: inputs.github_release_prerelease
         run: uv publish --trusted-publishing always ./nteract-dist/*
 
       - name: Publish dx to PyPI
+        if: inputs.github_release_prerelease
         run: uv publish --trusted-publishing always ./dx-dist/*
 
       - name: Generate release body

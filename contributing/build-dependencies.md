@@ -30,7 +30,7 @@ graph TD
 
     subgraph "Bundled Artifacts"
         APP["Notebook .app / .dmg<br/>.AppImage / .exe"]
-        PY["Python wheel<br/><i>pip install runtimed</i>"]
+        PY["Python wheel<br/><i>pip install --pre runtimed</i>"]
     end
 
     %% Frontend → Rust compile-time dependencies

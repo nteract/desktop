@@ -8,16 +8,16 @@
 
 ```bash
 # pandas
-pip install "dx[pandas]"
+pip install --pre "dx[pandas]"
 
 # polars
-pip install "dx[polars]"
+pip install --pre "dx[polars]"
 
 # both
-pip install "dx[pandas,polars]"
+pip install --pre "dx[pandas,polars]"
 ```
 
-Python 3.10+.
+Python 3.10+. Only pre-release wheels are being published while the library surface settles — the stable channel is frozen. See [#2217](https://github.com/nteract/desktop/issues/2217). Most nteract users don't install `dx` directly: the kernel launcher calls `dx.install()` during bootstrap, so DataFrames render through the blob store inside the nteract desktop app automatically.
 
 ## Use
 
