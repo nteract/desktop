@@ -69,6 +69,7 @@ pub(crate) use nbformat_convert::*;
 pub use path_index::{PathIndex, PathIndexError};
 pub(crate) use peer::*;
 pub(crate) use persist::*;
+pub(crate) use project_context::refresh_project_context_on_save_as;
 pub(crate) use room::*;
 pub(crate) use runtime_bridge::*;
 

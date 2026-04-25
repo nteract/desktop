@@ -6,9 +6,16 @@
 //! `set_project_context`; clients read via the normal RuntimeState sync
 //! path.
 //!
-//! Scope: write once per room creation from the notebook's on-disk
-//! location. `save_notebook_as` and filesystem watch refreshes are
-//! follow-up work.
+//! Write triggers:
+//!
+//! - Room creation (`get_or_create_room` in `catalog.rs`).
+//! - Untitled → file-backed promotion, after `finalize_untitled_promotion`
+//!   stamps the new path.
+//! - Save-as rename, after `save_notebook_to_disk` moves the file and
+//!   `set_path` updates the room.
+//!
+//! Filesystem watches for external project-file edits or for the
+//! notebook being moved out from under us are still follow-up work.
 //!
 //! Parsing is line-based on purpose. Adding `toml` / `serde_yaml` /
 //! `pathdiff` to `runtimed` just for the commit-2 extraction round
@@ -30,12 +37,24 @@ use crate::project_file::{self as daemon_project_file, DetectedProjectFile};
 
 use super::room::NotebookRoom;
 
+/// Cross-module entrypoint for the save-as handler. Save-as hands us a
+/// concrete path (no `Option`), and lives in `crate::requests`, outside
+/// `notebook_sync_server`'s `pub(super)` visibility.
+pub(crate) fn refresh_project_context_on_save_as(room: &Arc<NotebookRoom>, canonical: &Path) {
+    refresh_project_context(room, Some(canonical));
+}
+
 /// Walk up from the notebook path, parse what the daemon can, and write
 /// the result into the room's `RuntimeStateDoc.project_context`.
 ///
 /// Untitled notebooks (no path) leave the field at `Pending`; a sentinel
 /// write would be misleading because there's nothing to refresh against.
-pub(super) fn populate_project_context_on_open(room: &Arc<NotebookRoom>, path: Option<&Path>) {
+///
+/// Re-runnable: the caller may invoke this whenever the room's on-disk
+/// path changes (untitled promotion, save-as rename). The setter clears
+/// variant-specific fields before writing, so a `Detected` → `NotFound`
+/// transition doesn't leave ghost data.
+pub(super) fn refresh_project_context(room: &Arc<NotebookRoom>, path: Option<&Path>) {
     let Some(notebook_path) = path else {
         return;
     };
@@ -558,6 +577,45 @@ mod tests {
                 Path::new("/foo/pyproject.toml"),
             ),
             "../pyproject.toml"
+        );
+    }
+
+    #[test]
+    fn build_context_reflects_new_location_on_rerun() {
+        // Locks in the "re-runnable on path change" promise in
+        // refresh_project_context's doc comment. Building against
+        // location A then rebuilding against location B must produce
+        // B's answer, not a merge of both.
+        let temp = TempDir::new().unwrap();
+        let with_pyproject = temp.path().join("with");
+        let bare = temp.path().join("bare");
+        std::fs::create_dir_all(&with_pyproject).unwrap();
+        std::fs::create_dir_all(&bare).unwrap();
+        write(
+            &with_pyproject,
+            "pyproject.toml",
+            "[project]\nname = \"demo\"\ndependencies = [\"pandas\"]\n",
+        );
+
+        let nb_in_project = write(&with_pyproject, "demo.ipynb", "{}");
+        let nb_no_project = write(&bare, "demo.ipynb", "{}");
+
+        // First location: Detected against pyproject.toml.
+        let first = build_context(&nb_in_project);
+        assert!(
+            matches!(first, ProjectContext::Detected { .. }),
+            "expected Detected for notebook under project dir, got {first:?}"
+        );
+
+        // Save-as to a bare directory: should now be NotFound, with no
+        // leaked fields from the earlier Detected. `set_project_context`
+        // does the field-clearing in the CRDT setter; here we just
+        // confirm `build_context` returns the unambiguous answer for
+        // the new path.
+        let second = build_context(&nb_no_project);
+        assert!(
+            matches!(second, ProjectContext::NotFound { .. }),
+            "expected NotFound for notebook in bare dir, got {second:?}"
         );
     }
 }
