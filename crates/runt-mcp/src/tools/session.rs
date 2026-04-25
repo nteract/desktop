@@ -684,11 +684,7 @@ pub async fn show_notebook(
             match session.as_ref() {
                 Some(s) => (s.notebook_id.clone(), s.notebook_path.clone()),
                 None => {
-                    return tool_error(
-                        "No notebook_id provided and no active session. \
-                         Use list_active_notebooks() to find a notebook_id, \
-                         or connect to one first.",
-                    )
+                    return super::no_session_error(server).await;
                 }
             }
         }

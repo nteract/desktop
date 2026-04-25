@@ -370,6 +370,14 @@ async fn rejoin(
                     tokio::time::sleep(REJOIN_RETRY_DELAY).await;
                 } else {
                     warn!("Rejoin exhausted retries: {e}");
+                    // Record the drop so no_session_error can surface the
+                    // notebook_id and reconnect hint to the agent.
+                    *last_session_drop.write().await = Some(SessionDropInfo {
+                        reason: SessionDropReason::Disconnected,
+                        notebook_id: notebook_id.clone(),
+                        notebook_path: notebook_path.clone(),
+                    });
+                    *session.write().await = None;
                 }
             }
         }
