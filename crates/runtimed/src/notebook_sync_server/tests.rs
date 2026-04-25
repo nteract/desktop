@@ -6249,3 +6249,81 @@ async fn test_clone_as_ephemeral_carries_unknown_metadata_extras() {
         serde_json::json!({"paired_paths": [["x.py", "py:percent"]]})
     );
 }
+
+#[tokio::test]
+async fn test_file_watcher_replacement_drops_stale_top_level_metadata() {
+    // Codex P2#2 on PR #2198: the file-watcher path calls
+    // set_metadata_snapshot with whatever the new on-disk file
+    // parsed to. When a user deletes an unknown top-level key (say,
+    // `colab`) from the .ipynb, the daemon must converge — not keep
+    // the stale Automerge map around forever. Simulate the reload by
+    // parsing two different on-disk states and applying each.
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (room, notebook_path) = test_room_with_path(&tmp, "watcher-reload.ipynb");
+
+    // First state: both jupytext and colab present.
+    std::fs::write(
+        &notebook_path,
+        r#"{
+ "cells": [],
+ "metadata": {
+  "kernelspec": {"name": "python3", "display_name": "Python 3", "language": "python"},
+  "language_info": {"name": "python", "version": "3.11.5"},
+  "jupytext": {"paired_paths": [["x.py", "py:percent"]]},
+  "colab": {"kernel": {"name": "python3"}}
+ },
+ "nbformat": 4,
+ "nbformat_minor": 5
+}"#,
+    )
+    .unwrap();
+    {
+        let mut doc = room.doc.write().await;
+        crate::notebook_sync_server::load_notebook_from_disk(
+            &mut doc,
+            &notebook_path,
+            &room.blob_store,
+        )
+        .await
+        .unwrap();
+    }
+
+    let first = {
+        let doc = room.doc.read().await;
+        doc.get_metadata_snapshot().unwrap()
+    };
+    assert!(first.extras.contains_key("jupytext"));
+    assert!(first.extras.contains_key("colab"));
+
+    // Second state: colab removed, jupytext kept. This mirrors the
+    // watcher path exactly: parse_metadata_from_ipynb + set_metadata_snapshot.
+    let new_json = serde_json::json!({
+        "cells": [],
+        "metadata": {
+            "kernelspec": {"name": "python3", "display_name": "Python 3", "language": "python"},
+            "language_info": {"name": "python", "version": "3.11.5"},
+            "jupytext": {"paired_paths": [["x.py", "py:percent"]]}
+        },
+        "nbformat": 4,
+        "nbformat_minor": 5
+    });
+    let new_meta = crate::notebook_sync_server::parse_metadata_from_ipynb(&new_json).unwrap();
+    {
+        let mut doc = room.doc.write().await;
+        doc.set_metadata_snapshot(&new_meta).unwrap();
+    }
+
+    let after = {
+        let doc = room.doc.read().await;
+        doc.get_metadata_snapshot().unwrap()
+    };
+    assert!(
+        after.extras.contains_key("jupytext"),
+        "jupytext must still be present after replace"
+    );
+    assert!(
+        !after.extras.contains_key("colab"),
+        "colab must be deleted from doc after replacement snapshot omits it; extras={:?}",
+        after.extras.keys().collect::<Vec<_>>()
+    );
+}

@@ -1225,7 +1225,7 @@ mod tests {
                 Some(&json!("text/x-python"))
             );
             // Vanilla runt -> must not appear as a synthetic stamp.
-            assert!(meta.additional.get("runt").is_none());
+            assert!(!meta.additional.contains_key("runt"));
         }
 
         #[test]

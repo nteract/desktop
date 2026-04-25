@@ -438,14 +438,40 @@ impl NotebookDoc {
             update_json_at_key(&mut self.doc, &meta_id, "runt", &runt_v)?;
         }
 
+        // Delete extras keys that were present in the doc but are absent
+        // from the incoming snapshot. This is the replacement semantic
+        // the file-watcher path needs: when a user deletes `jupytext`
+        // from the .ipynb, re-parses it, and pushes the new snapshot
+        // back, the old Automerge map must go. Without this, stale
+        // extras linger in the doc forever.
+        //
+        // Scan before writing so we don't delete keys we're about to
+        // re-add (a no-op) and so reserved keys (kernelspec,
+        // language_info, runt, runtime, ephemeral) never get touched.
+        let stale_keys: Vec<String> = self
+            .doc
+            .keys(&meta_id)
+            .filter(|k| !is_snapshot_reserved_metadata_key(k))
+            .filter(|k| !snapshot.extras.contains_key(k))
+            .collect();
+        for key in &stale_keys {
+            let _ = self.doc.delete(&meta_id, key.as_str());
+        }
+
         // Write extras. Each key becomes its own Automerge Map so
         // concurrent edits to metadata.jupytext.* from two peers merge
-        // per-field. Guard against callers that stuff known top-level
-        // keys into extras — those would double-write at the same
-        // Automerge key.
+        // per-field. Guard against callers that stuff known typed keys
+        // into extras — those would double-write at the same Automerge
+        // key. The `runtime`/`ephemeral` reserved scalars aren't in
+        // this guard because they're already skipped on the read path;
+        // if a caller did stash one in extras, silently dropping it in
+        // the stale-key filter below is preferable to an error log.
         for (key, value) in &snapshot.extras {
             if matches!(key.as_str(), "kernelspec" | "language_info" | "runt") {
                 report_extras_collision(key);
+                continue;
+            }
+            if is_snapshot_reserved_metadata_key(key) {
                 continue;
             }
             update_json_at_key(&mut self.doc, &meta_id, key, value)?;
@@ -4220,6 +4246,90 @@ mod tests {
             "typed runt must win over colliding extras"
         );
         assert!(!round_tripped.extras.contains_key("runt"));
+    }
+
+    #[test]
+    fn set_metadata_snapshot_deletes_stale_extras_absent_from_replacement() {
+        use crate::metadata::NotebookMetadataSnapshot;
+        let mut doc = NotebookDoc::new_with_actor("test-nb", "test");
+
+        // Initial write: two unknown keys.
+        let mut first = NotebookMetadataSnapshot::default();
+        first
+            .extras
+            .insert("jupytext".to_string(), serde_json::json!({"formats": "py"}));
+        first.extras.insert(
+            "colab".to_string(),
+            serde_json::json!({"kernel": "python3"}),
+        );
+        doc.set_metadata_snapshot(&first).unwrap();
+
+        let after_first = doc.get_metadata_snapshot().unwrap();
+        assert_eq!(after_first.extras.len(), 2);
+
+        // Replacement: only jupytext present. colab must be deleted,
+        // not quietly retained. This is the file-watcher-reload path —
+        // a user edits metadata on disk, we re-parse, and the daemon
+        // has to converge to the new shape.
+        let mut second = NotebookMetadataSnapshot::default();
+        second
+            .extras
+            .insert("jupytext".to_string(), serde_json::json!({"formats": "py"}));
+        doc.set_metadata_snapshot(&second).unwrap();
+
+        let after_second = doc.get_metadata_snapshot().unwrap();
+        assert!(after_second.extras.contains_key("jupytext"));
+        assert!(
+            !after_second.extras.contains_key("colab"),
+            "stale extras key must be deleted when absent from replacement"
+        );
+    }
+
+    #[test]
+    fn set_metadata_snapshot_preserves_runtime_and_ephemeral_scalars() {
+        use crate::metadata::NotebookMetadataSnapshot;
+        let mut doc = NotebookDoc::new_with_actor("test-nb", "test");
+
+        // Seed nteract-internal scalars directly on the metadata map —
+        // bootstrap writes `runtime` and rooms may carry `ephemeral`.
+        let meta_id = doc
+            .doc
+            .get(automerge::ROOT, "metadata")
+            .unwrap()
+            .and_then(|(v, id)| match v {
+                automerge::Value::Object(automerge::ObjType::Map) => Some(id),
+                _ => None,
+            })
+            .unwrap_or_else(|| {
+                doc.doc
+                    .put_object(automerge::ROOT, "metadata", automerge::ObjType::Map)
+                    .unwrap()
+            });
+        doc.doc.put(&meta_id, "runtime", "python").unwrap();
+        doc.doc.put(&meta_id, "ephemeral", true).unwrap();
+
+        // Add an extras key, then replace with a snapshot that has NO
+        // extras. The runtime/ephemeral scalars must survive the
+        // stale-extras sweep — they're not nbformat keys and must not
+        // bleed into extras scans either.
+        let mut first = NotebookMetadataSnapshot::default();
+        first
+            .extras
+            .insert("jupytext".to_string(), serde_json::json!({"formats": "py"}));
+        doc.set_metadata_snapshot(&first).unwrap();
+
+        let empty = NotebookMetadataSnapshot::default();
+        doc.set_metadata_snapshot(&empty).unwrap();
+
+        // runtime and ephemeral scalars still on the doc.
+        let runtime_scalar = read_str(&doc.doc, meta_id.clone(), "runtime");
+        assert_eq!(runtime_scalar.as_deref(), Some("python"));
+        let ephemeral_present = doc.doc.get(&meta_id, "ephemeral").unwrap().is_some();
+        assert!(ephemeral_present);
+
+        // jupytext was deleted.
+        let after = doc.get_metadata_snapshot();
+        assert!(after.is_none() || !after.unwrap().extras.contains_key("jupytext"));
     }
 
     #[test]
