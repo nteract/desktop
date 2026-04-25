@@ -30,8 +30,6 @@ interface CrdtBridgeContextValue {
   getHandle: () => NotebookHandle | null;
   /** Signal that the CRDT was mutated and needs syncing to daemon. */
   onSyncNeeded: () => void;
-  /** Mark the notebook as dirty (unsaved changes). */
-  setDirty: (dirty: boolean) => void;
   /** Local actor label (e.g. "human:abcd1234") for filtering self-echo attributions. */
   localActor: string;
 }
@@ -43,7 +41,6 @@ const CrdtBridgeContext = createContext<CrdtBridgeContextValue | null>(null);
 interface CrdtBridgeProviderProps {
   getHandle: () => NotebookHandle | null;
   onSyncNeeded: () => void;
-  setDirty: (dirty: boolean) => void;
   localActor: string;
   children: ReactNode;
 }
@@ -51,7 +48,6 @@ interface CrdtBridgeProviderProps {
 export function CrdtBridgeProvider({
   getHandle,
   onSyncNeeded,
-  setDirty,
   localActor,
   children,
 }: CrdtBridgeProviderProps) {
@@ -59,12 +55,10 @@ export function CrdtBridgeProvider({
   const valueRef = useRef<CrdtBridgeContextValue>({
     getHandle,
     onSyncNeeded,
-    setDirty,
     localActor,
   });
   valueRef.current.getHandle = getHandle;
   valueRef.current.onSyncNeeded = onSyncNeeded;
-  valueRef.current.setDirty = setDirty;
   valueRef.current.localActor = localActor;
 
   // The context value object itself is stable (same ref every render).
@@ -107,7 +101,6 @@ export function useCrdtBridge(cellId: string): {
       },
       onSyncNeeded: () => {
         ctxRef.current.onSyncNeeded();
-        ctxRef.current.setDirty(true);
       },
     });
   }, [cellId]);

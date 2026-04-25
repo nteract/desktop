@@ -35,12 +35,17 @@ import {
 } from "../lib/notebook-executions";
 import { deleteOutputs, updateOutputsByDisplayId } from "../lib/notebook-outputs";
 import { cloneNotebookFile, openNotebookFile, saveNotebook } from "../lib/notebook-file-ops";
-import { emitBroadcast, emitPresence, subscribeBroadcast } from "../lib/notebook-frame-bus";
+import { emitBroadcast, emitPresence } from "../lib/notebook-frame-bus";
 import { notifyMetadataChanged, setNotebookHandle } from "../lib/notebook-metadata";
 import { type PoolState, resetPoolState, setPoolState } from "../lib/pool-state";
-import { getRuntimeState, resetRuntimeState, setRuntimeState } from "../lib/runtime-state";
+import {
+  getRuntimeState,
+  resetRuntimeState,
+  setRuntimeState,
+  useRuntimeState,
+} from "../lib/runtime-state";
 import { fromTauriEvent } from "../lib/tauri-rx";
-import type { DaemonBroadcast, JupyterOutput } from "../types";
+import type { JupyterOutput } from "../types";
 import init, { NotebookHandle } from "../wasm/runtimed-wasm/runtimed_wasm.js";
 
 // Module-level WASM init — runs before React renders.
@@ -88,7 +93,6 @@ export function useAutomergeNotebook() {
   const host = useNotebookHost();
   const cellIds = useCellIds();
   const [focusedCellId, setFocusedCellId] = useState<string | null>(null);
-  const [dirty, setDirty] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
 
@@ -97,6 +101,7 @@ export function useAutomergeNotebook() {
   const outputCacheRef = useRef<Map<string, JupyterOutput>>(new Map());
   const interactiveReadyRef = useRef(false);
   const latestSessionStatusRef = useRef<SessionStatus | null>(null);
+  const prevPathRef = useRef<string | null>(null);
 
   // SyncEngine and transport refs — stable across re-renders.
   const engineRef = useRef<SyncEngine | null>(null);
@@ -107,22 +112,19 @@ export function useAutomergeNotebook() {
     refreshBlobPort();
   }, []);
 
-  // Clear dirty state on daemon autosave. Also sync Tauri-side path state
-  // when the daemon broadcasts a path change (untitled→saved, save-as, or a
-  // peer renamed the notebook). The UUID is stable across all of this.
+  // Mirror `RuntimeStateDoc.path` to Tauri so the window title tracks
+  // path renames (untitled→saved, save-as). The doc is daemon-authored
+  // and reaches us via normal CRDT sync (frame 0x05).
+  const runtimeState = useRuntimeState();
+  const runtimePath = runtimeState.path ?? null;
   useEffect(() => {
-    return subscribeBroadcast((payload) => {
-      const broadcast = payload as DaemonBroadcast;
-      if (broadcast.event === "notebook_autosaved") {
-        setDirty(false);
-        host.notebook.markClean().catch(() => {});
-      } else if (broadcast.event === "path_changed") {
-        if (broadcast.path != null) {
-          host.notebook.applyPathChanged(broadcast.path).catch(() => {});
-        }
+    if (runtimePath !== prevPathRef.current) {
+      prevPathRef.current = runtimePath;
+      if (runtimePath != null) {
+        host.notebook.applyPathChanged(runtimePath).catch(() => {});
       }
-    });
-  }, [host]);
+    }
+  }, [runtimePath, host]);
 
   // ── Core helpers ───────────────────────────────────────────────────
 
@@ -193,7 +195,6 @@ export function useAutomergeNotebook() {
       if (!mutate(handle)) return false;
       rematerializeCellsSync(handle);
       engine.flush();
-      setDirty(true);
       return true;
     },
     [rematerializeCellsSync],
@@ -489,7 +490,6 @@ export function useAutomergeNotebook() {
 
     updateCellById(cellId, (c) => ({ ...c, source }));
     engine.scheduleFlush();
-    setDirty(true);
   }, []);
 
   const clearOutputsLocal = useCallback((_cellId: string) => {
@@ -539,7 +539,6 @@ export function useAutomergeNotebook() {
       rematerializeCellsSync(handle);
       engine.flush();
       setFocusedCellId(cellId);
-      setDirty(true);
 
       const cell = getNotebookCellsSnapshot().find((c) => c.id === cellId);
       return (
@@ -615,8 +614,7 @@ export function useAutomergeNotebook() {
   // ── File operations ────────────────────────────────────────────────
 
   const save = useCallback(async () => {
-    const saved = await saveNotebook(host, flushSync);
-    if (saved) setDirty(false);
+    await saveNotebook(host, flushSync);
   }, [host, flushSync]);
 
   const openNotebook = useCallback(() => openNotebookFile(host), [host]);
@@ -687,8 +685,6 @@ export function useAutomergeNotebook() {
     save,
     openNotebook,
     cloneNotebook,
-    dirty,
-    setDirty,
     loadError,
     updateOutputByDisplayId,
     applyExecutionCountFromDaemon,

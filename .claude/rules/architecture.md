@@ -128,8 +128,8 @@ Per-cell WASM accessors (O(1) Automerge map lookups): `get_cell_source(id)`, `ge
 
 ## Notebook Room Lifecycle
 
-- **Autosave:** 2s quiet period, 10s max interval. `NotebookAutosaved` broadcast clears the frontend dirty flag.
-- **UUID-stable rooms:** Room keys are always UUIDs. Saving an untitled notebook updates `path_index` and broadcasts `PathChanged { path }` to peers. The UUID never changes.
+- **Autosave:** 2s quiet period, 10s max interval. The daemon writes `RuntimeStateDoc.last_saved` on each successful save; the frontend computes dirty as `local_edit_at > last_saved` and clears its title-bar dot when the saved timestamp catches up.
+- **UUID-stable rooms:** Room keys are always UUIDs. Saving an untitled notebook updates `path_index` and writes `RuntimeStateDoc.path`; peers see the new path via normal CRDT sync. The UUID never changes.
 - **Crash recovery:** Untitled notebooks persist to `notebook-docs/{hash}.automerge`. Snapshots go to `notebook-docs/snapshots/`. Outputs are ephemeral — they live in RuntimeStateDoc and are not persisted.
 - **Multi-window:** Multiple windows join the same room as separate Automerge peers.
 - **Eviction:** After all peers disconnect, delayed eviction (default 30s via `keep_alive_secs`) shuts down the kernel and removes the room.

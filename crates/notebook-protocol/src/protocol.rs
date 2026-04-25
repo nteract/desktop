@@ -566,11 +566,12 @@ pub enum NotebookResponse {
 /// Broadcast messages from daemon to all peers in a room.
 ///
 /// Ephemeral, room-wide events that don't fit the request/response or
-/// CRDT-sync model: comm messages from the kernel, environment-launch
-/// progress, path renames, autosave acks. Kernel state, execution
-/// lifecycle, queue, and outputs all live in `RuntimeStateDoc` (frame
-/// type `0x05`) — they used to flow as broadcasts and the dead variants
-/// were removed once the doc became authoritative.
+/// CRDT-sync model: comm messages from the kernel and environment-launch
+/// progress. Kernel state, execution lifecycle, queue, outputs, the
+/// notebook's `path`, and `last_saved` timestamp all live in
+/// `RuntimeStateDoc` (frame type `0x05`) — they used to flow as
+/// broadcasts and the dead variants were removed once the doc became
+/// authoritative.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
 #[allow(clippy::large_enum_variant)]
@@ -596,19 +597,6 @@ pub enum NotebookBroadcast {
         #[serde(flatten)]
         phase: kernel_env::EnvProgressPhase,
     },
-
-    /// Sent when the room's `.ipynb` path changes (untitled→saved, save-as rename).
-    ///
-    /// Peers update local bookkeeping but do NOT reconnect — the UUID is stable.
-    /// `path` is `None` for an explicit "close file" rename (rare/future).
-    ///
-    /// Callers building this from a `PathBuf` should use
-    /// `p.to_string_lossy().into_owned()` so non-UTF-8 paths degrade gracefully
-    /// on the wire.
-    PathChanged { path: Option<String> },
-
-    /// Notebook was autosaved to disk by the daemon.
-    NotebookAutosaved { path: String },
 }
 
 // ── Runtime agent protocol types ──────────────────────────────────────────

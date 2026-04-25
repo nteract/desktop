@@ -150,6 +150,11 @@ export interface RuntimeState {
   env: EnvState;
   trust: TrustState;
   last_saved: string | null;
+  /**
+   * Path to the notebook's `.ipynb` on the daemon's disk. `null` for
+   * untitled notebooks; the daemon writes this on save / save-as.
+   */
+  path: string | null;
   executions: Record<string, ExecutionState>;
   comms: Record<string, CommDocEntry>;
 }
@@ -182,6 +187,7 @@ export const DEFAULT_RUNTIME_STATE: RuntimeState = {
     needs_approval: false,
   },
   last_saved: null,
+  path: null,
   executions: {},
   comms: {},
 };

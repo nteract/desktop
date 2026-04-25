@@ -84,19 +84,12 @@ Only `0x00` (AutomergeSync), `0x04` (Presence), and `0x06` (PoolStateSync) are v
 
 ## Key Broadcast Types
 
+After progressively migrating room state to `RuntimeStateDoc`, broadcasts are now narrow: kernel comm messages and env-install progress. Kernel state, execution lifecycle, queue, outputs, the notebook's `path`, and `last_saved` timestamp all live in `RuntimeStateDoc` (frame `0x05`).
+
 | Broadcast | Purpose |
 |-----------|---------|
-| `KernelStatus { status, cell_id }` | Kernel state: starting, idle, busy, error, shutdown |
-| `ExecutionStarted { cell_id, execution_count }` | Cell began executing |
-| `Output { cell_id, output_type, output_json, output_index }` | Cell produced output |
-| `ExecutionDone { cell_id }` | Cell execution completed |
-| `QueueChanged { executing, queued }` | Execution queue state changed (legacy; RuntimeStateDoc is authoritative) |
-| `Comm { msg_type, content, buffers }` | Jupyter comm message (widget) |
-| ~~`CommSync`~~ | Removed — widget state syncs via RuntimeStateDoc CRDT |
-| `EnvProgress { env_type, phase }` | Environment setup progress |
-| `EnvSyncState { in_sync, diff }` | Deps drifted from launched kernel |
-| `PathChanged { path }` | Room's `.ipynb` path changed — UUID is stable; peers update local path tracking |
-| `NotebookAutosaved { path }` | Autosave completed, frontend clears dirty flag |
+| `Comm { msg_type, content, buffers }` | Jupyter comm message (widget). Custom one-shot events; widget *state* syncs via RuntimeStateDoc. |
+| `EnvProgress { env_type, phase }` | Environment install/solve/download progress (high-frequency stream). |
 
 ## Tauri Event Bridge
 

@@ -530,18 +530,20 @@ mod tests {
     }
 
     #[test]
-    fn test_notebook_broadcast_path_changed() {
-        let broadcast = NotebookBroadcast::PathChanged {
-            path: Some("/tmp/foo.ipynb".into()),
+    fn test_notebook_broadcast_comm() {
+        let broadcast = NotebookBroadcast::Comm {
+            msg_type: "comm_msg".into(),
+            content: serde_json::json!({"comm_id": "abc"}),
+            buffers: vec![],
         };
         let json = serde_json::to_string(&broadcast).unwrap();
-        assert!(json.contains("path_changed"));
-        assert!(json.contains("/tmp/foo.ipynb"));
+        assert!(json.contains("comm"));
+        assert!(json.contains("comm_id"));
 
         let parsed: NotebookBroadcast = serde_json::from_str(&json).unwrap();
         match parsed {
-            NotebookBroadcast::PathChanged { path } => {
-                assert_eq!(path.as_deref(), Some("/tmp/foo.ipynb"));
+            NotebookBroadcast::Comm { msg_type, .. } => {
+                assert_eq!(msg_type, "comm_msg");
             }
             _ => panic!("unexpected broadcast type"),
         }

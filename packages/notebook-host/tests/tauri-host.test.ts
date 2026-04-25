@@ -213,15 +213,11 @@ describe("createTauriHost()", () => {
     expect(typosquat?.args).toEqual({ packages: ["requestz"] });
   });
 
-  it("routes notebook.markClean / applyPathChanged to the correct commands", async () => {
+  it("routes notebook.applyPathChanged to apply_path_changed", async () => {
     const host = createTauriHost({ transport: stubTransport });
-    await host.notebook.markClean();
     await host.notebook.applyPathChanged("/tmp/nb.ipynb");
-    expect(capturedInvokes.map((x) => x.cmd)).toEqual([
-      "mark_notebook_clean",
-      "apply_path_changed",
-    ]);
-    expect(capturedInvokes[1].args).toEqual({ path: "/tmp/nb.ipynb" });
+    expect(capturedInvokes.map((x) => x.cmd)).toEqual(["apply_path_changed"]);
+    expect(capturedInvokes[0].args).toEqual({ path: "/tmp/nb.ipynb" });
   });
 
   it("system.getGitInfo and getUsername route to the correct commands", async () => {

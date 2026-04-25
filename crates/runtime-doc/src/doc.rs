@@ -256,6 +256,9 @@ pub struct RuntimeState {
     pub env: EnvState,
     pub trust: TrustRuntimeState,
     pub last_saved: Option<String>,
+    /// Path to the notebook's `.ipynb` on the daemon's disk.
+    /// `None` for untitled notebooks; daemon writes this on save / save-as.
+    pub path: Option<String>,
     /// Execution lifecycle entries keyed by execution_id.
     #[serde(default)]
     pub executions: HashMap<String, ExecutionState>,
@@ -363,6 +366,10 @@ impl RuntimeStateDoc {
         doc.put(&ROOT, "last_saved", ScalarValue::Null)
             .expect("scaffold last_saved");
 
+        // path — the notebook's .ipynb path; null for untitled
+        doc.put(&ROOT, "path", ScalarValue::Null)
+            .expect("scaffold path");
+
         Self { doc }
     }
 
@@ -441,6 +448,8 @@ impl RuntimeStateDoc {
             .expect("scaffold display_index");
         doc.put(&ROOT, "last_saved", automerge::ScalarValue::Null)
             .expect("scaffold last_saved");
+        doc.put(&ROOT, "path", automerge::ScalarValue::Null)
+            .expect("scaffold path");
 
         Self { doc }
     }
@@ -1725,35 +1734,27 @@ impl RuntimeStateDoc {
 
     /// Set the `last_saved` timestamp.
     pub fn set_last_saved(&mut self, timestamp: Option<&str>) -> Result<(), RuntimeStateError> {
-        let current = self
-            .doc
-            .get(&ROOT, "last_saved")
-            .ok()
-            .flatten()
-            .and_then(|(value, _)| match value {
-                Value::Scalar(s) => match s.as_ref() {
-                    ScalarValue::Null => None,
-                    ScalarValue::Str(s) => Some(s.to_string()),
-                    _ => None,
-                },
-                _ => None,
-            });
+        self.set_optional_str("last_saved", timestamp)
+    }
 
-        let matches = match (&current, timestamp) {
-            (None, None) => true,
-            (Some(a), Some(b)) => a == b,
-            _ => false,
-        };
+    /// Set the notebook's `.ipynb` path. `None` for untitled.
+    pub fn set_path(&mut self, path: Option<&str>) -> Result<(), RuntimeStateError> {
+        self.set_optional_str("path", path)
+    }
 
-        if matches {
+    fn set_optional_str(
+        &mut self,
+        key: &'static str,
+        value: Option<&str>,
+    ) -> Result<(), RuntimeStateError> {
+        let current = self.read_opt_str(&ROOT, key);
+        if current.as_deref() == value {
             return Ok(());
         }
-
-        match timestamp {
-            Some(ts) => self.doc.put(&ROOT, "last_saved", ts)?,
-            None => self.doc.put(&ROOT, "last_saved", ScalarValue::Null)?,
+        match value {
+            Some(s) => self.doc.put(&ROOT, key, s)?,
+            None => self.doc.put(&ROOT, key, ScalarValue::Null)?,
         }
-
         Ok(())
     }
 
@@ -2112,19 +2113,8 @@ impl RuntimeStateDoc {
             })
             .unwrap_or_default();
 
-        let last_saved = self
-            .doc
-            .get(&ROOT, "last_saved")
-            .ok()
-            .flatten()
-            .and_then(|(value, _)| match value {
-                Value::Scalar(s) => match s.as_ref() {
-                    ScalarValue::Null => None,
-                    ScalarValue::Str(s) => Some(s.to_string()),
-                    _ => None,
-                },
-                _ => None,
-            });
+        let last_saved = self.read_opt_str(&ROOT, "last_saved");
+        let path = self.read_opt_str(&ROOT, "path");
 
         let trust_state = trust
             .as_ref()
@@ -2154,6 +2144,7 @@ impl RuntimeStateDoc {
             env: env_state,
             trust: trust_state,
             last_saved,
+            path,
             executions,
             comms,
         }

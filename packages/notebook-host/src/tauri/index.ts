@@ -176,9 +176,6 @@ export function createTauriHost(opts: CreateTauriHostOptions = {}): NotebookHost
     async applyPathChanged(path) {
       await invoke("apply_path_changed", { path });
     },
-    async markClean() {
-      await invoke("mark_notebook_clean");
-    },
   };
 
   const windowNs: HostWindow = {

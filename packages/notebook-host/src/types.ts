@@ -156,21 +156,19 @@ export interface HostRelay {
 }
 
 /**
- * Notebook-scoped state transitions the UI sometimes has to announce to the host.
+ * Notebook-scoped state transitions the UI announces to the host.
  *
- * NOTE: the `applyPathChanged` / `markClean` pair is a legacy shadow of state
- * the daemon already owns (last-saved heads vs current heads for dirty; the
- * `NotebookSession` for path). We keep them on the host for now because the
- * Tauri Rust side still maintains a `WindowNotebookRegistry` that the window
- * title setter reads from. Once the frontend reads path + dirty directly from
- * daemon state / RuntimeStateDoc, these two methods and their Tauri commands
- * (`apply_path_changed`, `mark_notebook_clean`, `has_notebook_path`) all go.
+ * `applyPathChanged` is the only survivor of this contract. The frontend
+ * reads `RuntimeStateDoc.path` (frame `0x05`) and forwards it here so the
+ * Tauri-side `WindowNotebookRegistry` (which the window title setter reads
+ * from) stays in sync. The previous `markClean` companion is gone — the
+ * dirty concept lives only as Tauri-side bookkeeping for the
+ * list-notebooks / save-all-on-quit flow now and will be cleaned up in a
+ * follow-up.
  */
 export interface HostNotebook {
   /** Daemon's path for this room changed (save / save-as); flushed to window state. */
   applyPathChanged(path: string): Promise<void>;
-  /** Daemon autosaved the doc; clear frontend dirty marker. */
-  markClean(): Promise<void>;
 }
 
 /**
