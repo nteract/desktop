@@ -1,8 +1,8 @@
 {
   "mcpServers": {
     "nteract-dev": {
-      "command": "cargo",
-      "args": ["run", "-p", "mcp-supervisor"],
+      "command": "./target/debug/mcp-supervisor",
+      "args": [],
       "env": {
         "RUNTIMED_DEV": "1",
         "SKIP_MATURIN": "1"
