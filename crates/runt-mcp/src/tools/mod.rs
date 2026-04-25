@@ -173,62 +173,6 @@ pub fn all_tools() -> Vec<Tool> {
                 .idempotent(true)
                 .open_world(false),
         ),
-        Tool::new(
-            "clear_outputs",
-            "Clear cell outputs.",
-            schema_for::<cell_crud::ClearOutputsParams>(),
-        )
-        .annotate(
-            ToolAnnotations::new()
-                .destructive(true)
-                .idempotent(true)
-                .open_world(false),
-        ),
-        // -- Cell metadata --
-        Tool::new(
-            "add_cell_tags",
-            "Add tags to a cell.",
-            schema_for::<cell_meta::AddCellTagsParams>(),
-        )
-        .annotate(
-            ToolAnnotations::new()
-                .destructive(false)
-                .idempotent(true)
-                .open_world(false),
-        ),
-        Tool::new(
-            "remove_cell_tags",
-            "Remove tags from a cell.",
-            schema_for::<cell_meta::RemoveCellTagsParams>(),
-        )
-        .annotate(
-            ToolAnnotations::new()
-                .destructive(true)
-                .idempotent(true)
-                .open_world(false),
-        ),
-        Tool::new(
-            "set_cells_source_hidden",
-            "Hide or show cell source.",
-            schema_for::<cell_meta::SetCellsSourceHiddenParams>(),
-        )
-        .annotate(
-            ToolAnnotations::new()
-                .destructive(false)
-                .idempotent(true)
-                .open_world(false),
-        ),
-        Tool::new(
-            "set_cells_outputs_hidden",
-            "Hide or show cell outputs.",
-            schema_for::<cell_meta::SetCellsOutputsHiddenParams>(),
-        )
-        .annotate(
-            ToolAnnotations::new()
-                .destructive(false)
-                .idempotent(true)
-                .open_world(false),
-        ),
         // -- Execution --
         Tool::new(
             "execute_cell",
@@ -243,6 +187,15 @@ pub fn all_tools() -> Vec<Tool> {
             schema_for::<execution::RunAllCellsParams>(),
         )
         .annotate(ToolAnnotations::new().destructive(true).open_world(true))
+        .with_meta(app_tool_meta()),
+        Tool::new(
+            "get_results",
+            "Get outputs for an execution by ID. Returns status (done/error/running/queued) \
+             so you know if outputs are complete. Use the execution_id from execute_cell, \
+             set_cell(and_run), or run_all_cells.",
+            schema_for::<execution::GetResultsParams>(),
+        )
+        .annotate(ToolAnnotations::new().read_only(true).open_world(false))
         .with_meta(app_tool_meta()),
         // -- Kernel --
         Tool::new(
@@ -291,12 +244,6 @@ pub fn all_tools() -> Vec<Tool> {
             schema_for::<deps::GetDependenciesParams>(),
         )
         .annotate(ToolAnnotations::new().read_only(true).open_world(false)),
-        Tool::new(
-            "sync_environment",
-            "Hot-install new dependencies. restart_kernel() if this fails.",
-            schema_for::<EmptyParams>(),
-        )
-        .annotate(ToolAnnotations::new().destructive(false).open_world(true)),
         // -- Editing --
         Tool::new(
             "replace_match",
@@ -344,15 +291,17 @@ pub async fn dispatch(
         "set_cell" => cell_crud::set_cell(server, request).await,
         "delete_cell" => cell_crud::delete_cell(server, request).await,
         "move_cell" => cell_crud::move_cell(server, request).await,
+        // Hidden from tool listing but still callable for backwards compat
         "clear_outputs" => cell_crud::clear_outputs(server, request).await,
-        // Cell metadata
         "add_cell_tags" => cell_meta::add_cell_tags(server, request).await,
         "remove_cell_tags" => cell_meta::remove_cell_tags(server, request).await,
         "set_cells_source_hidden" => cell_meta::set_cells_source_hidden(server, request).await,
         "set_cells_outputs_hidden" => cell_meta::set_cells_outputs_hidden(server, request).await,
+        "sync_environment" => deps::sync_environment(server, request).await,
         // Execution
         "execute_cell" => execution::execute_cell(server, request).await,
         "run_all_cells" => execution::run_all_cells(server, request).await,
+        "get_results" => execution::get_results(server, request).await,
         // Kernel
         "interrupt_kernel" => kernel::interrupt_kernel(server, request).await,
         "restart_kernel" => kernel::restart_kernel(server, request).await,
@@ -360,7 +309,6 @@ pub async fn dispatch(
         "add_dependency" => deps::add_dependency(server, request).await,
         "remove_dependency" => deps::remove_dependency(server, request).await,
         "get_dependencies" => deps::get_dependencies(server, request).await,
-        "sync_environment" => deps::sync_environment(server, request).await,
         // Editing
         "replace_match" => editing::replace_match(server, request).await,
         "replace_regex" => editing::replace_regex(server, request).await,
@@ -548,6 +496,7 @@ pub async fn build_execution_result(
         "code",
         result.execution_count.as_deref(),
         Some(&result.status),
+        result.execution_id.as_deref(),
     );
 
     let mut items = vec![Content::text(header)];
@@ -558,7 +507,7 @@ pub async fn build_execution_result(
     // Outputs live in RuntimeStateDoc, keyed by execution_id, so we fetch
     // them separately from the cell snapshot.
     let cell_snapshot = handle.get_cell(&result.cell_id);
-    let structured_content = if let Some(snap) = cell_snapshot {
+    let mut structured_content = if let Some(snap) = cell_snapshot {
         let outputs = handle.get_cell_outputs(&result.cell_id).unwrap_or_default();
         if outputs.is_empty() {
             None
@@ -584,6 +533,18 @@ pub async fn build_execution_result(
     };
 
     let mut call_result = CallToolResult::success(items);
+    // Inject execution_id into structured content so MCP App renderers
+    // can associate outputs with a specific execution.
+    if let Some(ref eid) = result.execution_id {
+        if let Some(ref mut sc) = structured_content {
+            if let Some(cell_obj) = sc.get_mut("cell").and_then(|c| c.as_object_mut()) {
+                cell_obj.insert(
+                    "execution_id".to_string(),
+                    serde_json::Value::String(eid.clone()),
+                );
+            }
+        }
+    }
     call_result.structured_content = structured_content;
     Ok(call_result)
 }

@@ -110,8 +110,13 @@ pub async fn get_cell(
     } else {
         Some(ec.as_str())
     };
-    let header =
-        formatting::format_cell_header(&cell.id, &cell.cell_type, ec_display, status.as_deref());
+    let header = formatting::format_cell_header(
+        &cell.id,
+        &cell.cell_type,
+        ec_display,
+        status.as_deref(),
+        None,
+    );
 
     // Include tags if present
     let tags = cell.tags();
@@ -246,7 +251,8 @@ pub async fn get_all_cells(
                     },
                 )
                 .await;
-                let header = formatting::format_cell_header(&cell.id, &cell.cell_type, ec, status);
+                let header =
+                    formatting::format_cell_header(&cell.id, &cell.cell_type, ec, status, None);
                 let tags = cell.tags();
                 let header = if tags.is_empty() {
                     header

@@ -206,12 +206,13 @@ pub fn format_cell_summary(
 
 /// Format a cell header line (matches Python _format_header).
 ///
-/// Example: ━━━ cell-abc12345 (code) ✓ idle [3] ━━━
+/// Example: ━━━ cell-abc12345 (code) ✓ idle [3] exec=exec-7f3a2b ━━━
 pub fn format_cell_header(
     cell_id: &str,
     cell_type: &str,
     execution_count: Option<&str>,
     status: Option<&str>,
+    execution_id: Option<&str>,
 ) -> String {
     let mut parts = vec![format!("━━━ {cell_id}")];
 
@@ -234,6 +235,12 @@ pub fn format_cell_header(
     if let Some(ec) = execution_count {
         if !ec.is_empty() {
             parts.push(format!("[{ec}]"));
+        }
+    }
+
+    if let Some(eid) = execution_id {
+        if !eid.is_empty() {
+            parts.push(format!("exec={eid}"));
         }
     }
 
@@ -454,20 +461,38 @@ mod tests {
 
     #[test]
     fn format_cell_header_chooses_icon_by_status() {
-        let idle = format_cell_header("cell-a", "code", Some("3"), Some("idle"));
+        let idle = format_cell_header("cell-a", "code", Some("3"), Some("idle"), None);
         assert!(idle.contains("✓ idle"));
         assert!(idle.contains("[3]"));
 
-        let err = format_cell_header("cell-b", "code", None, Some("error"));
+        let err = format_cell_header("cell-b", "code", None, Some("error"), None);
         assert!(err.contains("✗ error"));
 
-        let running = format_cell_header("cell-c", "code", None, Some("running"));
+        let running = format_cell_header("cell-c", "code", None, Some("running"), None);
         assert!(running.contains("◐ running"));
 
-        let queued = format_cell_header("cell-d", "code", None, Some("queued"));
+        let queued = format_cell_header("cell-d", "code", None, Some("queued"), None);
         assert!(queued.contains("⧗ queued"));
 
-        let unknown = format_cell_header("cell-e", "code", None, Some("bogus"));
+        let unknown = format_cell_header("cell-e", "code", None, Some("bogus"), None);
         assert!(unknown.contains("? bogus"));
+    }
+
+    #[test]
+    fn format_cell_header_includes_execution_id() {
+        let header = format_cell_header(
+            "cell-a",
+            "code",
+            Some("3"),
+            Some("done"),
+            Some("exec-7f3a2b"),
+        );
+        assert!(header.contains("exec=exec-7f3a2b"));
+        assert!(header.contains("[3]"));
+        assert!(header.contains("✓ done"));
+
+        // None execution_id should not add exec= field
+        let header_no_eid = format_cell_header("cell-b", "code", Some("1"), Some("done"), None);
+        assert!(!header_no_eid.contains("exec="));
     }
 }

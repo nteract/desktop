@@ -105,32 +105,16 @@
       "name": "move_cell"
     },
     {
-      "description": "Clear cell outputs.",
-      "name": "clear_outputs"
-    },
-    {
-      "description": "Add tags to a cell.",
-      "name": "add_cell_tags"
-    },
-    {
-      "description": "Remove tags from a cell.",
-      "name": "remove_cell_tags"
-    },
-    {
-      "description": "Hide or show cell source.",
-      "name": "set_cells_source_hidden"
-    },
-    {
-      "description": "Hide or show cell outputs.",
-      "name": "set_cells_outputs_hidden"
-    },
-    {
       "description": "Execute a code cell.",
       "name": "execute_cell"
     },
     {
       "description": "Execute all code cells in order.",
       "name": "run_all_cells"
+    },
+    {
+      "description": "Get outputs for an execution by ID. Returns status (done/error/running/queued) so you know if outputs are complete. Use the execution_id from execute_cell, set_cell(and_run), or run_all_cells.",
+      "name": "get_results"
     },
     {
       "description": "Interrupt execution.",
@@ -151,10 +135,6 @@
     {
       "description": "Get the notebook's declared dependencies.",
       "name": "get_dependencies"
-    },
-    {
-      "description": "Hot-install new dependencies. restart_kernel() if this fails.",
-      "name": "sync_environment"
     },
     {
       "description": "Replace literal text in a cell. Use context_before/context_after to disambiguate repeated matches.",
