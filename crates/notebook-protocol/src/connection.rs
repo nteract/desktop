@@ -330,46 +330,105 @@ impl LaunchSpec {
     }
 }
 
-/// Maximum frame size for data frames: 100 MiB (matches blob size limit).
-const MAX_FRAME_SIZE: usize = 100 * 1024 * 1024;
+// ── Frame size limits ───────────────────────────────────────────────
+//
+// Every typed frame has a hard cap and a soft warn threshold. The cap
+// rejects the frame outright (drops the connection); the warn threshold
+// just logs so we see growth before a cap rejection is triggered in
+// production.
+//
+// Caps are sized for *legitimate worst case*, not the typical case.
+// They exist as defense-in-depth against:
+//   1. parser/serde bugs that might let a giant payload land on the
+//      wrong channel (e.g. kernel output bytes confused for a Request),
+//   2. runaway senders OOMing the receiver,
+//   3. corrupted length prefixes on the wire.
+//
+// They do not replace per-content offloading — large outputs and widget
+// buffers still belong in the blob store.
+
+const KIB: usize = 1024;
+const MIB: usize = 1024 * 1024;
+
+/// Outer ceiling for any frame. Matches the blob-store size limit and
+/// the u32 length-prefix domain. Per-type caps below are tighter for
+/// every channel.
+const MAX_FRAME_SIZE: usize = 100 * MIB;
 
 /// Maximum frame size for control/handshake frames: 64 KiB.
-/// Applied to the initial handshake and JSON request/response traffic
-/// so that oversized frames can't force large allocations before channel
-/// routing has occurred.
-const MAX_CONTROL_FRAME_SIZE: usize = 64 * 1024;
+/// Applied to the initial handshake (before per-type routing exists).
+const MAX_CONTROL_FRAME_SIZE: usize = 64 * KIB;
 
-/// Maximum frame body size for `Presence` frames: 1 MiB.
-/// Presence payloads are cursor positions, selection ranges, and small
-/// peer-state snapshots encoded as CBOR. Per-peer they're hundreds of
-/// bytes; a snapshot with many peers is still well under 1 MiB. A cap
-/// here catches a desync that happened to land on the Presence channel
-/// (e.g. a garbage length of tens of MiB) far below the 100 MiB outer
-/// ceiling.
-///
-/// We deliberately do *not* apply a tight cap to Request/Response/
-/// Broadcast: those carry legitimately-large payloads —
-/// `SendComm` / `Broadcast::Comm` widget envelopes can include binary
-/// buffers; `Response::DocBytes` returns serialized Automerge doc
-/// state — and they already share the 100 MiB outer ceiling with data
-/// frames.
-const MAX_PRESENCE_FRAME_SIZE: usize = 1024 * 1024;
+/// Per-type body cap and warn threshold for a typed frame.
+#[derive(Debug, Clone, Copy)]
+struct FrameSizeLimits {
+    /// Hard cap. Frames exceeding this are rejected.
+    cap: usize,
+    /// Soft threshold. Frames exceeding this log a warning but proceed.
+    warn: usize,
+}
 
-/// Maximum body size allowed for a given `NotebookFrameType` byte.
+/// Per-type body limits.
 ///
-/// Enforced in `recv_typed_frame` so a corrupted stream with an
-/// oversized length prefix for a narrow-purpose channel (Presence)
-/// trips this check before the allocator honors the bogus length. The
-/// outer 100 MiB ceiling still gates everything else.
-fn max_payload_size_for_frame_type(type_byte: u8) -> usize {
+/// Sized for legitimate worst case per channel:
+/// - **AutomergeSync** (NotebookDoc) and **RuntimeStateSync**: 64 MiB.
+///   Initial sync of a notebook with many cells / lots of accumulated
+///   ephemeral state can be many MB; outputs are blob-offloaded but
+///   the doc itself can still be large.
+/// - **NotebookRequest**: 1 MiB. Every variant is small (cell IDs,
+///   metadata snapshots, completion requests). `SendComm` slider
+///   values are bytes, not megabytes. Headroom for SetMetadataSnapshot.
+/// - **NotebookResponse**: 64 MiB. `Response::DocBytes` returns a full
+///   Automerge doc dump; `Response::NotebookState` carries
+///   inspect-notebook output. Both can legitimately be large.
+/// - **NotebookBroadcast**: 16 MiB. `Comm.buffers` carries kernel-sourced
+///   widget buffer bytes and is the only path where kernel-controlled
+///   bytes still ride raw on a non-CRDT frame. Tightens further once
+///   that path moves through the blob store.
+/// - **Presence**: 1 MiB. CBOR cursor + selection per peer.
+/// - **PoolStateSync**: 1 MiB. The pool doc is bounded.
+/// - **SessionControl**: 1 MiB. JSON readiness frames are tiny.
+fn frame_size_limits(type_byte: u8) -> FrameSizeLimits {
     use notebook_doc::frame_types;
     match type_byte {
-        frame_types::PRESENCE => MAX_PRESENCE_FRAME_SIZE,
-        // Every other type — Request/Response/Broadcast (may carry
-        // widget buffers or DocBytes), AutomergeSync/RuntimeStateSync/
-        // PoolStateSync (Automerge sync), and unknown future types —
-        // shares the 100 MiB outer ceiling.
-        _ => MAX_FRAME_SIZE,
+        frame_types::AUTOMERGE_SYNC => FrameSizeLimits {
+            cap: 64 * MIB,
+            warn: 16 * MIB,
+        },
+        frame_types::REQUEST => FrameSizeLimits {
+            cap: MIB,
+            warn: 256 * KIB,
+        },
+        frame_types::RESPONSE => FrameSizeLimits {
+            cap: 64 * MIB,
+            warn: 16 * MIB,
+        },
+        frame_types::BROADCAST => FrameSizeLimits {
+            cap: 16 * MIB,
+            warn: 4 * MIB,
+        },
+        frame_types::PRESENCE => FrameSizeLimits {
+            cap: MIB,
+            warn: 256 * KIB,
+        },
+        frame_types::RUNTIME_STATE_SYNC => FrameSizeLimits {
+            cap: 64 * MIB,
+            warn: 16 * MIB,
+        },
+        frame_types::POOL_STATE_SYNC => FrameSizeLimits {
+            cap: MIB,
+            warn: 256 * KIB,
+        },
+        frame_types::SESSION_CONTROL => FrameSizeLimits {
+            cap: MIB,
+            warn: 256 * KIB,
+        },
+        // Unknown types fall back to the outer ceiling. The receive
+        // path skips them anyway after the body is consumed.
+        _ => FrameSizeLimits {
+            cap: MAX_FRAME_SIZE,
+            warn: MAX_FRAME_SIZE / 2,
+        },
     }
 }
 
@@ -652,13 +711,46 @@ pub struct TypedNotebookFrame {
 }
 
 /// Send a typed notebook frame.
+///
+/// Enforces the same per-type cap the receiver applies, so an outbound
+/// oversize is caught with a clear local error rather than a generic
+/// `frame too large` from the peer. A soft warn fires between the warn
+/// threshold and the cap so we see growth before it ever rejects.
 pub async fn send_typed_frame<W: AsyncWrite + Unpin>(
     writer: &mut W,
     frame_type: NotebookFrameType,
     payload: &[u8],
 ) -> std::io::Result<()> {
+    let type_byte = frame_type as u8;
+    let limits = frame_size_limits(type_byte);
+    if payload.len() > limits.cap {
+        log::error!(
+            "[notebook-protocol] outbound frame type 0x{:02x} exceeds cap: {} bytes (cap {})",
+            type_byte,
+            payload.len(),
+            limits.cap,
+        );
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!(
+                "outbound frame too large for type 0x{:02x}: {} bytes (max {})",
+                type_byte,
+                payload.len(),
+                limits.cap
+            ),
+        ));
+    }
+    if payload.len() > limits.warn {
+        log::warn!(
+            "[notebook-protocol] outbound frame type 0x{:02x} over warn threshold: {} bytes (warn {}, cap {})",
+            type_byte,
+            payload.len(),
+            limits.warn,
+            limits.cap,
+        );
+    }
     let mut data = Vec::with_capacity(1 + payload.len());
-    data.push(frame_type as u8);
+    data.push(type_byte);
     data.extend_from_slice(payload);
     send_frame(writer, &data).await
 }
@@ -715,17 +807,35 @@ pub async fn recv_typed_frame<R: AsyncRead + Unpin>(
         let type_byte = type_buf[0];
         let body_len = len - 1;
 
-        // Per-type ceiling. Control frames (Request/Response/Broadcast/
-        // Presence) cap at 1 MiB / 64 KiB; data frames keep 100 MiB.
-        let max_body = max_payload_size_for_frame_type(type_byte);
-        if body_len > max_body {
+        // Per-type ceiling. The hard cap rejects oversized payloads —
+        // a corrupted length prefix on a narrow-purpose channel trips
+        // this check before the allocator honors the bogus length. The
+        // soft warn threshold logs growth so we see drift in production
+        // before it ever rejects.
+        let limits = frame_size_limits(type_byte);
+        if body_len > limits.cap {
+            log::error!(
+                "[notebook-protocol] frame type 0x{:02x} exceeds cap: {} bytes (cap {}); dropping connection",
+                type_byte,
+                body_len,
+                limits.cap,
+            );
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 format!(
                     "frame too large for type 0x{:02x}: {} bytes (max {})",
-                    type_byte, body_len, max_body
+                    type_byte, body_len, limits.cap
                 ),
             ));
+        }
+        if body_len > limits.warn {
+            log::warn!(
+                "[notebook-protocol] frame type 0x{:02x} over warn threshold: {} bytes (warn {}, cap {})",
+                type_byte,
+                body_len,
+                limits.warn,
+                limits.cap,
+            );
         }
 
         // Now it's safe to allocate and read the body.
@@ -1222,12 +1332,11 @@ mod tests {
 
     #[tokio::test]
     async fn typed_frame_rejects_oversized_presence() {
-        // Presence frames have a 1 MiB cap because cursor positions /
-        // CBOR peer snapshots never legitimately approach that. A
-        // desync that happens to land on the Presence channel with a
-        // multi-MiB length header is caught here instead of trying to
-        // allocate it.
-        let body_len: u32 = (MAX_PRESENCE_FRAME_SIZE as u32) + 1;
+        // Presence frames cap at 1 MiB. A desync that happens to land
+        // on the Presence channel with a multi-MiB length header is
+        // caught here instead of trying to allocate it.
+        let cap = frame_size_limits(notebook_doc::frame_types::PRESENCE).cap;
+        let body_len: u32 = (cap as u32) + 1;
         let total_len: u32 = body_len + 1;
         let mut buf = Vec::new();
         buf.extend_from_slice(&total_len.to_be_bytes());
@@ -1239,11 +1348,10 @@ mod tests {
 
     #[tokio::test]
     async fn typed_frame_allows_big_broadcast_for_widget_comm() {
-        // NotebookBroadcast::Comm and NotebookRequest::SendComm carry
-        // widget envelopes with inline binary buffers that can exceed
-        // 1 MiB. Response::DocBytes similarly carries a serialized
-        // Automerge doc. These must NOT be capped tightly — they share
-        // the 100 MiB outer ceiling with data frames.
+        // `NotebookBroadcast::Comm` carries widget envelopes with inline
+        // binary buffers. The Broadcast cap (16 MiB) leaves room for
+        // legitimate widget messages while still being far below the
+        // outer ceiling.
         let big_payload = vec![0x42u8; 2 * 1024 * 1024]; // 2 MiB
         let mut buf = Vec::new();
         send_typed_frame(&mut buf, NotebookFrameType::Broadcast, &big_payload)
@@ -1254,6 +1362,72 @@ mod tests {
         let frame = recv_typed_frame(&mut cursor).await.unwrap().unwrap();
         assert_eq!(frame.frame_type, NotebookFrameType::Broadcast);
         assert_eq!(frame.payload.len(), big_payload.len());
+    }
+
+    #[tokio::test]
+    async fn typed_frame_rejects_oversized_request() {
+        // Requests carry small JSON envelopes. A multi-MiB length header
+        // on the Request channel is parser confusion or corruption.
+        let cap = frame_size_limits(notebook_doc::frame_types::REQUEST).cap;
+        let body_len: u32 = (cap as u32) + 1;
+        let total_len: u32 = body_len + 1;
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&total_len.to_be_bytes());
+        buf.push(notebook_doc::frame_types::REQUEST);
+        let mut cursor = std::io::Cursor::new(buf);
+        let err = recv_typed_frame(&mut cursor).await.unwrap_err();
+        assert!(err.to_string().contains("too large for type 0x01"));
+    }
+
+    #[tokio::test]
+    async fn typed_frame_send_rejects_outbound_oversize() {
+        // The send path mirrors the receive cap so an outbound oversize
+        // surfaces as a clear local error rather than as a generic peer
+        // rejection.
+        let cap = frame_size_limits(notebook_doc::frame_types::REQUEST).cap;
+        let oversized = vec![0u8; cap + 1];
+        let mut buf = Vec::new();
+        let err = send_typed_frame(&mut buf, NotebookFrameType::Request, &oversized)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("outbound frame too large"));
+        // No bytes should have been written for an over-cap frame.
+        assert!(
+            buf.is_empty(),
+            "frame body must not be written when over cap"
+        );
+    }
+
+    #[test]
+    fn frame_size_limits_cover_every_known_frame_type() {
+        // Pin the per-type cap table so a new frame type can't slip in
+        // without an explicit limit decision. Compares against the
+        // outer ceiling so the test fails when an unknown type ends up
+        // on the 100 MiB fallback.
+        use notebook_doc::frame_types as ft;
+        for &ty in &[
+            ft::AUTOMERGE_SYNC,
+            ft::REQUEST,
+            ft::RESPONSE,
+            ft::BROADCAST,
+            ft::PRESENCE,
+            ft::RUNTIME_STATE_SYNC,
+            ft::POOL_STATE_SYNC,
+            ft::SESSION_CONTROL,
+        ] {
+            let limits = frame_size_limits(ty);
+            assert!(
+                limits.cap < MAX_FRAME_SIZE,
+                "type 0x{ty:02x} has no tighter cap than the outer ceiling",
+            );
+            assert!(
+                limits.warn < limits.cap,
+                "type 0x{ty:02x} warn ({}) >= cap ({})",
+                limits.warn,
+                limits.cap,
+            );
+            assert!(limits.warn > 0, "type 0x{ty:02x} warn must be > 0");
+        }
     }
 
     #[tokio::test]
