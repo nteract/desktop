@@ -82,6 +82,15 @@ function pointerEvent(type: string, clientX: number): PointerEvent {
   return event;
 }
 
+function wheelEvent(deltaX: number, deltaY: number): WheelEvent {
+  return new WheelEvent("wheel", {
+    bubbles: true,
+    cancelable: true,
+    deltaX,
+    deltaY,
+  });
+}
+
 function rect(top: number, height: number): DOMRect {
   return {
     top,
@@ -624,6 +633,63 @@ describe("createTable", () => {
       await vi.advanceTimersByTimeAsync(20);
 
       expect(viewport.scrollTop).toBe(252);
+    });
+  });
+
+  describe("wheel scrolling", () => {
+    function setScrollMetrics(viewport: HTMLElement, metrics: Partial<HTMLElement>) {
+      for (const [key, value] of Object.entries(metrics)) {
+        Object.defineProperty(viewport, key, {
+          value,
+          configurable: true,
+        });
+      }
+    }
+
+    it("scrolls the table manually and prevents page handoff", async () => {
+      await flushRAF();
+      const viewport = container.querySelector<HTMLElement>(".sift-viewport")!;
+      setScrollMetrics(viewport, {
+        clientHeight: 100,
+        scrollHeight: 1000,
+      });
+      viewport.scrollTop = 100;
+
+      const event = wheelEvent(0, 50);
+      viewport.dispatchEvent(event);
+
+      expect(event.defaultPrevented).toBe(true);
+      expect(viewport.scrollTop).toBe(150);
+    });
+
+    it("swallows vertical wheel momentum at table boundaries", async () => {
+      await flushRAF();
+      const viewport = container.querySelector<HTMLElement>(".sift-viewport")!;
+      setScrollMetrics(viewport, {
+        clientHeight: 100,
+        scrollHeight: 1000,
+      });
+      viewport.scrollTop = 0;
+
+      const event = wheelEvent(0, -500);
+      viewport.dispatchEvent(event);
+
+      expect(event.defaultPrevented).toBe(true);
+      expect(viewport.scrollTop).toBe(0);
+    });
+
+    it("lets wheel events through when the table cannot scroll", async () => {
+      await flushRAF();
+      const viewport = container.querySelector<HTMLElement>(".sift-viewport")!;
+      setScrollMetrics(viewport, {
+        clientHeight: 1000,
+        scrollHeight: 100,
+      });
+
+      const event = wheelEvent(0, 50);
+      viewport.dispatchEvent(event);
+
+      expect(event.defaultPrevented).toBe(false);
     });
   });
 });

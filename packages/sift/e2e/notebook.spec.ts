@@ -49,4 +49,24 @@ test.describe("Notebook Demo", () => {
     const viewportHeight = await page.evaluate(() => window.innerHeight);
     expect(pageHeight).toBeGreaterThan(viewportHeight);
   });
+
+  test("wheel momentum over a scrollable table does not chain to the page", async ({ page }) => {
+    const firstViewport = page.locator(".sift-viewport").first();
+    await firstViewport.evaluate((el) => (el.scrollTop = 0));
+    const pageScrollBefore = await page.evaluate(() => {
+      window.scrollTo(0, 200);
+      return window.scrollY;
+    });
+    expect(pageScrollBefore).toBeGreaterThan(0);
+
+    const box = await firstViewport.boundingBox();
+    if (!box) throw new Error("No viewport bounding box");
+
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    await page.mouse.wheel(0, -800);
+    await page.waitForTimeout(100);
+
+    const pageScrollAfter = await page.evaluate(() => window.scrollY);
+    expect(pageScrollAfter).toBe(pageScrollBefore);
+  });
 });

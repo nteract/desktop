@@ -149,6 +149,9 @@ const CELL_PAD_V = 16; // 8px top + 8px bottom
 const MIN_COL_WIDTH = 60;
 const OVERSCAN = 40; // buffer rows above and below viewport
 
+const WHEEL_DELTA_LINE = 1;
+const WHEEL_DELTA_PAGE = 2;
+
 // --- Table Engine ---
 
 export function createTable(
@@ -338,6 +341,16 @@ export function createTable(
     const row = Math.min(anchor.row, filteredCount - 1);
     const maxScrollTop = Math.max(0, totalHeight + headerH - viewport.clientHeight);
     viewport.scrollTop = Math.min(maxScrollTop, headerH + rowPositions[row] + anchor.offset);
+  }
+
+  function clamp(value: number, min: number, max: number) {
+    return Math.min(max, Math.max(min, value));
+  }
+
+  function wheelDeltaToPixels(delta: number, deltaMode: number, pageSize: number) {
+    if (deltaMode === WHEEL_DELTA_LINE) return delta * LINE_HEIGHT;
+    if (deltaMode === WHEEL_DELTA_PAGE) return delta * pageSize;
+    return delta;
   }
 
   // --- Filter + Sort ---
@@ -1389,7 +1402,33 @@ export function createTable(
     scheduleRender();
   }
 
+  function onWheel(e: WheelEvent) {
+    const deltaY = wheelDeltaToPixels(e.deltaY, e.deltaMode, viewport.clientHeight);
+    const deltaX = wheelDeltaToPixels(e.deltaX, e.deltaMode, viewport.clientWidth);
+    const maxScrollTop = Math.max(0, viewport.scrollHeight - viewport.clientHeight);
+    const maxScrollLeft = Math.max(0, viewport.scrollWidth - viewport.clientWidth);
+    const scrollsY = deltaY !== 0 && maxScrollTop > 0;
+    const scrollsX = deltaX !== 0 && maxScrollLeft > 0;
+    if (!scrollsY && !scrollsX) return;
+
+    e.preventDefault();
+
+    const nextTop = scrollsY
+      ? clamp(viewport.scrollTop + deltaY, 0, maxScrollTop)
+      : viewport.scrollTop;
+    const nextLeft = scrollsX
+      ? clamp(viewport.scrollLeft + deltaX, 0, maxScrollLeft)
+      : viewport.scrollLeft;
+
+    if (nextTop !== viewport.scrollTop || nextLeft !== viewport.scrollLeft) {
+      viewport.scrollTop = nextTop;
+      viewport.scrollLeft = nextLeft;
+      scheduleRender();
+    }
+  }
+
   viewport.addEventListener("scroll", onScroll, { passive: true });
+  viewport.addEventListener("wheel", onWheel, { passive: false });
 
   const onWindowResize = () => {
     fitLastColumnToViewport();
@@ -1799,6 +1838,7 @@ export function createTable(
     // Remove event listeners and observers
     headerResizeObserver?.disconnect();
     viewport.removeEventListener("scroll", onScroll);
+    viewport.removeEventListener("wheel", onWheel);
 
     container.removeEventListener("keydown", onKeyDown);
     window.removeEventListener("resize", onWindowResize);
