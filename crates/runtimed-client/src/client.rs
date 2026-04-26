@@ -88,6 +88,8 @@ pub struct DaemonInfo {
     /// HTTP port for the content-addressed blob server. `None` if the
     /// blob server hasn't finished binding yet.
     pub blob_port: Option<u16>,
+    /// Directory for durable execution result records.
+    pub execution_store_dir: Option<String>,
     /// Path to the git worktree this dev daemon is pinned to.
     pub worktree_path: Option<String>,
     /// Human-readable workspace description (dev mode only).
@@ -217,6 +219,7 @@ impl PoolClient {
                 pid,
                 started_at,
                 blob_port,
+                execution_store_dir,
                 worktree_path,
                 workspace_description,
             } => Ok(DaemonInfo {
@@ -225,6 +228,7 @@ impl PoolClient {
                 pid,
                 started_at,
                 blob_port,
+                execution_store_dir,
                 worktree_path,
                 workspace_description,
             }),

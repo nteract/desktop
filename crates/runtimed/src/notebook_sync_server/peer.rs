@@ -31,6 +31,7 @@ pub async fn handle_runtime_agent_sync_connection<R, W>(
     room: Arc<NotebookRoom>,
     notebook_id: String,
     runtime_agent_id: String,
+    execution_store_dir: PathBuf,
 ) where
     R: tokio::io::AsyncRead + Unpin + Send + 'static,
     W: tokio::io::AsyncWrite + Unpin + Send,
@@ -138,6 +139,8 @@ pub async fn handle_runtime_agent_sync_connection<R, W>(
     // ── 5. Sync loop ─────────────────────────────────────────────────
     let mut changed_rx = room.broadcasts.changed_tx.subscribe();
     let mut state_changed_rx = room.state.subscribe();
+    let execution_store =
+        runtimed_client::execution_store::ExecutionStore::new(execution_store_dir);
     let mut pending_replies: std::collections::HashMap<
         String,
         tokio::sync::oneshot::Sender<RuntimeAgentResponse>,
@@ -178,11 +181,13 @@ pub async fn handle_runtime_agent_sync_connection<R, W>(
                     }
                     NotebookFrameType::RuntimeStateSync => {
                         if let Ok(msg) = automerge::sync::Message::decode(&typed_frame.payload) {
+                            let mut state_changed = false;
                             let reply_encoded = room.state.with_doc(|sd| {
                                 if let Ok(changed) = sd.receive_sync_message_with_changes(
                                     &mut state_sync_state, msg,
                                 ) {
                                     if changed {
+                                        state_changed = true;
                                         // Notification handled by with_doc heads check
                                     }
                                 }
@@ -195,6 +200,9 @@ pub async fn handle_runtime_agent_sync_connection<R, W>(
                                     NotebookFrameType::RuntimeStateSync,
                                     &encoded,
                                 ).await;
+                            }
+                            if state_changed {
+                                persist_terminal_execution_records(&room, &execution_store).await;
                             }
                         }
                     }
@@ -1257,7 +1265,18 @@ where
     // frontend can observe progressive notebook-doc updates.
     if let Some(load_path) = needs_load {
         if room.try_start_loading() {
-            match streaming_load_cells(&mut reader, writer, room, load_path, &mut peer_state).await
+            let execution_store = runtimed_client::execution_store::ExecutionStore::new(
+                daemon.config.execution_store_dir.clone(),
+            );
+            match streaming_load_cells(
+                &mut reader,
+                writer,
+                room,
+                load_path,
+                Some(&execution_store),
+                &mut peer_state,
+            )
+            .await
             {
                 Ok(count) => {
                     room.finish_loading();
@@ -1716,6 +1735,14 @@ where
                                     .await?;
                                 }
 
+                                persist_terminal_execution_records(
+                                    room,
+                                    &runtimed_client::execution_store::ExecutionStore::new(
+                                        daemon.config.execution_store_dir.clone(),
+                                    ),
+                                )
+                                .await;
+
                                 if runtime_state_phase
                                     != notebook_protocol::protocol::RuntimeStatePhaseWire::Ready
                                 {
@@ -2122,4 +2149,59 @@ async fn send_doc_sync<W: tokio::io::AsyncWrite + Unpin>(
         connection::send_typed_frame(writer, NotebookFrameType::AutomergeSync, &encoded).await?;
     }
     Ok(())
+}
+
+async fn persist_terminal_execution_records(
+    room: &NotebookRoom,
+    store: &runtimed_client::execution_store::ExecutionStore,
+) {
+    let notebook_path = room
+        .identity
+        .path
+        .read()
+        .await
+        .as_ref()
+        .map(|p| p.to_string_lossy().to_string());
+    let context_id = notebook_execution_context_id(room, notebook_path.as_deref());
+    let records = room
+        .state
+        .read(|sd| {
+            sd.read_state()
+                .executions
+                .into_iter()
+                .filter_map(|(execution_id, exec)| {
+                    if !matches!(exec.status.as_str(), "done" | "error") {
+                        return None;
+                    }
+                    Some(
+                        runtimed_client::execution_store::ExecutionRecord::from_execution_state(
+                            &execution_id,
+                            "notebook",
+                            context_id.clone(),
+                            notebook_path.clone(),
+                            &exec,
+                        ),
+                    )
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    for record in records {
+        if let Err(e) = store.write_record(record).await {
+            warn!(
+                "[execution-store] Failed to persist execution record: {}",
+                e
+            );
+        }
+    }
+}
+
+pub(crate) fn notebook_execution_context_id(
+    room: &NotebookRoom,
+    notebook_path: Option<&str>,
+) -> String {
+    notebook_path
+        .map(str::to_string)
+        .unwrap_or_else(|| room.id.to_string())
 }

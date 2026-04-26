@@ -69,6 +69,7 @@ impl DaemonLock {
                     version: "unknown".to_string(),
                     started_at: Utc::now(),
                     blob_port: None,
+                    execution_store_dir: None,
                     worktree_path: None,
                     workspace_description: None,
                 });
@@ -93,6 +94,7 @@ impl DaemonLock {
                     version: "unknown".to_string(),
                     started_at: Utc::now(),
                     blob_port: None,
+                    execution_store_dir: None,
                     worktree_path: None,
                     workspace_description: None,
                 });
@@ -131,6 +133,7 @@ impl DaemonLock {
                     version: "unknown".to_string(),
                     started_at: Utc::now(),
                     blob_port: None,
+                    execution_store_dir: None,
                     worktree_path: None,
                     workspace_description: None,
                 });
@@ -164,6 +167,11 @@ impl DaemonLock {
             version: crate::daemon_version().to_string(),
             started_at: Utc::now(),
             blob_port,
+            execution_store_dir: Some(
+                crate::default_execution_store_dir()
+                    .to_string_lossy()
+                    .to_string(),
+            ),
             worktree_path,
             workspace_description,
         };

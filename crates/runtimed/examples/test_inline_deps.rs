@@ -57,6 +57,7 @@ async fn main() -> anyhow::Result<()> {
         socket_path: temp_dir.path().join("test-daemon.sock"),
         cache_dir: temp_dir.path().join("envs"),
         blob_store_dir: temp_dir.path().join("blobs"),
+        execution_store_dir: temp_dir.path().join("executions"),
         notebook_docs_dir: temp_dir.path().join("notebook-docs"),
         uv_pool_size: 0, // Don't create real envs
         conda_pool_size: 0,

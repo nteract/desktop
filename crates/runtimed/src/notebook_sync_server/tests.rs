@@ -1872,6 +1872,177 @@ async fn test_load_notebook_from_disk_routes_outputs_through_blob_store() {
 }
 
 #[tokio::test]
+async fn test_load_notebook_reuses_matching_durable_execution_id() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let blob_store = test_blob_store(&tmp);
+
+    let notebook_json = serde_json::json!({
+        "nbformat": 4,
+        "nbformat_minor": 5,
+        "metadata": {},
+        "cells": [
+            {
+                "id": "cell-1",
+                "cell_type": "code",
+                "source": "print('hi')",
+                "execution_count": 7,
+                "metadata": {},
+                "outputs": [
+                    {
+                        "output_type": "stream",
+                        "name": "stdout",
+                        "text": "hi\n"
+                    }
+                ]
+            }
+        ]
+    });
+    let ipynb_path = tmp.path().join("durable.ipynb");
+    std::fs::write(
+        &ipynb_path,
+        serde_json::to_string_pretty(&notebook_json).unwrap(),
+    )
+    .unwrap();
+
+    let context_id = ipynb_path.to_string_lossy().to_string();
+    let mut first_doc = crate::notebook_doc::NotebookDoc::new(&context_id);
+    let mut first_state = RuntimeStateDoc::new();
+    load_notebook_from_disk_with_state_doc(
+        &mut first_doc,
+        Some(&mut first_state),
+        &ipynb_path,
+        &blob_store,
+    )
+    .await
+    .unwrap();
+    let first_execution_id = first_doc.get_execution_id("cell-1").unwrap();
+    let outputs = first_state.get_outputs(&first_execution_id);
+
+    let store =
+        runtimed_client::execution_store::ExecutionStore::new(tmp.path().join("execution-store"));
+    store
+        .write_record(runtimed_client::execution_store::ExecutionRecord {
+            schema_version: runtimed_client::execution_store::EXECUTION_RECORD_SCHEMA_VERSION,
+            execution_id: "durable-exec-1".to_string(),
+            context_kind: "notebook".to_string(),
+            context_id: context_id.clone(),
+            notebook_path: Some(context_id.clone()),
+            cell_id: Some("cell-1".to_string()),
+            status: "done".to_string(),
+            success: Some(true),
+            execution_count: Some(7),
+            source: Some("print('hi')".to_string()),
+            seq: Some(0),
+            outputs,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        })
+        .await
+        .unwrap();
+
+    let mut reload_doc = crate::notebook_doc::NotebookDoc::new(&context_id);
+    let mut reload_state = RuntimeStateDoc::new();
+    load_notebook_from_disk_with_state_doc_and_execution_store(
+        &mut reload_doc,
+        Some(&mut reload_state),
+        &ipynb_path,
+        &blob_store,
+        Some(&store),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(
+        reload_doc.get_execution_id("cell-1").as_deref(),
+        Some("durable-exec-1")
+    );
+    assert_eq!(
+        reload_state
+            .get_execution("durable-exec-1")
+            .unwrap()
+            .execution_count,
+        Some(7)
+    );
+}
+
+#[tokio::test]
+async fn test_load_notebook_mints_execution_id_when_durable_record_no_longer_matches() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let blob_store = test_blob_store(&tmp);
+
+    let notebook_json = serde_json::json!({
+        "nbformat": 4,
+        "nbformat_minor": 5,
+        "metadata": {},
+        "cells": [
+            {
+                "id": "cell-1",
+                "cell_type": "code",
+                "source": "print('changed externally')",
+                "execution_count": 7,
+                "metadata": {},
+                "outputs": [
+                    {
+                        "output_type": "stream",
+                        "name": "stdout",
+                        "text": "hi\n"
+                    }
+                ]
+            }
+        ]
+    });
+    let ipynb_path = tmp.path().join("changed.ipynb");
+    std::fs::write(
+        &ipynb_path,
+        serde_json::to_string_pretty(&notebook_json).unwrap(),
+    )
+    .unwrap();
+
+    let context_id = ipynb_path.to_string_lossy().to_string();
+    let store =
+        runtimed_client::execution_store::ExecutionStore::new(tmp.path().join("execution-store"));
+    store
+        .write_record(runtimed_client::execution_store::ExecutionRecord {
+            schema_version: runtimed_client::execution_store::EXECUTION_RECORD_SCHEMA_VERSION,
+            execution_id: "durable-exec-1".to_string(),
+            context_kind: "notebook".to_string(),
+            context_id: context_id.clone(),
+            notebook_path: Some(context_id.clone()),
+            cell_id: Some("cell-1".to_string()),
+            status: "done".to_string(),
+            success: Some(true),
+            execution_count: Some(7),
+            source: Some("print('hi')".to_string()),
+            seq: Some(0),
+            outputs: vec![serde_json::json!({
+                "output_type": "stream",
+                "name": "stdout",
+                "text": {"inline": "hi\n"}
+            })],
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        })
+        .await
+        .unwrap();
+
+    let mut doc = crate::notebook_doc::NotebookDoc::new(&context_id);
+    let mut state_doc = RuntimeStateDoc::new();
+    load_notebook_from_disk_with_state_doc_and_execution_store(
+        &mut doc,
+        Some(&mut state_doc),
+        &ipynb_path,
+        &blob_store,
+        Some(&store),
+    )
+    .await
+    .unwrap();
+
+    let execution_id = doc.get_execution_id("cell-1").unwrap();
+    assert_ne!(execution_id, "durable-exec-1");
+    assert!(state_doc.get_execution(&execution_id).is_some());
+}
+
+#[tokio::test]
 async fn test_load_notebook_from_disk_resolves_nbformat_attachments() {
     let tmp = tempfile::TempDir::new().unwrap();
     let blob_store = test_blob_store(&tmp);

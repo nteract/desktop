@@ -814,14 +814,18 @@ async fn run_mcp_server(no_show: bool) -> Result<()> {
     // detect daemon upgrades across child restarts. If the daemon isn't up
     // yet (common at launch), we skip it — the proxy will degrade to a
     // "child restarted" message, which is accurate.
-    let daemon_version = tokio::time::timeout(
+    let daemon_info = tokio::time::timeout(
         std::time::Duration::from_millis(500),
         runtimed_client::singleton::query_daemon_info(socket_path.clone()),
     )
     .await
     .ok()
-    .flatten()
-    .map(|info| info.version);
+    .flatten();
+    let daemon_version = daemon_info.as_ref().map(|info| info.version.clone());
+    let execution_store_path = daemon_info
+        .as_ref()
+        .and_then(|info| info.execution_store_dir.as_ref())
+        .map(PathBuf::from);
 
     use rmcp::service::ServiceExt;
     let server = if no_show {
@@ -829,7 +833,8 @@ async fn run_mcp_server(no_show: bool) -> Result<()> {
     } else {
         runt_mcp::NteractMcp::new(socket_path.clone(), blob_base_url, blob_store_path)
     }
-    .with_daemon_version(daemon_version);
+    .with_daemon_version(daemon_version)
+    .with_execution_store_path(execution_store_path);
 
     // Grab shared state handles before serving (serve consumes the server)
     let session = server.session().clone();
