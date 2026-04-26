@@ -400,7 +400,7 @@ export const MarkdownCell = memo(function MarkdownCell({
   useEffect(() => {
     if (isFocused && !editing) {
       requestAnimationFrame(() => {
-        viewRef.current?.focus();
+        viewRef.current?.focus({ preventScroll: true });
       });
     }
   }, [isFocused, editing]);

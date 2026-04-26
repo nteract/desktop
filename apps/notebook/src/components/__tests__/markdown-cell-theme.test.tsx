@@ -5,6 +5,7 @@ import type { MarkdownCell as MarkdownCellType } from "../../types";
 
 let mockDarkMode = false;
 let mockColorTheme: string | undefined;
+let mockIsFocused = false;
 const isolatedFrameProps: Array<Record<string, unknown>> = [];
 
 const mockFrameHandle = {
@@ -95,7 +96,7 @@ vi.mock("../../lib/blob-port", () => ({
 }));
 
 vi.mock("../../lib/cell-ui-state", () => ({
-  useIsCellFocused: () => false,
+  useIsCellFocused: () => mockIsFocused,
   useIsNextCellFromFocused: () => false,
   useIsPreviousCellFromFocused: () => false,
   useSearchQuery: () => "",
@@ -142,6 +143,7 @@ describe("MarkdownCell theme sync", () => {
   beforeEach(() => {
     mockDarkMode = false;
     mockColorTheme = undefined;
+    mockIsFocused = false;
     isolatedFrameProps.length = 0;
     mockFrameHandle.send.mockClear();
     mockFrameHandle.render.mockClear();
@@ -176,6 +178,23 @@ describe("MarkdownCell theme sync", () => {
         cellId: "md-1",
         replace: true,
       });
+    });
+  });
+
+  it("focuses the markdown preview without scrolling when the cell becomes focused", async () => {
+    const focusSpy = vi.spyOn(HTMLElement.prototype, "focus").mockImplementation(() => undefined);
+
+    const { rerender } = render(
+      <MarkdownCell cell={makeCell()} onFocus={() => {}} onDelete={() => {}} />,
+    );
+
+    expect(focusSpy).not.toHaveBeenCalledWith({ preventScroll: true });
+
+    mockIsFocused = true;
+    rerender(<MarkdownCell cell={makeCell()} onFocus={() => {}} onDelete={() => {}} />);
+
+    await waitFor(() => {
+      expect(focusSpy).toHaveBeenCalledWith({ preventScroll: true });
     });
   });
 });
