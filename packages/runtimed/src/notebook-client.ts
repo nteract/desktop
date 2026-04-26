@@ -16,7 +16,36 @@ import type {
   HistoryEntry,
   NotebookRequest,
   NotebookResponse,
+  SaveErrorKind,
 } from "./request-types";
+
+/**
+ * Thrown when `NotebookClient.saveNotebook` receives a structured
+ * `SaveErrorKind` from the daemon. Callers that need to branch on the
+ * kind (e.g., to surface the conflicting UUID on `path_already_open`)
+ * can inspect `.kind`. `.message` is a user-facing rendering suitable
+ * for display.
+ */
+export class SaveNotebookError extends Error {
+  readonly kind: SaveErrorKind;
+  constructor(kind: SaveErrorKind) {
+    super(formatSaveError(kind));
+    this.name = "SaveNotebookError";
+    this.kind = kind;
+  }
+}
+
+function formatSaveError(kind: SaveErrorKind): string {
+  switch (kind.type) {
+    case "path_already_open":
+      return (
+        `Cannot save: ${kind.path} is already open in another notebook window. ` +
+        `Close that window first, or choose a different path.`
+      );
+    case "io":
+      return `Failed to save notebook: ${kind.message}`;
+  }
+}
 
 const nullLogger: SyncEngineLogger = {
   debug() {},
@@ -193,6 +222,44 @@ export class NotebookClient {
     } catch (e) {
       this.log.error("[notebook-client] Complete failed:", e);
       throw e;
+    }
+  }
+
+  /**
+   * Save the notebook to disk via the daemon.
+   *
+   * Pass `path` to save-as. Without `path`, saves in place — the daemon
+   * uses the room's current path and returns `save_error` if the room
+   * is still untitled.
+   *
+   * Throws `SaveNotebookError` on structured `save_error` responses (the
+   * `.kind` payload carries `path_already_open` / `io` details). Throws
+   * a plain `Error` on transport failures or unexpected response shapes.
+   */
+  async saveNotebook(options: { formatCells: boolean; path?: string }): Promise<{ path: string }> {
+    const request: NotebookRequest = {
+      type: "save_notebook",
+      format_cells: options.formatCells,
+      ...(options.path !== undefined ? { path: options.path } : {}),
+    };
+
+    let response: NotebookResponse;
+    try {
+      response = await this.sendRequest(request);
+    } catch (e) {
+      this.log.error("[notebook-client] Save request failed:", e);
+      throw e;
+    }
+
+    switch (response.result) {
+      case "notebook_saved":
+        return { path: response.path };
+      case "save_error":
+        throw new SaveNotebookError(response.error);
+      case "error":
+        throw new Error(`Daemon save failed: ${response.error}`);
+      default:
+        throw new Error(`Unexpected save_notebook response: ${JSON.stringify(response)}`);
     }
   }
 

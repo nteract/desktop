@@ -31,7 +31,14 @@ export type NotebookRequest =
       /** Deduplicate identical entries when true. */
       unique: boolean;
     }
-  | { type: "complete"; code: string; cursor_pos: number };
+  | { type: "complete"; code: string; cursor_pos: number }
+  | {
+      type: "save_notebook";
+      /** Format code cells (ruff / deno fmt) before writing to disk. */
+      format_cells: boolean;
+      /** Target path. Omit to save in place. */
+      path?: string;
+    };
 
 /** One entry returned by `get_history`. */
 export interface HistoryEntry {
@@ -100,4 +107,20 @@ export type NotebookResponse =
       items: CompletionItem[];
       cursor_start: number;
       cursor_end: number;
-    };
+    }
+  | { result: "notebook_saved"; path: string }
+  | { result: "save_error"; error: SaveErrorKind };
+
+/**
+ * Structured save failures returned in `NotebookResponse::SaveError`.
+ * Mirrors `notebook_protocol::protocol::SaveErrorKind`.
+ */
+export type SaveErrorKind =
+  | {
+      type: "path_already_open";
+      /** UUID of the room that currently holds this path. */
+      uuid: string;
+      /** The conflicting path. */
+      path: string;
+    }
+  | { type: "io"; message: string };

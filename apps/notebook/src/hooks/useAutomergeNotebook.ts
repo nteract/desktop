@@ -614,8 +614,12 @@ export function useAutomergeNotebook() {
   // ── File operations ────────────────────────────────────────────────
 
   const save = useCallback(async () => {
-    await saveNotebook(host, flushSync);
-  }, [host, flushSync]);
+    // `runtimeState.path` is the authoritative source: the daemon writes
+    // it on save / save-as / untitled promotion. Reading it here avoids
+    // a Tauri round-trip to the WindowNotebookRegistry.
+    const hasPath = runtimePath != null;
+    await saveNotebook(host, flushSync, hasPath);
+  }, [host, flushSync, runtimePath]);
 
   const openNotebook = useCallback(() => openNotebookFile(host), [host]);
 

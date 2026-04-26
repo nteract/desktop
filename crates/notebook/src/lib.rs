@@ -436,18 +436,6 @@ async fn set_metadata_snapshot(
     }
 }
 
-/// Read the metadata `additional` fields from the daemon's Automerge doc.
-/// Returns a HashMap with the `runt` field as a JSON value for trust verification.
-async fn get_raw_metadata_additional(
-    handle: &RelayHandle,
-) -> Option<HashMap<String, serde_json::Value>> {
-    let snapshot = get_metadata_snapshot(handle).await?;
-    let runt_value = serde_json::to_value(&snapshot.runt).ok()?;
-    let mut additional = HashMap::new();
-    additional.insert("runt".to_string(), runt_value);
-    Some(additional)
-}
-
 /// Connect to the daemon by opening an existing notebook file.
 ///
 /// The daemon loads the file, derives notebook_id, creates the room, and populates
@@ -1786,17 +1774,6 @@ async fn complete_onboarding(
     Ok(())
 }
 
-/// Check if the notebook has a file path set
-#[tauri::command]
-async fn has_notebook_path(
-    window: tauri::Window,
-    registry: tauri::State<'_, WindowNotebookRegistry>,
-) -> Result<bool, String> {
-    let path = path_for_window(&window, registry.inner())?;
-    let path = path.lock().map_err(|e| e.to_string())?;
-    Ok(path.is_some())
-}
-
 /// Sync the Tauri window's local path state and title with a `PathChanged`
 /// broadcast from the daemon. Called by the frontend when another peer (an
 /// MCP agent, a sibling window) saves or renames the notebook — without this,
@@ -1839,65 +1816,6 @@ fn apply_path_changed(
     // touch `window.set_title(...)` here — a Rust-side write would race
     // against the frontend's concurrent title update from the same
     // `path_changed` broadcast.
-
-    Ok(())
-}
-
-/// Format all code cells in the notebook and save.
-/// Formatting is best-effort - cells that fail to format are saved as-is.
-///
-/// The daemon handles both formatting and disk persistence:
-/// - Formats code cells using ruff (Python) or deno fmt (Deno)
-/// - Updates the Automerge doc with formatted sources (synced to all clients)
-/// - Writes the .ipynb file to disk
-#[tauri::command]
-async fn save_notebook(
-    window: tauri::Window,
-    registry: tauri::State<'_, WindowNotebookRegistry>,
-) -> Result<(), String> {
-    info!(
-        "[save] save_notebook command invoked by window {}",
-        window.label()
-    );
-    let path = path_for_window(&window, registry.inner())?;
-    let notebook_sync = notebook_sync_for_window(&window, registry.inner())?;
-
-    // Verify we have a path - daemon will use the room's notebook_path
-    {
-        let p = path.lock().map_err(|e| e.to_string())?;
-        if p.is_none() {
-            return Err("No file path set - use save_notebook_as".to_string());
-        }
-    }
-
-    // Save via daemon - daemon handles formatting and disk write
-    // Formatted sources are synced back via Automerge
-    let sync_handle = notebook_sync.lock().await.clone();
-    let handle = sync_handle.ok_or("Not connected to daemon")?;
-
-    match handle
-        .send_request(NotebookRequest::SaveNotebook {
-            format_cells: true, // Daemon formats cells before saving
-            path: None,         // Use room's notebook_path
-        })
-        .await
-    {
-        Ok(NotebookResponse::NotebookSaved { path, .. }) => {
-            info!("[save] Notebook saved via daemon to: {}", path);
-        }
-        Ok(NotebookResponse::SaveError { error }) => {
-            return Err(format_save_error(&error));
-        }
-        Ok(NotebookResponse::Error { error }) => {
-            return Err(format!("Daemon save failed: {}", error));
-        }
-        Ok(other) => {
-            return Err(format!("Unexpected daemon response: {:?}", other));
-        }
-        Err(e) => {
-            return Err(format!("Daemon request failed: {}", e));
-        }
-    }
 
     Ok(())
 }
@@ -2805,26 +2723,14 @@ async fn send_frame_bytes(
 }
 
 // ============================================================================
-// Trust Verification Commands
+// Trust approval
 // ============================================================================
-
-/// Verify the trust status of the current notebook's dependencies.
-///
-/// Returns the trust status and information about what packages would be installed.
-#[tauri::command]
-async fn verify_notebook_trust(
-    window: tauri::Window,
-    registry: tauri::State<'_, WindowNotebookRegistry>,
-) -> Result<trust::TrustInfo, String> {
-    let notebook_sync = notebook_sync_for_window(&window, registry.inner())?;
-    let guard = notebook_sync.lock().await;
-    let handle = guard.as_ref().ok_or("Not connected to daemon")?;
-    // Use raw metadata to preserve trust_signature (not in the typed RuntMetadata struct)
-    let additional = get_raw_metadata_additional(handle)
-        .await
-        .ok_or("Failed to read metadata from daemon")?;
-    trust::verify_notebook_trust(&additional)
-}
+//
+// Trust *status* is authored by the daemon on `RuntimeStateDoc.trust` and
+// reaches the frontend via CRDT sync. Only the explicit approval action
+// stays Tauri-side, because it needs the local HMAC key to sign. That
+// will move to the daemon in a follow-up, at which point this command
+// (and the `runt-trust` crate dep on `notebook`) can be dropped too.
 
 /// Approve the notebook's dependencies and sign them with the local trust key.
 ///
@@ -3775,10 +3681,11 @@ pub fn run(
         .manage(daemon_status_state)
         .manage(SyncReadyState::default())
         .invoke_handler(tauri::generate_handler![
-            // Notebook file operations
-            has_notebook_path,
+            // Notebook file operations. In-place saves go straight from the
+            // frontend to the daemon via `send_frame(0x01)`; this handler
+            // only covers the paths that need Tauri-side side effects
+            // (save-as: dialog + recent-menu, clone: new window).
             apply_path_changed,
-            save_notebook,
             save_notebook_as,
             get_default_save_directory,
             clone_notebook_to_ephemeral,
@@ -3804,8 +3711,9 @@ pub fn run(
             // pyproject / pixi / environment.yml: discovery + import
             // now flow through RuntimeStateDoc.project_context and
             // WASM metadata writes. No Tauri commands live here.
-            // Trust verification
-            verify_notebook_trust,
+            // Trust. Status reads come off `RuntimeStateDoc.trust` via
+            // CRDT sync; only the explicit approval (HMAC signing with the
+            // local trust key) stays on the Tauri side for now.
             approve_notebook_trust,
             check_typosquats,
             // Synced settings (via runtimed Automerge)

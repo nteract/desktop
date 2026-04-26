@@ -50,7 +50,6 @@ import type {
   HostUpdater,
   HostWindow,
   NotebookHost,
-  TrustInfo,
   TyposquatWarning,
   Unlisten,
 } from "../types";
@@ -115,9 +114,6 @@ export function createTauriHost(opts: CreateTauriHostOptions = {}): NotebookHost
   };
 
   const trust: HostTrust = {
-    async verify() {
-      return invoke<TrustInfo>("verify_notebook_trust");
-    },
     async approve() {
       await invoke("approve_notebook_trust");
     },

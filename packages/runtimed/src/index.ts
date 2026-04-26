@@ -53,6 +53,7 @@ export {
   type RuntimeLifecycle,
   type RuntimeState,
   type TrustState,
+  type TrustStatus,
   diffExecutions,
   getExecutionCountForCell,
 } from "./runtime-state";
@@ -108,13 +109,14 @@ export {
 } from "./derived-state";
 
 // Notebook client
-export { NotebookClient, type NotebookClientOptions } from "./notebook-client";
+export { NotebookClient, type NotebookClientOptions, SaveNotebookError } from "./notebook-client";
 export type {
   CommRequestMessage,
   CompletionItem,
   HistoryEntry,
   NotebookRequest,
   NotebookResponse,
+  SaveErrorKind,
 } from "./request-types";
 
 // MIME priority

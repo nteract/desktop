@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 import type { NotebookHost } from "@nteract/notebook-host";
+import type { NotebookTransport } from "runtimed";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import {
   cloneNotebookFile,
@@ -15,7 +16,22 @@ const mockSaveDialog = vi.fn<
   (opts?: { filters?: unknown; defaultPath?: string }) => Promise<string | null>
 >();
 
+/**
+ * Minimal NotebookTransport stub for the save-path test. `sendRequest` is
+ * what `NotebookClient.saveNotebook` calls — the rest of the transport
+ * surface is unused in these tests.
+ */
+const mockSendRequest = vi.fn();
+const stubTransport = {
+  sendRequest: (req: unknown) => mockSendRequest(req),
+  sendFrame: async () => {},
+  onFrame: () => () => {},
+  connected: true,
+  disconnect: () => {},
+} as unknown as NotebookTransport;
+
 const stubHost = {
+  transport: stubTransport,
   dialog: {
     openFile: (opts?: { filters?: unknown; defaultPath?: string }) => mockOpenDialog(opts),
     saveFile: (opts?: { filters?: unknown; defaultPath?: string }) => mockSaveDialog(opts),
@@ -32,6 +48,7 @@ afterEach(() => {
   mockInvoke.mockReset();
   mockOpenDialog.mockReset();
   mockSaveDialog.mockReset();
+  mockSendRequest.mockReset();
   clearMocks();
 });
 
@@ -46,26 +63,28 @@ describe("saveNotebook", () => {
     flushSync.mockClear();
   });
 
-  it("saves in place when the notebook already has a path", async () => {
-    mockInvoke.mockImplementation((cmd: string) => {
-      if (cmd === "has_notebook_path") return true;
-      return undefined;
+  it("saves in place through the transport when the notebook has a path", async () => {
+    mockSendRequest.mockResolvedValueOnce({
+      result: "notebook_saved",
+      path: "/home/user/notebooks/MyNotebook.ipynb",
     });
 
-    const result = await saveNotebook(stubHost, flushSync);
+    const result = await saveNotebook(stubHost, flushSync, true);
 
     expect(result).toBe(true);
     expect(flushSync).toHaveBeenCalledTimes(1);
-    expect(mockInvoke).toHaveBeenCalledWith(
-      "has_notebook_path",
+    expect(mockSendRequest).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "save_notebook", format_cells: true }),
+    );
+    // No Tauri round-trip for save-in-place.
+    expect(mockInvoke).not.toHaveBeenCalledWith(
+      "save_notebook",
       expect.anything(),
     );
-    expect(mockInvoke).toHaveBeenCalledWith("save_notebook", expect.anything());
   });
 
   it("opens a save dialog for untitled notebooks", async () => {
     mockInvoke.mockImplementation((cmd: string) => {
-      if (cmd === "has_notebook_path") return false;
       if (cmd === "get_default_save_directory") return "/home/user/notebooks";
       return undefined;
     });
@@ -73,7 +92,7 @@ describe("saveNotebook", () => {
       "/home/user/notebooks/MyNotebook.ipynb",
     );
 
-    const result = await saveNotebook(stubHost, flushSync);
+    const result = await saveNotebook(stubHost, flushSync, false);
 
     expect(result).toBe(true);
     expect(mockSaveDialog).toHaveBeenCalledTimes(1);
@@ -83,17 +102,17 @@ describe("saveNotebook", () => {
         path: "/home/user/notebooks/MyNotebook.ipynb",
       }),
     );
+    expect(mockSendRequest).not.toHaveBeenCalled();
   });
 
   it("returns false when the save dialog is cancelled", async () => {
     mockInvoke.mockImplementation((cmd: string) => {
-      if (cmd === "has_notebook_path") return false;
       if (cmd === "get_default_save_directory") return "/tmp";
       return undefined;
     });
     mockSaveDialog.mockResolvedValueOnce(null);
 
-    const result = await saveNotebook(stubHost, flushSync);
+    const result = await saveNotebook(stubHost, flushSync, false);
 
     expect(result).toBe(false);
     // save_notebook_as should NOT be called
@@ -103,18 +122,29 @@ describe("saveNotebook", () => {
     expect(saveAsCalls).toHaveLength(0);
   });
 
-  it("returns false and logs on error", async () => {
-    mockInvoke.mockRejectedValue(new Error("disk full"));
+  it("returns false on daemon save errors", async () => {
+    mockSendRequest.mockResolvedValueOnce({
+      result: "save_error",
+      error: { type: "io", message: "disk full" },
+    });
 
-    const result = await saveNotebook(stubHost, flushSync);
+    const result = await saveNotebook(stubHost, flushSync, true);
 
     expect(result).toBe(false);
   });
 
-  it("always flushes sync before checking path", async () => {
-    mockInvoke.mockRejectedValue(new Error("fail"));
+  it("returns false on transport failure", async () => {
+    mockSendRequest.mockRejectedValueOnce(new Error("transport down"));
 
-    await saveNotebook(stubHost, flushSync);
+    const result = await saveNotebook(stubHost, flushSync, true);
+
+    expect(result).toBe(false);
+  });
+
+  it("always flushes sync before saving", async () => {
+    mockSendRequest.mockRejectedValueOnce(new Error("fail"));
+
+    await saveNotebook(stubHost, flushSync, true);
 
     expect(flushSync).toHaveBeenCalledTimes(1);
   });

@@ -104,8 +104,14 @@ export interface EnvState {
   prewarmed_packages: string[];
 }
 
+/**
+ * Trust status mirrors `runt_trust::TrustStatus` serialized with
+ * `rename_all = "snake_case"`.
+ */
+export type TrustStatus = "trusted" | "untrusted" | "signature_invalid" | "no_dependencies";
+
 export interface TrustState {
-  status: string;
+  status: TrustStatus;
   needs_approval: boolean;
 }
 
