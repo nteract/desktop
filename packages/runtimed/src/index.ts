@@ -86,9 +86,13 @@ export {
 // Derived state
 export {
   type DaemonQueueState,
+  deriveEnvManager,
   deriveEnvSyncState,
   deriveKernelInfo,
   deriveQueueState,
+  deriveRuntimeKind,
+  type EnvManager,
+  type EnvManagerMetadataInputs,
   type EnvSyncDiff,
   type EnvSyncState,
   isKernelStatus,
@@ -98,6 +102,7 @@ export {
   lifecycleToLegacyStatus,
   RUNTIME_STATUS,
   runtimeStatusKey,
+  type RuntimeKind,
   type RuntimeStatusKey,
   statusKeyToLegacyStatus,
 } from "./derived-state";

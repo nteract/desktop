@@ -62,6 +62,39 @@ export interface EnvSyncState {
   diff?: EnvSyncDiff;
 }
 
+/**
+ * Env-manager the notebook is running under — `"uv"` / `"conda"` /
+ * `"pixi"`. Drives toolbar badge + dep-header panel selection.
+ *
+ * Distinct from `RuntimeKind` (`"python"` / `"deno"`): a Python notebook
+ * always has exactly one manager, a Deno notebook has none.
+ */
+export type EnvManager = "uv" | "conda" | "pixi";
+
+/**
+ * Runtime kind — `"python"` / `"deno"`. Matches `kernelspec.name` /
+ * `language_info.name` as sampled from the notebook doc's metadata,
+ * plus a fallback when the daemon has detected a project file but the
+ * notebook metadata hasn't been stamped yet.
+ */
+export type RuntimeKind = "python" | "deno";
+
+/**
+ * Inline-metadata inputs to `deriveEnvManager`. Sourced from the WASM
+ * Automerge doc (not `RuntimeState`), so we pass them in instead of
+ * making the deriver depend on the WASM handle.
+ */
+export interface EnvManagerMetadataInputs {
+  /** `runt.uv.dependencies` present on the notebook (regardless of count). */
+  isUvConfigured: boolean;
+  /** `runt.conda.dependencies` present on the notebook (regardless of count). */
+  isCondaConfigured: boolean;
+  /** environment.yml detected with a non-empty `dependencies:` list. */
+  environmentYmlHasDeps: boolean;
+  /** pixi.toml detected with non-empty `[dependencies]` or `[pypi-dependencies]`. */
+  pixiHasDeps: boolean;
+}
+
 // ── Derivation functions ────────────────────────────────────────────
 
 /** Derive kernel type and environment source from RuntimeState. */
@@ -70,6 +103,79 @@ export function deriveKernelInfo(state: RuntimeState): KernelInfo {
     kernelType: state.kernel.language || undefined,
     envSource: state.kernel.env_source || undefined,
   };
+}
+
+/**
+ * Derive the env manager (`"uv"` / `"conda"` / `"pixi"`) a Python
+ * notebook is using, from the authoritative sources in priority order:
+ *
+ * 1. Running kernel's `env_source` (`"uv:..."` / `"conda:..."` /
+ *    `"pixi:..."`). The daemon has spoken — nothing else matters.
+ * 2. Inline notebook metadata (`runt.uv` / `runt.conda`). The user has
+ *    declared deps even if the kernel isn't up yet.
+ * 3. Detected project file via `RuntimeState.project_context`:
+ *    pixi.toml → pixi, environment.yml → conda, pyproject.toml → uv.
+ *    The daemon walked up from the notebook and found one, so we trust
+ *    it even before the notebook's own kernelspec lands.
+ *
+ * Returns `null` when none of these match (fresh untitled notebook with
+ * no deps and no project file nearby).
+ *
+ * Inline-metadata signals (#2) are passed in by the caller because they
+ * live in the WASM Automerge doc, not in `RuntimeState`.
+ */
+export function deriveEnvManager(
+  state: RuntimeState,
+  metadata: EnvManagerMetadataInputs,
+): EnvManager | null {
+  const envSource = state.kernel.env_source;
+  if (envSource.startsWith("pixi:")) return "pixi";
+  if (envSource.startsWith("conda:")) return "conda";
+  if (envSource.startsWith("uv:")) return "uv";
+
+  if (metadata.isUvConfigured) return "uv";
+  if (metadata.isCondaConfigured || metadata.environmentYmlHasDeps) return "conda";
+  if (metadata.pixiHasDeps) return "pixi";
+
+  const ctx = state.project_context;
+  if (ctx.state === "Detected") {
+    switch (ctx.project_file.kind) {
+      case "PixiToml":
+        return "pixi";
+      case "EnvironmentYml":
+        return "conda";
+      case "PyprojectToml":
+        return "uv";
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Derive the notebook's runtime kind — `"python"` / `"deno"` — from
+ * WASM-resolved kernelspec/language_info, a pre-metadata daemon hint,
+ * and a last-ditch project-file fallback.
+ *
+ * The first two inputs are produced by the frontend (WASM metadata
+ * detection + daemon:ready hint). The project-context fallback kicks in
+ * when the notebook hasn't yet persisted its kernelspec but the daemon
+ * already found a Python project file next to it — "untitled notebook
+ * sitting in a pyproject directory" is the canonical case.
+ *
+ * None of the three project-file kinds are Deno indicators, so a
+ * detected project file implies Python. A Deno runtime only shows up
+ * through the first two signals.
+ */
+export function deriveRuntimeKind(
+  state: RuntimeState,
+  detectedRuntime: string | null,
+  runtimeHint: string | null,
+): RuntimeKind | null {
+  if (detectedRuntime === "python" || detectedRuntime === "deno") return detectedRuntime;
+  if (runtimeHint === "python" || runtimeHint === "deno") return runtimeHint;
+  if (state.project_context.state === "Detected") return "python";
+  return null;
 }
 
 /** Derive queue state from RuntimeState. */

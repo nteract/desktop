@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { NotebookClient } from "runtimed";
+import { deriveEnvManager, deriveRuntimeKind, NotebookClient } from "runtimed";
 import { IsolationTest } from "@/components/isolated";
 import { MediaProvider } from "@/components/outputs/media-provider";
 import { getCrdtCommWriter, setCrdtCommWriter } from "@/components/widgets/crdt-comm-writer";
@@ -219,13 +219,18 @@ function AppContent() {
   // Guard against duplicate per-cell execute requests (rapid Shift+Enter)
   const executingCellsRef = useRef(new Set<string>());
 
+  // Full runtime state from the daemon. Feeds the env-manager + runtime
+  // derivers below and the path read further down. Single subscription
+  // point; the derivers are pure and don't add re-renders.
+  const runtimeState = useRuntimeState();
+
   // Notebook runtime type — reactive read from WASM Automerge doc.
   // Re-renders automatically when metadata changes (bootstrap, sync, writes).
   const detectedRuntime = useDetectRuntime();
   // Runtime hint from daemon:ready payload — available before metadata syncs,
   // prevents momentary flicker of wrong runtime UI (e.g. Python for Deno notebooks).
   const [runtimeHint, setRuntimeHint] = useState<string | null>(null);
-  const runtime = detectedRuntime ?? runtimeHint;
+  const runtime = deriveRuntimeKind(runtimeState, detectedRuntime, runtimeHint);
 
   // `true` when the room is in-memory only (untitled); reported by the daemon
   // via `daemon:ready`. Drives the always-dirty titlebar asterisk. Null until
@@ -472,33 +477,21 @@ function AppContent() {
     flushCellUIState();
   });
 
-  // When kernel is running and we know the env source, use it to determine panel type.
-  // This handles: both-deps (backend picks based on preference), pixi (auto-detected, no metadata).
-  // Fall back to metadata-based detection when kernel hasn't started yet.
-  const envType = envSource?.startsWith("conda:")
-    ? "conda"
-    : envSource?.startsWith("uv:")
-      ? "uv"
-      : envSource?.startsWith("pixi:")
-        ? "pixi"
-        : isUvConfigured
-          ? "uv"
-          : isCondaConfigured || environmentYmlInfo?.has_dependencies
-            ? "conda"
-            : pixiInfo?.has_dependencies || pixiInfo?.has_pypi_dependencies
-              ? "pixi"
-              : null;
+  // Env manager (uv / conda / pixi) — drives the toolbar badge and
+  // which dep header renders. Derived from RuntimeState + WASM-metadata
+  // signals in priority order: running kernel's env_source, inline
+  // deps, detected project file. See `deriveEnvManager` in runtimed.
+  const envType = deriveEnvManager(runtimeState, {
+    isUvConfigured,
+    isCondaConfigured,
+    environmentYmlHasDeps: Boolean(environmentYmlInfo?.has_dependencies),
+    pixiHasDeps: Boolean(pixiInfo?.has_dependencies || pixiInfo?.has_pypi_dependencies),
+  });
 
-  // Pre-start hint for the env badge (more specific than envType: distinguishes pixi)
-  const envTypeHint = envSource
-    ? null // backend has spoken, no hint needed
-    : pixiInfo?.has_dependencies || pixiInfo?.has_pypi_dependencies
-      ? ("pixi" as const)
-      : envType === "conda"
-        ? ("conda" as const)
-        : envType === "uv"
-          ? ("uv" as const)
-          : null;
+  // Pre-start hint for the env badge: same answer as envType when the
+  // daemon hasn't yet reported env_source (kernel still launching).
+  // Once envSource is set, toolbar renders the real label off it.
+  const envTypeHint = envSource ? null : envType;
 
   // Auto-updater
   const {
@@ -882,7 +875,7 @@ function AppContent() {
   // untitled state. The runtime state hook returns the same default
   // until the daemon's first state sync arrives, so this effect is a
   // straight projection.
-  const runtimePath = useRuntimeState().path;
+  const runtimePath = runtimeState.path;
   useEffect(() => {
     applyNotebookPath(runtimePath);
   }, [applyNotebookPath, runtimePath]);
