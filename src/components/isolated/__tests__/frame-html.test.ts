@@ -58,7 +58,9 @@ describe("generateFrameHtml", () => {
   it("forwards wheel deltas when iframe scroll reaches a boundary", () => {
     expect(html).toContain("document.addEventListener('wheel'");
     expect(html).toContain("isWheelAtScrollBoundary");
+    expect(html).toContain("e.preventDefault()");
     expect(html).toContain("sendRpc('nteract/wheelBoundary'");
+    expect(html).toContain("passive: false");
   });
 
   describe("dark mode", () => {

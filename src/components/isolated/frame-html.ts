@@ -644,9 +644,10 @@ export function generateFrameHtml(options: FrameHtmlOptions = {}): string {
         if (!e.deltaY) return;
         var scroller = nearestVerticalScroller(e.target);
         if (isWheelAtScrollBoundary(scroller, e.deltaY)) {
+          e.preventDefault();
           sendRpc('nteract/wheelBoundary', { deltaY: e.deltaY });
         }
-      }, { capture: true, passive: true });
+      }, { capture: true, passive: false });
 
       // --- Double Click Forwarding ---
       document.addEventListener('dblclick', function(e) {
