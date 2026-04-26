@@ -75,3 +75,9 @@ tempfile = "3"
 [build-dependencies]
 serde_json = { workspace = true }
 tauri-build = { version = "2", features = [] }
+
+[package.metadata.cargo-machete]
+# `wry` is depended on only to activate its `fullscreen` Cargo feature
+# via feature unification — no direct code uses it. See the wry line
+# in [dependencies] for the full rationale.
+ignored = ["wry"]
