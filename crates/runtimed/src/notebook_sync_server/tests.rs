@@ -6414,3 +6414,43 @@ async fn project_file_watcher_refreshes_context_on_external_edit() {
         let _ = tx.send(());
     }
 }
+
+/// Kernel launch can fail before the kernel ever connects to the
+/// daemon — e.g. the subprocess exits with status 1 because a required
+/// module isn't installed. The failure arms in
+/// `notebook_sync_server::metadata` and `requests::launch_kernel` now
+/// use `reset_starting_state_with_outcome(..., ResetOutcome::Error)`
+/// so the CRDT carries `Error + error_details` instead of quietly
+/// reverting to `NotStarted`. This covers the wiring.
+#[tokio::test]
+async fn reset_starting_state_error_variant_writes_details() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (room, _) = test_room_with_path(&tmp, "launch-failure.ipynb");
+
+    // Seed a non-Error lifecycle so the transition under test is observable.
+    room.state
+        .with_doc(|sd| sd.set_lifecycle(&RuntimeLifecycle::Launching))
+        .unwrap();
+
+    let stderr_tail = "Kernel process exited immediately: status 1\nstderr tail:\n/path/to/python: No module named foo\n";
+    reset_starting_state_with_outcome(
+        &room,
+        None,
+        ResetOutcome::Error {
+            reason: None,
+            details: stderr_tail,
+        },
+    )
+    .await;
+
+    let state = room.state.with_doc(|sd| Ok(sd.read_state())).unwrap();
+    assert!(
+        matches!(state.kernel.lifecycle, RuntimeLifecycle::Error),
+        "expected Error lifecycle, got {:?}",
+        state.kernel.lifecycle
+    );
+    assert_eq!(state.kernel.error_details.as_deref(), Some(stderr_tail));
+    // No typed reason (generic launch error); `error_reason` is empty
+    // but present so readers can skip typed-reason branches cleanly.
+    assert_eq!(state.kernel.error_reason.as_deref(), Some(""));
+}
