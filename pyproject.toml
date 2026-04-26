@@ -8,6 +8,7 @@ dependencies = [
     "gremlin ; sys_platform == 'darwin'",
     "dx",
     "nteract-kernel-launcher",
+    "safari-timeline",
     "pandas",
     "polars",
     "pyarrow>=14",
@@ -24,7 +25,7 @@ build-backend = "setuptools.build_meta"
 packages = []
 
 [tool.uv.workspace]
-members = ["python/runtimed", "python/nteract", "python/gremlin", "python/prewarm", "python/dx", "python/nteract-kernel-launcher"]
+members = ["python/runtimed", "python/nteract", "python/gremlin", "python/prewarm", "python/dx", "python/nteract-kernel-launcher", "python/safari-timeline"]
 
 [tool.uv.sources]
 runtimed = { workspace = true }
@@ -32,6 +33,7 @@ nteract = { workspace = true }
 gremlin = { workspace = true }
 dx = { workspace = true }
 nteract-kernel-launcher = { workspace = true }
+safari-timeline = { workspace = true }
 
 [tool.ruff]
 line-length = 100
@@ -50,7 +52,7 @@ select = [
 ]
 
 [tool.ruff.lint.isort]
-known-first-party = ["runtimed", "nteract", "prewarm"]
+known-first-party = ["runtimed", "nteract", "prewarm", "safari_timeline"]
 
 [tool.ruff.lint.per-file-ignores]
 "**/tests/**" = ["SIM105", "SIM117"]
@@ -84,6 +86,7 @@ extra-paths = [
     "python/gremlin/src",
     "python/prewarm/src",
     "python/dx/src",
+    "python/safari-timeline/src",
     # nteract-kernel-launcher is a single top-level .py file, no src/ layout
     "python/nteract-kernel-launcher",
     # Integration tests sit side-by-side under tests/ and share fixtures
