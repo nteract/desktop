@@ -83,7 +83,9 @@ Phases are written by the daemon to RuntimeStateDoc. Frontend displays them via 
 
 Environments are cached by dependency hash so notebooks with identical deps share a single environment.
 
-**UV** (`uv_env.rs`): Hash = SHA256(sorted deps + requires_python + prerelease + env_id), first 16 hex chars. Location: `~/.cache/runt/envs/{hash}/`. When deps are non-empty, env_id is excluded (cross-notebook sharing). When empty, env_id is included (per-notebook isolation).
+Cache locations are channel-aware: stable writes under `runt/`, nightly under `runt-nightly/`, a dev worktree under `runt/worktrees/{hash}/`. Paths below show the stable shape; substitute the channel namespace in your own tree.
+
+**UV** (`uv_env.rs`): Hash = SHA256(sorted deps + requires_python + prerelease + env_id), first 16 hex chars. Location: `~/.cache/runt/envs/{hash}/` (Linux), `~/Library/Caches/runt/envs/{hash}/` (macOS). When deps are non-empty, env_id is excluded (cross-notebook sharing). When empty, env_id is included (per-notebook isolation).
 
 **Conda** (`conda_env.rs`): Hash = SHA256(sorted deps + sorted channels + python version + env_id), first 16 hex chars. Location: `~/.cache/runt/conda-envs/{hash}/`.
 
@@ -91,7 +93,7 @@ Cache hit check: verify `{hash}/bin/python` (Unix) or `{hash}/Scripts/python.exe
 
 ## Inline Dependency Environments
 
-For notebooks with inline UV deps (`metadata.runt.uv.dependencies`), the daemon creates cached environments in `~/.cache/runt/inline-envs/`. Keyed by hash of sorted dependencies for fast reuse. Cache hit = instant startup.
+For notebooks with inline UV deps (`metadata.runt.uv.dependencies`), the daemon creates cached environments in `~/.cache/runt/inline-envs/` (same channel namespacing as above). Keyed by hash of sorted dependencies for fast reuse. Cache hit = instant startup.
 
 ### PEP 723 Support
 

@@ -40,11 +40,11 @@ pub struct CondaEnvironment {
 }
 
 /// Get the default cache directory for conda environments.
+///
+/// Channel-aware; see [`super::uv::default_cache_dir_uv`] for the
+/// nightly/stable/dev namespacing rationale.
 pub fn default_cache_dir_conda() -> PathBuf {
-    dirs::cache_dir()
-        .unwrap_or_else(|| PathBuf::from("/tmp"))
-        .join("runt")
-        .join("conda-envs")
+    runt_workspace::daemon_base_dir().join("conda-envs")
 }
 
 /// Base package set every Conda kernel env is warmed with.

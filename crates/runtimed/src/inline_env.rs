@@ -51,11 +51,11 @@ impl ProgressHandler for BroadcastProgressHandler {
 }
 
 /// Get the cache directory for inline dependency environments.
-fn get_inline_cache_dir() -> std::path::PathBuf {
-    dirs::cache_dir()
-        .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
-        .join("runt")
-        .join("inline-envs")
+///
+/// Channel-aware: shares `runt_workspace::daemon_base_dir` with the other
+/// kernel-env caches so nightly and stable stay on their own trees.
+pub(crate) fn inline_cache_dir() -> std::path::PathBuf {
+    runt_workspace::daemon_base_dir().join("inline-envs")
 }
 
 /// Return inline deps unchanged.
@@ -95,9 +95,8 @@ pub async fn prepare_uv_inline_env(
         prerelease: prerelease.map(|s| s.to_string()),
     };
 
-    let env =
-        kernel_env::uv::prepare_environment_in(&uv_deps, None, &get_inline_cache_dir(), handler)
-            .await?;
+    let env = kernel_env::uv::prepare_environment_in(&uv_deps, None, &inline_cache_dir(), handler)
+        .await?;
 
     Ok(PreparedEnv {
         env_path: env.venv_path,
@@ -125,9 +124,8 @@ pub async fn prepare_conda_inline_env(
         env_id: None,
     };
 
-    let env =
-        kernel_env::conda::prepare_environment_in(&conda_deps, &get_inline_cache_dir(), handler)
-            .await?;
+    let env = kernel_env::conda::prepare_environment_in(&conda_deps, &inline_cache_dir(), handler)
+        .await?;
 
     Ok(PreparedEnv {
         env_path: env.env_path,
@@ -159,7 +157,7 @@ pub async fn claim_pool_env_for_uv_inline_cache(
         prerelease: prerelease.map(|s| s.to_string()),
     };
     let hash = kernel_env::uv::compute_env_hash(&uv_deps, None);
-    let target = get_inline_cache_dir().join(&hash);
+    let target = inline_cache_dir().join(&hash);
     rename_env_to_target(&mut env.venv_path, &mut env.python_path, target).await;
 }
 
@@ -182,7 +180,7 @@ pub async fn claim_pool_env_for_conda_inline_cache(
         env_id: None,
     };
     let hash = kernel_env::conda::compute_env_hash(&conda_deps);
-    let target = get_inline_cache_dir().join(&hash);
+    let target = inline_cache_dir().join(&hash);
     rename_env_to_target(&mut env.venv_path, &mut env.python_path, target).await;
 }
 
@@ -488,7 +486,7 @@ pub async fn check_uv_inline_cache(
     };
 
     let hash = kernel_env::uv::compute_env_hash(&uv_deps, None);
-    let cache_dir = get_inline_cache_dir();
+    let cache_dir = inline_cache_dir();
     let venv_path = cache_dir.join(&hash);
 
     #[cfg(unix)]
@@ -537,7 +535,7 @@ pub fn check_conda_inline_cache(deps: &[String], channels: &[String]) -> Option<
     };
 
     let hash = kernel_env::conda::compute_env_hash(&conda_deps);
-    let cache_dir = get_inline_cache_dir();
+    let cache_dir = inline_cache_dir();
     let env_path = cache_dir.join(&hash);
 
     #[cfg(unix)]
