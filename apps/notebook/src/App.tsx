@@ -315,6 +315,7 @@ function AppContent() {
     statusKey,
     lifecycle,
     errorReason,
+    errorDetails,
     kernelInfo,
     queueState,
     envSyncState,
@@ -1158,6 +1159,7 @@ function AppContent() {
           statusKey={statusKey}
           lifecycle={lifecycle}
           errorReason={errorReason}
+          kernelErrorMessage={errorDetails}
           envSource={envSource}
           envTypeHint={envTypeHint}
           envProgress={envProgress.isActive || envProgress.error ? envProgress : null}

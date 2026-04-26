@@ -1876,15 +1876,32 @@ pub(crate) fn is_untitled_notebook(notebook_id: &str) -> bool {
     uuid::Uuid::parse_str(notebook_id).is_ok()
 }
 
-/// Reset runtime state to "not_started" (clears any stale starting phase).
-/// Used when an early exit prevents kernel launch after status was set to "starting".
+/// Outcome the caller wants for `RuntimeStateDoc.kernel` after tearing
+/// down a failed or stale runtime agent.
+pub(crate) enum ResetOutcome<'a> {
+    /// Clear the starting phase and leave the kernel in `NotStarted`. The
+    /// frontend's auto-launch path can retry cleanly.
+    NotStarted,
+    /// Mark the kernel as `Error` and attach an error_details string the
+    /// UI can render. `reason` is the typed key (or `None` for generic
+    /// errors that don't fit the `KernelErrorReason` enum).
+    Error {
+        reason: Option<runtime_doc::KernelErrorReason>,
+        details: &'a str,
+    },
+}
+
+/// Reset runtime state after a failed or aborted launch. Writes the
+/// requested outcome to `RuntimeStateDoc.kernel` and clears the stale
+/// runtime agent handle / request channel / pending connect sender.
 ///
 /// `expected_runtime_agent_id`: If `Some`, only reset if the current runtime agent
 /// matches — prevents a stale error handler from clobbering a newer agent's state.
 /// Pre-spawn callers pass `None` (no agent exists yet, always safe to reset).
-pub(crate) async fn reset_starting_state(
+pub(crate) async fn reset_starting_state_with_outcome<'a>(
     room: &NotebookRoom,
     expected_runtime_agent_id: Option<&str>,
+    outcome: ResetOutcome<'a>,
 ) {
     // For guarded resets (post-spawn error paths), atomically check-and-clear
     // provenance AND capture the generation counter in a single write lock scope.
@@ -1916,7 +1933,18 @@ pub(crate) async fn reset_starting_state(
     // state handle uses std::sync::Mutex - no lock ordering concern
     // with runtime_agent_handle (tokio::sync::Mutex).
     if let Err(e) = room.state.with_doc(|sd| {
-        sd.set_lifecycle(&RuntimeLifecycle::NotStarted)?;
+        match outcome {
+            ResetOutcome::NotStarted => {
+                sd.set_lifecycle(&RuntimeLifecycle::NotStarted)?;
+            }
+            ResetOutcome::Error { reason, details } => {
+                sd.set_lifecycle_with_error_details(
+                    &RuntimeLifecycle::Error,
+                    reason,
+                    Some(details),
+                )?;
+            }
+        }
         sd.set_prewarmed_packages(&[])?;
         Ok(())
     }) {
@@ -1958,6 +1986,20 @@ pub(crate) async fn reset_starting_state(
         }
         *guard = None;
     }
+}
+
+/// Reset runtime state to `NotStarted`. Convenience wrapper around
+/// [`reset_starting_state_with_outcome`] for call sites that don't have
+/// a specific error message to surface — e.g. pool-empty, a user-side
+/// config error the caller has already encoded in its own
+/// `NotebookResponse::Error`, or a path that only needs to unwind the
+/// "starting" state so auto-launch can retry.
+pub(crate) async fn reset_starting_state(
+    room: &NotebookRoom,
+    expected_runtime_agent_id: Option<&str>,
+) {
+    reset_starting_state_with_outcome(room, expected_runtime_agent_id, ResetOutcome::NotStarted)
+        .await;
 }
 
 /// Try to satisfy UV inline deps from the prewarmed pool.
@@ -3256,23 +3298,62 @@ pub(crate) async fn auto_launch_kernel(
                     }
                     Ok(notebook_protocol::protocol::RuntimeAgentResponse::Error { error }) => {
                         warn!("[notebook-sync] Agent kernel launch failed: {}", error);
-                        reset_starting_state(room, Some(&runtime_agent_id)).await;
+                        // Surface the failure through CRDT so the UI
+                        // doesn't sit on "starting" forever. The error
+                        // string usually carries the stderr tail from
+                        // `jupyter_kernel.rs` — exactly what the user
+                        // needs to see.
+                        reset_starting_state_with_outcome(
+                            room,
+                            Some(&runtime_agent_id),
+                            ResetOutcome::Error {
+                                reason: None,
+                                details: &error,
+                            },
+                        )
+                        .await;
                     }
                     Ok(_) => {
                         warn!(
                             "[notebook-sync] Unexpected runtime agent response during auto-launch"
                         );
-                        reset_starting_state(room, Some(&runtime_agent_id)).await;
+                        reset_starting_state_with_outcome(
+                            room,
+                            Some(&runtime_agent_id),
+                            ResetOutcome::Error {
+                                reason: None,
+                                details: "Unexpected runtime agent response during kernel launch",
+                            },
+                        )
+                        .await;
                     }
                     Err(e) => {
                         warn!("[notebook-sync] Agent communication error: {}", e);
-                        reset_starting_state(room, Some(&runtime_agent_id)).await;
+                        let details = format!("Agent communication error: {e}");
+                        reset_starting_state_with_outcome(
+                            room,
+                            Some(&runtime_agent_id),
+                            ResetOutcome::Error {
+                                reason: None,
+                                details: &details,
+                            },
+                        )
+                        .await;
                     }
                 }
             }
             Err(e) => {
                 warn!("[notebook-sync] Failed to spawn runtime agent: {}", e);
-                reset_starting_state(room, None).await;
+                let details = format!("Failed to spawn runtime agent: {e}");
+                reset_starting_state_with_outcome(
+                    room,
+                    None,
+                    ResetOutcome::Error {
+                        reason: None,
+                        details: &details,
+                    },
+                )
+                .await;
             }
         }
     }

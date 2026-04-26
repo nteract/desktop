@@ -19,9 +19,9 @@ use crate::notebook_sync_server::{
     captured_env_source_override, check_and_broadcast_sync_state, check_inline_deps,
     extract_pixi_toml_deps, get_inline_conda_channels, get_inline_conda_deps, get_inline_uv_deps,
     get_inline_uv_prerelease, promote_inline_deps_to_project, publish_kernel_state_presence,
-    reset_starting_state, resolve_metadata_snapshot, send_runtime_agent_request,
-    try_conda_pool_for_inline_deps, try_uv_pool_for_inline_deps, unified_env_on_disk,
-    CapturedEnvRuntime, NotebookRoom,
+    reset_starting_state, reset_starting_state_with_outcome, resolve_metadata_snapshot,
+    send_runtime_agent_request, try_conda_pool_for_inline_deps, try_uv_pool_for_inline_deps,
+    unified_env_on_disk, CapturedEnvRuntime, NotebookRoom, ResetOutcome,
 };
 use crate::protocol::NotebookResponse;
 
@@ -1393,30 +1393,64 @@ pub(crate) async fn handle(
                         }
                     }
                     Ok(notebook_protocol::protocol::RuntimeAgentResponse::Error { error }) => {
-                        reset_starting_state(room, Some(&runtime_agent_id)).await;
+                        // Mirror the response into CRDT so UIs that
+                        // watch RuntimeStateDoc (not the RPC reply)
+                        // also see the failure.
+                        reset_starting_state_with_outcome(
+                            room,
+                            Some(&runtime_agent_id),
+                            ResetOutcome::Error {
+                                reason: None,
+                                details: &error,
+                            },
+                        )
+                        .await;
                         NotebookResponse::Error {
                             error: format!("Agent kernel launch failed: {}", error),
                         }
                     }
                     Ok(_) => {
-                        reset_starting_state(room, Some(&runtime_agent_id)).await;
+                        let msg = "Unexpected runtime agent response";
+                        reset_starting_state_with_outcome(
+                            room,
+                            Some(&runtime_agent_id),
+                            ResetOutcome::Error {
+                                reason: None,
+                                details: msg,
+                            },
+                        )
+                        .await;
                         NotebookResponse::Error {
-                            error: "Unexpected runtime agent response".to_string(),
+                            error: msg.to_string(),
                         }
                     }
                     Err(e) => {
-                        reset_starting_state(room, Some(&runtime_agent_id)).await;
-                        NotebookResponse::Error {
-                            error: format!("Agent communication error: {}", e),
-                        }
+                        let details = format!("Agent communication error: {e}");
+                        reset_starting_state_with_outcome(
+                            room,
+                            Some(&runtime_agent_id),
+                            ResetOutcome::Error {
+                                reason: None,
+                                details: &details,
+                            },
+                        )
+                        .await;
+                        NotebookResponse::Error { error: details }
                     }
                 }
             }
             Err(e) => {
-                reset_starting_state(room, None).await;
-                NotebookResponse::Error {
-                    error: format!("Failed to spawn runtime agent: {}", e),
-                }
+                let details = format!("Failed to spawn runtime agent: {e}");
+                reset_starting_state_with_outcome(
+                    room,
+                    None,
+                    ResetOutcome::Error {
+                        reason: None,
+                        details: &details,
+                    },
+                )
+                .await;
+                NotebookResponse::Error { error: details }
             }
         }
     }
