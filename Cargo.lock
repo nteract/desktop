@@ -4462,7 +4462,6 @@ dependencies = [
  "runtimed-client",
  "serde",
  "serde_json",
- "serde_yaml",
  "strsim",
  "tauri",
  "tauri-build",
@@ -4475,7 +4474,6 @@ dependencies = [
  "tauri-plugin-window-state",
  "tempfile",
  "tokio",
- "toml 1.1.2+spec-1.1.0",
  "uuid",
  "wry",
 ]
