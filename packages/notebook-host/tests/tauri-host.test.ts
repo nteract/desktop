@@ -22,13 +22,6 @@ vi.mock("@tauri-apps/api/core", () => ({
         });
       case "get_blob_port":
         return Promise.resolve(12345);
-      case "verify_notebook_trust":
-        return Promise.resolve({
-          status: "trusted",
-          uv_dependencies: [],
-          conda_dependencies: [],
-          conda_channels: [],
-        });
       case "check_typosquats":
         return Promise.resolve([]);
       case "get_username":
@@ -195,15 +188,10 @@ describe("createTauriHost()", () => {
     expect(capturedInvokes.at(-1)?.cmd).toBe("get_blob_port");
   });
 
-  it("routes trust.verify / approve to the correct commands", async () => {
+  it("routes trust.approve to approve_notebook_trust", async () => {
     const host = createTauriHost({ transport: stubTransport });
-    const verify = await host.trust.verify();
-    expect(verify.status).toBe("trusted");
     await host.trust.approve();
-    const cmds = capturedInvokes.map((x) => x.cmd);
-    expect(cmds).toEqual(
-      expect.arrayContaining(["verify_notebook_trust", "approve_notebook_trust"]),
-    );
+    expect(capturedInvokes.map((x) => x.cmd)).toContain("approve_notebook_trust");
   });
 
   it("routes deps.checkTyposquats to check_typosquats (not trust)", async () => {

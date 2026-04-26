@@ -1,14 +1,15 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { NotebookHost } from "@nteract/notebook-host";
+import { NotebookClient, SaveNotebookError } from "runtimed";
 import { logger } from "./logger";
 
 /**
  * Notebook file operations — save, open, clone.
  *
- * Host-agnostic wrappers: dialogs go through `host.dialog`, the invoke
- * calls below remain until the daemon-request thin-wrapper PR. Taking
- * `host` as a parameter (vs. a module-level ref) keeps these functions
- * pure and trivially testable with a stub host.
+ * In-place save goes straight to the daemon via `host.transport`. Save-as
+ * and clone still route through Tauri commands because they have
+ * Tauri-only side effects (file dialog, recent-menu updates, window
+ * creation, kernel relaunch).
  */
 
 const IPYNB_FILTER = { name: "Jupyter Notebook", extensions: ["ipynb"] };
@@ -16,25 +17,30 @@ const IPYNB_FILTER = { name: "Jupyter Notebook", extensions: ["ipynb"] };
 /**
  * Save the current notebook to disk.
  *
- * If the notebook already has a path, saves in place. Otherwise opens
- * a save dialog for the user to choose a location.
+ * If the notebook already has a path, saves in place via the daemon.
+ * Otherwise opens a save dialog for the user to choose a location and
+ * forwards to `save_notebook_as` (still Tauri-side because save-as has
+ * window/menu side effects).
  *
- * @param host - The notebook host (for dialogs).
+ * @param host - The notebook host (for dialogs and transport).
  * @param flushSync - Flush any pending debounced sync before saving so
  *   the daemon has the latest source when writing to disk.
+ * @param hasPath - Whether the notebook has a saved path. Read from
+ *   `runtimeState.path` by the caller; passed in so this helper doesn't
+ *   need to round-trip to Tauri for the check.
  * @returns `true` if saved successfully, `false` on cancel or error.
  */
 export async function saveNotebook(
   host: NotebookHost,
   flushSync: () => Promise<void>,
+  hasPath: boolean,
 ): Promise<boolean> {
   try {
     await flushSync();
 
-    const hasPath = await invoke<boolean>("has_notebook_path");
-
     if (hasPath) {
-      await invoke("save_notebook");
+      const client = new NotebookClient({ transport: host.transport });
+      await client.saveNotebook({ formatCells: true });
     } else {
       const defaultDir = await invoke<string>("get_default_save_directory");
       const filePath = await host.dialog.saveFile({
@@ -47,7 +53,11 @@ export async function saveNotebook(
 
     return true;
   } catch (e) {
-    logger.error("[notebook-file-ops] Save failed:", e);
+    if (e instanceof SaveNotebookError) {
+      logger.error("[notebook-file-ops] Save failed:", e.message);
+    } else {
+      logger.error("[notebook-file-ops] Save failed:", e);
+    }
     return false;
   }
 }
