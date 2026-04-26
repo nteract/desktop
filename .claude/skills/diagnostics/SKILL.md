@@ -7,9 +7,17 @@ description: Collect and analyze nteract diagnostic logs. Use when debugging iss
 
 ## Why `env -i`?
 
-In the dev environment, `RUNTIMED_DEV` and `RUNTIMED_WORKSPACE_PATH` are set (by direnv, xtask, or `nteract-dev`). These cause `runt` to target the per-worktree dev daemon. System diagnostics need to target the **system-installed** daemon, so we use `env -i` to strip all env vars except `PATH` and `HOME`.
+In the dev environment, `RUNTIMED_DEV` and `RUNTIMED_WORKSPACE_PATH` may be set
+by direnv, xtask-managed subprocesses, or `nteract-dev`. These cause `runt` to
+target the per-worktree dev daemon. System diagnostics need to target the
+**system-installed** daemon, so we use `env -i` to strip all env vars except
+`PATH` and `HOME`.
 
-The repo-local `bin/runt` wrapper is first in `$PATH` — it runs `./target/debug/runt`, which is the dev build. That's fine for quick checks, but for true system diagnostics, call the system binary by its channel-specific name (`runt` for stable, `runt-nightly` for nightly) via `env -i` so dev env vars don't leak through.
+The repo-local `bin/runt` wrapper may be first in `$PATH` when direnv is active
+— it runs `./target/debug/runt`, which is the dev build. That's fine for quick
+checks, but for true system diagnostics, call the system binary by its
+channel-specific name (`runt` for stable, `runt-nightly` for nightly) via
+`env -i` so dev env vars don't leak through.
 
 ## Collecting Diagnostics
 
@@ -25,6 +33,7 @@ env -i HOME=$HOME /usr/local/bin/runt diagnostics
 
 **Dev daemon** (per-worktree, no `env -i` needed):
 ```bash
+RUNTIMED_DEV=1 RUNTIMED_WORKSPACE_PATH="$(pwd)" \
 ./target/debug/runt diagnostics
 ```
 

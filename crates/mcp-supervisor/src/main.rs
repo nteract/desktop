@@ -765,9 +765,9 @@ impl Supervisor {
         if !state.socket_path.is_empty() && !state.socket_path.contains("worktrees/") {
             warn!(
                 "⚠️  Socket path does not contain 'worktrees/': {}\n\
-                 This may indicate direnv is not active and the supervisor is \
-                 connecting to the system daemon instead of a per-worktree dev daemon.\n\
-                 Fix: run `direnv allow` in the repo root.",
+                 This may indicate the supervisor is connecting to the system \
+                 daemon instead of a per-worktree dev daemon.\n\
+                 Fix: start the dev daemon from the repo root with `cargo xtask dev-daemon`.",
                 state.socket_path
             );
         }
@@ -2854,9 +2854,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             _ if mode == DevMode::Attach => {
                 let message = format!(
                     "Attach mode requires an already-running worktree daemon for {}. \
-                     Start it from an owner-mode session or with `RUNTIMED_DEV=1 \
-                     RUNTIMED_WORKSPACE_PATH={} cargo xtask dev-daemon`.",
-                    daemon_workspace_path.display(),
+                     Start it from an owner-mode session or run `cargo xtask dev-daemon` \
+                     from that worktree.",
                     daemon_workspace_path.display()
                 );
                 error!("{message}");

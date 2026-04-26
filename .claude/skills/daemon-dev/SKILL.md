@@ -312,17 +312,23 @@ launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/io.nteract.runtimed.plis
 
 Each git worktree can run its own isolated daemon.
 
-**Conductor users:** Automatic. `cargo xtask dev-daemon` translates `CONDUCTOR_WORKSPACE_PATH` to `RUNTIMED_WORKSPACE_PATH`.
+**xtask-managed commands:** `cargo xtask dev-daemon`, `cargo xtask notebook`,
+and `cargo xtask run-mcp` derive the current git worktree and pass
+`RUNTIMED_DEV=1` plus `RUNTIMED_WORKSPACE_PATH` to subprocesses. Conductor users
+get the same behavior from `CONDUCTOR_WORKSPACE_PATH`.
 
-**Non-Conductor users:** Set `RUNTIMED_DEV=1`:
+No extra environment is needed for the normal two-terminal xtask workflow:
 
 ```bash
 # Terminal 1
-RUNTIMED_DEV=1 cargo xtask dev-daemon
+cargo xtask dev-daemon
 
 # Terminal 2
-RUNTIMED_DEV=1 cargo xtask notebook
+cargo xtask notebook
 ```
+
+Set `RUNTIMED_DEV=1` and `RUNTIMED_WORKSPACE_PATH="$(pwd)"` only for raw
+`./target/debug/runt ...` commands or other processes not launched by xtask.
 
 **State location** (macOS: `~/Library/Caches/`, Linux: `~/.cache/`):
 

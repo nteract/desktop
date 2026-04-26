@@ -98,14 +98,20 @@ cargo xtask dev --skip-install --skip-build  # Fast repeat
 
 ### Conductor vs Non-Conductor
 
-**Conductor users:** Dev mode is automatic. `CONDUCTOR_WORKSPACE_PATH` is translated to `RUNTIMED_WORKSPACE_PATH` by xtask commands.
+**xtask-managed commands:** `cargo xtask dev-daemon`, `cargo xtask notebook`,
+`cargo xtask dev`, and `cargo xtask run-mcp` derive the current git worktree and
+pass the dev env to subprocesses. Conductor users get the same behavior from
+`CONDUCTOR_WORKSPACE_PATH`.
 
-**Non-Conductor users:** Set `RUNTIMED_DEV=1` explicitly:
+No extra environment is needed for the normal two-terminal xtask workflow:
 
 ```bash
-RUNTIMED_DEV=1 cargo xtask dev-daemon    # Terminal 1
-RUNTIMED_DEV=1 cargo xtask notebook      # Terminal 2
+cargo xtask dev-daemon    # Terminal 1
+cargo xtask notebook      # Terminal 2
 ```
+
+Set `RUNTIMED_DEV=1` and `RUNTIMED_WORKSPACE_PATH="$(pwd)"` only for raw
+`./target/debug/runt ...` commands or other processes not launched by xtask.
 
 ### Useful Daemon Commands
 
@@ -144,7 +150,8 @@ Use `nteract-dev` as the repo-local MCP server name so it stays distinct from an
     "nteract-dev": {
       "command": "cargo",
       "args": ["run", "-p", "mcp-supervisor"],
-      "env": { "RUNTIMED_DEV": "1" }
+      "cwd": ".",
+      "env": { "NTERACT_DEV_MODE": "owner", "RUNTIMED_DEV": "1" }
     }
   }
 }
@@ -182,8 +189,8 @@ The repo includes `.zed/tasks.json` with pre-configured tasks (use cmd-shift-t):
 
 | Task | What it does |
 |------|-------------|
-| Dev Daemon | `cargo xtask dev-daemon` with dev env vars |
-| Dev App | `cargo xtask notebook` with dev env vars and auto Vite port |
+| Dev Daemon | `cargo xtask dev-daemon`; xtask derives the worktree env |
+| Dev App | `cargo xtask notebook`; xtask derives the worktree env and auto Vite port |
 | Daemon Status | `./target/debug/runt daemon status` |
 | Daemon Logs | `./target/debug/runt daemon logs -f` |
 | Format | `cargo xtask lint --fix` (Rust + JS/TS via vp + Python ruff) |

@@ -37,6 +37,14 @@ Two verbs plus three read-only tools, layered on top of the proxied `runt mcp` t
 
 `nteract-dev` proxies `runt mcp` (Rust-native, direct Automerge access, no Python overhead). It auto-builds `runt` on startup and watches `crates/runt-mcp/src/` for hot reload. For the installed app, `runt mcp` ships as a sidecar binary — no Python or uv required.
 
+`nteract-dev` runs in explicit modes. Claude Code uses owner mode from
+`.mcp.json`, so it may start, restart, rebuild, and stop the worktree daemon.
+Codex project config uses attach mode, so Codex connects to an already-running
+worktree daemon but does not own its lifecycle. When falling back to manual
+commands, `cargo xtask dev-daemon`, `cargo xtask notebook`, and
+`cargo xtask run-mcp` derive the current git worktree and pass the dev env to
+subprocesses; direnv is not required for those xtask paths.
+
 ## System daemon CLI (`runt` / `runt-nightly`)
 
 When running CLI commands against system-installed daemons from a dev environment, **always use `env -i`** to strip dev env vars (`RUNTIMED_DEV`, `RUNTIMED_WORKSPACE_PATH`) that would otherwise redirect commands to the per-worktree dev daemon:
@@ -53,11 +61,13 @@ env -i HOME=$HOME /usr/local/bin/runt diagnostics
 env -i HOME=$HOME /usr/local/bin/runt daemon status
 ```
 
-For the dev daemon, use `./target/debug/runt` directly (no `env -i` needed — dev env vars are correct).
+For the dev daemon, prefer `nteract-dev` tools or `cargo xtask` commands. If you
+run `./target/debug/runt` directly, set `RUNTIMED_DEV=1` and
+`RUNTIMED_WORKSPACE_PATH="$(pwd)"` unless your shell already has them.
 
 ## Verifying Daemon Isolation
 
-After setting up direnv, verify that the three MCP servers connect to the correct daemons:
+Verify that the three MCP servers connect to the correct daemons:
 
 ```bash
 # 1. Check nteract-dev status (should show worktrees/ socket)
@@ -84,8 +94,10 @@ env -i HOME=$HOME /usr/local/bin/runt-nightly daemon status --json | jq -r '.soc
 ```
 
 **Red flags:**
-- nteract-dev socket path doesn't contain `worktrees/` → direnv not active, using system daemon
+- nteract-dev socket path doesn't contain `worktrees/` → using system daemon instead of a worktree daemon
 - nteract-nightly shows empty notebook list → connecting to dev daemon instead of system daemon
 - nteract-nightly MCP process has `RUNTIMED_DEV=1` in environment → env var stripping failed
 
-**Fix:** If direnv is not active, install it and run `direnv allow` in the repo root. See CLAUDE.md § Development Setup.
+**Fix:** Start the dev daemon from the repo root with `cargo xtask dev-daemon`
+or use the owner-mode `nteract-dev` `up` tool. Use direnv only if you want the
+repo's `bin/` wrappers on PATH for interactive shell commands.

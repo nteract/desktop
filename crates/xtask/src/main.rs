@@ -1765,22 +1765,22 @@ fn cmd_mcp(print_config: bool, release: bool) {
             eprintln!("Failed to resolve supervisor binary path: {e}");
             exit(1);
         });
-        let config = if release {
-            serde_json::json!({
-                "command": binary_path.to_string_lossy(),
-                "env": {
-                    "RUNTIMED_DEV": "1",
-                    "RUNTIMED_RELEASE": "1"
-                }
-            })
-        } else {
-            serde_json::json!({
-                "command": binary_path.to_string_lossy(),
-                "env": {
-                    "RUNTIMED_DEV": "1"
-                }
-            })
-        };
+        let mut env_map = serde_json::Map::new();
+        env_map.insert("RUNTIMED_DEV".into(), serde_json::json!("1"));
+        if release {
+            env_map.insert("RUNTIMED_RELEASE".into(), serde_json::json!("1"));
+        }
+        if let Some(path) = runt_workspace::get_workspace_path() {
+            env_map.insert(
+                "RUNTIMED_WORKSPACE_PATH".into(),
+                serde_json::json!(path.to_string_lossy()),
+            );
+        }
+
+        let config = serde_json::json!({
+            "command": binary_path.to_string_lossy(),
+            "env": env_map,
+        });
         println!(
             "{}",
             serde_json::to_string_pretty(&config).unwrap_or_else(|e| {
@@ -1929,15 +1929,9 @@ fn cmd_dev_daemon(release: bool) {
     println!("Press Ctrl+C to stop.");
     println!();
 
-    // Run the daemon with --dev flag
     let mut cmd = Command::new(binary);
     cmd.args(["--dev", "run"]);
-    cmd.env("RUNTIMED_DEV", "1");
-
-    // Translate Conductor → Runtimed for Conductor workspace users
-    if let Ok(path) = env::var("CONDUCTOR_WORKSPACE_PATH") {
-        cmd.env("RUNTIMED_WORKSPACE_PATH", &path);
-    }
+    apply_worktree_env(&mut cmd, true);
     let status = cmd.status().unwrap_or_else(|e| {
         eprintln!("Failed to run runtimed: {e}");
         exit(1);
