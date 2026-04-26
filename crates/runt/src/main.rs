@@ -4671,38 +4671,53 @@ async fn env_command(command: EnvCommands) -> anyhow::Result<()> {
 
 /// Cache directories to manage
 struct EnvCacheDir {
-    label: &'static str,
+    label: String,
     path: PathBuf,
 }
 
+/// Enumerate every env cache directory across both channels so CLI
+/// commands (`runt env stats`, `runt env list`, `runt env clean`) always
+/// reflect the full on-disk picture — whether the user invoked the
+/// stable or nightly binary.
+///
+/// Reaches through `cache_namespace_for` directly rather than
+/// `daemon_base_dir_for` so a dev-mode invocation lists the canonical
+/// channel roots instead of scoping into the current worktree. The CLI
+/// is meant to show the whole cache, not just one worktree's slice.
 fn get_env_cache_dirs() -> Vec<EnvCacheDir> {
-    let base = dirs::cache_dir().unwrap_or_else(|| PathBuf::from("/tmp"));
-    vec![
-        EnvCacheDir {
-            label: "UV envs",
-            path: base.join("runt").join("envs"),
-        },
-        EnvCacheDir {
-            label: "Conda envs",
-            path: base.join("runt").join("conda-envs"),
-        },
-        EnvCacheDir {
-            label: "Inline envs",
-            path: base.join("runt").join("inline-envs"),
-        },
-        EnvCacheDir {
-            label: "UV envs (nightly)",
-            path: base.join("runt-nightly").join("envs"),
-        },
-        EnvCacheDir {
-            label: "Worktrees",
-            path: base.join("runt").join("worktrees"),
-        },
-        EnvCacheDir {
-            label: "Worktrees (nightly)",
-            path: base.join("runt-nightly").join("worktrees"),
-        },
-    ]
+    use runt_workspace::{cache_namespace_for, BuildChannel};
+
+    // Leaf dirs a daemon writes directly under its base. Kept as
+    // (subdir, human-label) pairs so the listing stays consistent even
+    // when we add a new env backend.
+    const ENV_SUBDIRS: &[(&str, &str)] = &[
+        ("envs", "UV envs"),
+        ("conda-envs", "Conda envs"),
+        ("pixi-envs", "Pixi envs"),
+        ("inline-envs", "Inline envs"),
+        ("tools", "Bootstrapped tools"),
+    ];
+
+    let cache_root = dirs::cache_dir().unwrap_or_else(|| PathBuf::from("/tmp"));
+    let mut dirs = Vec::with_capacity(ENV_SUBDIRS.len() * 2 + 2);
+    for channel in [BuildChannel::Stable, BuildChannel::Nightly] {
+        let base = cache_root.join(cache_namespace_for(channel));
+        let suffix = match channel {
+            BuildChannel::Stable => "",
+            BuildChannel::Nightly => " (nightly)",
+        };
+        for (sub, label) in ENV_SUBDIRS {
+            dirs.push(EnvCacheDir {
+                label: format!("{label}{suffix}"),
+                path: base.join(sub),
+            });
+        }
+        dirs.push(EnvCacheDir {
+            label: format!("Worktrees{suffix}"),
+            path: base.join("worktrees"),
+        });
+    }
+    dirs
 }
 
 async fn env_stats() -> anyhow::Result<()> {
@@ -4822,13 +4837,13 @@ async fn env_clean(
         // Query daemon for in-use env paths to protect running kernels
         let in_use = query_active_env_paths().await;
 
-        let base = dirs::cache_dir().unwrap_or_else(|| PathBuf::from("/tmp"));
-        let dirs_to_clean = [
-            base.join("runt").join("envs"),
-            base.join("runt").join("conda-envs"),
-            base.join("runt").join("inline-envs"),
-            base.join("runt-nightly").join("envs"),
-        ];
+        // Cross-channel: nuke env caches for both stable and nightly.
+        // Worktrees are session state, not env cache — skip them here.
+        let dirs_to_clean: Vec<PathBuf> = get_env_cache_dirs()
+            .into_iter()
+            .filter(|d| !d.label.starts_with("Worktrees"))
+            .map(|d| d.path)
+            .collect();
 
         let mut total_removed = 0;
         for dir in &dirs_to_clean {
@@ -4869,15 +4884,14 @@ async fn env_clean(
     // don't evict them. Falls back to empty if daemon isn't reachable.
     let in_use = query_active_env_paths().await;
 
-    // Selective eviction
-    let eviction_dirs = [
-        kernel_env::uv::default_cache_dir_uv(),
-        kernel_env::conda::default_cache_dir_conda(),
-        dirs::cache_dir()
-            .unwrap_or_else(|| PathBuf::from("/tmp"))
-            .join("runt")
-            .join("inline-envs"),
-    ];
+    // Selective eviction: sweep env dirs for both channels so a nightly
+    // binary evicts nightly envs and vice versa, without missing the
+    // cross-channel bits a user might have from switching binaries.
+    let eviction_dirs: Vec<PathBuf> = get_env_cache_dirs()
+        .into_iter()
+        .filter(|d| !d.label.starts_with("Worktrees"))
+        .map(|d| d.path)
+        .collect();
 
     if dry_run {
         println!(
