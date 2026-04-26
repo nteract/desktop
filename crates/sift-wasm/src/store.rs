@@ -1809,14 +1809,19 @@ fn get_string_value(arr: &dyn Array, row: usize) -> String {
                 }
             })
             .unwrap_or_default(),
-        _ => format!("{:?}", arr.as_any()),
+        _ => ArrayFormatter::try_new(arr, &Default::default())
+            .ok()
+            .map(|formatter| formatter.value(row).to_string())
+            .unwrap_or_default(),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow::array::{ArrayRef, BooleanArray, Float64Array, Int32Array, StringArray};
+    use arrow::array::{
+        ArrayRef, BooleanArray, Float64Array, Int32Array, StringArray, StructArray,
+    };
     use arrow::datatypes::{Field, Schema};
     use std::collections::HashMap;
     use std::sync::Arc;
@@ -1866,6 +1871,34 @@ mod tests {
         assert_eq!(
             format_timestamp_ms(i64::MAX, None, false),
             i64::MAX.to_string()
+        );
+    }
+
+    #[test]
+    fn filter_string_value_matches_display_formatter_for_struct_rows() {
+        let metrics = StructArray::from(vec![
+            (
+                Arc::new(Field::new("clicks", DataType::Int32, false)),
+                Arc::new(Int32Array::from(vec![375, 651])) as ArrayRef,
+            ),
+            (
+                Arc::new(Field::new("ratio", DataType::Float64, false)),
+                Arc::new(Float64Array::from(vec![0.1, 0.2])) as ArrayRef,
+            ),
+        ]);
+        let formatter = ArrayFormatter::try_new(&metrics, &Default::default()).unwrap();
+
+        assert_eq!(
+            get_string_value(&metrics, 0),
+            formatter.value(0).to_string()
+        );
+        assert_eq!(
+            get_string_value(&metrics, 1),
+            formatter.value(1).to_string()
+        );
+        assert_ne!(
+            get_string_value(&metrics, 1),
+            format!("{:?}", metrics.as_any())
         );
     }
 
