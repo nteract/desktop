@@ -43,8 +43,9 @@ futures = "0.3"
 bytes = "1"
 base64 = "0.22"
 tokio = { version = "1.36.0", features = ["full"] }
-runtimelib = { version = "1.6.0", default-features = false }
-jupyter-protocol = "1.4.0"
+runtimelib = { version = "2.0.0", default-features = false }
+jupyter-protocol = "2.0.0"
+nbformat = "3.0.0"
 thiserror = "2"
 schemars = "1"
 notify = "8"
