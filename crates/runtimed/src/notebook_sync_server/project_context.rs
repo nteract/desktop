@@ -102,12 +102,20 @@ async fn rearm_project_file_watcher(room: &Arc<NotebookRoom>, detected_path: Opt
         return;
     };
 
-    let shutdown_tx = spawn_project_file_watcher(watch_path, room.clone());
+    let (shutdown_tx, ready_rx) = spawn_project_file_watcher(watch_path, room.clone());
     *room
         .persistence
         .project_file_watcher_shutdown_tx
         .lock()
         .await = Some(shutdown_tx);
+    // Block until the watcher task has actually installed its
+    // subscription (or failed trying). Without this, events that land
+    // between "we returned from this function" and "notify attached
+    // itself" go unreported. On the failure path the sender is dropped
+    // and the receiver returns `Err(RecvError)` — we just continue,
+    // because the task has already logged the error and there's no
+    // watcher to wait on anyway.
+    let _ = ready_rx.await;
 }
 
 /// Watch a single project file and call `refresh_project_context_async`
@@ -116,15 +124,32 @@ async fn rearm_project_file_watcher(room: &Arc<NotebookRoom>, detected_path: Opt
 /// suppress — any event from `notify` is an external change worth
 /// re-parsing.
 ///
-/// Returns the oneshot sender the caller stores; dropping or sending
-/// on it stops the watcher.
+/// Returns two channels:
+///
+/// - `shutdown_tx`: the caller stores it; sending (or dropping) stops
+///   the watcher.
+/// - `ready_rx`: resolves when the task has actually installed the
+///   FSEvents subscription (or hit an error and given up). Callers
+///   await this before returning to guarantee that events after the
+///   return point actually reach the watcher.
 fn spawn_project_file_watcher(
     project_file_path: PathBuf,
     room: Arc<NotebookRoom>,
-) -> oneshot::Sender<()> {
+) -> (oneshot::Sender<()>, oneshot::Receiver<()>) {
     let (shutdown_tx, mut shutdown_rx) = oneshot::channel();
+    let (ready_tx, ready_rx) = oneshot::channel::<()>();
 
     spawn_best_effort("project-file-watcher", async move {
+        // Signals readiness or gives up, running `ready_tx.send(())`
+        // exactly once on any exit path. Dropping without sending (the
+        // error arms below) still unblocks the waiter via `RecvError`.
+        let mut ready_tx = Some(ready_tx);
+        let signal_ready = |slot: &mut Option<oneshot::Sender<()>>| {
+            if let Some(tx) = slot.take() {
+                let _ = tx.send(());
+            }
+        };
+
         let (tx, mut rx) = tokio::sync::mpsc::channel::<DebounceEventResult>(16);
         let debouncer_result = notify_debouncer_mini::new_debouncer(
             std::time::Duration::from_millis(500),
@@ -177,6 +202,10 @@ fn spawn_project_file_watcher(
             project_file_path, parent_dir
         );
 
+        // Subscription is live; unblock the waiter. From this point on,
+        // events that land against `project_file_path` reach `rx`.
+        signal_ready(&mut ready_tx);
+
         loop {
             tokio::select! {
                 Some(result) = rx.recv() => {
@@ -215,7 +244,7 @@ fn spawn_project_file_watcher(
         }
     });
 
-    shutdown_tx
+    (shutdown_tx, ready_rx)
 }
 
 /// Detect + parse, translating the daemon's internal `DetectedProjectFile`
@@ -314,7 +343,7 @@ fn parse_detected(
     content: &str,
 ) -> Result<ProjectFileParsed, String> {
     match detected.kind {
-        daemon_project_file::ProjectFileKind::PyprojectToml => Ok(parse_pyproject_toml(content)),
+        daemon_project_file::ProjectFileKind::PyprojectToml => parse_pyproject_toml(content),
         daemon_project_file::ProjectFileKind::PixiToml => Ok(parse_pixi_toml(content)),
         daemon_project_file::ProjectFileKind::EnvironmentYml => {
             parse_environment_yml(&detected.path, content)
@@ -327,12 +356,14 @@ fn parse_detected(
 ///
 /// Uses real TOML parsing via `serde`. PEP 508 specs such as
 /// `requests[security,socks]>=2` include commas inside bracket groups,
-/// which earlier line-scanning extraction could not distinguish from
-/// list separators. A parse failure falls back to an empty
-/// `ProjectFileParsed` rather than propagating — the caller already has
-/// `ProjectContext::Unreadable` for genuinely broken project files, and
-/// we only hit this arm on well-formed TOML.
-fn parse_pyproject_toml(content: &str) -> ProjectFileParsed {
+/// which a line scanner couldn't distinguish from list separators.
+///
+/// Parse errors — both raw-TOML syntax failures and schema-valid but
+/// shape-invalid inputs (`dependencies = "pandas"` where a list is
+/// expected) — route to `Err(reason)` so `build_context` emits
+/// `ProjectContext::Unreadable` and the UI surfaces the problem instead
+/// of silently reporting zero deps.
+fn parse_pyproject_toml(content: &str) -> Result<ProjectFileParsed, String> {
     #[derive(serde::Deserialize, Default)]
     struct Root {
         #[serde(default)]
@@ -361,25 +392,15 @@ fn parse_pyproject_toml(content: &str) -> ProjectFileParsed {
         dev_dependencies: Vec<String>,
     }
 
-    match toml::from_str::<Root>(content) {
-        Ok(root) => ProjectFileParsed {
-            dependencies: root.project.dependencies,
-            dev_dependencies: root.tool.uv.dev_dependencies,
-            requires_python: root.project.requires_python,
-            prerelease: None,
-            extras: ProjectFileExtras::None,
-        },
-        Err(e) => {
-            debug!("[notebook-sync] pyproject.toml parse skipped: {}", e);
-            ProjectFileParsed {
-                dependencies: Vec::new(),
-                dev_dependencies: Vec::new(),
-                requires_python: None,
-                prerelease: None,
-                extras: ProjectFileExtras::None,
-            }
-        }
-    }
+    let root: Root =
+        toml::from_str(content).map_err(|e| format!("pyproject.toml parse failed: {e}"))?;
+    Ok(ProjectFileParsed {
+        dependencies: root.project.dependencies,
+        dev_dependencies: root.tool.uv.dev_dependencies,
+        requires_python: root.project.requires_python,
+        prerelease: None,
+        extras: ProjectFileExtras::None,
+    })
 }
 
 /// Commit-2 pixi parsing keeps the easy signals: channels (top-level
@@ -677,6 +698,28 @@ mod tests {
         };
         assert_eq!(parsed.dependencies, vec!["pandas"]);
         assert_eq!(parsed.dev_dependencies, vec!["pytest", "ruff>=0.6"]);
+    }
+
+    #[test]
+    fn build_context_pyproject_schema_mismatch_routes_to_unreadable() {
+        // Well-formed TOML, wrong shape: `dependencies` should be a
+        // list of strings, not a bare string. The prior fallback
+        // silently reported zero deps — now it surfaces as Unreadable
+        // so the UI can explain what's wrong.
+        let temp = TempDir::new().unwrap();
+        write(
+            temp.path(),
+            "pyproject.toml",
+            "[project]\nname = \"demo\"\ndependencies = \"pandas\"\n",
+        );
+        let notebook = write(temp.path(), "demo.ipynb", "{}");
+
+        let (ctx, _) = build_context(&notebook);
+        let ProjectContext::Unreadable { path, reason, .. } = ctx else {
+            panic!("expected Unreadable, got {ctx:?}");
+        };
+        assert!(path.ends_with("pyproject.toml"));
+        assert!(reason.contains("parse failed"));
     }
 
     #[test]

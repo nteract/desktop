@@ -6370,14 +6370,12 @@ async fn project_file_watcher_refreshes_context_on_external_edit() {
         .await
         .is_some());
 
-    // Give FSEvents a moment to wire up the watch. Without this the
-    // write below can race the kernel-side subscription registration
-    // (observed empirically on macOS).
-    sleep(Duration::from_millis(500)).await;
-
-    // External edit: add a dep. `notify` picks up the write, debounces
-    // for 500ms, then fires. We poll the CRDT up to 15s for the new
-    // state to appear so the test stays robust across CI jitter.
+    // External edit: add a dep. `refresh_project_context_async`
+    // already awaited the watcher's ready signal before returning, so
+    // the subscription is live — no pre-write settle needed. `notify`
+    // picks up the write, debounces for 500ms, then fires. We poll the
+    // CRDT up to 15s for the new state to appear so the test stays
+    // robust across CI jitter.
     std::fs::write(
         &pyproject_path,
         "[project]\nname = \"demo\"\ndependencies = [\"pandas\", \"numpy\"]\n",
