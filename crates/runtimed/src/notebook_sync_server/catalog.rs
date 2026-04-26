@@ -67,7 +67,7 @@ pub async fn get_or_create_room(
     // Single-writer invariant: only the daemon writes this key. Also
     // re-runs after untitled promotion and save-as rename; see
     // `project_context::refresh_project_context` callers.
-    super::project_context::refresh_project_context(&room, path.as_deref());
+    super::project_context::refresh_project_context_async(&room, path.as_deref()).await;
 
     // Insert into path_index (under a separate lock per the locking convention).
     if let Some(ref p) = path {

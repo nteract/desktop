@@ -97,6 +97,14 @@ pub struct RoomPersistence {
     /// Shutdown signal for the file watcher task.
     /// Sent when the room is evicted to stop the watcher.
     pub watcher_shutdown_tx: Mutex<Option<oneshot::Sender<()>>>,
+    /// Shutdown signal for the project-file watcher task.
+    ///
+    /// Separate from `watcher_shutdown_tx` (which watches the `.ipynb`)
+    /// because the project-file watcher is pinned to a different path
+    /// and can be swapped on save-as without bouncing the notebook
+    /// watcher. `None` until `refresh_project_context` finds a project
+    /// file and the watcher gets armed.
+    pub project_file_watcher_shutdown_tx: Mutex<Option<oneshot::Sender<()>>>,
     /// Raw nbformat attachments preserved from disk, keyed by cell ID.
     ///
     /// Populated only by `.ipynb` load paths. Resolved image data already
@@ -135,6 +143,7 @@ impl RoomPersistence {
             last_save_sources: RwLock::new(HashMap::new()),
             last_self_write: AtomicU64::new(0),
             watcher_shutdown_tx: Mutex::new(None),
+            project_file_watcher_shutdown_tx: Mutex::new(None),
             nbformat_attachments: RwLock::new(HashMap::new()),
             is_loading: AtomicBool::new(false),
         }
@@ -153,6 +162,7 @@ impl RoomPersistence {
             last_save_sources: RwLock::new(HashMap::new()),
             last_self_write: AtomicU64::new(0),
             watcher_shutdown_tx: Mutex::new(None),
+            project_file_watcher_shutdown_tx: Mutex::new(None),
             nbformat_attachments: RwLock::new(HashMap::new()),
             is_loading: AtomicBool::new(false),
         }

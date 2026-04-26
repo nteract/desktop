@@ -813,6 +813,20 @@ where
                     );
                 }
 
+                // Stop the project-file watcher if one is armed. Armed only
+                // when `refresh_project_context` actually found a project
+                // file to watch; untitled / bare-dir notebooks leave it
+                // unset.
+                if let Some(shutdown_tx) = room_for_eviction
+                    .persistence
+                    .project_file_watcher_shutdown_tx
+                    .lock()
+                    .await
+                    .take()
+                {
+                    let _ = shutdown_tx.send(());
+                }
+
                 // Flush launched_config deps → metadata.runt.{uv,conda}.dependencies
                 // before env cleanup and final save. This captures any packages
                 // the user hot-installed during the session so they land in
