@@ -268,6 +268,6 @@ def install(ip: Any) -> None:
                     original(etype, evalue, stb)
 
     # Tag for idempotency.
-    _safe_showtraceback._nteract_installed = True  # type: ignore[attr-defined]
+    _safe_showtraceback._nteract_installed = True
 
     ip._showtraceback = types.MethodType(_safe_showtraceback, ip)
