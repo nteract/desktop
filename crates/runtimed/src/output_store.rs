@@ -1008,73 +1008,91 @@ async fn convert_data_bundle(
 ) -> io::Result<HashMap<String, ContentRef>> {
     let mut result = HashMap::new();
 
-    if let Some(Value::Object(map)) = data {
-        for (mime_type, value) in map {
-            // dx blob-ref MIME: the kernel already uploaded the bytes via
-            // the nteract.dx.blob comm. Compose a ContentRef under the
-            // wrapped content_type without a new BlobStore::put call. The
-            // blob-ref MIME itself is NOT emitted as a manifest entry — it
-            // is a transport detail, not display content.
-            if mime_type == notebook_doc::mime::BLOB_REF_MIME {
-                let hash = value.get("hash").and_then(|v| v.as_str());
-                let target_ct = value.get("content_type").and_then(|v| v.as_str());
-                let size = value.get("size").and_then(|v| v.as_u64()).unwrap_or(0);
-                match (hash, target_ct) {
-                    (Some(h), Some(ct)) => {
-                        if blob_store.exists(h) {
-                            result
-                                .insert(ct.to_string(), ContentRef::from_hash(h.to_string(), size));
-                        } else {
-                            tracing::warn!(
-                                "[dx] blob-ref MIME references missing blob hash={} (dropping)",
-                                h
-                            );
-                        }
-                    }
-                    _ => {
-                        tracing::warn!(
-                            "[dx] blob-ref MIME missing hash or content_type (dropping)"
-                        );
-                    }
-                }
-                continue;
-            }
+    let Some(Value::Object(map)) = data else {
+        return Ok(result);
+    };
 
-            let content_ref = if is_binary_mime(mime_type) {
-                // Binary MIME type: base64-decode → store raw bytes in blob.
-                // Jupyter sends image data as base64 strings on the wire.
-                // We decode to actual bytes so the blob store holds real
-                // binary content and the HTTP server serves it correctly.
-                let base64_str = value_to_string(value);
-                let raw_bytes = base64::engine::general_purpose::STANDARD
-                    .decode(&base64_str)
-                    .map_err(|e| {
-                        io::Error::new(
-                            io::ErrorKind::InvalidData,
-                            format!("base64 decode failed for {}: {}", mime_type, e),
-                        )
-                    })?;
-                ContentRef::from_binary(&raw_bytes, mime_type, blob_store).await?
-            } else if mime_type == "application/json" || mime_type.ends_with("+json") {
-                // JSON-shaped MIME: kernels emit these as structured
-                // `Value::Object`/`Value::Array`. Serialize to JSON text for
-                // storage; `resolve_data_bundle` parses them back into
-                // structured form on save. Pairs with the symmetric branch
-                // in that function.
-                let content_str = value_to_string(value);
-                ContentRef::from_data(&content_str, mime_type, blob_store, threshold).await?
-            } else {
-                // Text MIME type: store as a single string. Jupyter writes
-                // multi-line text as `["<div>\n", "<style>\n", ...]` — join
-                // those back into the canonical string form here so the blob
-                // holds the same text the kernel produced, not its JSON
-                // encoding. nbformat re-splits on save via
-                // `serialize_media_for_notebook`.
-                let content_str = normalize_text(value);
-                ContentRef::from_data(&content_str, mime_type, blob_store, threshold).await?
-            };
-            result.insert(mime_type.clone(), content_ref);
+    // Normalize the bundle once through jupyter_protocol's typed Media
+    // deserializer. It joins array-of-strings for text MIMEs, keeps
+    // structured Value for `application/json` / `*+json`, and preserves
+    // unknown MIMEs via `Other` with the same array-rejoin logic. This
+    // replaces the per-MIME hand-roll that accidentally JSON-stringified
+    // multi-line text (#2242) and flattened JSON objects (#2246).
+    //
+    // BLOB_REF_MIME is handled before Media ever sees it: its payload is
+    // a transport-level `{hash, content_type, size}` object that the
+    // typed enum doesn't know about, and we want to swap the MIME key out
+    // for the target content_type anyway.
+    let mut bundle: serde_json::Map<String, Value> = map.clone();
+    if let Some(ref_value) = bundle.remove(notebook_doc::mime::BLOB_REF_MIME) {
+        let hash = ref_value.get("hash").and_then(|v| v.as_str());
+        let target_ct = ref_value.get("content_type").and_then(|v| v.as_str());
+        let size = ref_value.get("size").and_then(|v| v.as_u64()).unwrap_or(0);
+        match (hash, target_ct) {
+            (Some(h), Some(ct)) => {
+                if blob_store.exists(h) {
+                    result.insert(ct.to_string(), ContentRef::from_hash(h.to_string(), size));
+                } else {
+                    tracing::warn!(
+                        "[dx] blob-ref MIME references missing blob hash={} (dropping)",
+                        h
+                    );
+                }
+            }
+            _ => {
+                tracing::warn!("[dx] blob-ref MIME missing hash or content_type (dropping)");
+            }
         }
+    }
+
+    let media: jupyter_protocol::media::Media = serde_json::from_value(Value::Object(bundle))
+        .map_err(|e| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("failed to deserialize media bundle: {e}"),
+            )
+        })?;
+    let normalized: HashMap<String, Value> =
+        serde_json::from_value(serde_json::to_value(&media).map_err(|e| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("failed to re-serialize media bundle: {e}"),
+            )
+        })?)
+        .map_err(|e| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("failed to collect normalized media bundle: {e}"),
+            )
+        })?;
+
+    for (mime_type, value) in normalized {
+        let content_ref = if is_binary_mime(&mime_type) {
+            // Binary MIME type: Media leaves the base64 string intact;
+            // decode to raw bytes so the blob store holds real binary
+            // content and the HTTP server can serve it with the right
+            // Content-Type.
+            let base64_str = value_to_string(&value);
+            let raw_bytes = base64::engine::general_purpose::STANDARD
+                .decode(&base64_str)
+                .map_err(|e| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("base64 decode failed for {}: {}", mime_type, e),
+                    )
+                })?;
+            ContentRef::from_binary(&raw_bytes, &mime_type, blob_store).await?
+        } else {
+            // Text or JSON MIME. For text MIMEs Media gave us a
+            // `Value::String` (arrays already joined); for JSON MIMEs
+            // it gave us the structured `Value`. `value_to_string`
+            // handles both: strings pass through, objects/arrays are
+            // serialized. `resolve_data_bundle` re-parses JSON MIMEs on
+            // save.
+            let content_str = value_to_string(&value);
+            ContentRef::from_data(&content_str, &mime_type, blob_store, threshold).await?
+        };
+        result.insert(mime_type, content_ref);
     }
 
     Ok(result)
@@ -1533,6 +1551,46 @@ mod tests {
                 serde_json::from_str(&content).expect("stored content should parse as JSON");
             assert_eq!(parsed, payload, "round-trip mismatch for {mime}");
         }
+    }
+
+    /// SVG arrives as text in nbformat (Jupyter splits multi-line text MIMEs
+    /// on save) but lands in `MediaType::Svg` on deserialize. Ingest should
+    /// join the lines back into a single string, not JSON-stringify them.
+    #[tokio::test]
+    async fn svg_array_is_joined_like_other_text_mimes() {
+        let dir = tempfile::tempdir().unwrap();
+        let blob_store = test_store(&dir);
+
+        let output = serde_json::json!({
+            "output_type": "display_data",
+            "data": {
+                "image/svg+xml": [
+                    "<svg xmlns=\"http://www.w3.org/2000/svg\">\n",
+                    "  <circle r=\"10\"/>\n",
+                    "</svg>",
+                ],
+            },
+            "metadata": {},
+        });
+
+        let manifest = create_manifest(&output, &blob_store, DEFAULT_INLINE_THRESHOLD)
+            .await
+            .unwrap();
+        let data = match manifest {
+            OutputManifest::DisplayData { data, .. } => data,
+            other => panic!("expected DisplayData, got {other:?}"),
+        };
+
+        let content = data
+            .get("image/svg+xml")
+            .expect("image/svg+xml missing")
+            .resolve(&blob_store)
+            .await
+            .unwrap();
+        assert_eq!(
+            content,
+            "<svg xmlns=\"http://www.w3.org/2000/svg\">\n  <circle r=\"10\"/>\n</svg>",
+        );
     }
 
     #[tokio::test]
