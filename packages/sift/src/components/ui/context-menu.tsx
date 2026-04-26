@@ -17,7 +17,7 @@ const ContextMenuSubTrigger = React.forwardRef<
   <ContextMenuPrimitive.SubTrigger
     ref={ref}
     className={cn(
-      "flex cursor-default select-none items-center rounded-sm px-2 py-1.5 text-sm outline-none",
+      "flex cursor-default select-none items-center rounded-sm px-2 py-1.5 text-[13px] leading-[1.3] outline-none",
       "data-[state=open]:bg-[color-mix(in_srgb,var(--sift-accent)_8%,transparent)]",
       "focus:bg-[color-mix(in_srgb,var(--sift-accent)_8%,transparent)]",
       inset && "pl-8",
@@ -26,7 +26,7 @@ const ContextMenuSubTrigger = React.forwardRef<
     {...props}
   >
     {children}
-    <span className="ml-auto text-xs opacity-50">▸</span>
+    <span className="ml-auto text-[11px] leading-none opacity-50">▸</span>
   </ContextMenuPrimitive.SubTrigger>
 ));
 ContextMenuSubTrigger.displayName = "ContextMenuSubTrigger";
@@ -38,7 +38,7 @@ const ContextMenuSubContent = React.forwardRef<
   <ContextMenuPrimitive.SubContent
     ref={ref}
     className={cn(
-      "z-50 min-w-[8rem] overflow-hidden rounded-lg border border-[var(--sift-rule)] bg-[var(--sift-panel)] p-1 shadow-lg",
+      "z-50 min-w-[128px] overflow-hidden rounded-lg border border-[var(--sift-rule)] bg-[var(--sift-panel)] p-1 shadow-lg",
       "data-[state=open]:animate-in data-[state=closed]:animate-out",
       className,
     )}
@@ -55,8 +55,8 @@ const ContextMenuContent = React.forwardRef<
     <ContextMenuPrimitive.Content
       ref={ref}
       className={cn(
-        "z-50 min-w-[10rem] overflow-hidden rounded-lg border border-[var(--sift-rule)] bg-[var(--sift-panel)] p-1 shadow-lg",
-        "text-[var(--sift-ink)] font-[var(--sift-font)]",
+        "z-50 min-w-[160px] overflow-hidden rounded-lg border border-[var(--sift-rule)] bg-[var(--sift-panel)] p-1 shadow-lg",
+        "text-[13px] leading-[1.3] text-[var(--sift-ink)] font-[var(--sift-font)]",
         className,
       )}
       {...props}
@@ -74,7 +74,7 @@ const ContextMenuItem = React.forwardRef<
   <ContextMenuPrimitive.Item
     ref={ref}
     className={cn(
-      "relative flex cursor-default select-none items-center rounded-sm px-2 py-1.5 text-sm outline-none",
+      "relative flex cursor-default select-none items-center rounded-sm px-2 py-1.5 text-[13px] leading-[1.3] outline-none",
       "focus:bg-[color-mix(in_srgb,var(--sift-accent)_8%,transparent)] focus:text-[var(--sift-ink)]",
       "data-[disabled]:pointer-events-none data-[disabled]:opacity-50",
       inset && "pl-8",
@@ -106,7 +106,7 @@ const ContextMenuLabel = React.forwardRef<
   <ContextMenuPrimitive.Label
     ref={ref}
     className={cn(
-      "px-2 py-1.5 text-xs font-semibold text-[var(--sift-muted)]",
+      "px-2 py-1.5 text-[11px] leading-[1.2] font-semibold text-[var(--sift-muted)]",
       inset && "pl-8",
       className,
     )}
