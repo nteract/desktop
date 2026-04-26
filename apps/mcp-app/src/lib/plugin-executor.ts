@@ -82,14 +82,27 @@ export function installPluginFromUrl(
   jsUrl: string,
   cssUrl?: string,
 ): Promise<void> {
+  const cssPromise = cssUrl ? loadStylesheet(cssUrl) : Promise.resolve();
+  const scriptPromise = loadScript(jsUrl);
+
+  return Promise.all([cssPromise, scriptPromise]).then(() => undefined);
+}
+
+function loadStylesheet(cssUrl: string): Promise<void> {
   return new Promise((resolve, reject) => {
     if (cssUrl) {
       const link = document.createElement("link");
       link.rel = "stylesheet";
       link.href = cssUrl;
+      link.onload = () => resolve();
+      link.onerror = () => reject(new Error(`Failed to load plugin stylesheet: ${cssUrl}`));
       document.head.appendChild(link);
     }
+  });
+}
 
+function loadScript(jsUrl: string): Promise<void> {
+  return new Promise((resolve, reject) => {
     const script = document.createElement("script");
     script.src = jsUrl;
     script.onload = () => resolve();
