@@ -86,6 +86,13 @@ export interface IsolatedFrameProps {
   className?: string;
 
   /**
+   * When true, wheel events that reach a scroll boundary inside the iframe
+   * are forwarded to the nearest scrollable parent.
+   * @default true
+   */
+  allowWheelBoundaryScroll?: boolean;
+
+  /**
    * Callback when the iframe is ready to receive messages.
    */
   onReady?: () => void;
@@ -276,6 +283,7 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
       maxHeight = 2000,
       autoHeight = false,
       className = "",
+      allowWheelBoundaryScroll = true,
       onReady,
       onResize,
       onLinkClick,
@@ -333,6 +341,7 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
     const onWidgetUpdateRef = useRef(onWidgetUpdate);
     const onErrorRef = useRef(onError);
     const onMessageRef = useRef(onMessage);
+    const allowWheelBoundaryScrollRef = useRef(allowWheelBoundaryScroll);
 
     // Sync refs during render so effects always see the latest callbacks.
     onReadyRef.current = onReady;
@@ -343,6 +352,7 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
     onWidgetUpdateRef.current = onWidgetUpdate;
     onErrorRef.current = onError;
     onMessageRef.current = onMessage;
+    allowWheelBoundaryScrollRef.current = allowWheelBoundaryScroll;
 
     // Create blob URL on mount (only once, with initial darkMode)
     useEffect(() => {
@@ -543,6 +553,9 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
                 onMouseDownRef.current?.();
               });
               transport.onNotification(NTERACT_WHEEL_BOUNDARY, (params) => {
+                if (!allowWheelBoundaryScrollRef.current) {
+                  return;
+                }
                 scrollFrameWheelBoundary(iframeRef.current, params as { deltaY?: number });
               });
               transport.onNotification(NTERACT_DOUBLE_CLICK, () => {

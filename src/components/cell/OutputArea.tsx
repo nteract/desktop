@@ -558,6 +558,7 @@ export function OutputArea({
                 colorTheme={colorTheme}
                 minHeight={24}
                 maxHeight={maxHeight ?? 2000}
+                allowWheelBoundaryScroll={false}
                 onReady={handleFrameReady}
                 onLinkClick={onLinkClick}
                 onMouseDown={onIframeMouseDown}

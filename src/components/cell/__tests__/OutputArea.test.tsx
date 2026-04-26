@@ -32,17 +32,23 @@ vi.mock("@/components/isolated/iframe-libraries", () => ({
 vi.mock("@/components/isolated", async () => {
   const React = await import("react");
 
-  const MockIsolatedFrame = React.forwardRef<typeof mockFrameHandle, { onReady?: () => void }>(
-    function MockIsolatedFrame({ onReady }, ref) {
-      React.useImperativeHandle(ref, () => mockFrameHandle);
+  const MockIsolatedFrame = React.forwardRef<
+    typeof mockFrameHandle,
+    { allowWheelBoundaryScroll?: boolean; onReady?: () => void }
+  >(function MockIsolatedFrame({ allowWheelBoundaryScroll, onReady }, ref) {
+    React.useImperativeHandle(ref, () => mockFrameHandle);
 
-      React.useEffect(() => {
-        onReady?.();
-      }, [onReady]);
+    React.useEffect(() => {
+      onReady?.();
+    }, [onReady]);
 
-      return <div data-testid="isolated-frame" />;
-    },
-  );
+    return (
+      <div
+        data-allow-wheel-boundary-scroll={String(allowWheelBoundaryScroll)}
+        data-testid="isolated-frame"
+      />
+    );
+  });
 
   return {
     CommBridgeManager: class CommBridgeManager {},
@@ -106,5 +112,13 @@ describe("OutputArea iframe theme sync", () => {
     await waitFor(() => {
       expect(mockFrameHandle.setTheme).toHaveBeenCalledWith(false, null);
     });
+  });
+
+  it("does not forward iframe wheel boundary scroll from notebook outputs", () => {
+    const { getByTestId } = render(<OutputArea outputs={makeMarkdownOutput()} isolated />);
+
+    expect(getByTestId("isolated-frame").getAttribute("data-allow-wheel-boundary-scroll")).toBe(
+      "false",
+    );
   });
 });
