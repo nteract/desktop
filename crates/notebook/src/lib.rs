@@ -2908,17 +2908,6 @@ async fn send_frame_bytes(
 }
 
 // ============================================================================
-// pyproject.toml Discovery and Environment Commands
-// ============================================================================
-//
-// Deleted in favour of daemon-side walk-up (#2208). The daemon writes
-// `RuntimeStateDoc.project_context` on notebook open and save-as; the
-// frontend reads it reactively via `useDependencies`, and the import
-// flow writes UV deps through the existing WASM metadata helpers.
-// No `detect_pyproject` / `get_pyproject_dependencies` /
-// `import_pyproject_dependencies` commands anymore.
-
-// ============================================================================
 // Trust Verification Commands
 // ============================================================================
 
