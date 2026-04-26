@@ -649,8 +649,11 @@ h1 {
 
 /* --- Type-aware cells --- */
 
+.sift-cell-numeric,
 .sift-cell-timestamp {
   font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 
 .sift-badge {

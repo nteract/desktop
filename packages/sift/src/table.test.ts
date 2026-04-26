@@ -103,6 +103,27 @@ describe("createTable", () => {
       const stats = container.querySelector(".sift-stat-rows") as HTMLElement;
       expect(stats?.dataset.value).toContain("50");
     });
+
+    it("does not let long numeric values expand row height", async () => {
+      const numericContainer = document.createElement("div");
+      document.body.appendChild(numericContainer);
+      const longNumber = `0.${"0".repeat(300)}5`;
+      const numericEngine = createTable(
+        numericContainer,
+        makeTableData([[1, "Person 1", longNumber, true]]),
+      );
+      const viewport = numericContainer.querySelector<HTMLElement>(".sift-viewport")!;
+      Object.defineProperty(viewport, "clientHeight", { value: 400, configurable: true });
+      viewport.dispatchEvent(new Event("scroll"));
+
+      await vi.advanceTimersByTimeAsync(20);
+
+      const row = numericContainer.querySelector<HTMLElement>(".sift-row")!;
+      expect(Number.parseFloat(row.style.height || "0")).toBeLessThan(80);
+
+      numericEngine.destroy();
+      numericContainer.remove();
+    });
   });
 
   describe("filtering", () => {
@@ -413,6 +434,26 @@ describe("createTable", () => {
       expect(total).toBeGreaterThanOrEqual(1600 - 2);
       e.destroy();
       wide.remove();
+    });
+
+    it("does not shrink the last column when the table is wider than the viewport", async () => {
+      const narrow = document.createElement("div");
+      document.body.appendChild(narrow);
+      const e = createTable(narrow, makeTableData(makeRows(10)));
+      await flushRAF();
+
+      const viewport = narrow.querySelector<HTMLElement>(".sift-viewport")!;
+      const headers = narrow.querySelectorAll<HTMLElement>(".sift-th");
+      const last = headers[headers.length - 1];
+      const initialLastWidth = Number.parseFloat(last.style.width || "0");
+
+      Object.defineProperty(viewport, "clientWidth", { value: 300, configurable: true });
+      window.dispatchEvent(new Event("resize"));
+      await flushRAF();
+
+      expect(Number.parseFloat(last.style.width || "0")).toBe(initialLastWidth);
+      e.destroy();
+      narrow.remove();
     });
   });
 });
