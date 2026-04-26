@@ -1,6 +1,6 @@
 [package]
 name = "runt"
-version = "2.3.3"
+version = "2.3.4"
 edition.workspace = true
 description = "CLI for Jupyter Runtimes — bundled with nteract"
 repository.workspace = true

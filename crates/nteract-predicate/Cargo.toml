@@ -1,6 +1,6 @@
 [package]
 name = "nteract-predicate"
-version = "0.1.5"
+version = "0.1.6"
 edition = "2021"
 description = "Pure-Rust compute kernels for dataframe/Arrow analysis (summary, filter, histogram)"
 
