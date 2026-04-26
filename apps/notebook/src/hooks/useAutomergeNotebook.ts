@@ -202,8 +202,9 @@ export function useAutomergeNotebook() {
 
   // ── Bootstrap ──────────────────────────────────────────────────────
 
-  const bootstrap = useCallback(async () => {
+  const bootstrap = useCallback(async (isCancelled: () => boolean = () => false) => {
     await wasmReady;
+    if (isCancelled()) return false;
 
     const handle = NotebookHandle.create_empty_with_actor(`human:${sessionIdRef.current}`);
 
@@ -214,6 +215,10 @@ export function useAutomergeNotebook() {
     if (initialBlobPort === null) {
       initialBlobPort = await refreshBlobPort();
     }
+    // React StrictMode can run the effect cleanup while the blob-port
+    // refresh is pending. Cleanup frees the WASM handle, so make sure this
+    // async continuation still owns the current handle before calling into it.
+    if (isCancelled() || handleRef.current !== handle) return false;
     if (initialBlobPort !== null) {
       handle.set_blob_port(initialBlobPort);
     }
@@ -388,7 +393,7 @@ export function useAutomergeNotebook() {
     // ── Bootstrap ─────────────────────────────────────────────────
 
     setIsLoading(true);
-    void bootstrap().catch((error) => {
+    void bootstrap(() => cancelled).catch((error) => {
       logger.error("[automerge-notebook] Bootstrap failed", error);
       if (!cancelled) {
         setLoadError(error instanceof Error ? error.message : String(error));
@@ -411,7 +416,7 @@ export function useAutomergeNotebook() {
           setIsLoading(true);
           setLoadError(null);
           return from(
-            bootstrap().catch((err: unknown) => {
+            bootstrap(() => cancelled).catch((err: unknown) => {
               logger.error("[automerge-notebook] lifecycle bootstrap failed:", err);
             }),
           );
