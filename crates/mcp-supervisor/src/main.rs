@@ -50,6 +50,61 @@ use tracing::{error, info, warn};
 /// and toggled at runtime by the `supervisor_set_mode` MCP tool.
 static RELEASE_MODE: AtomicBool = AtomicBool::new(false);
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+enum DevMode {
+    Owner,
+    Attach,
+    Isolated,
+}
+
+impl DevMode {
+    fn from_env() -> Result<Self, String> {
+        match std::env::var("NTERACT_DEV_MODE") {
+            Ok(value) => Self::parse(&value),
+            Err(std::env::VarError::NotPresent) => Ok(Self::Owner),
+            Err(std::env::VarError::NotUnicode(value)) => Err(format!(
+                "NTERACT_DEV_MODE must be valid UTF-8, got {:?}",
+                value
+            )),
+        }
+    }
+
+    fn parse(value: &str) -> Result<Self, String> {
+        match value {
+            "" | "owner" => Ok(Self::Owner),
+            "attach" => Ok(Self::Attach),
+            "isolated" => Ok(Self::Isolated),
+            other => Err(format!(
+                "invalid NTERACT_DEV_MODE='{other}'. Expected one of: owner, attach, isolated"
+            )),
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Owner => "owner",
+            Self::Attach => "attach",
+            Self::Isolated => "isolated",
+        }
+    }
+
+    fn can_manage_daemon(self) -> bool {
+        !matches!(self, Self::Attach)
+    }
+
+    fn uses_isolated_workspace(self) -> bool {
+        matches!(self, Self::Isolated)
+    }
+}
+
+#[derive(Debug, Clone)]
+struct IsolatedContext {
+    root_dir: PathBuf,
+    workspace_path: PathBuf,
+    cache_dir: PathBuf,
+}
+
 /// Whether to use release-mode binaries.
 fn use_release_binaries() -> bool {
     RELEASE_MODE.load(Ordering::Relaxed)
@@ -70,8 +125,8 @@ fn cargo_binary(project_root: &Path, name: &str) -> std::path::PathBuf {
     project_root.join("target").join(profile).join(bin_name)
 }
 
-/// Check if the dev daemon is running and get its socket path.
-fn daemon_status(project_root: &Path) -> Option<DaemonInfo> {
+/// Check if the dev daemon for `workspace_path` is running and get its socket path.
+fn daemon_status(project_root: &Path, workspace_path: &Path) -> Option<DaemonInfo> {
     let runt = cargo_binary(project_root, "runt");
 
     if !runt.exists() {
@@ -82,11 +137,8 @@ fn daemon_status(project_root: &Path) -> Option<DaemonInfo> {
     cmd.args(["daemon", "status", "--json"])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .env("RUNTIMED_DEV", "1");
-
-    if let Some(workspace) = runt_workspace::get_workspace_path() {
-        cmd.env("RUNTIMED_WORKSPACE_PATH", &workspace);
-    }
+        .env("RUNTIMED_DEV", "1")
+        .env("RUNTIMED_WORKSPACE_PATH", workspace_path);
 
     let output = cmd.output().ok()?;
     if !output.status.success() {
@@ -136,35 +188,22 @@ fn expected_daemon_version(project_root: &Path) -> Option<String> {
 /// Stop a running daemon by PID. Works whether or not we started it.
 /// Tries `runt daemon stop` first (graceful), falls back to kill(pid).
 ///
-/// Safety: refuses to act if the workspace path can't be resolved, because
-/// without it the `runt` CLI would target the system nightly daemon instead
-/// of this worktree's dev daemon.
-fn stop_daemon_by_pid(project_root: &Path, pid: u32) {
-    let workspace = match runt_workspace::get_workspace_path() {
-        Some(ws) => ws,
-        None => {
-            error!(
-                "Refusing to stop daemon (PID {pid}): cannot resolve workspace path. \
-                 Without RUNTIMED_WORKSPACE_PATH the stop command would target the \
-                 system nightly daemon, not this worktree's dev daemon."
-            );
-            return;
-        }
-    };
-
+/// Safety: always receives the target workspace path explicitly so the `runt`
+/// CLI cannot fall back to the system nightly daemon.
+fn stop_daemon_by_pid(project_root: &Path, workspace_path: &Path, pid: u32) {
     // Try graceful stop via runt CLI
     let runt = cargo_binary(project_root, "runt");
     if runt.exists() {
         info!(
             "Stopping daemon (PID {pid}) via runt daemon stop (workspace: {})...",
-            workspace.display()
+            workspace_path.display()
         );
         let mut cmd = std::process::Command::new(&runt);
         cmd.args(["daemon", "stop"])
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .env("RUNTIMED_DEV", "1")
-            .env("RUNTIMED_WORKSPACE_PATH", &workspace);
+            .env("RUNTIMED_WORKSPACE_PATH", workspace_path);
         if let Ok(status) = cmd.status() {
             if status.success() {
                 // Give it a moment to release the socket
@@ -183,11 +222,106 @@ fn stop_daemon_by_pid(project_root: &Path, pid: u32) {
     std::thread::sleep(Duration::from_secs(2));
 }
 
+fn daemon_run_args(disable_env_pools: bool) -> Vec<&'static str> {
+    let mut args = vec!["--dev", "run"];
+    if disable_env_pools {
+        args.extend([
+            "--uv-pool-size",
+            "0",
+            "--conda-pool-size",
+            "0",
+            "--pixi-pool-size",
+            "0",
+        ]);
+    }
+    args
+}
+
+fn worktree_cache_dir(workspace_path: &Path) -> Option<PathBuf> {
+    Some(
+        dirs::cache_dir()?
+            .join(runt_workspace::cache_namespace())
+            .join("worktrees")
+            .join(runt_workspace::worktree_hash(workspace_path)),
+    )
+}
+
+fn create_isolated_context(project_root: &Path) -> std::io::Result<IsolatedContext> {
+    let session_id = format!(
+        "{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    );
+    let root_dir = project_root
+        .join(".context")
+        .join("isolated-daemons")
+        .join(session_id);
+    let workspace_path = root_dir.join("workspace");
+    std::fs::create_dir_all(&workspace_path)?;
+    let cache_dir = worktree_cache_dir(&workspace_path).unwrap_or_else(|| {
+        root_dir
+            .join("cache")
+            .join(runt_workspace::worktree_hash(&workspace_path))
+    });
+
+    Ok(IsolatedContext {
+        root_dir,
+        workspace_path,
+        cache_dir,
+    })
+}
+
+fn child_env(
+    socket_path: &str,
+    workspace_path: &Path,
+) -> std::collections::HashMap<String, String> {
+    let mut env = std::collections::HashMap::new();
+    env.insert("RUNTIMED_DEV".to_string(), "1".to_string());
+    env.insert("RUNTIMED_SOCKET_PATH".to_string(), socket_path.to_string());
+    env.insert(
+        "RUNTIMED_WORKSPACE_PATH".to_string(),
+        workspace_path.to_string_lossy().to_string(),
+    );
+    env
+}
+
+fn cleanup_isolated_context(context: &IsolatedContext) {
+    if context.cache_dir.exists() {
+        match std::fs::remove_dir_all(&context.cache_dir) {
+            Ok(()) => info!(
+                "Removed isolated daemon cache {}",
+                context.cache_dir.display()
+            ),
+            Err(e) => warn!(
+                "Failed to remove isolated daemon cache {}: {e}",
+                context.cache_dir.display()
+            ),
+        }
+    }
+
+    if context.root_dir.exists() {
+        match std::fs::remove_dir_all(&context.root_dir) {
+            Ok(()) => info!(
+                "Removed isolated daemon workspace {}",
+                context.root_dir.display()
+            ),
+            Err(e) => warn!(
+                "Failed to remove isolated daemon workspace {}: {e}",
+                context.root_dir.display()
+            ),
+        }
+    }
+}
+
 /// Start the dev daemon as a background process. Returns the child handle.
-///
-/// Before starting, checks for a stale daemon on the socket and stops it
-/// if its version doesn't match the built binary.
-fn start_daemon(project_root: &Path) -> Option<std::process::Child> {
+fn start_daemon(
+    project_root: &Path,
+    workspace_path: &Path,
+    disable_env_pools: bool,
+) -> Option<std::process::Child> {
     let runtimed = cargo_binary(project_root, "runtimed");
 
     if !runtimed.exists() {
@@ -196,18 +330,19 @@ fn start_daemon(project_root: &Path) -> Option<std::process::Child> {
     }
 
     let mut cmd = std::process::Command::new(&runtimed);
-    cmd.args(["--dev", "run"])
+    cmd.args(daemon_run_args(disable_env_pools))
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .env("RUNTIMED_DEV", "1");
-
-    if let Some(workspace) = runt_workspace::get_workspace_path() {
-        cmd.env("RUNTIMED_WORKSPACE_PATH", &workspace);
-    }
+        .env("RUNTIMED_DEV", "1")
+        .env("RUNTIMED_WORKSPACE_PATH", workspace_path);
 
     match cmd.spawn() {
         Ok(child) => {
-            info!("Started dev daemon (PID {})", child.id());
+            info!(
+                "Started dev daemon (PID {}, workspace: {})",
+                child.id(),
+                workspace_path.display()
+            );
             Some(child)
         }
         Err(e) => {
@@ -218,10 +353,10 @@ fn start_daemon(project_root: &Path) -> Option<std::process::Child> {
 }
 
 /// Wait for the daemon to become ready (up to `timeout`).
-fn wait_for_daemon(project_root: &Path, timeout: Duration) -> bool {
+fn wait_for_daemon(project_root: &Path, workspace_path: &Path, timeout: Duration) -> bool {
     let start = Instant::now();
     while start.elapsed() < timeout {
-        if let Some(info) = daemon_status(project_root) {
+        if let Some(info) = daemon_status(project_root, workspace_path) {
             if info.running {
                 return true;
             }
@@ -492,6 +627,12 @@ struct SupervisorState {
     proxy: Option<McpProxy>,
     /// Project root path.
     project_root: PathBuf,
+    /// nteract-dev operating mode.
+    mode: DevMode,
+    /// Workspace path used for daemon isolation/status.
+    daemon_workspace_path: PathBuf,
+    /// Isolated session metadata, present only in isolated mode.
+    isolated_context: Option<IsolatedContext>,
     /// Log directory (.context/ in the project root).
     log_dir: PathBuf,
     /// Daemon socket path.
@@ -520,7 +661,13 @@ impl Supervisor {
     /// Create a supervisor with no proxy yet. The stdio MCP server starts
     /// immediately so the client doesn't time out; the proxy and child are
     /// connected later via a background task.
-    fn new_empty(project_root: PathBuf, tool_list_changed_tx: mpsc::Sender<()>) -> Self {
+    fn new_empty(
+        project_root: PathBuf,
+        mode: DevMode,
+        daemon_workspace_path: PathBuf,
+        isolated_context: Option<IsolatedContext>,
+        tool_list_changed_tx: mpsc::Sender<()>,
+    ) -> Self {
         let log_dir = project_root.join(".context");
         let _ = std::fs::create_dir_all(&log_dir);
         Self {
@@ -528,6 +675,9 @@ impl Supervisor {
                 proxy: None,
                 log_dir,
                 project_root,
+                mode,
+                daemon_workspace_path,
+                isolated_context,
                 socket_path: String::new(),
                 last_error: None,
                 daemon_child: None,
@@ -544,6 +694,20 @@ impl Supervisor {
             .proxy
             .as_ref()
             .ok_or_else(|| McpError::internal_error("nteract MCP server not yet initialized", None))
+    }
+
+    async fn current_mode(&self) -> DevMode {
+        self.state.read().await.mode
+    }
+
+    async fn reject_in_attach_mode(&self, operation: &str) -> Option<CallToolResult> {
+        if self.current_mode().await == DevMode::Attach {
+            Some(CallToolResult::success(vec![Content::text(format!(
+                "{operation} is disabled in nteract-dev attach mode. Attach mode never starts, stops, rebuilds, or restarts the shared worktree daemon; use an owner-mode nteract-dev session for daemon lifecycle changes."
+            ))]))
+        } else {
+            None
+        }
     }
 
     /// Restart the child process via the proxy.
@@ -631,7 +795,7 @@ impl Supervisor {
             .collect();
 
         // Query daemon version and detect mismatches
-        let daemon_version = daemon_status(&state.project_root)
+        let daemon_version = daemon_status(&state.project_root, &state.daemon_workspace_path)
             .and_then(|info| info.daemon_info)
             .and_then(|di| di.version);
         let expected_version = expected_daemon_version(&state.project_root);
@@ -665,6 +829,12 @@ impl Supervisor {
             last_error: state.last_error.clone(),
             socket_path: state.socket_path.clone(),
             project_root: state.project_root.to_string_lossy().to_string(),
+            mode: state.mode.as_str().to_string(),
+            daemon_workspace_path: state.daemon_workspace_path.to_string_lossy().to_string(),
+            isolated_workspace_path: state
+                .isolated_context
+                .as_ref()
+                .map(|ctx| ctx.workspace_path.to_string_lossy().to_string()),
             daemon_managed: state.daemon_child.is_some(),
             build_mode: if use_release_binaries() {
                 "release"
@@ -875,17 +1045,15 @@ impl Supervisor {
         };
 
         // Launch the dev binary with Vite URL
+        let daemon_workspace_path = state.daemon_workspace_path.clone();
         let mut cmd = std::process::Command::new(&binary);
         cmd.arg(&path)
             .env("RUNTIMED_DEV", "1")
+            .env("RUNTIMED_WORKSPACE_PATH", &daemon_workspace_path)
             .env("RUNTIMED_VITE_PORT", vite_port.to_string())
             .env("PATH", augmented_path())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
-
-        if let Some(wp) = runt_workspace::get_workspace_path() {
-            cmd.env("RUNTIMED_WORKSPACE_PATH", &wp);
-        }
 
         drop(state);
 
@@ -1096,6 +1264,10 @@ impl Supervisor {
     /// 5. If `vite`, start the Vite dev server.
     /// 6. Ensure the child is healthy (restart if not running).
     async fn handle_up(&self, request: &CallToolRequestParams) -> Result<CallToolResult, McpError> {
+        if let Some(result) = self.reject_in_attach_mode("up").await {
+            return Ok(result);
+        }
+
         let params: UpParams = request
             .arguments
             .as_ref()
@@ -1134,7 +1306,14 @@ impl Supervisor {
             }
         }
 
-        let project_root = self.state.read().await.project_root.clone();
+        let (project_root, daemon_workspace_path, mode) = {
+            let state = self.state.read().await;
+            (
+                state.project_root.clone(),
+                state.daemon_workspace_path.clone(),
+                state.mode,
+            )
+        };
 
         // Step 2: rebuild (cargo + maturin)
         //
@@ -1207,7 +1386,7 @@ impl Supervisor {
         // Now we only restart when the binary actually changed — the
         // check below reuses the existing "is the running daemon at the
         // expected version?" path for the not-rebuilt case.
-        let needs_daemon_restart = match daemon_status(&project_root) {
+        let needs_daemon_restart = match daemon_status(&project_root, &daemon_workspace_path) {
             Some(info) if info.running => {
                 if daemon_changed_by_rebuild {
                     report.push("daemon: binary changed — restarting".into());
@@ -1250,17 +1429,25 @@ impl Supervisor {
                 state.daemon_child = None;
             }
             // Also stop any unmanaged daemon on the socket
-            if let Some(info) = daemon_status(&project_root) {
+            if let Some(info) = daemon_status(&project_root, &daemon_workspace_path) {
                 if info.running {
                     if let Some(pid) = info.daemon_info.and_then(|di| di.pid) {
-                        stop_daemon_by_pid(&project_root, pid);
+                        stop_daemon_by_pid(&project_root, &daemon_workspace_path, pid);
                     }
                 }
             }
-            state.daemon_child = start_daemon(&project_root);
+            state.daemon_child = start_daemon(
+                &project_root,
+                &daemon_workspace_path,
+                mode.uses_isolated_workspace(),
+            );
             drop(state);
 
-            if !wait_for_daemon(&project_root, Duration::from_secs(30)) {
+            if !wait_for_daemon(
+                &project_root,
+                &daemon_workspace_path,
+                Duration::from_secs(30),
+            ) {
                 return Ok(CallToolResult::success(vec![Content::text(format!(
                     "up: daemon did not become ready within 30s.\n\n{}",
                     report.join("\n")
@@ -1328,6 +1515,10 @@ impl Supervisor {
         &self,
         request: &CallToolRequestParams,
     ) -> Result<CallToolResult, McpError> {
+        if let Some(result) = self.reject_in_attach_mode("down").await {
+            return Ok(result);
+        }
+
         let params: DownParams = request
             .arguments
             .as_ref()
@@ -1347,7 +1538,13 @@ impl Supervisor {
 
         // Stop daemon if requested
         if params.daemon {
-            let project_root = self.state.read().await.project_root.clone();
+            let (project_root, daemon_workspace_path) = {
+                let state = self.state.read().await;
+                (
+                    state.project_root.clone(),
+                    state.daemon_workspace_path.clone(),
+                )
+            };
             let mut state = self.state.write().await;
             if let Some(ref mut child) = state.daemon_child {
                 let _ = child.kill();
@@ -1355,10 +1552,10 @@ impl Supervisor {
                 state.daemon_child = None;
                 report.push("daemon: managed child stopped".into());
             }
-            if let Some(info) = daemon_status(&project_root) {
+            if let Some(info) = daemon_status(&project_root, &daemon_workspace_path) {
                 if info.running {
                     if let Some(pid) = info.daemon_info.and_then(|di| di.pid) {
-                        stop_daemon_by_pid(&project_root, pid);
+                        stop_daemon_by_pid(&project_root, &daemon_workspace_path, pid);
                         report.push(format!("daemon: unmanaged process pid {pid} stopped"));
                     }
                 }
@@ -1392,6 +1589,12 @@ struct SupervisorStatus {
     socket_path: String,
     /// Project root directory.
     project_root: String,
+    /// nteract-dev operating mode: "owner", "attach", or "isolated".
+    mode: String,
+    /// Workspace path used for daemon isolation/status.
+    daemon_workspace_path: String,
+    /// Isolated workspace path, if running in isolated mode.
+    isolated_workspace_path: Option<String>,
     /// Whether the supervisor started (and manages) the daemon.
     daemon_managed: bool,
     /// Current build mode for daemon binaries: "debug" or "release".
@@ -1537,13 +1740,11 @@ impl ServerHandler for Supervisor {
         ))
         .with_instructions(
             "nteract-dev — MCP supervisor proxying to the nteract notebook server. \
-             Includes supervisor_status, supervisor_restart, supervisor_rebuild, \
-             supervisor_logs, supervisor_start_vite, and supervisor_stop tools \
-             for managing the server lifecycle and dev environment. \
-             File watching is active: Python changes hot-reload instantly, \
-             Rust changes trigger maturin develop + reload. Changed tool \
-             behavior takes effect immediately; new/removed tools may take \
-             a moment for the client to discover.",
+             Modes are selected with NTERACT_DEV_MODE=owner|attach|isolated. \
+             Owner mode manages the shared worktree daemon, attach mode only \
+             connects to an existing daemon, and isolated mode manages a \
+             session-scoped daemon. File watching is opt-in with \
+             NTERACT_DEV_WATCH=1.",
         )
     }
 
@@ -1563,28 +1764,31 @@ impl ServerHandler for Supervisor {
         let up_schema = schema_object::<UpParams>()?;
         let down_schema = schema_object::<DownParams>()?;
         let logs_schema = schema_object::<SupervisorLogsParams>()?;
+        let mode = self.current_mode().await;
 
-        tools.push(Tool::new(
-            "up",
-            "Bring the dev environment to a working state. Idempotent: \
-             sweeps zombie Vite processes, ensures the daemon is running \
-             (starting it if needed), ensures the MCP child is healthy, \
-             and optionally starts Vite and/or rebuilds the daemon + \
-             Python bindings first. Pass vite=true to also start Vite, \
-             rebuild=true to rebuild before starting, mode='debug'|'release' \
-             to switch build mode. Returns a structured status report.",
-            up_schema,
-        ));
-        tools.push(Tool::new(
-            "down",
-            "Stop the managed Vite dev server (if running). Does NOT stop \
-             the MCP proxy child — the child auto-restarts on disconnect \
-             and killing it here would just cause a restart. Does NOT \
-             stop the daemon by default — daemons are often managed by \
-             launchd or the installed app. Pass daemon=true to also stop \
-             the managed daemon process.",
-            down_schema,
-        ));
+        if mode.can_manage_daemon() {
+            tools.push(Tool::new(
+                "up",
+                "Bring the dev environment to a working state. Idempotent: \
+                 sweeps zombie Vite processes, ensures the daemon is running \
+                 (starting it if needed), ensures the MCP child is healthy, \
+                 and optionally starts Vite and/or rebuilds the daemon + \
+                 Python bindings first. Pass vite=true to also start Vite, \
+                 rebuild=true to rebuild before starting, mode='debug'|'release' \
+                 to switch build mode. Returns a structured status report.",
+                up_schema,
+            ));
+            tools.push(Tool::new(
+                "down",
+                "Stop the managed Vite dev server (if running). Does NOT stop \
+                 the MCP proxy child — the child auto-restarts on disconnect \
+                 and killing it here would just cause a restart. Does NOT \
+                 stop the daemon by default — daemons are often managed by \
+                 launchd or the installed app. Pass daemon=true to also stop \
+                 the managed daemon process.",
+                down_schema,
+            ));
+        }
         tools.push(Tool::new(
             "status",
             "Report the current state of the supervisor, child process, \
@@ -1685,11 +1889,19 @@ impl ServerHandler for Supervisor {
 
                 match target {
                     "daemon" => {
+                        if let Some(result) = self
+                            .reject_in_attach_mode("supervisor_restart target=daemon")
+                            .await
+                        {
+                            return Ok(result);
+                        }
                         // Restart daemon, then child.
                         // Stop whatever daemon is on the socket — whether we
                         // started it or launchd did.
                         let mut state = self.state.write().await;
                         let project_root = state.project_root.clone();
+                        let daemon_workspace_path = state.daemon_workspace_path.clone();
+                        let disable_env_pools = state.mode.uses_isolated_workspace();
 
                         if let Some(ref mut child) = state.daemon_child {
                             info!("Stopping managed daemon (PID {:?})...", child.id());
@@ -1699,21 +1911,30 @@ impl ServerHandler for Supervisor {
                         }
 
                         // Also stop any unmanaged daemon on the socket
-                        if let Some(info) = daemon_status(&project_root) {
+                        if let Some(info) = daemon_status(&project_root, &daemon_workspace_path) {
                             if info.running {
                                 if let Some(di) = &info.daemon_info {
                                     if let Some(pid) = di.pid {
                                         info!("Stopping unmanaged daemon (PID {pid})...");
-                                        stop_daemon_by_pid(&project_root, pid);
+                                        stop_daemon_by_pid(
+                                            &project_root,
+                                            &daemon_workspace_path,
+                                            pid,
+                                        );
                                     }
                                 }
                             }
                         }
 
-                        state.daemon_child = start_daemon(&project_root);
+                        state.daemon_child =
+                            start_daemon(&project_root, &daemon_workspace_path, disable_env_pools);
                         drop(state);
 
-                        if !wait_for_daemon(&project_root, Duration::from_secs(30)) {
+                        if !wait_for_daemon(
+                            &project_root,
+                            &daemon_workspace_path,
+                            Duration::from_secs(30),
+                        ) {
                             return Ok(CallToolResult::success(vec![Content::text(
                                 "Daemon restart failed — daemon did not become ready within 30s",
                             )]));
@@ -1783,15 +2004,23 @@ impl ServerHandler for Supervisor {
                     }
                 }
             }
-            "supervisor_start_vite" => match self.start_vite().await {
-                Ok(port) => Ok(CallToolResult::success(vec![Content::text(format!(
-                    "Vite dev server running on http://localhost:{port}"
-                ))])),
-                Err(e) => Ok(CallToolResult::success(vec![Content::text(format!(
-                    "Failed to start Vite: {e}"
-                ))])),
-            },
+            "supervisor_start_vite" => {
+                if let Some(result) = self.reject_in_attach_mode("supervisor_start_vite").await {
+                    return Ok(result);
+                }
+                match self.start_vite().await {
+                    Ok(port) => Ok(CallToolResult::success(vec![Content::text(format!(
+                        "Vite dev server running on http://localhost:{port}"
+                    ))])),
+                    Err(e) => Ok(CallToolResult::success(vec![Content::text(format!(
+                        "Failed to start Vite: {e}"
+                    ))])),
+                }
+            }
             "supervisor_stop" => {
+                if let Some(result) = self.reject_in_attach_mode("supervisor_stop").await {
+                    return Ok(result);
+                }
                 let name = request
                     .arguments
                     .as_ref()
@@ -1811,10 +2040,17 @@ impl ServerHandler for Supervisor {
                 }
             }
             "supervisor_rebuild" => {
+                if let Some(result) = self.reject_in_attach_mode("supervisor_rebuild").await {
+                    return Ok(result);
+                }
                 info!("Manual rebuild triggered via MCP tool");
-                let project_root = {
+                let (project_root, daemon_workspace_path, disable_env_pools) = {
                     let state = self.state.read().await;
-                    state.project_root.clone()
+                    (
+                        state.project_root.clone(),
+                        state.daemon_workspace_path.clone(),
+                        state.mode.uses_isolated_workspace(),
+                    )
                 };
 
                 // 1. Rebuild daemon binary and CLI (cargo build -p runtimed -p runt)
@@ -1851,21 +2087,26 @@ impl ServerHandler for Supervisor {
                     }
 
                     // Also stop any unmanaged daemon on the socket (e.g. launchd)
-                    if let Some(info) = daemon_status(&project_root) {
+                    if let Some(info) = daemon_status(&project_root, &daemon_workspace_path) {
                         if info.running {
                             if let Some(di) = &info.daemon_info {
                                 if let Some(pid) = di.pid {
                                     info!("Stopping unmanaged daemon (PID {pid}) for rebuild...");
-                                    stop_daemon_by_pid(&project_root, pid);
+                                    stop_daemon_by_pid(&project_root, &daemon_workspace_path, pid);
                                 }
                             }
                         }
                     }
 
-                    state.daemon_child = start_daemon(&project_root);
+                    state.daemon_child =
+                        start_daemon(&project_root, &daemon_workspace_path, disable_env_pools);
                 }
 
-                if !wait_for_daemon(&project_root, Duration::from_secs(30)) {
+                if !wait_for_daemon(
+                    &project_root,
+                    &daemon_workspace_path,
+                    Duration::from_secs(30),
+                ) {
                     return Ok(CallToolResult::success(vec![Content::text(
                         "Rebuild succeeded but daemon did not become ready within 30s",
                     )]));
@@ -1873,7 +2114,7 @@ impl ServerHandler for Supervisor {
 
                 // Verify the running daemon matches the just-built binary
                 let version_ok = match (
-                    daemon_status(&project_root)
+                    daemon_status(&project_root, &daemon_workspace_path)
                         .and_then(|i| i.daemon_info)
                         .and_then(|di| di.version),
                     expected_daemon_version(&project_root),
@@ -1944,7 +2185,11 @@ impl ServerHandler for Supervisor {
                     .unwrap_or(50) as usize;
 
                 let state = self.state.read().await;
-                let log_path = daemon_log_path(&state.project_root, &state.socket_path);
+                let log_path = daemon_log_path(
+                    &state.project_root,
+                    &state.socket_path,
+                    &state.daemon_workspace_path,
+                );
 
                 match log_path {
                     Some(path) if path.exists() => {
@@ -1961,6 +2206,9 @@ impl ServerHandler for Supervisor {
                 }
             }
             "supervisor_set_mode" => {
+                if let Some(result) = self.reject_in_attach_mode("supervisor_set_mode").await {
+                    return Ok(result);
+                }
                 let mode = request
                     .arguments
                     .as_ref()
@@ -1990,9 +2238,13 @@ impl ServerHandler for Supervisor {
                     if old_release { "release" } else { "debug" }
                 );
 
-                let project_root = {
+                let (project_root, daemon_workspace_path, disable_env_pools) = {
                     let state = self.state.read().await;
-                    state.project_root.clone()
+                    (
+                        state.project_root.clone(),
+                        state.daemon_workspace_path.clone(),
+                        state.mode.uses_isolated_workspace(),
+                    )
                 };
 
                 // Validate both target binaries exist before stopping anything.
@@ -2041,7 +2293,7 @@ impl ServerHandler for Supervisor {
                                 .args(["daemon", "stop"])
                                 .env("RUNTIMED_DEV", "1")
                                 // Always target this worktree's daemon — never the system daemon.
-                                .env("RUNTIMED_WORKSPACE_PATH", &project_root);
+                                .env("RUNTIMED_WORKSPACE_PATH", &daemon_workspace_path);
                             let _ = stop_cmd.status();
                             // Give it a moment to release the socket
                             std::thread::sleep(Duration::from_secs(2));
@@ -2052,10 +2304,15 @@ impl ServerHandler for Supervisor {
                 // Start the new daemon (now using the new mode's binary)
                 {
                     let mut state = self.state.write().await;
-                    state.daemon_child = start_daemon(&project_root);
+                    state.daemon_child =
+                        start_daemon(&project_root, &daemon_workspace_path, disable_env_pools);
                 }
 
-                if !wait_for_daemon(&project_root, Duration::from_secs(30)) {
+                if !wait_for_daemon(
+                    &project_root,
+                    &daemon_workspace_path,
+                    Duration::from_secs(30),
+                ) {
                     // Roll back on failure
                     RELEASE_MODE.store(old_release, Ordering::Relaxed);
                     return Ok(CallToolResult::success(vec![Content::text(format!(
@@ -2237,7 +2494,11 @@ fn tail_file(path: &Path, lines: usize) -> String {
 /// Derive the daemon log path from the socket path.
 /// The socket is at `.../worktrees/{hash}/runtimed.sock` and the log is
 /// `.../worktrees/{hash}/runtimed.log`.
-fn daemon_log_path(_project_root: &Path, socket_path: &str) -> Option<PathBuf> {
+fn daemon_log_path(
+    _project_root: &Path,
+    socket_path: &str,
+    workspace_path: &Path,
+) -> Option<PathBuf> {
     // Try the socket's sibling file first
     let socket = PathBuf::from(socket_path);
     let log_from_socket = socket.with_file_name("runtimed.log");
@@ -2249,7 +2510,7 @@ fn daemon_log_path(_project_root: &Path, socket_path: &str) -> Option<PathBuf> {
     let cache_base = dirs::cache_dir()?
         .join(runt_workspace::cache_namespace())
         .join("worktrees");
-    let hash = runt_workspace::get_workspace_path().map(|p| runt_workspace::worktree_hash(&p))?;
+    let hash = runt_workspace::worktree_hash(workspace_path);
     Some(cache_base.join(hash).join("runtimed.log"))
 }
 
@@ -2476,13 +2737,38 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
     })?;
     info!("Project root: {}", project_root.display());
+    let mode = DevMode::from_env()?;
+    let isolated_context = if mode == DevMode::Isolated {
+        Some(create_isolated_context(&project_root).map_err(|e| {
+            format!(
+                "failed to create isolated nteract-dev workspace under .context/isolated-daemons: {e}"
+            )
+        })?)
+    } else {
+        None
+    };
+    let daemon_workspace_path = isolated_context
+        .as_ref()
+        .map(|ctx| ctx.workspace_path.clone())
+        .unwrap_or_else(|| project_root.clone());
+    info!(
+        "nteract-dev mode={} daemon_workspace={}",
+        mode.as_str(),
+        daemon_workspace_path.display()
+    );
 
     // Step 1: Start the stdio MCP server IMMEDIATELY so the client doesn't
     // time out waiting for the initialize response. The child process and
     // daemon are connected in a background task — until then, the supervisor
     // returns only its own tools and empty resource lists.
     let (tool_list_changed_tx, mut tool_list_changed_rx) = mpsc::channel::<()>(4);
-    let supervisor = Supervisor::new_empty(project_root.clone(), tool_list_changed_tx);
+    let supervisor = Supervisor::new_empty(
+        project_root.clone(),
+        mode,
+        daemon_workspace_path.clone(),
+        isolated_context,
+        tool_list_changed_tx,
+    );
 
     let transport = rmcp::transport::io::stdio();
     let server = supervisor.serve(transport).await?;
@@ -2514,12 +2800,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // child spawn, file watcher). When done, populates state and notifies
     // the client that new tools are available.
     let init_project_root = project_root.clone();
+    let init_daemon_workspace_path = daemon_workspace_path.clone();
+    let init_mode = mode;
     tokio::spawn(async move {
         let project_root = init_project_root;
+        let daemon_workspace_path = init_daemon_workspace_path;
+        let mode = init_mode;
 
         // 2a: Ensure daemon is running
         let mut daemon_child = None;
-        let socket_path = match daemon_status(&project_root) {
+        if !cargo_binary(&project_root, "runt").exists() {
+            info!("runt binary not found, building...");
+            let pr = project_root.clone();
+            let build_ok = tokio::task::spawn_blocking(move || build_runt_cli(&pr))
+                .await
+                .unwrap_or(false);
+            if !build_ok {
+                error!("Failed to build runt CLI");
+                child_ready.notify_waiters();
+                return;
+            }
+        }
+
+        let socket_path = match daemon_status(&project_root, &daemon_workspace_path) {
             Some(info) if info.running => {
                 info!("Dev daemon already running at {}", info.socket_path);
                 if let Some(expected) = expected_daemon_version(&project_root) {
@@ -2529,10 +2832,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         .and_then(|di| di.version.as_deref());
                     match running {
                         Some(v) if v != expected => {
-                            warn!(
-                                "Running daemon version ({v}) doesn't match built binary ({expected}). \
-                                 Use supervisor_rebuild or supervisor_restart target=daemon to update."
-                            );
+                            if mode == DevMode::Attach {
+                                warn!(
+                                    "Running daemon version ({v}) doesn't match built binary ({expected}). \
+                                     Attach mode cannot restart the shared daemon; use an owner-mode \
+                                     nteract-dev session to rebuild or restart it."
+                                );
+                            } else {
+                                warn!(
+                                    "Running daemon version ({v}) doesn't match built binary ({expected}). \
+                                     Use supervisor_rebuild or supervisor_restart target=daemon to update."
+                                );
+                            }
                         }
                         Some(v) => info!("Daemon version: {v} (matches built binary)"),
                         None => {}
@@ -2540,15 +2851,44 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 info.socket_path
             }
+            _ if mode == DevMode::Attach => {
+                let message = format!(
+                    "Attach mode requires an already-running worktree daemon for {}. \
+                     Start it from an owner-mode session or with `RUNTIMED_DEV=1 \
+                     RUNTIMED_WORKSPACE_PATH={} cargo xtask dev-daemon`.",
+                    daemon_workspace_path.display(),
+                    daemon_workspace_path.display()
+                );
+                error!("{message}");
+                let mut state = state_for_init.write().await;
+                state.last_error = Some(message);
+                child_ready.notify_waiters();
+                return;
+            }
             Some(_info) => {
                 info!("Daemon not running, starting it...");
-                daemon_child = start_daemon(&project_root);
-                if !wait_for_daemon(&project_root, Duration::from_secs(30)) {
+                if !cargo_binary(&project_root, "runtimed").exists()
+                    && !run_cargo_build_daemon(&project_root)
+                {
+                    error!("Failed to build runtimed daemon");
+                    child_ready.notify_waiters();
+                    return;
+                }
+                daemon_child = start_daemon(
+                    &project_root,
+                    &daemon_workspace_path,
+                    mode.uses_isolated_workspace(),
+                );
+                if !wait_for_daemon(
+                    &project_root,
+                    &daemon_workspace_path,
+                    Duration::from_secs(30),
+                ) {
                     error!("Daemon failed to start within 30s");
                     child_ready.notify_waiters();
                     return;
                 }
-                match daemon_status(&project_root) {
+                match daemon_status(&project_root, &daemon_workspace_path) {
                     Some(info) if info.running => info.socket_path,
                     _ => {
                         error!("Daemon started but status query failed");
@@ -2558,34 +2898,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
             None => {
-                warn!("runt CLI not found, building...");
-                let pr = project_root.clone();
-                let build_ok = tokio::task::spawn_blocking(move || {
-                    std::process::Command::new("cargo")
-                        .args(["build", "-p", "runt"])
-                        .current_dir(&pr)
-                        .status()
-                        .map(|s| s.success())
-                        .unwrap_or(false)
-                })
-                .await
-                .unwrap_or(false);
-                if !build_ok {
-                    error!("Failed to build runt CLI");
+                if !run_cargo_build_daemon(&project_root) {
+                    error!("Failed to build daemon binaries");
                     child_ready.notify_waiters();
                     return;
                 }
 
-                match daemon_status(&project_root) {
+                match daemon_status(&project_root, &daemon_workspace_path) {
                     Some(info) => {
                         if !info.running {
-                            daemon_child = start_daemon(&project_root);
-                            if !wait_for_daemon(&project_root, Duration::from_secs(30)) {
+                            daemon_child = start_daemon(
+                                &project_root,
+                                &daemon_workspace_path,
+                                mode.uses_isolated_workspace(),
+                            );
+                            if !wait_for_daemon(
+                                &project_root,
+                                &daemon_workspace_path,
+                                Duration::from_secs(30),
+                            ) {
                                 error!("Daemon failed to start within 30s");
                                 child_ready.notify_waiters();
                                 return;
                             }
-                            match daemon_status(&project_root) {
+                            match daemon_status(&project_root, &daemon_workspace_path) {
                                 Some(fresh) if fresh.running => fresh.socket_path,
                                 _ => {
                                     error!("Daemon started but status query failed");
@@ -2647,9 +2983,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
 
         // 2c: Create the MCP proxy and spawn the child
-        let mut child_env = std::collections::HashMap::new();
-        child_env.insert("RUNTIMED_DEV".to_string(), "1".to_string());
-        child_env.insert("RUNTIMED_SOCKET_PATH".to_string(), socket_path.clone());
+        let child_env = child_env(&socket_path, &daemon_workspace_path);
 
         // Extract tool_list_changed_tx from state for the proxy
         let tool_list_changed_tx = {
@@ -2774,6 +3108,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let _ = child.kill();
             let _ = child.wait();
         }
+        if let Some(context) = state.isolated_context.clone() {
+            cleanup_isolated_context(&context);
+        }
     }
 
     Ok(())
@@ -2892,6 +3229,79 @@ mod tests {
         // Sanity guards on the small accessor functions the dispatcher reads.
         assert_eq!(default_restart_target(), "child");
         assert_eq!(default_log_lines(), 50);
+    }
+
+    #[test]
+    fn dev_mode_parse_defaults_to_owner_for_empty_value() {
+        assert_eq!(DevMode::parse("").unwrap(), DevMode::Owner);
+        assert_eq!(DevMode::parse("owner").unwrap(), DevMode::Owner);
+    }
+
+    #[test]
+    fn dev_mode_parse_accepts_attach_and_isolated() {
+        assert_eq!(DevMode::parse("attach").unwrap(), DevMode::Attach);
+        assert_eq!(DevMode::parse("isolated").unwrap(), DevMode::Isolated);
+    }
+
+    #[test]
+    fn dev_mode_parse_rejects_unknown_values() {
+        let err = DevMode::parse("review").unwrap_err();
+        assert!(err.contains("NTERACT_DEV_MODE"));
+        assert!(err.contains("owner, attach, isolated"));
+    }
+
+    #[test]
+    fn attach_mode_cannot_manage_daemon() {
+        assert!(DevMode::Owner.can_manage_daemon());
+        assert!(!DevMode::Attach.can_manage_daemon());
+        assert!(DevMode::Isolated.can_manage_daemon());
+    }
+
+    #[test]
+    fn isolated_daemon_args_disable_all_env_pools() {
+        assert_eq!(daemon_run_args(false), vec!["--dev", "run"]);
+        assert_eq!(
+            daemon_run_args(true),
+            vec![
+                "--dev",
+                "run",
+                "--uv-pool-size",
+                "0",
+                "--conda-pool-size",
+                "0",
+                "--pixi-pool-size",
+                "0",
+            ],
+        );
+    }
+
+    #[test]
+    fn child_env_pins_socket_and_workspace() {
+        let workspace = PathBuf::from("/tmp/nteract-workspace");
+        let env = child_env("/tmp/runtimed.sock", &workspace);
+        assert_eq!(env.get("RUNTIMED_DEV").map(String::as_str), Some("1"));
+        assert_eq!(
+            env.get("RUNTIMED_SOCKET_PATH").map(String::as_str),
+            Some("/tmp/runtimed.sock"),
+        );
+        assert_eq!(
+            env.get("RUNTIMED_WORKSPACE_PATH").map(String::as_str),
+            Some("/tmp/nteract-workspace"),
+        );
+    }
+
+    #[test]
+    fn isolated_context_uses_context_workspace_and_worktree_cache() {
+        let dir = tempfile::tempdir().unwrap();
+        let context = create_isolated_context(dir.path()).unwrap();
+        assert!(context
+            .root_dir
+            .starts_with(dir.path().join(".context").join("isolated-daemons")));
+        assert_eq!(context.workspace_path, context.root_dir.join("workspace"));
+        assert!(context.workspace_path.exists());
+        assert!(context
+            .cache_dir
+            .ends_with(runt_workspace::worktree_hash(&context.workspace_path)));
     }
 
     // `binary_fingerprint` gates the new "skip restart when cargo
