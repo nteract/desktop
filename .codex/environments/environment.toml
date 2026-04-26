@@ -18,3 +18,8 @@ command = "RUNTIMED_DEV=1 RUST_LOG=debug cargo xtask dev-daemon --release"
 name = "Daemon Status"
 icon = "tool"
 command = "./target/debug/runt daemon status"
+
+[[actions]]
+name = "Notebook App"
+icon = "tool"
+command = "RUNTIMED_DEV=1 RUST_LOG=debug cargo xtask dev"
