@@ -351,10 +351,7 @@ pub async fn get_results(
             source: record.source,
             seq: record.seq,
         };
-        let cell = handle
-            .as_ref()
-            .and_then(|handle| handle.get_cell(&exec.cell_id));
-        return render_execution_result(server, execution_id, &exec, None, cell, full_output).await;
+        return render_execution_result(server, execution_id, &exec, None, None, full_output).await;
     }
 
     tool_error(&format!(

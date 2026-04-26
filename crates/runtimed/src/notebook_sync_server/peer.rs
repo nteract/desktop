@@ -141,6 +141,10 @@ pub async fn handle_runtime_agent_sync_connection<R, W>(
     let mut state_changed_rx = room.state.subscribe();
     let execution_store =
         runtimed_client::execution_store::ExecutionStore::new(execution_store_dir);
+    let mut persisted_execution_records: std::collections::HashMap<
+        String,
+        runtimed_client::execution_store::ExecutionRecord,
+    > = std::collections::HashMap::new();
     let mut pending_replies: std::collections::HashMap<
         String,
         tokio::sync::oneshot::Sender<RuntimeAgentResponse>,
@@ -202,7 +206,11 @@ pub async fn handle_runtime_agent_sync_connection<R, W>(
                                 ).await;
                             }
                             if state_changed {
-                                persist_terminal_execution_records(&room, &execution_store).await;
+                                persist_terminal_execution_records(
+                                    &room,
+                                    &execution_store,
+                                    &mut persisted_execution_records,
+                                ).await;
                             }
                         }
                     }
@@ -1215,6 +1223,10 @@ where
 
     let mut state_peer_state = sync::State::new();
     let mut pool_peer_state = sync::State::new();
+    let mut persisted_execution_records: std::collections::HashMap<
+        String,
+        runtimed_client::execution_store::ExecutionRecord,
+    > = std::collections::HashMap::new();
 
     // Initial RuntimeStateDoc sync — encode inside lock, send outside.
     // Uses bounded generation to compact atomically if the message would exceed
@@ -1740,6 +1752,7 @@ where
                                     &runtimed_client::execution_store::ExecutionStore::new(
                                         daemon.config.execution_store_dir.clone(),
                                     ),
+                                    &mut persisted_execution_records,
                                 )
                                 .await;
 
@@ -2154,6 +2167,10 @@ async fn send_doc_sync<W: tokio::io::AsyncWrite + Unpin>(
 async fn persist_terminal_execution_records(
     room: &NotebookRoom,
     store: &runtimed_client::execution_store::ExecutionStore,
+    persisted_records: &mut std::collections::HashMap<
+        String,
+        runtimed_client::execution_store::ExecutionRecord,
+    >,
 ) {
     let notebook_path = room
         .identity
@@ -2188,11 +2205,19 @@ async fn persist_terminal_execution_records(
         .unwrap_or_default();
 
     for record in records {
-        if let Err(e) = store.write_record(record).await {
+        if persisted_records
+            .get(&record.execution_id)
+            .is_some_and(|existing| existing.payload_matches(&record))
+        {
+            continue;
+        }
+        if let Err(e) = store.write_record(record.clone()).await {
             warn!(
                 "[execution-store] Failed to persist execution record: {}",
                 e
             );
+        } else {
+            persisted_records.insert(record.execution_id.clone(), record);
         }
     }
 }

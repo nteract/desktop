@@ -1928,8 +1928,8 @@ async fn test_load_notebook_reuses_matching_durable_execution_id() {
             context_id: context_id.clone(),
             notebook_path: Some(context_id.clone()),
             cell_id: Some("cell-1".to_string()),
-            status: "done".to_string(),
-            success: Some(true),
+            status: "error".to_string(),
+            success: Some(false),
             execution_count: Some(7),
             source: Some("print('hi')".to_string()),
             seq: Some(0),
@@ -1956,13 +1956,10 @@ async fn test_load_notebook_reuses_matching_durable_execution_id() {
         reload_doc.get_execution_id("cell-1").as_deref(),
         Some("durable-exec-1")
     );
-    assert_eq!(
-        reload_state
-            .get_execution("durable-exec-1")
-            .unwrap()
-            .execution_count,
-        Some(7)
-    );
+    let reloaded_execution = reload_state.get_execution("durable-exec-1").unwrap();
+    assert_eq!(reloaded_execution.execution_count, Some(7));
+    assert_eq!(reloaded_execution.status, "error");
+    assert_eq!(reloaded_execution.success, Some(false));
 }
 
 #[tokio::test]

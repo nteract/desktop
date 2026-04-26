@@ -68,6 +68,25 @@ impl ExecutionRecord {
         matches!(self.status.as_str(), "done" | "error")
     }
 
+    pub fn terminal_success(&self) -> bool {
+        self.success.unwrap_or(self.status == "done")
+    }
+
+    pub fn payload_matches(&self, other: &Self) -> bool {
+        self.schema_version == other.schema_version
+            && self.execution_id == other.execution_id
+            && self.context_kind == other.context_kind
+            && self.context_id == other.context_id
+            && self.notebook_path == other.notebook_path
+            && self.cell_id == other.cell_id
+            && self.status == other.status
+            && self.success == other.success
+            && self.execution_count == other.execution_count
+            && self.source == other.source
+            && self.seq == other.seq
+            && self.outputs == other.outputs
+    }
+
     pub fn matches_notebook_cell(
         &self,
         context_id: &str,
@@ -95,7 +114,9 @@ pub struct ExecutionStore {
 
 impl ExecutionStore {
     pub fn new(root: impl Into<PathBuf>) -> Self {
-        Self { root: root.into() }
+        let root = root.into();
+        cleanup_tmp_files_sync(&root);
+        Self { root }
     }
 
     pub fn root(&self) -> &Path {
@@ -106,6 +127,9 @@ impl ExecutionStore {
         validate_execution_id(&record.execution_id)?;
         tokio::fs::create_dir_all(&self.root).await?;
         if let Some(existing) = self.read_record(&record.execution_id).await {
+            if existing.payload_matches(&record) {
+                return Ok(());
+            }
             record.created_at = existing.created_at;
         }
         record.updated_at = Utc::now();
@@ -222,6 +246,10 @@ impl ExecutionStore {
                 continue;
             }
             if let Ok(path) = self.path_for_id(&record.execution_id) {
+                match self.read_record(&record.execution_id).await {
+                    Some(latest) if latest.updated_at < cutoff => {}
+                    Some(_) | None => continue,
+                }
                 match tokio::fs::remove_file(&path).await {
                     Ok(()) => removed += 1,
                     Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -251,6 +279,25 @@ impl ExecutionStore {
     fn path_for_id(&self, execution_id: &str) -> std::io::Result<PathBuf> {
         validate_execution_id(execution_id)?;
         Ok(self.root.join(format!("{execution_id}.json")))
+    }
+}
+
+fn cleanup_tmp_files_sync(root: &Path) {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|s| s.to_str()) != Some("tmp") {
+            continue;
+        }
+        if let Err(e) = std::fs::remove_file(&path) {
+            log::warn!(
+                "[execution-store] Failed to remove stale temp record {:?}: {}",
+                path,
+                e
+            );
+        }
     }
 }
 
@@ -372,6 +419,38 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn unchanged_write_preserves_updated_at() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let store = ExecutionStore::new(tmp.path());
+        let mut first = record("exec-1");
+        first.updated_at = Utc::now() - chrono::Duration::days(5);
+        tokio::fs::create_dir_all(tmp.path()).await.unwrap();
+        tokio::fs::write(
+            tmp.path().join("exec-1.json"),
+            serde_json::to_vec_pretty(&first).unwrap(),
+        )
+        .await
+        .unwrap();
+
+        let mut same_payload = first.clone();
+        same_payload.updated_at = Utc::now();
+        store.write_record(same_payload).await.unwrap();
+
+        let loaded = store.read_record("exec-1").await.unwrap();
+        assert_eq!(loaded.updated_at, first.updated_at);
+    }
+
+    #[test]
+    fn new_removes_stale_tmp_files() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("exec-1.abc.tmp"), b"partial").unwrap();
+
+        let _store = ExecutionStore::new(tmp.path());
+
+        assert!(!tmp.path().join("exec-1.abc.tmp").exists());
+    }
+
+    #[tokio::test]
     async fn corrupt_records_are_ignored() {
         let tmp = tempfile::TempDir::new().unwrap();
         let store = ExecutionStore::new(tmp.path());
@@ -442,6 +521,36 @@ mod tests {
             .await;
         assert_eq!(removed, 1);
         assert!(store.read_record("exec-1").await.is_none());
+    }
+
+    #[tokio::test]
+    async fn prune_rereads_before_delete() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let store = ExecutionStore::new(tmp.path());
+        let mut old = record("exec-1");
+        old.updated_at = Utc::now() - chrono::Duration::days(31);
+        tokio::fs::create_dir_all(tmp.path()).await.unwrap();
+        tokio::fs::write(
+            tmp.path().join("exec-1.json"),
+            serde_json::to_vec_pretty(&old).unwrap(),
+        )
+        .await
+        .unwrap();
+
+        let mut refreshed = old.clone();
+        refreshed.updated_at = Utc::now();
+        tokio::fs::write(
+            tmp.path().join("exec-1.json"),
+            serde_json::to_vec_pretty(&refreshed).unwrap(),
+        )
+        .await
+        .unwrap();
+
+        let removed = store
+            .prune_older_than(Utc::now() - chrono::Duration::days(30))
+            .await;
+        assert_eq!(removed, 0);
+        assert!(store.read_record("exec-1").await.is_some());
     }
 
     #[tokio::test]
