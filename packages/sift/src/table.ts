@@ -299,6 +299,22 @@ export function createTable(
   function captureScrollAnchor(): ScrollAnchor | null {
     if (filteredCount === 0) return null;
     const headerH = headerEl.offsetHeight;
+    const viewportRect = viewport.getBoundingClientRect();
+    const anchorY = viewportRect.top + headerH;
+    if (viewportRect.height > 0) {
+      for (const pr of pool) {
+        if (pr.assignedRow === -1) continue;
+        const rowRect = pr.el.getBoundingClientRect();
+        if (rowRect.height <= 0) continue;
+        if (rowRect.top <= anchorY && rowRect.bottom > anchorY) {
+          return {
+            row: pr.assignedRow,
+            offset: Math.max(0, anchorY - rowRect.top),
+          };
+        }
+      }
+    }
+
     const scrollTop = Math.max(0, viewport.scrollTop - headerH);
     const row = Math.min(rowAtOffset(scrollTop), filteredCount - 1);
     return {
@@ -951,6 +967,7 @@ export function createTable(
     preserveViewport = false,
     updateHeights = true,
     schedule = true,
+    updateSummary = true,
   ) {
     if (!lastColumnAutoFill) return;
     const last = columns.length - 1;
@@ -963,7 +980,7 @@ export function createTable(
     if (target === colWidths[last]) return;
     colWidths[last] = target;
     headerCells[last].style.width = target + "px";
-    renderSummary(last);
+    if (updateSummary) renderSummary(last);
     updateScrollContentWidth();
     if (updateHeights) markHeightsDirty(preserveViewport);
     if (schedule) scheduleRender();
@@ -1235,6 +1252,14 @@ export function createTable(
       scheduledRaf = null;
     }
     render();
+  }
+
+  function updateMountedColumnWidth(colIndex: number) {
+    for (const pr of pool) {
+      if (pr.assignedRow === -1) continue;
+      pr.cells[colIndex].style.width = colWidths[colIndex] + "px";
+      applyCellPinStyle(pr.cells[colIndex], colIndex);
+    }
   }
 
   function render() {
@@ -1551,16 +1576,22 @@ export function createTable(
       const delta = ev.clientX - startX;
       colWidths[colIndex] = Math.max(MIN_COL_WIDTH, startWidth + delta);
       headerCells[colIndex].style.width = colWidths[colIndex] + "px";
-      renderSummary(colIndex);
       updateScrollContentWidth();
-      if (!isLast) fitLastColumnToViewport(false, false, false);
-      renderImmediately();
+      updatePinnedStyles();
+      updateMountedColumnWidth(colIndex);
+      if (!isLast) {
+        fitLastColumnToViewport(false, false, false, false);
+        updatePinnedStyles();
+        updateMountedColumnWidth(columns.length - 1);
+      }
     };
 
     const onUp = () => {
       handle.classList.remove("dragging");
       handle.removeEventListener("pointermove", onMove);
       handle.removeEventListener("pointerup", onUp);
+      renderSummary(colIndex);
+      if (!isLast) renderSummary(columns.length - 1);
       markHeightsDirty(true);
       renderImmediately();
     };
