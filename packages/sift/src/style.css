@@ -330,6 +330,8 @@ h1 {
   width: 100%;
   overflow: hidden;
   animation: summary-fade-in 300ms ease-out;
+  -webkit-user-select: none;
+  user-select: none;
   --sift-chart-bg: transparent;
   --sift-chart-text: var(--sift-muted);
   --sift-chart-text-secondary: var(--sift-muted);
@@ -341,6 +343,49 @@ h1 {
 .sift-th-summary svg,
 .sift-th-summary canvas {
   display: block;
+  -webkit-user-drag: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.sift-brush-hit-target {
+  position: absolute;
+  inset: 0 auto auto 0;
+  cursor: crosshair;
+  touch-action: none;
+  -webkit-user-drag: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.sift-brush-selection {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: var(--sift-accent);
+  border-radius: 2px;
+  pointer-events: none;
+}
+
+.sift-brush-selection-active {
+  opacity: 0.15;
+}
+
+.sift-brushing,
+.sift-brushing * {
+  -webkit-user-select: none !important;
+  user-select: none !important;
+}
+
+.sift-brush-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 2147483647;
+  cursor: crosshair;
+  background: transparent;
+  touch-action: none;
+  -webkit-user-select: none;
+  user-select: none;
 }
 
 @keyframes summary-fade-in {
