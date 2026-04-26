@@ -265,6 +265,34 @@ describe("SyncEngine", () => {
       engine.stop();
     });
 
+    it("resetForBootstrap emits a pending status so stale ready doesn't leak across reconnect", () => {
+      (handle.receive_frame as ReturnType<typeof vi.fn>).mockReturnValueOnce([
+        sessionStatusEvent(interactiveStatus()),
+      ]);
+
+      const engine = createEngine();
+      engine.start();
+
+      const statuses: SessionStatus[] = [];
+      engine.sessionStatus$.subscribe((status) => statuses.push(status));
+
+      // First session reaches ready.
+      transport.deliver(Array.from([0x07, 1]));
+      expect(statuses.at(-1)?.runtime_state).toBe("ready");
+
+      // Rebootstrap (daemon:ready path). ReplaySubject(1) must now carry
+      // a pending value so late subscribers don't see a stale ready.
+      engine.resetForBootstrap();
+      expect(statuses.at(-1)?.runtime_state).toBe("pending");
+
+      // A fresh subscriber also gets the pending cache, not the old ready.
+      let lateSeen: SessionStatus | null = null;
+      engine.sessionStatus$.subscribe((status) => (lateSeen = status));
+      expect(lateSeen!.runtime_state).toBe("pending");
+
+      engine.stop();
+    });
+
     it("emits cell changes before initialSyncComplete$ when sync frames arrive first", () => {
       const changeset: CellChangeset = {
         changed: [{ cell_id: "cell-1", fields: { source: true } }],

@@ -1,8 +1,8 @@
 import { useNotebookHost } from "@nteract/notebook-host";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { NotebookTransport, SessionStatus, SyncableHandle } from "runtimed";
 import { DEFAULT_MIME_PRIORITY, SyncEngine } from "runtimed";
-import { concatMap, from, switchMap } from "rxjs";
+import { concatMap, from, Observable, switchMap } from "rxjs";
 import { needsPlugin, preWarmForMimes } from "@/components/isolated/iframe-libraries";
 import { getBlobPort, refreshBlobPort } from "../lib/blob-port";
 import { materializeChangeset } from "../lib/frame-pipeline";
@@ -674,6 +674,32 @@ export function useAutomergeNotebook() {
   /** Accessor for the SyncEngine (for subscribing to commChanges$ etc.). */
   const getEngine = useCallback(() => engineRef.current, []);
 
+  /**
+   * Stable `sessionStatus$` proxy. The underlying engine is constructed
+   * in this hook's `useEffect`, so subscribers must survive the "engine
+   * not yet ready" window. The proxy is built once at hook-init; on each
+   * subscribe it attaches to whichever engine is current. Subscribers
+   * that call in before the engine exists get the ReplaySubject(1)'s
+   * latest as soon as the engine wires itself up — no drop.
+   *
+   * Child `useEffect`s run before parent's in React, so in practice any
+   * component consuming `sessionStatus$` via `useObservable` attaches
+   * after this hook's effect has populated `engineRef`. The null guard
+   * is a safety net for unusual render orders (e.g. StrictMode).
+   */
+  const sessionStatus$ = useMemo(
+    () =>
+      new Observable<SessionStatus>((subscriber) => {
+        const engine = engineRef.current;
+        if (!engine) {
+          // Extremely narrow window. The next mount cycle will re-subscribe.
+          return;
+        }
+        return engine.sessionStatus$.subscribe(subscriber);
+      }),
+    [],
+  );
+
   return {
     cellIds,
     isLoading,
@@ -698,6 +724,7 @@ export function useAutomergeNotebook() {
     // CRDT bridge context deps
     getHandle,
     getEngine,
+    sessionStatus$,
     triggerSync,
     localActor,
   };
