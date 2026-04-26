@@ -64,7 +64,7 @@ pub fn get(name: &str) -> Option<(&'static [u8], &'static str)> {
     Some((plugin.bytes, content_type_for(name)?))
 }
 
-fn content_type_for(name: &str) -> Option<&'static str> {
+pub(crate) fn content_type_for(name: &str) -> Option<&'static str> {
     let (_, ext) = name.rsplit_once('.')?;
     match ext {
         "js" => Some("application/javascript; charset=utf-8"),
