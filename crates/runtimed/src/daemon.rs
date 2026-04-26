@@ -3001,15 +3001,12 @@ impl Daemon {
         let max_count = self.config.env_cache_max_count;
 
         // Directories to GC. These are the global content-addressed caches
-        // used by kernel-env (not per-worktree pool dirs).
+        // used by kernel-env. All three share the daemon's channel-namespaced
+        // base so nightly GCs nightly envs and stable GCs stable envs.
         let cache_dirs = [
             kernel_env::uv::default_cache_dir_uv(),
             kernel_env::conda::default_cache_dir_conda(),
-            // inline-envs: same parent as uv cache but under "inline-envs"
-            dirs::cache_dir()
-                .unwrap_or_else(|| PathBuf::from("/tmp"))
-                .join("runt")
-                .join("inline-envs"),
+            crate::inline_env::inline_cache_dir(),
         ];
 
         loop {

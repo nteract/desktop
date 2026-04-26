@@ -48,11 +48,11 @@ pub struct PixiEnvironment {
 }
 
 /// Get the default cache directory for pixi project environments.
+///
+/// Channel-aware; see [`super::uv::default_cache_dir_uv`] for the
+/// nightly/stable/dev namespacing rationale.
 pub fn default_cache_dir_pixi() -> PathBuf {
-    dirs::cache_dir()
-        .unwrap_or_else(|| PathBuf::from("/tmp"))
-        .join("runt")
-        .join("pixi-envs")
+    runt_workspace::daemon_base_dir().join("pixi-envs")
 }
 
 /// Generate a minimal `pixi.toml` manifest for the given packages.

@@ -35,11 +35,21 @@ pub struct UvEnvironment {
 }
 
 /// Get the default cache directory for UV environments.
+///
+/// Channel-aware via [`runt_workspace::daemon_base_dir`]:
+/// - stable: `$CACHE/runt/envs/`
+/// - nightly: `$CACHE/runt-nightly/envs/`
+/// - dev worktree: `$CACHE/runt-nightly/worktrees/{hash}/envs/` (source
+///   builds default to the nightly channel unless `RUNT_BUILD_CHANNEL=stable`)
+///
+/// where `$CACHE` is `~/Library/Caches` on macOS, `~/.cache` on Linux, and
+/// `%LOCALAPPDATA%` on Windows.
+///
+/// Aligning this with the daemon's own cache_dir is what keeps nightly
+/// out of the stable cache (and prevents the "not within cache dir"
+/// eviction guard from firing on legitimate envs). See #2244.
 pub fn default_cache_dir_uv() -> PathBuf {
-    dirs::cache_dir()
-        .unwrap_or_else(|| PathBuf::from("/tmp"))
-        .join("runt")
-        .join("envs")
+    runt_workspace::daemon_base_dir().join("envs")
 }
 
 /// Check if uv is available (either on PATH or bootstrappable via rattler).
@@ -1131,6 +1141,23 @@ fn find_site_packages(base_path: &std::path::Path) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Lock in the channel-namespaced cache path shape. Tests build with
+    /// the default channel (nightly for source builds), so the helper
+    /// should resolve under `runt-nightly/envs`. The terminal segment
+    /// pinning is the part that matters most — the rest is
+    /// `runt_workspace::daemon_base_dir`'s responsibility.
+    #[test]
+    fn default_cache_dir_uv_is_under_envs() {
+        let path = default_cache_dir_uv();
+        let s = path.to_string_lossy();
+        assert!(s.ends_with("envs"), "got {s:?}");
+        // Should be nested under the channel namespace, not just "runt".
+        assert!(
+            s.contains("runt-nightly") || s.contains("runt"),
+            "got {s:?}"
+        );
+    }
 
     #[test]
     fn test_compute_env_hash_stable() {

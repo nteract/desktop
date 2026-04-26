@@ -36,11 +36,14 @@ struct GithubPlatform {
 }
 
 /// Cache directory for bootstrapped tools.
+///
+/// Channel-aware via [`runt_workspace::daemon_base_dir`]: stable uses
+/// `runt/tools/`, nightly uses `runt-nightly/tools/`, dev worktrees nest
+/// under `worktrees/{hash}/tools/`. This keeps a nightly install from
+/// sharing a bootstrapped deno/uv/ruff with stable, same rationale as
+/// #2244 for envs.
 fn tools_cache_dir() -> PathBuf {
-    dirs::cache_dir()
-        .unwrap_or_else(|| PathBuf::from("/tmp"))
-        .join("runt")
-        .join("tools")
+    runt_workspace::daemon_base_dir().join("tools")
 }
 
 /// Compute a hash for tool caching.
@@ -1239,8 +1242,11 @@ mod tests {
     #[test]
     fn test_tools_cache_dir() {
         let dir = tools_cache_dir();
-        assert!(dir.to_string_lossy().contains("runt"));
-        assert!(dir.to_string_lossy().contains("tools"));
+        let s = dir.to_string_lossy();
+        // Channel-namespaced: stable is "runt", nightly is "runt-nightly".
+        // Either is fine — what matters is the dir ends at `.../tools`.
+        assert!(s.contains("runt"));
+        assert!(s.ends_with("tools"));
     }
 
     #[test]

@@ -34,6 +34,9 @@ dirs = "6"
 sha2 = "0.11"
 hex = "0.4"
 
+# Channel-aware cache directory (nightly vs stable, dev worktree isolation).
+runt-workspace = { path = "../runt-workspace" }
+
 # Tool bootstrapping (get_uv_path)
 kernel-launch = { path = "../kernel-launch", optional = true }
 
