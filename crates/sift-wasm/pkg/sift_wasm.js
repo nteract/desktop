@@ -511,6 +511,25 @@ export function store_value_counts(handle, col) {
 }
 
 /**
+ * Batch-fetch display strings and raw numeric values for viewport rows.
+ *
+ * The frontend calls this once per render window instead of calling
+ * is_null/get_cell_string/get_cell_f64 for every visible cell.
+ * @param {number} handle
+ * @param {Uint32Array} rows
+ * @returns {any}
+ */
+export function store_viewport_cells(handle, rows) {
+    const ptr0 = passArray32ToWasm0(rows, wasm.__wbindgen_malloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ret = wasm.store_viewport_cells(handle, ptr0, len0);
+    if (ret[2]) {
+        throw takeFromExternrefTable0(ret[1]);
+    }
+    return takeFromExternrefTable0(ret[0]);
+}
+
+/**
  * Search a string column for values containing a substring.
  * Returns indices of matching rows as a Uint32Array.
  *

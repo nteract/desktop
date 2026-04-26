@@ -12,6 +12,13 @@ export type FilterSpecJson =
   | { kind: "not_in"; col: number; values: string[] }
   | { kind: "boolean"; col: number; value: boolean };
 
+export type ViewportCells = {
+  rows: number[];
+  strings: string[];
+  numeric_values: (number | null)[];
+  nulls: boolean[];
+};
+
 type PredicateModule = {
   // Data store
   load_ipc(ipc_bytes: Uint8Array): number;
@@ -31,6 +38,7 @@ type PredicateModule = {
   get_cell_string(handle: number, row: number, col: number): string;
   get_cell_f64(handle: number, row: number, col: number): number;
   is_null(handle: number, row: number, col: number): boolean;
+  store_viewport_cells(handle: number, rows: Uint32Array): ViewportCells;
   // Store-based summaries (operates on handle, iterates in Rust)
   store_value_counts(handle: number, col: number): { label: string; count: number }[];
   store_histogram(
