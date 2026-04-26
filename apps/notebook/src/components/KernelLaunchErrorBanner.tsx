@@ -1,5 +1,41 @@
 import { AlertCircle, RotateCw, X } from "lucide-react";
+import { KERNEL_ERROR_REASON, type RuntimeLifecycle } from "runtimed";
 import { Button } from "@/components/ui/button";
+
+/**
+ * Decide whether the generic kernel-launch banner should render.
+ *
+ * Exported as a pure function so unit tests can exercise the gating
+ * without mounting App.tsx (which needs a NotebookHost + WASM). The
+ * call site in App.tsx composes this with `dismissedLaunchError` for
+ * dismissal state.
+ *
+ * Rules:
+ *
+ * - Only show in `Error` state with non-empty `errorDetails`.
+ * - Skip `MissingIpykernel`: toolbar renders a targeted "install
+ *   ipykernel" prompt that already consumes the error message.
+ * - Skip `runtime === "deno"`: toolbar renders the Deno
+ *   "auto-install failed" prompt that already consumes it.
+ *
+ * Everything else — including `CondaEnvYmlMissing`, stderr tails from
+ * generic subprocess crashes, env-build rate limits — falls through
+ * to this banner. `CondaEnvYmlMissing`'s `error_details` carries the
+ * conda env name + remediation command; surfacing that string in the
+ * banner is a strict upgrade on the previous tooltip-only surface.
+ */
+export function shouldShowKernelLaunchErrorBanner(params: {
+  lifecycle: RuntimeLifecycle;
+  errorDetails: string | null;
+  errorReason: string | null;
+  runtime: string | null;
+}): boolean {
+  if (params.lifecycle.lifecycle !== "Error") return false;
+  if (!params.errorDetails || params.errorDetails.length === 0) return false;
+  if (params.errorReason === KERNEL_ERROR_REASON.MISSING_IPYKERNEL) return false;
+  if (params.runtime === "deno") return false;
+  return true;
+}
 
 interface KernelLaunchErrorBannerProps {
   /**

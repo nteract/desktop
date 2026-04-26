@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { deriveEnvManager, deriveRuntimeKind, KERNEL_ERROR_REASON, NotebookClient } from "runtimed";
+import { deriveEnvManager, deriveRuntimeKind, NotebookClient } from "runtimed";
 import { IsolationTest } from "@/components/isolated";
 import { MediaProvider } from "@/components/outputs/media-provider";
 import { getCrdtCommWriter, setCrdtCommWriter } from "@/components/widgets/crdt-comm-writer";
@@ -22,7 +22,10 @@ import { NotebookView } from "./components/NotebookView";
 import { PixiDependencyHeader } from "./components/PixiDependencyHeader";
 import { PoolErrorBanner } from "./components/PoolErrorBanner";
 import { TrustDialog } from "./components/TrustDialog";
-import { KernelLaunchErrorBanner } from "./components/KernelLaunchErrorBanner";
+import {
+  KernelLaunchErrorBanner,
+  shouldShowKernelLaunchErrorBanner,
+} from "./components/KernelLaunchErrorBanner";
 import { UntrustedBanner } from "./components/UntrustedBanner";
 import { PresenceProvider } from "./contexts/PresenceContext";
 import { useAutomergeNotebook } from "./hooks/useAutomergeNotebook";
@@ -1169,16 +1172,15 @@ function AppContent() {
               }}
             />
           )}
-        {lifecycle.lifecycle === "Error" &&
-          errorDetails &&
-          errorDetails.length > 0 &&
-          // Skip when a typed reason owns the UX (missing_ipykernel has a
-          // targeted toolbar prompt; conda_env_yml_missing has its own flow).
-          errorReason !== KERNEL_ERROR_REASON.MISSING_IPYKERNEL &&
-          errorReason !== KERNEL_ERROR_REASON.CONDA_ENV_YML_MISSING &&
+        {shouldShowKernelLaunchErrorBanner({
+          lifecycle,
+          errorDetails,
+          errorReason,
+          runtime,
+        }) &&
           dismissedLaunchError !== errorDetails && (
             <KernelLaunchErrorBanner
-              errorDetails={errorDetails}
+              errorDetails={errorDetails as string}
               onRetry={() => {
                 setDismissedLaunchError(null);
                 tryStartKernel();

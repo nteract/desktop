@@ -4,12 +4,19 @@
  * - Retry button invokes onRetry callback
  * - Dismiss button invokes onDismiss callback
  * - Heading + icon rendered
+ * - Gating helper `shouldShowKernelLaunchErrorBanner` exhaustively
+ *   covers the cases App.tsx composes against (typed reasons, runtime,
+ *   lifecycle, details presence).
  */
 
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { KERNEL_ERROR_REASON, type RuntimeLifecycle } from "runtimed";
 import { describe, expect, it, vi } from "vite-plus/test";
-import { KernelLaunchErrorBanner } from "../KernelLaunchErrorBanner";
+import {
+  KernelLaunchErrorBanner,
+  shouldShowKernelLaunchErrorBanner,
+} from "../KernelLaunchErrorBanner";
 
 const STDERR_TAIL = [
   "Kernel process exited immediately: exit status: 1",
@@ -66,5 +73,91 @@ describe("KernelLaunchErrorBanner", () => {
     );
     await user.click(screen.getByRole("button", { name: /dismiss/i }));
     expect(onDismiss).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("shouldShowKernelLaunchErrorBanner", () => {
+  const ERROR: RuntimeLifecycle = { lifecycle: "Error" };
+  const IDLE: RuntimeLifecycle = { lifecycle: "Running", activity: "Idle" };
+
+  it("shows for a plain Error with details and no typed reason", () => {
+    expect(
+      shouldShowKernelLaunchErrorBanner({
+        lifecycle: ERROR,
+        errorDetails: STDERR_TAIL,
+        errorReason: "",
+        runtime: "python",
+      }),
+    ).toBe(true);
+  });
+
+  it("hides when lifecycle is not Error", () => {
+    expect(
+      shouldShowKernelLaunchErrorBanner({
+        lifecycle: IDLE,
+        errorDetails: STDERR_TAIL,
+        errorReason: null,
+        runtime: "python",
+      }),
+    ).toBe(false);
+  });
+
+  it("hides when errorDetails is null or empty", () => {
+    expect(
+      shouldShowKernelLaunchErrorBanner({
+        lifecycle: ERROR,
+        errorDetails: null,
+        errorReason: null,
+        runtime: "python",
+      }),
+    ).toBe(false);
+    expect(
+      shouldShowKernelLaunchErrorBanner({
+        lifecycle: ERROR,
+        errorDetails: "",
+        errorReason: null,
+        runtime: "python",
+      }),
+    ).toBe(false);
+  });
+
+  it("hides for MissingIpykernel (toolbar prompt owns that UX)", () => {
+    expect(
+      shouldShowKernelLaunchErrorBanner({
+        lifecycle: ERROR,
+        errorDetails: "ipykernel not declared",
+        errorReason: KERNEL_ERROR_REASON.MISSING_IPYKERNEL,
+        runtime: "python",
+      }),
+    ).toBe(false);
+  });
+
+  it("shows for CondaEnvYmlMissing — no dedicated UI exists yet", () => {
+    // Codex review on #2236: excluding this reason suppressed the only
+    // real rendered surface the daemon's `error_details` has.
+    // `environment.yml` unbuilt-env failures now use the generic banner.
+    expect(
+      shouldShowKernelLaunchErrorBanner({
+        lifecycle: ERROR,
+        errorDetails:
+          "environment.yml declares conda env 'analysis', which is not built. Run: conda env create -f environment.yml",
+        errorReason: KERNEL_ERROR_REASON.CONDA_ENV_YML_MISSING,
+        runtime: "python",
+      }),
+    ).toBe(true);
+  });
+
+  it("hides for Deno runtime (toolbar renders its own install prompt)", () => {
+    // Deno failures show `Deno not available. Auto-install failed…`
+    // in NotebookToolbar. Rendering the red banner on top would be
+    // duplicate noise with two retry surfaces.
+    expect(
+      shouldShowKernelLaunchErrorBanner({
+        lifecycle: ERROR,
+        errorDetails: "deno binary not on PATH",
+        errorReason: null,
+        runtime: "deno",
+      }),
+    ).toBe(false);
   });
 });
