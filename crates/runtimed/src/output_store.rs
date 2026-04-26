@@ -1056,8 +1056,13 @@ async fn convert_data_bundle(
                     })?;
                 ContentRef::from_binary(&raw_bytes, mime_type, blob_store).await?
             } else {
-                // Text MIME type: store as-is with inline/blob threshold.
-                let content_str = value_to_string(value);
+                // Text MIME type: store as a single string. Jupyter writes
+                // multi-line text as `["<div>\n", "<style>\n", ...]` — join
+                // those back into the canonical string form here so the blob
+                // holds the same text the kernel produced, not its JSON
+                // encoding. nbformat re-splits on save via
+                // `serialize_media_for_notebook`.
+                let content_str = normalize_text(value);
                 ContentRef::from_data(&content_str, mime_type, blob_store, threshold).await?
             };
             result.insert(mime_type.clone(), content_ref);
@@ -1428,6 +1433,55 @@ mod tests {
         });
         preflight_ref_buffers(&nbformat, &[], &blob_store).await;
         assert!(!blob_store.exists("abc"));
+    }
+
+    /// Regression for nteract/desktop#2242.
+    ///
+    /// Jupyter writes multi-line text MIME values as an array of strings
+    /// (`["<div>\n", "<style>\n", ...]`). Ingest has to join that back into
+    /// the canonical string form before storing it in the blob — otherwise
+    /// the blob ends up holding the JSON-stringified array, which round-trips
+    /// through save as `"[\"<div>\\n\",...]"` and renders as the literal
+    /// array on screen.
+    #[tokio::test]
+    async fn text_mime_array_of_strings_is_joined_into_content() {
+        let dir = tempfile::tempdir().unwrap();
+        let blob_store = test_store(&dir);
+
+        let output = serde_json::json!({
+            "output_type": "execute_result",
+            "execution_count": 1,
+            "data": {
+                "text/plain": ["line one\n", "line two\n", "line three"],
+                "text/html": ["<div>\n", "<style>\n", "  x\n", "</style>\n", "</div>"],
+            },
+            "metadata": {},
+        });
+
+        let manifest = create_manifest(&output, &blob_store, DEFAULT_INLINE_THRESHOLD)
+            .await
+            .unwrap();
+
+        let data = match manifest {
+            OutputManifest::ExecuteResult { data, .. } => data,
+            other => panic!("expected ExecuteResult, got {other:?}"),
+        };
+
+        let plain = data
+            .get("text/plain")
+            .expect("text/plain missing")
+            .resolve(&blob_store)
+            .await
+            .unwrap();
+        assert_eq!(plain, "line one\nline two\nline three");
+
+        let html = data
+            .get("text/html")
+            .expect("text/html missing")
+            .resolve(&blob_store)
+            .await
+            .unwrap();
+        assert_eq!(html, "<div>\n<style>\n  x\n</style>\n</div>");
     }
 
     #[tokio::test]
