@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { deriveEnvManager, deriveRuntimeKind, NotebookClient } from "runtimed";
+import { deriveEnvManager, deriveRuntimeKind, NotebookClient, type SessionStatus } from "runtimed";
 import { IsolationTest } from "@/components/isolated";
 import { MediaProvider } from "@/components/outputs/media-provider";
 import { getCrdtCommWriter, setCrdtCommWriter } from "@/components/widgets/crdt-comm-writer";
@@ -55,6 +55,7 @@ import {
 } from "./lib/cell-ui-state";
 import { startCursorDispatch } from "./lib/cursor-registry";
 import { KERNEL_STATUS } from "./lib/kernel-status";
+import { useObservable } from "./lib/use-observable";
 import { logger } from "./lib/logger";
 import { getNotebookCellsSnapshot } from "./lib/notebook-cells";
 import { useDetectRuntime } from "./lib/notebook-metadata";
@@ -177,9 +178,18 @@ function AppContent() {
     flushSync,
     getHandle,
     getEngine,
+    sessionStatus$,
     triggerSync,
     localActor,
   } = useAutomergeNotebook();
+
+  // Daemon sync status. Drives the kernel-action gate: until the daemon
+  // has confirmed the first RuntimeStateSync round-trip (`runtime_state ==
+  // "ready"`), trust state is unknown and kernel-modifying actions must
+  // fail-closed. `sessionStatus$` is a ReplaySubject(1) on the engine;
+  // `useObservable` seeds with `null` until the engine emits.
+  const sessionStatus = useObservable<SessionStatus | null>(sessionStatus$, null);
+  const sessionReady = sessionStatus?.runtime_state === "ready";
 
   // Global find (Cmd+F)
   const globalFind = useGlobalFind(cellIds);
@@ -589,6 +599,15 @@ function AppContent() {
   // Check trust and start kernel if trusted, otherwise show dialog.
   // Returns true if kernel was started, false if trust dialog opened or error.
   const tryStartKernel = useCallback(async (): Promise<boolean> => {
+    // Fail-closed until the daemon has confirmed first RuntimeStateSync.
+    // Before that, `runtimeState.trust.status` is the default and cannot
+    // gate an install. Buttons are disabled in this state, but keyboard
+    // shortcuts and menu routes still call in — so guard here too.
+    if (!sessionReady) {
+      logger.debug("[App] tryStartKernel: session not ready, skipping");
+      return false;
+    }
+
     // Re-check trust status (may have changed)
     const info = await checkTrust();
     if (!info) return false;
@@ -607,11 +626,19 @@ function AppContent() {
     pendingKernelStartRef.current = true;
     setTrustDialogOpen(true);
     return false;
-  }, [checkTrust, launchKernel]);
+  }, [sessionReady, checkTrust, launchKernel]);
 
   // Handler to sync deps - tries hot-sync for UV additions, falls back to restart
   // Always checks trust before any operation that installs packages
   const handleSyncDeps = useCallback(async (): Promise<boolean> => {
+    // Fail-closed until the daemon has pushed initial RuntimeStateSync.
+    // Hot-sync and restart both install packages; can't run either if we
+    // don't have authoritative trust state yet.
+    if (!sessionReady) {
+      logger.debug("[App] handleSyncDeps: session not ready, skipping");
+      return false;
+    }
+
     // Reset any previous error state before attempting
     envProgress.reset();
 
@@ -668,6 +695,7 @@ function AppContent() {
     }
     return started;
   }, [
+    sessionReady,
     envSource,
     envSyncState,
     envProgress,
@@ -679,6 +707,12 @@ function AppContent() {
 
   // Restart and run all cells
   const restartAndRunAll = useCallback(async () => {
+    // Same fail-closed reasoning as handleRestartKernel: don't shut
+    // down before first RuntimeStateSync.
+    if (!sessionReady) {
+      logger.debug("[App] restartAndRunAll: session not ready, skipping");
+      return;
+    }
     if (runAllInFlightRef.current) {
       logger.debug("[App] restartAndRunAll: already in flight, skipping");
       return;
@@ -708,7 +742,7 @@ function AppContent() {
     } finally {
       runAllInFlightRef.current = false;
     }
-  }, [flushSync, shutdownKernel, tryStartKernel, daemonRunAllCells]);
+  }, [sessionReady, flushSync, shutdownKernel, tryStartKernel, daemonRunAllCells]);
 
   // Handle trust approval from dialog
   const handleTrustApprove = useCallback(async () => {
@@ -716,13 +750,16 @@ function AppContent() {
     if (success && pendingKernelStartRef.current) {
       pendingKernelStartRef.current = false;
       // Fire and forget - dialog closes immediately, kernel starts in background
-      // Use "auto" for both - daemon detects from Automerge doc
-      launchKernel("auto", "auto").catch((e) => {
+      // Use "auto" for both - daemon detects from Automerge doc. Route
+      // through `tryStartKernel` so the sessionReady guard applies; if
+      // a slow first sync hasn't landed yet, the launch is deferred
+      // rather than firing against stale state.
+      tryStartKernel().catch((e) => {
         logger.error("[App] kernel launch after trust approval failed:", e);
       });
     }
     return success;
-  }, [approveTrust, launchKernel]);
+  }, [approveTrust, tryStartKernel]);
 
   // Handle trust decline from dialog
   const handleTrustDecline = useCallback(() => {
@@ -732,14 +769,27 @@ function AppContent() {
 
   // Start kernel explicitly with pyproject.toml (user action from DependencyHeader)
   const handleStartKernelWithPyproject = useCallback(async () => {
+    if (!sessionReady) {
+      logger.debug("[App] handleStartKernelWithPyproject: session not ready, skipping");
+      return;
+    }
     const response = await launchKernel("python", "uv:pyproject");
     if (response.result === "error") {
       logger.error("[App] handleStartKernelWithPyproject: daemon error", response.error);
     }
-  }, [launchKernel]);
+  }, [sessionReady, launchKernel]);
 
   const handleExecuteCell = useCallback(
     async (cellId: string) => {
+      // Fail-closed until the daemon has confirmed first RuntimeStateSync.
+      // If a runtime agent is already alive from a prior session,
+      // `execute_cell` would otherwise queue into RuntimeStateDoc before
+      // we've verified trust (see crates/runtimed/src/requests/execute_cell.rs).
+      if (!sessionReady) {
+        logger.debug("[App] handleExecuteCell: session not ready, skipping");
+        return;
+      }
+
       // Resolve cell up front before awaiting sync operations.
       const cell = getNotebookCellsSnapshot().find((c) => c.id === cellId);
       if (!cell || cell.cell_type !== "code") return;
@@ -796,7 +846,7 @@ function AppContent() {
         }, 150);
       }
     },
-    [flushSync, kernelStatus, tryStartKernel, executeCell],
+    [sessionReady, flushSync, kernelStatus, tryStartKernel, executeCell],
   );
 
   const handleAddCell = useCallback(
@@ -816,11 +866,29 @@ function AppContent() {
 
   // Restart kernel (shutdown then start)
   const handleRestartKernel = useCallback(async () => {
+    // Fail-closed until first RuntimeStateSync. Shutdown writes
+    // RuntimeLifecycle::Shutdown via the runtime-agent request path, so
+    // firing it against a still-syncing session would mutate kernel
+    // state before we've seen the authoritative snapshot — and the
+    // follow-up tryStartKernel would then no-op, leaving the kernel
+    // stopped.
+    if (!sessionReady) {
+      logger.debug("[App] handleRestartKernel: session not ready, skipping");
+      return;
+    }
     await shutdownKernel();
     await tryStartKernel();
-  }, [shutdownKernel, tryStartKernel]);
+  }, [sessionReady, shutdownKernel, tryStartKernel]);
 
   const handleRunAllCells = useCallback(async () => {
+    // Fail-closed until first RuntimeStateSync. Same reasoning as
+    // handleExecuteCell: if a runtime agent is already alive, the daemon
+    // would queue into RuntimeStateDoc before we've verified trust.
+    if (!sessionReady) {
+      logger.debug("[App] handleRunAllCells: session not ready, skipping");
+      return;
+    }
+
     if (runAllInFlightRef.current) {
       logger.debug("[App] handleRunAllCells: already in flight, skipping");
       return;
@@ -852,7 +920,7 @@ function AppContent() {
     } finally {
       runAllInFlightRef.current = false;
     }
-  }, [kernelStatus, tryStartKernel, flushSync, daemonRunAllCells]);
+  }, [sessionReady, kernelStatus, tryStartKernel, flushSync, daemonRunAllCells]);
 
   const handleRestartAndRunAll = useCallback(async () => {
     // Backend clears outputs and emits cells:outputs_cleared before queuing,

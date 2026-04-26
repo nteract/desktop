@@ -1094,7 +1094,12 @@ export class SyncEngine {
    * Reset the engine for a new bootstrap cycle (e.g. daemon:ready).
    *
    * Clears status / execution tracking so the next round of frames is
-   * treated as a fresh connection.
+   * treated as a fresh connection. Also emits a fully-pending
+   * `SessionStatus` so late subscribers (ReplaySubject(1) cache) see
+   * "not ready" immediately — without this, downstream consumers that
+   * gate on `sessionStatus.runtime_state === "ready"` would keep the
+   * previous session's `ready` value until the next daemon status
+   * frame arrives, leaving a rebootstrap-sized fail-open window.
    */
   resetForBootstrap(): void {
     this.opts.logger.info("[sync-engine] Resetting for bootstrap");
@@ -1102,5 +1107,10 @@ export class SyncEngine {
     this.prevExecutions = {};
     this.commDiffState = { comms: {}, json: {} };
     this.lastRuntimeState = null;
+    this._sessionStatus$.next({
+      notebook_doc: "pending",
+      runtime_state: "pending",
+      initial_load: { phase: "not_needed" },
+    });
   }
 }
