@@ -399,6 +399,7 @@ mod tests {
             version: version.to_string(),
             started_at: Utc::now(),
             blob_port: None,
+            execution_store_dir: None,
             worktree_path: None,
             workspace_description: None,
         }

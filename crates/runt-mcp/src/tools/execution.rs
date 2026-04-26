@@ -316,22 +316,57 @@ pub async fn get_results(
     })?;
     let full_output = arg_bool(request, "full_output").unwrap_or(false);
 
-    let handle = require_handle!(server);
-
-    let runtime_state = handle.get_runtime_state().map_err(|_| {
-        McpError::internal_error("Failed to read RuntimeStateDoc".to_string(), None)
-    })?;
-
-    let exec = match runtime_state.executions.get(execution_id) {
-        Some(e) => e,
-        None => {
-            return tool_error(&format!(
-                "Execution not found: {execution_id}. \
-                 It may have been evicted when the notebook room closed."
-            ));
-        }
+    let handle = {
+        let guard = server.session.read().await;
+        guard.as_ref().map(|session| session.handle.clone())
     };
 
+    if let Some(handle) = handle.as_ref() {
+        let runtime_state = handle.get_runtime_state().map_err(|_| {
+            McpError::internal_error("Failed to read RuntimeStateDoc".to_string(), None)
+        })?;
+        if let Some(exec) = runtime_state.executions.get(execution_id) {
+            let cell = handle.get_cell(&exec.cell_id);
+            return render_execution_result(
+                server,
+                execution_id,
+                exec,
+                Some(&runtime_state.comms),
+                cell,
+                full_output,
+            )
+            .await;
+        }
+    }
+
+    let store =
+        runtimed_client::execution_store::ExecutionStore::new(server.execution_store_path.clone());
+    if let Some(record) = store.read_record(execution_id).await {
+        let exec = runtime_doc::ExecutionState {
+            cell_id: record.cell_id.clone().unwrap_or_default(),
+            status: record.status,
+            execution_count: record.execution_count,
+            success: record.success,
+            outputs: record.outputs,
+            source: record.source,
+            seq: record.seq,
+        };
+        return render_execution_result(server, execution_id, &exec, None, None, full_output).await;
+    }
+
+    tool_error(&format!(
+        "Execution not found: {execution_id}. It may have been evicted and no durable result record was found."
+    ))
+}
+
+async fn render_execution_result(
+    server: &NteractMcp,
+    execution_id: &str,
+    exec: &runtime_doc::ExecutionState,
+    comms: Option<&std::collections::HashMap<String, runtime_doc::CommDocEntry>>,
+    cell: Option<notebook_doc::CellSnapshot>,
+    full_output: bool,
+) -> Result<CallToolResult, McpError> {
     // Determine display status with clear indication of completeness
     let (display_status, is_terminal) = match exec.status.as_str() {
         "done" => ("done", true),
@@ -354,7 +389,6 @@ pub async fn get_results(
     );
 
     // Resolve outputs from the execution's manifests
-    let comms = Some(&runtime_state.comms);
     let outputs = if !exec.outputs.is_empty() {
         output_resolver::resolve_cell_outputs_for_llm(
             &exec.outputs,
@@ -391,40 +425,129 @@ pub async fn get_results(
     }
 
     // Build structured content from the execution's output manifests
-    let cell = handle.get_cell(&exec.cell_id);
-    let mut structured_content = if let Some(snap) = cell {
-        if exec.outputs.is_empty() {
-            None
-        } else {
-            let wrapped = crate::structured::cell_structured_content_from_manifests(
-                &snap.id,
-                &snap.cell_type,
-                &snap.source,
-                &exec.outputs,
-                exec.execution_count,
-                display_status,
-                &server.blob_base_url,
-            );
-            wrapped.get("cell").cloned().map(|mut cell_data| {
-                if let Some(obj) = cell_data.as_object_mut() {
-                    obj.insert(
-                        "execution_id".to_string(),
-                        serde_json::Value::String(execution_id.to_string()),
-                    );
-                }
-                // Wrap as top-level with blob_base_url
-                let mut top = serde_json::json!({ "cell": cell_data });
-                if let Some(base) = &server.blob_base_url {
-                    top["blob_base_url"] = serde_json::Value::String(base.clone());
-                }
-                top
-            })
-        }
-    } else {
+    let fallback_source = exec.source.as_deref().unwrap_or_default();
+    let fallback_cell = notebook_doc::CellSnapshot {
+        id: exec.cell_id.clone(),
+        cell_type: "code".to_string(),
+        position: String::new(),
+        source: fallback_source.to_string(),
+        execution_count: exec
+            .execution_count
+            .map(|count| count.to_string())
+            .unwrap_or_else(|| "null".to_string()),
+        metadata: serde_json::json!({}),
+        resolved_assets: std::collections::HashMap::new(),
+    };
+    let snap = cell.unwrap_or(fallback_cell);
+    let mut structured_content = if exec.outputs.is_empty() {
         None
+    } else {
+        let wrapped = crate::structured::cell_structured_content_from_manifests(
+            &snap.id,
+            &snap.cell_type,
+            &snap.source,
+            &exec.outputs,
+            exec.execution_count,
+            display_status,
+            &server.blob_base_url,
+        );
+        wrapped.get("cell").cloned().map(|mut cell_data| {
+            if let Some(obj) = cell_data.as_object_mut() {
+                obj.insert(
+                    "execution_id".to_string(),
+                    serde_json::Value::String(execution_id.to_string()),
+                );
+            }
+            // Wrap as top-level with blob_base_url
+            let mut top = serde_json::json!({ "cell": cell_data });
+            if let Some(base) = &server.blob_base_url {
+                top["blob_base_url"] = serde_json::Value::String(base.clone());
+            }
+            top
+        })
     };
 
     let mut call_result = rmcp::model::CallToolResult::success(items);
     call_result.structured_content = structured_content.take();
     Ok(call_result)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use super::*;
+
+    fn make_request(args: serde_json::Value) -> CallToolRequestParams {
+        serde_json::from_value(serde_json::json!({
+            "name": "get_results",
+            "arguments": args,
+        }))
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn get_results_reads_durable_store_without_active_session() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let store = runtimed_client::execution_store::ExecutionStore::new(tmp.path());
+        store
+            .write_record(runtimed_client::execution_store::ExecutionRecord {
+                schema_version: runtimed_client::execution_store::EXECUTION_RECORD_SCHEMA_VERSION,
+                execution_id: "exec-durable".to_string(),
+                context_kind: "notebook".to_string(),
+                context_id: "/tmp/notebook.ipynb".to_string(),
+                notebook_path: Some("/tmp/notebook.ipynb".to_string()),
+                cell_id: Some("cell-1".to_string()),
+                status: "done".to_string(),
+                success: Some(true),
+                execution_count: Some(3),
+                source: Some("print('hi')".to_string()),
+                seq: Some(0),
+                outputs: vec![serde_json::json!({
+                    "output_type": "stream",
+                    "name": "stdout",
+                    "text": {"inline": "hi\n"}
+                })],
+                created_at: chrono::Utc::now(),
+                updated_at: chrono::Utc::now(),
+            })
+            .await
+            .unwrap();
+
+        let server = NteractMcp::new(PathBuf::from("/tmp/missing.sock"), None, None)
+            .with_execution_store_path(Some(tmp.path().to_path_buf()));
+        let result = get_results(
+            &server,
+            &make_request(serde_json::json!({"execution_id": "exec-durable"})),
+        )
+        .await
+        .unwrap();
+
+        assert_ne!(result.is_error, Some(true));
+        let content = serde_json::to_string(&result.content).unwrap();
+        assert!(content.contains("exec-durable"));
+        assert!(content.contains("hi"));
+        assert_eq!(
+            result.structured_content.unwrap()["cell"]["execution_id"],
+            "exec-durable"
+        );
+    }
+
+    #[tokio::test]
+    async fn get_results_missing_durable_record_omits_unknown_cell_recovery_hint() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let server = NteractMcp::new(PathBuf::from("/tmp/missing.sock"), None, None)
+            .with_execution_store_path(Some(tmp.path().to_path_buf()));
+        let result = get_results(
+            &server,
+            &make_request(serde_json::json!({"execution_id": "exec-missing"})),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result.is_error, Some(true));
+        let content = serde_json::to_string(&result.content).unwrap();
+        assert!(content.contains("Execution not found"));
+        assert!(!content.contains("get_cell("));
+    }
 }

@@ -37,6 +37,7 @@ pub struct NteractMcp {
     socket_path: PathBuf,
     blob_base_url: Option<String>,
     blob_store_path: Option<PathBuf>,
+    execution_store_path: PathBuf,
     session: Arc<RwLock<Option<NotebookSession>>>,
     /// Context from the most recently dropped session — allows error messages
     /// to tell agents *why* the session was lost and *which notebook_id* to
@@ -67,6 +68,7 @@ impl NteractMcp {
             socket_path,
             blob_base_url,
             blob_store_path,
+            execution_store_path: runtimed_client::default_execution_store_dir(),
             session: Arc::new(RwLock::new(None)),
             last_session_drop: Arc::new(RwLock::new(None)),
             peer_label: Arc::new(RwLock::new("Inkwell".to_string())),
@@ -90,6 +92,14 @@ impl NteractMcp {
     /// Called by the `runt mcp` binary after a best-effort daemon query.
     pub fn with_daemon_version(mut self, version: Option<String>) -> Self {
         self.daemon_version = version;
+        self
+    }
+
+    /// Set the durable execution-store path discovered from daemon info.
+    pub fn with_execution_store_path(mut self, path: Option<PathBuf>) -> Self {
+        if let Some(path) = path {
+            self.execution_store_path = path;
+        }
         self
     }
 

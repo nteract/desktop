@@ -78,6 +78,7 @@ fn test_config(temp_dir: &TempDir) -> DaemonConfig {
         socket_path,
         cache_dir: temp_dir.path().join("envs"),
         blob_store_dir: temp_dir.path().join("blobs"),
+        execution_store_dir: temp_dir.path().join("executions"),
         notebook_docs_dir: temp_dir.path().join("notebook-docs"),
         uv_pool_size: 0, // Don't create real envs in tests
         conda_pool_size: 0,
@@ -294,6 +295,7 @@ async fn test_singleton_prevents_second_daemon() {
         socket_path: socket_path.clone(),
         cache_dir: temp_dir.path().join("envs"),
         blob_store_dir: temp_dir.path().join("blobs"),
+        execution_store_dir: temp_dir.path().join("executions"),
         notebook_docs_dir: temp_dir.path().join("notebook-docs"),
         uv_pool_size: 0,
         conda_pool_size: 0,

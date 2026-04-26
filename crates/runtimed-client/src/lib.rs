@@ -23,6 +23,7 @@ use serde::{Deserialize, Serialize};
 pub mod client;
 pub mod daemon_connection;
 pub mod daemon_paths;
+pub mod execution_store;
 pub mod output_resolver;
 pub mod resolved_output;
 pub use notebook_doc;
@@ -204,6 +205,11 @@ pub fn default_cache_dir() -> PathBuf {
 /// Get the default directory for the content-addressed blob store.
 pub fn default_blob_store_dir() -> PathBuf {
     daemon_base_dir().join("blobs")
+}
+
+/// Get the default directory for durable execution records.
+pub fn default_execution_store_dir() -> PathBuf {
+    daemon_base_dir().join("executions")
 }
 
 /// Get the directory for kernel connection files.

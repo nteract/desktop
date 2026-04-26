@@ -22,6 +22,9 @@ pub struct DaemonInfo {
     /// HTTP port for the blob server (if running).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub blob_port: Option<u16>,
+    /// Directory for durable execution result records.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution_store_dir: Option<String>,
     /// Path to the git worktree (dev mode only).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worktree_path: Option<String>,
@@ -77,6 +80,7 @@ pub async fn query_daemon_info(socket_path: std::path::PathBuf) -> Option<Daemon
             version: info.daemon_version,
             started_at: info.started_at,
             blob_port: info.blob_port,
+            execution_store_dir: info.execution_store_dir,
             worktree_path: info.worktree_path,
             workspace_description: info.workspace_description,
         });

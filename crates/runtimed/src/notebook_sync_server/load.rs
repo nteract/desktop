@@ -429,6 +429,7 @@ pub(crate) async fn streaming_load_cells<R, W>(
     writer: &mut W,
     room: &NotebookRoom,
     path: &Path,
+    execution_store: Option<&runtimed_client::execution_store::ExecutionStore>,
     peer_state: &mut sync::State,
 ) -> Result<usize, String>
 where
@@ -458,6 +459,15 @@ where
         path.display(),
         start.elapsed()
     );
+    let notebook_path = room
+        .identity
+        .path
+        .read()
+        .await
+        .as_ref()
+        .map(|p| p.to_string_lossy().to_string());
+    let context_id = super::notebook_execution_context_id(room, notebook_path.as_deref());
+    let durable_records = durable_execution_records(execution_store, &context_id).await;
 
     // 2. Stream cells in batches
     let mut cell_iter = cells.into_iter().enumerate().peekable();
@@ -490,17 +500,35 @@ where
             batch.push((idx, cell, output_refs, resolved_assets));
         }
 
-        // Store outputs in RuntimeStateDoc with synthetic execution_ids.
-        // Collect (cell_id, synthetic_eid) pairs for linking below.
-        let mut cell_eids: HashMap<String, String> = HashMap::new();
+        // Store outputs in RuntimeStateDoc with durable execution state when a
+        // matching terminal record exists, otherwise mint synthetic IDs.
+        // Collect (cell_id, execution) pairs for linking below.
+        let mut cell_executions: HashMap<String, LoadedExecution> = HashMap::new();
+        for (_idx, cell, output_refs, _resolved_assets) in &batch {
+            if output_refs.is_empty() {
+                continue;
+            }
+            let parsed_ec = cell.execution_count.parse::<i64>().ok();
+            let execution = durable_or_synthetic_execution(
+                &durable_records,
+                &context_id,
+                notebook_path.as_deref(),
+                &cell.id,
+                &cell.source,
+                parsed_ec,
+                output_refs,
+            );
+            cell_executions.insert(cell.id.clone(), execution);
+        }
         let _ = room.state.with_doc(|sd| {
             for (_idx, cell, output_refs, _resolved_assets) in &batch {
-                if !output_refs.is_empty() {
-                    let synthetic_eid = uuid::Uuid::new_v4().to_string();
-                    let _ = sd.create_execution(&synthetic_eid, &cell.id);
-                    let _ = sd.set_outputs(&synthetic_eid, output_refs);
-                    let _ = sd.set_execution_done(&synthetic_eid, true);
-                    cell_eids.insert(cell.id.clone(), synthetic_eid);
+                if let Some(execution) = cell_executions.get(&cell.id) {
+                    let _ = sd.create_execution(&execution.execution_id, &cell.id);
+                    let _ = sd.set_outputs(&execution.execution_id, output_refs);
+                    if let Ok(ec) = cell.execution_count.parse::<i64>() {
+                        let _ = sd.set_execution_count(&execution.execution_id, ec);
+                    }
+                    let _ = sd.set_execution_done(&execution.execution_id, execution.success);
                 }
             }
             Ok(())
@@ -520,8 +548,8 @@ where
                 )
                 .map_err(|e| format!("Failed to add cell {}: {}", cell.id, e))?;
                 // Link cell to its synthetic execution_id
-                if let Some(eid) = cell_eids.get(&cell.id) {
-                    let _ = doc.set_execution_id(&cell.id, Some(eid));
+                if let Some(execution) = cell_executions.get(&cell.id) {
+                    let _ = doc.set_execution_id(&cell.id, Some(&execution.execution_id));
                 }
                 doc.set_cell_resolved_assets(&cell.id, resolved_assets)
                     .map_err(|e| format!("Failed to set resolved assets for {}: {}", cell.id, e))?;
@@ -687,9 +715,23 @@ pub(crate) async fn load_notebook_from_disk(
 #[cfg(test)]
 pub(crate) async fn load_notebook_from_disk_with_state_doc(
     doc: &mut NotebookDoc,
+    state_doc: Option<&mut RuntimeStateDoc>,
+    path: &std::path::Path,
+    blob_store: &BlobStore,
+) -> Result<usize, String> {
+    load_notebook_from_disk_with_state_doc_and_execution_store(
+        doc, state_doc, path, blob_store, None,
+    )
+    .await
+}
+
+#[cfg(test)]
+pub(crate) async fn load_notebook_from_disk_with_state_doc_and_execution_store(
+    doc: &mut NotebookDoc,
     mut state_doc: Option<&mut RuntimeStateDoc>,
     path: &std::path::Path,
     blob_store: &BlobStore,
+    execution_store: Option<&runtimed_client::execution_store::ExecutionStore>,
 ) -> Result<usize, String> {
     // Read the file
     let content = tokio::fs::read_to_string(path)
@@ -709,6 +751,8 @@ pub(crate) async fn load_notebook_from_disk_with_state_doc(
         attachments: nbformat_attachments,
     } = parse_cells_from_ipynb(&json)
         .ok_or_else(|| "Failed to parse cells from notebook".to_string())?;
+    let context_id = path.to_string_lossy().to_string();
+    let durable_records = durable_execution_records(execution_store, &context_id).await;
 
     // Populate cells in the doc
     for (i, cell) in cells.iter().enumerate() {
@@ -731,19 +775,27 @@ pub(crate) async fn load_notebook_from_disk_with_state_doc(
             } else {
                 Vec::new()
             };
-            let synthetic_eid = uuid::Uuid::new_v4().to_string();
+            let execution = durable_or_synthetic_execution(
+                &durable_records,
+                &context_id,
+                Some(&context_id),
+                &cell.id,
+                &cell.source,
+                parsed_ec,
+                &output_refs,
+            );
             if let Some(ref mut sd) = state_doc {
-                let _ = sd.create_execution(&synthetic_eid, &cell.id);
+                let _ = sd.create_execution(&execution.execution_id, &cell.id);
                 if has_outputs {
-                    sd.set_outputs(&synthetic_eid, &output_refs)
+                    sd.set_outputs(&execution.execution_id, &output_refs)
                         .map_err(|e| format!("Failed to set outputs in state doc: {}", e))?;
                 }
                 if let Some(ec) = parsed_ec {
-                    let _ = sd.set_execution_count(&synthetic_eid, ec);
+                    let _ = sd.set_execution_count(&execution.execution_id, ec);
                 }
-                let _ = sd.set_execution_done(&synthetic_eid, true);
+                let _ = sd.set_execution_done(&execution.execution_id, execution.success);
             }
-            doc.set_execution_id(&cell.id, Some(&synthetic_eid))
+            doc.set_execution_id(&cell.id, Some(&execution.execution_id))
                 .map_err(|e| format!("Failed to set execution_id: {}", e))?;
         }
         if should_resolve_markdown_assets(&cell.cell_type) {
@@ -766,6 +818,53 @@ pub(crate) async fn load_notebook_from_disk_with_state_doc(
     }
 
     Ok(cells.len())
+}
+
+#[derive(Debug, Clone)]
+struct LoadedExecution {
+    execution_id: String,
+    success: bool,
+}
+
+async fn durable_execution_records(
+    execution_store: Option<&runtimed_client::execution_store::ExecutionStore>,
+    context_id: &str,
+) -> Vec<runtimed_client::execution_store::ExecutionRecord> {
+    match execution_store {
+        Some(store) => store.list_context("notebook", context_id).await,
+        None => Vec::new(),
+    }
+}
+
+fn durable_or_synthetic_execution(
+    durable_records: &[runtimed_client::execution_store::ExecutionRecord],
+    context_id: &str,
+    notebook_path: Option<&str>,
+    cell_id: &str,
+    source: &str,
+    execution_count: Option<i64>,
+    outputs: &[serde_json::Value],
+) -> LoadedExecution {
+    if let Some(record) = durable_records.iter().find(|record| {
+        record.matches_notebook_cell(
+            context_id,
+            notebook_path,
+            cell_id,
+            source,
+            execution_count,
+            outputs,
+        )
+    }) {
+        return LoadedExecution {
+            execution_id: record.execution_id.clone(),
+            success: record.terminal_success(),
+        };
+    }
+
+    LoadedExecution {
+        execution_id: uuid::Uuid::new_v4().to_string(),
+        success: true,
+    }
 }
 
 /// Create a new empty notebook with a single code cell.

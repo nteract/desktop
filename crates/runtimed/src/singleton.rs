@@ -33,7 +33,7 @@ impl DaemonLock {
     /// instead of the default. This is primarily for testing.
     pub fn try_acquire(
         custom_lock_dir: Option<&PathBuf>,
-    ) -> Result<Self, client_singleton::DaemonInfo> {
+    ) -> Result<Self, Box<client_singleton::DaemonInfo>> {
         let (lock_path, info_path) = if let Some(dir) = custom_lock_dir {
             (dir.join("daemon.lock"), dir.join("daemon.json"))
         } else {
@@ -60,18 +60,19 @@ impl DaemonLock {
                 warn!("[singleton] Failed to open lock file: {}", e);
                 // Try to read existing daemon info
                 if let Some(info) = client_singleton::read_daemon_info(&info_path) {
-                    return Err(info);
+                    return Err(Box::new(info));
                 }
                 // No info available, create a placeholder
-                return Err(client_singleton::DaemonInfo {
+                return Err(Box::new(client_singleton::DaemonInfo {
                     endpoint: "unknown".to_string(),
                     pid: 0,
                     version: "unknown".to_string(),
                     started_at: Utc::now(),
                     blob_port: None,
+                    execution_store_dir: None,
                     worktree_path: None,
                     workspace_description: None,
-                });
+                }));
             }
         };
 
@@ -85,17 +86,18 @@ impl DaemonLock {
                 // Another process holds the lock
                 info!("[singleton] Another daemon is already running");
                 if let Some(info) = client_singleton::read_daemon_info(&info_path) {
-                    return Err(info);
+                    return Err(Box::new(info));
                 }
-                return Err(client_singleton::DaemonInfo {
+                return Err(Box::new(client_singleton::DaemonInfo {
                     endpoint: "unknown".to_string(),
                     pid: 0,
                     version: "unknown".to_string(),
                     started_at: Utc::now(),
                     blob_port: None,
+                    execution_store_dir: None,
                     worktree_path: None,
                     workspace_description: None,
-                });
+                }));
             }
         }
 
@@ -123,17 +125,18 @@ impl DaemonLock {
             if result == 0 {
                 info!("[singleton] Another daemon is already running");
                 if let Some(info) = client_singleton::read_daemon_info(&info_path) {
-                    return Err(info);
+                    return Err(Box::new(info));
                 }
-                return Err(client_singleton::DaemonInfo {
+                return Err(Box::new(client_singleton::DaemonInfo {
                     endpoint: "unknown".to_string(),
                     pid: 0,
                     version: "unknown".to_string(),
                     started_at: Utc::now(),
                     blob_port: None,
+                    execution_store_dir: None,
                     worktree_path: None,
                     workspace_description: None,
-                });
+                }));
             }
         }
 
@@ -164,6 +167,11 @@ impl DaemonLock {
             version: crate::daemon_version().to_string(),
             started_at: Utc::now(),
             blob_port,
+            execution_store_dir: Some(
+                crate::default_execution_store_dir()
+                    .to_string_lossy()
+                    .to_string(),
+            ),
             worktree_path,
             workspace_description,
         };

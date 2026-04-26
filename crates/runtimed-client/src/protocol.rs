@@ -123,6 +123,9 @@ pub enum Response {
         /// blob server hasn't finished binding yet.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         blob_port: Option<u16>,
+        /// Directory for durable execution result records.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        execution_store_dir: Option<String>,
         /// Path to the git worktree this dev daemon is pinned to.
         /// Non-dev daemons return None.
         #[serde(default, skip_serializing_if = "Option::is_none")]

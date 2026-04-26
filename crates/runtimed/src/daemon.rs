@@ -44,6 +44,8 @@ pub struct DaemonConfig {
     pub cache_dir: PathBuf,
     /// Directory for the content-addressed blob store.
     pub blob_store_dir: PathBuf,
+    /// Directory for durable execution result records.
+    pub execution_store_dir: PathBuf,
     /// Directory for persisted notebook Automerge documents.
     pub notebook_docs_dir: PathBuf,
     /// Target number of UV environments to maintain.
@@ -95,6 +97,7 @@ impl Default for DaemonConfig {
             socket_path: default_socket_path(),
             cache_dir: default_cache_dir(),
             blob_store_dir: default_blob_store_dir(),
+            execution_store_dir: crate::default_execution_store_dir(),
             notebook_docs_dir: crate::default_notebook_docs_dir(),
             uv_pool_size: 3,
             conda_pool_size: 3,
@@ -711,7 +714,7 @@ pub struct Daemon {
 #[derive(Debug, thiserror::Error)]
 #[error("Another daemon is already running: {info:?}")]
 pub struct DaemonAlreadyRunning {
-    pub info: DaemonInfo,
+    pub info: Box<DaemonInfo>,
 }
 
 impl Daemon {
@@ -867,6 +870,12 @@ impl Daemon {
             pid: std::process::id(),
             started_at: self.started_at,
             blob_port,
+            execution_store_dir: Some(
+                self.config
+                    .execution_store_dir
+                    .to_string_lossy()
+                    .to_string(),
+            ),
             worktree_path,
             workspace_description,
         }
@@ -1834,6 +1843,7 @@ impl Daemon {
                             room,
                             notebook_id,
                             runtime_agent_id,
+                            self.config.execution_store_dir.clone(),
                         )
                         .await;
                         Ok(())
@@ -3188,6 +3198,12 @@ impl Daemon {
                 // safe (the persisted-doc walk below still gathers refs for
                 // anything they might reopen). Without this distinction, a
                 // daemon that stays open while idle would never GC again.
+                let blob_max_age = blob_gc_grace();
+                let execution_store_refs = Self::collect_execution_store_refs_for_gc(
+                    &self.config.execution_store_dir,
+                    blob_max_age,
+                )
+                .await;
                 let rooms_empty = room_arcs.is_empty();
                 if Self::should_skip_blob_sweep(
                     rooms_empty,
@@ -3198,10 +3214,10 @@ impl Daemon {
                         "[runtimed] GC: 0 active rooms and no room has loaded since startup; skipping blob sweep this cycle"
                     );
                 } else {
-                    let blob_max_age = blob_gc_grace();
-                    let referenced_hashes =
+                    let mut referenced_hashes =
                         Self::collect_blob_refs_for_gc(&room_arcs, &self.config.notebook_docs_dir)
                             .await;
+                    referenced_hashes.extend(execution_store_refs);
                     Self::sweep_orphaned_blobs(&self.blob_store, &referenced_hashes, blob_max_age)
                         .await;
                 }
@@ -3478,6 +3494,25 @@ impl Daemon {
         }
 
         referenced_hashes
+    }
+
+    /// Prune expired durable execution records, then return blob hashes
+    /// referenced by the remaining records.
+    pub(crate) async fn collect_execution_store_refs_for_gc(
+        execution_store_dir: &Path,
+        retention: std::time::Duration,
+    ) -> std::collections::HashSet<String> {
+        let store = runtimed_client::execution_store::ExecutionStore::new(execution_store_dir);
+        let retention_secs = retention.as_secs().min(i64::MAX as u64) as i64;
+        let cutoff = chrono::Utc::now() - chrono::Duration::seconds(retention_secs);
+        let pruned = store.prune_older_than(cutoff).await;
+        if pruned > 0 {
+            info!(
+                "[runtimed] GC: pruned {} expired durable execution records",
+                pruned
+            );
+        }
+        store.referenced_blob_hashes().await
     }
 
     /// Sweep the blob store, deleting blobs that are not in
@@ -5893,6 +5928,73 @@ mod tests {
             "persisted-doc blob ref should be collected, got {:?}",
             refs
         );
+    }
+
+    #[tokio::test]
+    async fn execution_store_gc_prunes_expired_records_before_marking_blobs() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let store = runtimed_client::execution_store::ExecutionStore::new(tmp.path());
+        store
+            .write_record(runtimed_client::execution_store::ExecutionRecord {
+                schema_version: runtimed_client::execution_store::EXECUTION_RECORD_SCHEMA_VERSION,
+                execution_id: "exec-live".to_string(),
+                context_kind: "notebook".to_string(),
+                context_id: "/tmp/live.ipynb".to_string(),
+                notebook_path: Some("/tmp/live.ipynb".to_string()),
+                cell_id: Some("cell-live".to_string()),
+                status: "done".to_string(),
+                success: Some(true),
+                execution_count: Some(1),
+                source: Some("display('live')".to_string()),
+                seq: Some(0),
+                outputs: vec![serde_json::json!({
+                    "output_type": "display_data",
+                    "data": {"image/png": {"blob": "live-blob", "size": 4}}
+                })],
+                created_at: chrono::Utc::now(),
+                updated_at: chrono::Utc::now(),
+            })
+            .await
+            .unwrap();
+
+        let expired = runtimed_client::execution_store::ExecutionRecord {
+            schema_version: runtimed_client::execution_store::EXECUTION_RECORD_SCHEMA_VERSION,
+            execution_id: "exec-expired".to_string(),
+            context_kind: "notebook".to_string(),
+            context_id: "/tmp/expired.ipynb".to_string(),
+            notebook_path: Some("/tmp/expired.ipynb".to_string()),
+            cell_id: Some("cell-expired".to_string()),
+            status: "done".to_string(),
+            success: Some(true),
+            execution_count: Some(1),
+            source: Some("display('expired')".to_string()),
+            seq: Some(0),
+            outputs: vec![serde_json::json!({
+                "output_type": "display_data",
+                "data": {"image/png": {"blob": "expired-blob", "size": 4}}
+            })],
+            created_at: chrono::Utc::now() - chrono::Duration::days(31),
+            updated_at: chrono::Utc::now() - chrono::Duration::days(31),
+        };
+        tokio::fs::write(
+            tmp.path().join("exec-expired.json"),
+            serde_json::to_vec_pretty(&expired).unwrap(),
+        )
+        .await
+        .unwrap();
+
+        let refs = Daemon::collect_execution_store_refs_for_gc(
+            tmp.path(),
+            std::time::Duration::from_secs(BLOB_GC_GRACE_SECS),
+        )
+        .await;
+
+        assert!(refs.contains("live-blob"), "live record should mark blob");
+        assert!(
+            !refs.contains("expired-blob"),
+            "expired record should be pruned before blob marking"
+        );
+        assert!(store.read_record("exec-expired").await.is_none());
     }
 
     #[tokio::test]

@@ -401,6 +401,7 @@ async fn run_daemon(
         socket_path: socket.unwrap_or_else(runtimed::default_socket_path),
         cache_dir: cache_dir.unwrap_or_else(runtimed::default_cache_dir),
         blob_store_dir: blob_store_dir.unwrap_or_else(runtimed::default_blob_store_dir),
+        execution_store_dir: runtimed::default_execution_store_dir(),
         uv_pool_size,
         conda_pool_size,
         pixi_pool_size,
@@ -411,6 +412,7 @@ async fn run_daemon(
     info!("  Socket: {:?}", config.socket_path);
     info!("  Cache dir: {:?}", config.cache_dir);
     info!("  Blob store: {:?}", config.blob_store_dir);
+    info!("  Execution store: {:?}", config.execution_store_dir);
     info!("  UV pool size: {}", config.uv_pool_size);
     info!("  Conda pool size: {}", config.conda_pool_size);
     info!("  Pixi pool size: {}", config.pixi_pool_size);
