@@ -147,7 +147,7 @@ const LINE_HEIGHT = 20;
 const CELL_PAD_H = 24; // 12px each side
 const CELL_PAD_V = 16; // 8px top + 8px bottom
 const MIN_COL_WIDTH = 60;
-const OVERSCAN = 80; // buffer rows above and below viewport
+const OVERSCAN = 40; // buffer rows above and below viewport
 
 // --- Table Engine ---
 
@@ -287,6 +287,57 @@ export function createTable(
       else hi = mid;
     }
     return lo;
+  }
+
+  type ScrollAnchor = {
+    row: number;
+    offset: number;
+  };
+
+  let pendingScrollAnchor: ScrollAnchor | null = null;
+
+  function captureScrollAnchor(): ScrollAnchor | null {
+    if (filteredCount === 0) return null;
+    const headerH = headerEl.offsetHeight;
+    const viewportRect = viewport.getBoundingClientRect();
+    const anchorY = viewportRect.top + headerH;
+    if (viewportRect.height > 0) {
+      for (const pr of pool) {
+        if (pr.assignedRow === -1) continue;
+        const rowRect = pr.el.getBoundingClientRect();
+        if (rowRect.height <= 0) continue;
+        if (rowRect.top <= anchorY && rowRect.bottom > anchorY) {
+          return {
+            row: pr.assignedRow,
+            offset: Math.max(0, anchorY - rowRect.top),
+          };
+        }
+      }
+    }
+
+    const scrollTop = Math.max(0, viewport.scrollTop - headerH);
+    const row = Math.min(rowAtOffset(scrollTop), filteredCount - 1);
+    return {
+      row,
+      offset: Math.max(0, scrollTop - rowPositions[row]),
+    };
+  }
+
+  function markHeightsDirty(preserveViewport = false) {
+    if (preserveViewport && !pendingScrollAnchor) {
+      pendingScrollAnchor = captureScrollAnchor();
+    }
+    heightsDirty = true;
+  }
+
+  function restoreScrollAnchor(headerH: number) {
+    if (!pendingScrollAnchor) return;
+    const anchor = pendingScrollAnchor;
+    pendingScrollAnchor = null;
+    if (filteredCount === 0) return;
+    const row = Math.min(anchor.row, filteredCount - 1);
+    const maxScrollTop = Math.max(0, totalHeight + headerH - viewport.clientHeight);
+    viewport.scrollTop = Math.min(maxScrollTop, headerH + rowPositions[row] + anchor.offset);
   }
 
   // --- Filter + Sort ---
@@ -912,7 +963,12 @@ export function createTable(
   let lastColumnAutoFill = true;
   const lastColumnAutoFillMinWidth = colWidths[columns.length - 1] ?? MIN_COL_WIDTH;
 
-  function fitLastColumnToViewport() {
+  function fitLastColumnToViewport(
+    preserveViewport = false,
+    updateHeights = true,
+    schedule = true,
+    updateSummary = true,
+  ) {
     if (!lastColumnAutoFill) return;
     const last = columns.length - 1;
     if (last < 0) return;
@@ -924,10 +980,10 @@ export function createTable(
     if (target === colWidths[last]) return;
     colWidths[last] = target;
     headerCells[last].style.width = target + "px";
-    renderSummary(last);
+    if (updateSummary) renderSummary(last);
     updateScrollContentWidth();
-    heightsDirty = true;
-    scheduleRender();
+    if (updateHeights) markHeightsDirty(preserveViewport);
+    if (schedule) scheduleRender();
   }
 
   function rebuildFilterPills() {
@@ -1190,6 +1246,22 @@ export function createTable(
     });
   }
 
+  function renderImmediately() {
+    if (scheduledRaf !== null) {
+      cancelAnimationFrame(scheduledRaf);
+      scheduledRaf = null;
+    }
+    render();
+  }
+
+  function updateMountedColumnWidth(colIndex: number) {
+    for (const pr of pool) {
+      if (pr.assignedRow === -1) continue;
+      pr.cells[colIndex].style.width = colWidths[colIndex] + "px";
+      applyCellPinStyle(pr.cells[colIndex], colIndex);
+    }
+  }
+
   function render() {
     if (heightsDirty) {
       recomputeAllHeights();
@@ -1197,6 +1269,7 @@ export function createTable(
       const headerH = headerEl.offsetHeight;
       rowPool.style.top = headerH + "px";
       scrollContent.style.height = totalHeight + headerH + "px";
+      restoreScrollAnchor(headerH);
     }
 
     if (filteredCount === 0) {
@@ -1503,17 +1576,24 @@ export function createTable(
       const delta = ev.clientX - startX;
       colWidths[colIndex] = Math.max(MIN_COL_WIDTH, startWidth + delta);
       headerCells[colIndex].style.width = colWidths[colIndex] + "px";
-      renderSummary(colIndex);
       updateScrollContentWidth();
-      heightsDirty = true;
-      scheduleRender();
-      if (!isLast) fitLastColumnToViewport();
+      updatePinnedStyles();
+      updateMountedColumnWidth(colIndex);
+      if (!isLast) {
+        fitLastColumnToViewport(false, false, false, false);
+        updatePinnedStyles();
+        updateMountedColumnWidth(columns.length - 1);
+      }
     };
 
     const onUp = () => {
       handle.classList.remove("dragging");
       handle.removeEventListener("pointermove", onMove);
       handle.removeEventListener("pointerup", onUp);
+      renderSummary(colIndex);
+      if (!isLast) renderSummary(columns.length - 1);
+      markHeightsDirty(true);
+      renderImmediately();
     };
 
     handle.addEventListener("pointermove", onMove);
