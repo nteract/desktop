@@ -19,7 +19,7 @@ import {
 } from "react";
 import { CellContainer } from "@/components/cell/CellContainer";
 import { CompactExecutionButton } from "@/components/cell/CompactExecutionButton";
-import { anyOutputNeedsIsolation, OutputArea } from "@/components/cell/OutputArea";
+import { outputNeedsWell, OutputArea } from "@/components/cell/OutputArea";
 import { CodeMirrorEditor, type CodeMirrorEditorRef } from "@/components/editor/codemirror-editor";
 import type { SupportedLanguage } from "@/components/editor/languages";
 import { remoteCursorsExtension } from "@/components/editor/remote-cursors";
@@ -128,7 +128,7 @@ export const CodeCell = memo(function CodeCell({
   // than `cell.outputs`. Content changes no longer invalidate the cell
   // snapshot — CodeCell re-renders only when its chrome state changes.
   const outputs = useCellOutputs(cell.id);
-  const hasInteractiveOutputWell = anyOutputNeedsIsolation(outputs);
+  const hasOutputWell = outputNeedsWell(outputs);
 
   // Check cell metadata for visibility (JupyterLab convention)
   const isSourceHidden =
@@ -141,10 +141,10 @@ export const CodeCell = memo(function CodeCell({
   const bothHidden = isSourceHidden && (isOutputsHidden || outputs.length === 0);
 
   useEffect(() => {
-    if (!hasInteractiveOutputWell || isOutputsHidden || outputs.length === 0) {
+    if (!hasOutputWell || isOutputsHidden || outputs.length === 0) {
       setIsOutputWellInteractive(false);
     }
-  }, [hasInteractiveOutputWell, isOutputsHidden, outputs.length]);
+  }, [hasOutputWell, isOutputsHidden, outputs.length]);
 
   // Register EditorView with the cursor registry for remote cursor rendering.
   // We use a ref + polling approach because the EditorView is created async
@@ -398,15 +398,15 @@ export const CodeCell = memo(function CodeCell({
               onSearchMatchCount={onSearchMatchCount}
               onLinkClick={handleLinkClick}
               onIframeMouseDown={onFocus}
-              iframeInteractive={isOutputWellInteractive}
-              onIframeInteractiveChange={setIsOutputWellInteractive}
+              outputWellInteractive={isOutputWellInteractive}
+              onOutputWellInteractiveChange={setIsOutputWellInteractive}
             />
           )
         }
         outputRightGutterContent={
           outputs.length > 0 && !isOutputsHidden ? (
             <>
-              {hasInteractiveOutputWell && (
+              {hasOutputWell && (
                 <button
                   type="button"
                   tabIndex={-1}

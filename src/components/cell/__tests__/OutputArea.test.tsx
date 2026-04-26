@@ -67,7 +67,17 @@ function makeMarkdownOutput(content = "```python\nprint('hello')\n```"): Jupyter
   ];
 }
 
-describe("OutputArea isolated iframe", () => {
+function makeLargeStreamOutput(): JupyterOutput[] {
+  return [
+    {
+      output_type: "stream",
+      name: "stdout",
+      text: Array.from({ length: 160 }, (_, index) => `log line ${index}`).join("\n"),
+    },
+  ];
+}
+
+describe("OutputArea output well", () => {
   beforeEach(() => {
     mockDarkMode = false;
     mockColorTheme = undefined;
@@ -126,13 +136,33 @@ describe("OutputArea isolated iframe", () => {
     expect(frame.getAttribute("class") ?? "").toContain("pointer-events-none");
     expect(frame.getAttribute("data-allow-wheel-boundary-scroll")).toBe("false");
 
-    const activator = screen.getByRole("button", { name: "Activate interactive output" });
+    const activator = screen.getByRole("button", { name: "Activate output well" });
     fireEvent.click(activator);
 
     await waitFor(() => {
-      expect(screen.queryByRole("button", { name: "Activate interactive output" })).toBeNull();
+      expect(screen.queryByRole("button", { name: "Activate output well" })).toBeNull();
     });
     expect(frame.getAttribute("class") ?? "").not.toContain("pointer-events-none");
     expect(onIframeMouseDown).toHaveBeenCalled();
+  });
+
+  it("bounds large in-DOM stream outputs behind the same output well", async () => {
+    const onOutputWellInteractiveChange = vi.fn();
+    const { container } = render(
+      <OutputArea
+        outputs={makeLargeStreamOutput()}
+        outputWellInteractive={false}
+        onOutputWellInteractiveChange={onOutputWellInteractiveChange}
+      />,
+    );
+
+    const outputWell = container.querySelector('[data-slot="output-well"]');
+    expect(outputWell?.getAttribute("data-interactive")).toBe("false");
+    expect(container.querySelector('[data-slot="isolated-frame"]')).toBeNull();
+    expect(container.querySelector(".max-h-\\[420px\\]")).not.toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Activate output well" }));
+
+    expect(onOutputWellInteractiveChange).toHaveBeenCalledWith(true);
   });
 });

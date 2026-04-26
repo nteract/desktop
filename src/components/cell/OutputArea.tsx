@@ -104,21 +104,35 @@ interface OutputAreaProps {
    */
   onIframeMouseDown?: () => void;
   /**
-   * Controlled interaction state for isolated output iframes.
-   * When false, the iframe is visible but pointer-inert so page scrolling wins.
+   * Controlled interaction state for bounded output wells.
+   * When false, the output is visible but pointer-inert so page scrolling wins.
    */
-  iframeInteractive?: boolean;
+  outputWellInteractive?: boolean;
   /**
-   * Callback when the isolated output iframe interaction state changes.
+   * Callback when the bounded output well interaction state changes.
    */
-  onIframeInteractiveChange?: (interactive: boolean) => void;
+  onOutputWellInteractiveChange?: (interactive: boolean) => void;
 }
+
+const LARGE_IN_DOM_OUTPUT_CHAR_THRESHOLD = 8_000;
+const LARGE_IN_DOM_OUTPUT_LINE_THRESHOLD = 120;
 
 /**
  * Normalize stream text (can be string or string array).
  */
 function normalizeText(text: string | string[]): string {
   return Array.isArray(text) ? text.join("") : text;
+}
+
+function countLines(text: string): number {
+  return text.length === 0 ? 0 : text.split(/\r\n|\r|\n/).length;
+}
+
+function textExceedsOutputWellThreshold(text: string): boolean {
+  return (
+    text.length >= LARGE_IN_DOM_OUTPUT_CHAR_THRESHOLD ||
+    countLines(text) >= LARGE_IN_DOM_OUTPUT_LINE_THRESHOLD
+  );
 }
 
 /**
@@ -163,6 +177,30 @@ export function anyOutputNeedsIsolation(
   priority: readonly string[] = DEFAULT_PRIORITY,
 ): boolean {
   return outputs.some((output) => outputNeedsIsolation(output, priority));
+}
+
+function outputNeedsBoundedInDomWell(output: JupyterOutput): boolean {
+  if (output.output_type === "stream") {
+    return textExceedsOutputWellThreshold(normalizeText(output.text));
+  }
+
+  if (output.output_type === "error") {
+    return textExceedsOutputWellThreshold(output.traceback.join("\n"));
+  }
+
+  const plain = output.data["text/plain"];
+  return typeof plain === "string" && textExceedsOutputWellThreshold(plain);
+}
+
+function anyOutputNeedsBoundedInDomWell(outputs: JupyterOutput[]): boolean {
+  return outputs.some(outputNeedsBoundedInDomWell);
+}
+
+export function outputNeedsWell(
+  outputs: JupyterOutput[],
+  priority: readonly string[] = DEFAULT_PRIORITY,
+): boolean {
+  return anyOutputNeedsIsolation(outputs, priority) || anyOutputNeedsBoundedInDomWell(outputs);
 }
 
 /**
@@ -265,15 +303,15 @@ export function OutputArea({
   searchQuery,
   onSearchMatchCount,
   onIframeMouseDown,
-  iframeInteractive,
-  onIframeInteractiveChange,
+  outputWellInteractive,
+  onOutputWellInteractiveChange,
 }: OutputAreaProps) {
   const id = useId();
   const frameRef = useRef<IsolatedFrameHandle>(null);
   const bridgeRef = useRef<CommBridgeManager | null>(null);
   const inDomOutputRef = useRef<HTMLDivElement>(null);
   const outputWellRef = useRef<HTMLDivElement>(null);
-  const [uncontrolledIframeInteractive, setUncontrolledIframeInteractive] = useState(false);
+  const [uncontrolledOutputWellInteractive, setUncontrolledOutputWellInteractive] = useState(false);
   const injectedLibsRef = useRef(new Set<string>());
   const renderGenRef = useRef(0);
   const searchQueryRef = useRef(searchQuery);
@@ -298,19 +336,21 @@ export function OutputArea({
   const shouldIsolate =
     outputs.length > 0 &&
     (isolated === true || (isolated === "auto" && anyOutputNeedsIsolation(outputs, priority)));
+  const needsBoundedInDomWell = !shouldIsolate && anyOutputNeedsBoundedInDomWell(outputs);
 
   // When preloading, we render the iframe even with no outputs (hidden)
   // This allows it to bootstrap ahead of time for instant rendering
   const showPreloadedIframe = preloadIframe && !collapsed;
-  const isIframeInteractive = iframeInteractive ?? uncontrolledIframeInteractive;
-  const setIframeInteractive = useCallback(
+  const hasOutputWell = shouldIsolate || needsBoundedInDomWell;
+  const isOutputWellInteractive = outputWellInteractive ?? uncontrolledOutputWellInteractive;
+  const setOutputWellInteractive = useCallback(
     (interactive: boolean) => {
-      if (iframeInteractive === undefined) {
-        setUncontrolledIframeInteractive(interactive);
+      if (outputWellInteractive === undefined) {
+        setUncontrolledOutputWellInteractive(interactive);
       }
-      onIframeInteractiveChange?.(interactive);
+      onOutputWellInteractiveChange?.(interactive);
     },
-    [iframeInteractive, onIframeInteractiveChange],
+    [outputWellInteractive, onOutputWellInteractiveChange],
   );
 
   // Check if we have widgets and should set up comm bridge
@@ -534,24 +574,24 @@ export function OutputArea({
   const isPreloadOnly = showPreloadedIframe && outputs.length === 0;
 
   useEffect(() => {
-    if (!shouldIsolate || collapsed || isPreloadOnly) {
-      setIframeInteractive(false);
+    if (!hasOutputWell || collapsed || isPreloadOnly) {
+      setOutputWellInteractive(false);
     }
-  }, [collapsed, isPreloadOnly, setIframeInteractive, shouldIsolate]);
+  }, [collapsed, hasOutputWell, isPreloadOnly, setOutputWellInteractive]);
 
   useEffect(() => {
-    if (!isIframeInteractive) {
+    if (!isOutputWellInteractive) {
       return;
     }
 
     const handlePointerDown = (event: PointerEvent) => {
       if (!outputWellRef.current?.contains(event.target as Node | null)) {
-        setIframeInteractive(false);
+        setOutputWellInteractive(false);
       }
     };
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
-        setIframeInteractive(false);
+        setOutputWellInteractive(false);
       }
     };
 
@@ -561,12 +601,12 @@ export function OutputArea({
       window.removeEventListener("pointerdown", handlePointerDown, true);
       window.removeEventListener("keydown", handleKeyDown, true);
     };
-  }, [isIframeInteractive, setIframeInteractive]);
+  }, [isOutputWellInteractive, setOutputWellInteractive]);
 
   const activateOutputWell = useCallback(() => {
     onIframeMouseDown?.();
-    setIframeInteractive(true);
-  }, [onIframeMouseDown, setIframeInteractive]);
+    setOutputWellInteractive(true);
+  }, [onIframeMouseDown, setOutputWellInteractive]);
 
   // Empty state: render nothing (unless preloading iframe)
   if (outputs.length === 0 && !showPreloadedIframe) {
@@ -612,10 +652,10 @@ export function OutputArea({
             <div
               ref={outputWellRef}
               data-slot="output-well"
-              data-interactive={isIframeInteractive ? "true" : "false"}
+              data-interactive={isOutputWellInteractive ? "true" : "false"}
               className={cn(
                 "relative rounded-sm ring-1 ring-transparent transition-shadow",
-                isIframeInteractive && "ring-ring/60",
+                isOutputWellInteractive && "ring-ring/60",
                 shouldIsolate ? undefined : "hidden",
               )}
             >
@@ -625,7 +665,7 @@ export function OutputArea({
                 colorTheme={colorTheme}
                 minHeight={24}
                 maxHeight={maxHeight ?? 2000}
-                className={cn(!isIframeInteractive && "pointer-events-none")}
+                className={cn(!isOutputWellInteractive && "pointer-events-none")}
                 allowWheelBoundaryScroll={false}
                 onReady={handleFrameReady}
                 onLinkClick={onLinkClick}
@@ -634,11 +674,11 @@ export function OutputArea({
                 onMessage={handleIframeMessage}
                 onError={handleIframeError}
               />
-              {shouldIsolate && !isIframeInteractive && (
+              {shouldIsolate && !isOutputWellInteractive && (
                 <button
                   type="button"
                   data-slot="output-well-activator"
-                  aria-label="Activate interactive output"
+                  aria-label="Activate output well"
                   className="absolute inset-0 z-10 cursor-default bg-transparent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
                   onClick={activateOutputWell}
                 />
@@ -648,32 +688,60 @@ export function OutputArea({
 
           {/* In-DOM outputs (when not using isolation) */}
           {!shouldIsolate && (
-            <div ref={inDomOutputRef}>
-              {outputs.map((output, index) => {
-                // Prefer daemon-stamped output_id for stable React keys so a
-                // stream append doesn't re-mount sibling outputs. Fall back
-                // to positional when a render path skipped the id.
-                const key = output.output_id ?? `output-${index}`;
-                return (
-                  <div key={key} data-slot="output-item" data-output-index={index}>
-                    <ErrorBoundary
-                      resetKeys={[output]}
-                      fallback={(error, reset) => (
-                        <OutputErrorFallback error={error} outputIndex={index} onRetry={reset} />
-                      )}
-                      onError={(error, errorInfo) => {
-                        console.error(
-                          `[OutputArea] Error rendering output ${index}:`,
-                          error,
-                          errorInfo.componentStack,
-                        );
-                      }}
-                    >
-                      {renderOutput(output, index, renderers, priority)}
-                    </ErrorBoundary>
-                  </div>
-                );
-              })}
+            <div
+              ref={needsBoundedInDomWell ? outputWellRef : undefined}
+              data-slot={needsBoundedInDomWell ? "output-well" : undefined}
+              data-interactive={
+                needsBoundedInDomWell ? (isOutputWellInteractive ? "true" : "false") : undefined
+              }
+              className={cn(
+                needsBoundedInDomWell &&
+                  "relative rounded-sm ring-1 ring-transparent transition-shadow",
+                needsBoundedInDomWell && isOutputWellInteractive && "ring-ring/60",
+              )}
+            >
+              <div
+                ref={inDomOutputRef}
+                className={cn(
+                  needsBoundedInDomWell && "max-h-[420px] overflow-y-auto overscroll-contain pr-2",
+                  needsBoundedInDomWell && !isOutputWellInteractive && "pointer-events-none",
+                )}
+              >
+                {outputs.map((output, index) => {
+                  // Prefer daemon-stamped output_id for stable React keys so a
+                  // stream append doesn't re-mount sibling outputs. Fall back
+                  // to positional when a render path skipped the id.
+                  const key = output.output_id ?? `output-${index}`;
+                  return (
+                    <div key={key} data-slot="output-item" data-output-index={index}>
+                      <ErrorBoundary
+                        resetKeys={[output]}
+                        fallback={(error, reset) => (
+                          <OutputErrorFallback error={error} outputIndex={index} onRetry={reset} />
+                        )}
+                        onError={(error, errorInfo) => {
+                          console.error(
+                            `[OutputArea] Error rendering output ${index}:`,
+                            error,
+                            errorInfo.componentStack,
+                          );
+                        }}
+                      >
+                        {renderOutput(output, index, renderers, priority)}
+                      </ErrorBoundary>
+                    </div>
+                  );
+                })}
+              </div>
+              {needsBoundedInDomWell && !isOutputWellInteractive && (
+                <button
+                  type="button"
+                  data-slot="output-well-activator"
+                  aria-label="Activate output well"
+                  className="absolute inset-0 z-10 cursor-default bg-transparent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+                  onClick={activateOutputWell}
+                />
+              )}
             </div>
           )}
         </div>
