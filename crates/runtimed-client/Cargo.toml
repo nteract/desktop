@@ -1,6 +1,6 @@
 [package]
 name = "runtimed-client"
-version = "2.3.3"
+version = "2.3.4"
 edition.workspace = true
 description = "Client library for communicating with the runtimed daemon"
 repository.workspace = true

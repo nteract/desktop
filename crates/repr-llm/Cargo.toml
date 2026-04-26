@@ -1,6 +1,6 @@
 [package]
 name = "repr-llm"
-version = "0.1.5"
+version = "0.1.6"
 edition.workspace = true
 description = "LLM-friendly text summaries of structured visualization specs"
 repository.workspace = true

@@ -1,6 +1,6 @@
 [package]
 name = "nteract-mcp"
-version = "0.1.5"
+version = "0.1.6"
 edition.workspace = true
 description = "nteract MCP server — resilient proxy in front of `runt mcp`. Ships as a sidecar in the nteract desktop app, inside the .mcpb Claude Desktop extension, and in the Claude Code plugin."
 repository.workspace = true

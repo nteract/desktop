@@ -1,6 +1,6 @@
 [package]
 name = "runt-trust"
-version = "0.2.5"
+version = "0.2.6"
 edition.workspace = true
 description = "Notebook trust verification using HMAC signatures over dependency metadata"
 repository.workspace = true
