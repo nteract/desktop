@@ -653,11 +653,7 @@ export function OutputArea({
               ref={outputWellRef}
               data-slot="output-well"
               data-interactive={isOutputWellInteractive ? "true" : "false"}
-              className={cn(
-                "relative rounded-sm ring-1 ring-transparent transition-shadow",
-                isOutputWellInteractive && "ring-ring/60",
-                shouldIsolate ? undefined : "hidden",
-              )}
+              className={cn("relative", shouldIsolate ? undefined : "hidden")}
             >
               <IsolatedFrame
                 ref={frameRef}
@@ -695,9 +691,8 @@ export function OutputArea({
                 needsBoundedInDomWell ? (isOutputWellInteractive ? "true" : "false") : undefined
               }
               className={cn(
-                needsBoundedInDomWell &&
-                  "relative rounded-sm ring-1 ring-transparent transition-shadow",
-                needsBoundedInDomWell && isOutputWellInteractive && "ring-ring/60",
+                needsBoundedInDomWell && "relative border-y border-border/50 transition-colors",
+                needsBoundedInDomWell && isOutputWellInteractive && "border-ring/50",
               )}
             >
               <div
