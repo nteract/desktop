@@ -1,4 +1,5 @@
-import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import { layout, prepare } from "@chenglou/pretext";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { type Column, createTable, type TableData, type TableEngine } from "./table";
 
 // --- Test helpers ---
@@ -63,6 +64,15 @@ async function flushRAF() {
   await vi.advanceTimersByTimeAsync(0);
 }
 
+function resetPretextMocks() {
+  vi.mocked(prepare).mockImplementation(
+    () => ({ __brand: "PreparedText" }) as unknown as ReturnType<typeof prepare>,
+  );
+  vi.mocked(layout).mockImplementation(
+    () => ({ lineCount: 1, height: 20 }) as ReturnType<typeof layout>,
+  );
+}
+
 // --- Tests ---
 
 describe("createTable", () => {
@@ -73,11 +83,18 @@ describe("createTable", () => {
 
   beforeEach(() => {
     vi.useFakeTimers();
+    resetPretextMocks();
     container = document.createElement("div");
     document.body.appendChild(container);
     rows = makeRows(50);
     data = makeTableData(rows);
     engine = createTable(container, data);
+  });
+
+  afterEach(() => {
+    engine.destroy();
+    container.remove();
+    vi.useRealTimers();
   });
 
   describe("DOM structure", () => {
@@ -123,6 +140,32 @@ describe("createTable", () => {
 
       numericEngine.destroy();
       numericContainer.remove();
+    });
+
+    it("positions rows with freshly measured lazy heights before painting", async () => {
+      engine.destroy();
+      container.innerHTML = "";
+
+      vi.mocked(prepare).mockImplementation(
+        (text: string) =>
+          ({ __brand: "PreparedText", text }) as unknown as ReturnType<typeof prepare>,
+      );
+      vi.mocked(layout).mockImplementation((prepared: unknown) => {
+        const { text } = prepared as { text?: string };
+        return {
+          lineCount: text?.includes("tall wrapped categorical text") ? 6 : 1,
+          height: text?.includes("tall wrapped categorical text") ? 120 : 20,
+        } as ReturnType<typeof layout>;
+      });
+
+      const tallRows = makeRows(8);
+      tallRows[1][1] = "tall wrapped categorical text";
+      engine = createTable(container, makeTableData(tallRows));
+
+      await vi.advanceTimersByTimeAsync(20);
+
+      const thirdRenderedRow = container.querySelector<HTMLElement>('[aria-rowindex="4"]');
+      expect(thirdRenderedRow?.style.transform).toBe("translateY(172px)");
     });
   });
 

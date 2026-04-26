@@ -1247,7 +1247,18 @@ export function createTable(
         rowHeights[r] = computeRowHeight(r);
         lazyPrepared = true;
       }
+    }
 
+    // Newly measured rows can shift every downstream row position. Rebuild
+    // before assigning transforms so Safari never paints a mixed frame where
+    // some rows use measured heights and others still use estimated offsets.
+    if (lazyPrepared) {
+      rebuildPositions();
+      scrollContent.style.height = totalHeight + headerH + "px";
+    }
+
+    for (let r = first; r <= last; r++) {
+      const dataRow = viewIndices[r];
       let existing = false;
       for (const pr of pool) {
         if (pr.assignedRow === r) {
@@ -1274,22 +1285,7 @@ export function createTable(
       }
     }
 
-    // If we lazy-prepared any rows, their heights shifted downstream row
-    // positions. The original code then reset the entire pool and re-rendered
-    // the whole visible range with corrected positions, doubling paint cost
-    // on every scroll that pulled in fresh rows — Safari white-screened on
-    // downward momentum scroll because the compositor starved waiting for
-    // main. Update positions now and let the next rAF tick reposition the
-    // pool. The displayed rows sit at slightly-stale transforms for one
-    // frame (≤ one row height ≈ 20px, ≈ 16ms) — invisible in practice; the
-    // scroll stays smooth.
-    if (lazyPrepared) {
-      rebuildPositions();
-      scrollContent.style.height = totalHeight + "px";
-      scheduleRender();
-    }
-
-    if (lastScrollTop === scrollTop && lastViewportHeight === viewportH) {
+    if (lazyPrepared || (lastScrollTop === scrollTop && lastViewportHeight === viewportH)) {
       for (const pr of pool) {
         if (pr.assignedRow === -1) continue;
         for (let c = 0; c < columns.length; c++) {
