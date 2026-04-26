@@ -632,6 +632,7 @@ h1 {
   overflow-y: auto;
   overflow-x: auto;
   overscroll-behavior: none; /* kill elastic bounce entirely — no rubberbanding on iOS */
+  overflow-anchor: none;
   position: relative;
 }
 

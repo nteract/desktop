@@ -73,6 +73,15 @@ function resetPretextMocks() {
   );
 }
 
+function pointerEvent(type: string, clientX: number): PointerEvent {
+  const event = new Event(type, { bubbles: true, cancelable: true }) as PointerEvent;
+  Object.defineProperties(event, {
+    clientX: { value: clientX },
+    pointerId: { value: 1 },
+  });
+  return event;
+}
+
 // --- Tests ---
 
 describe("createTable", () => {
@@ -497,6 +506,55 @@ describe("createTable", () => {
       expect(Number.parseFloat(last.style.width || "0")).toBe(initialLastWidth);
       e.destroy();
       narrow.remove();
+    });
+
+    it("keeps the top visible row anchored while resized text changes row heights", async () => {
+      engine.destroy();
+      container.innerHTML = "";
+
+      vi.mocked(prepare).mockImplementation(
+        (text: string) =>
+          ({ __brand: "PreparedText", text }) as unknown as ReturnType<typeof prepare>,
+      );
+      vi.mocked(layout).mockImplementation((prepared: unknown, width: number) => {
+        const { text } = prepared as { text?: string };
+        const tall = text?.includes("wrap-sensitive above viewport") && width < 500;
+        return {
+          lineCount: tall ? 6 : 1,
+          height: tall ? 120 : 20,
+        } as ReturnType<typeof layout>;
+      });
+
+      const resizeRows = makeRows(50);
+      resizeRows[0][1] = "wrap-sensitive above viewport";
+      engine = createTable(container, makeTableData(resizeRows));
+      await vi.advanceTimersByTimeAsync(20);
+
+      const viewport = container.querySelector<HTMLElement>(".sift-viewport")!;
+      Object.defineProperty(viewport, "clientHeight", { value: 400, configurable: true });
+
+      viewport.scrollTop = 280;
+      viewport.dispatchEvent(new Event("scroll"));
+      await flushRAF();
+
+      const nameHandle = container
+        .querySelectorAll<HTMLElement>(".sift-th")[1]
+        .querySelector<HTMLElement>(".sift-resize-handle")!;
+      Object.defineProperty(nameHandle, "setPointerCapture", {
+        value: vi.fn(),
+        configurable: true,
+      });
+
+      nameHandle.dispatchEvent(pointerEvent("pointerdown", 0));
+      nameHandle.dispatchEvent(pointerEvent("pointermove", 400));
+      await vi.advanceTimersByTimeAsync(20);
+
+      expect(viewport.scrollTop).toBe(280);
+
+      nameHandle.dispatchEvent(pointerEvent("pointerup", 400));
+      await vi.advanceTimersByTimeAsync(20);
+
+      expect(viewport.scrollTop).toBe(180);
     });
   });
 });
