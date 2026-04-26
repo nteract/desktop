@@ -20,6 +20,16 @@ type NonNullSummary =
 type FilterCallback = (filter: ColumnFilter) => void;
 
 const CHART_HEIGHT = 48;
+const BRUSHING_CLASS = "sift-brushing";
+
+type BrushState = {
+  startX: number;
+  currentX: number;
+};
+
+function clearNativeSelection() {
+  document.getSelection()?.removeAllRanges();
+}
 
 /**
  * Does a bin with range [x0, x1] overlap the active range filter?
@@ -71,11 +81,16 @@ function BrushLayer({
   activeFilter?: RangeFilter | null;
   onFilter: FilterCallback;
 }) {
-  const svgRef = useRef<SVGSVGElement>(null);
-  const [brushState, setBrushState] = useState<{
-    startX: number;
-    currentX: number;
-  } | null>(null);
+  const hitTargetRef = useRef<HTMLDivElement>(null);
+  const brushStateRef = useRef<BrushState | null>(null);
+  const stopBrushCaptureRef = useRef<(() => void) | null>(null);
+  const [brushState, setBrushState] = useState<BrushState | null>(null);
+
+  useEffect(() => {
+    return () => {
+      stopBrushCaptureRef.current?.();
+    };
+  }, []);
 
   // When min === max (the filtered slice is a single value), the brush's
   // value↔pixel mapping would divide by zero and produce NaN coordinates,
@@ -99,57 +114,158 @@ function BrushLayer({
     [width, min, span],
   );
 
-  const onPointerDown = useCallback((e: React.PointerEvent) => {
-    const svg = svgRef.current!;
-    svg.setPointerCapture(e.pointerId);
-    const rect = svg.getBoundingClientRect();
-    const x = e.clientX - rect.left;
-    setBrushState({ startX: x, currentX: x });
-  }, []);
-
-  const onPointerMove = useCallback(
-    (e: React.PointerEvent) => {
-      if (!brushState) return;
-      const rect = svgRef.current!.getBoundingClientRect();
-      const x = Math.max(0, Math.min(width, e.clientX - rect.left));
-      setBrushState({ ...brushState, currentX: x });
+  const clientXToBrushX = useCallback(
+    (clientX: number) => {
+      const rect = hitTargetRef.current!.getBoundingClientRect();
+      return Math.max(0, Math.min(width, clientX - rect.left));
     },
-    [brushState, width],
+    [width],
   );
 
-  const onPointerUp = useCallback(() => {
-    if (!brushState) return;
-    const x0 = Math.min(brushState.startX, brushState.currentX);
-    const x1 = Math.max(brushState.startX, brushState.currentX);
-    setBrushState(null);
+  const setBrush = useCallback((state: BrushState | null) => {
+    brushStateRef.current = state;
+    setBrushState(state);
+  }, []);
 
-    // If the drag was tiny, treat as a click → clear filter
-    if (x1 - x0 < 3) {
-      onFilter(null);
-      return;
-    }
+  const finishBrush = useCallback(
+    (state: BrushState) => {
+      const x0 = Math.min(state.startX, state.currentX);
+      const x1 = Math.max(state.startX, state.currentX);
+      setBrush(null);
 
-    // Constant-slice column (span === 0): xToValue maps every pixel to
-    // `min`, so v0 === v1 === min === max and the "entire range" check
-    // below would fire on every real drag and clear the filter. Let the
-    // user pin the single value instead so their filter survives
-    // subsequent changes on other columns.
-    if (span <= 0) {
-      onFilter({ kind: "range", min, max });
-      return;
-    }
+      // If the drag was tiny, treat as a click → clear filter
+      if (x1 - x0 < 3) {
+        onFilter(null);
+        return;
+      }
 
-    const v0 = xToValue(x0);
-    const v1 = xToValue(x1);
+      // Constant-slice column (span === 0): xToValue maps every pixel to
+      // `min`, so v0 === v1 === min === max and the "entire range" check
+      // below would fire on every real drag and clear the filter. Let the
+      // user pin the single value instead so their filter survives
+      // subsequent changes on other columns.
+      if (span <= 0) {
+        onFilter({ kind: "range", min, max });
+        return;
+      }
 
-    // If the entire range is selected, clear instead of filtering
-    if (v0 <= min && v1 >= max) {
-      onFilter(null);
-      return;
-    }
+      const v0 = xToValue(x0);
+      const v1 = xToValue(x1);
 
-    onFilter({ kind: "range", min: v0, max: v1 });
-  }, [brushState, xToValue, onFilter, min, max, span]);
+      // If the entire range is selected, clear instead of filtering
+      if (v0 <= min && v1 >= max) {
+        onFilter(null);
+        return;
+      }
+
+      onFilter({ kind: "range", min: v0, max: v1 });
+    },
+    [setBrush, onFilter, span, min, max, xToValue],
+  );
+
+  const stopBrushCapture = useCallback(() => {
+    stopBrushCaptureRef.current?.();
+    stopBrushCaptureRef.current = null;
+  }, []);
+
+  const startBrushCapture = useCallback(
+    (pointerId: number) => {
+      stopBrushCapture();
+
+      const overlay = document.createElement("div");
+      overlay.className = "sift-brush-overlay";
+      document.body.appendChild(overlay);
+      document.documentElement.classList.add(BRUSHING_CLASS);
+      clearNativeSelection();
+      let active = true;
+      let releaseTimer: number | null = null;
+
+      const blockSelection = (event: Event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        clearNativeSelection();
+      };
+
+      const onSelectionChange = () => {
+        if (active) clearNativeSelection();
+      };
+
+      const shouldHandlePointer = (event: PointerEvent) => event.pointerId === pointerId;
+
+      const cleanup = () => {
+        if (!active) return;
+        active = false;
+        if (releaseTimer !== null) window.clearTimeout(releaseTimer);
+        document.removeEventListener("selectstart", blockSelection, true);
+        document.removeEventListener("dragstart", blockSelection, true);
+        document.removeEventListener("selectionchange", onSelectionChange, true);
+        document.removeEventListener("pointermove", onMove, true);
+        document.removeEventListener("pointerup", onUp, true);
+        document.removeEventListener("pointercancel", onCancel, true);
+        overlay.remove();
+        document.documentElement.classList.remove(BRUSHING_CLASS);
+        clearNativeSelection();
+      };
+
+      const releaseAfterSafariSelectionSettles = () => {
+        clearNativeSelection();
+        requestAnimationFrame(clearNativeSelection);
+        releaseTimer = window.setTimeout(cleanup, 150);
+      };
+
+      const onMove = (event: PointerEvent) => {
+        if (!shouldHandlePointer(event)) return;
+        event.preventDefault();
+        event.stopPropagation();
+        clearNativeSelection();
+
+        const state = brushStateRef.current;
+        if (!state) return;
+        setBrush({ ...state, currentX: clientXToBrushX(event.clientX) });
+      };
+
+      const onUp = (event: PointerEvent) => {
+        if (!shouldHandlePointer(event)) return;
+        event.preventDefault();
+        event.stopPropagation();
+
+        const state = brushStateRef.current;
+        clearNativeSelection();
+        if (state) finishBrush(state);
+        releaseAfterSafariSelectionSettles();
+      };
+
+      const onCancel = (event: PointerEvent) => {
+        if (!shouldHandlePointer(event)) return;
+        event.preventDefault();
+        event.stopPropagation();
+        setBrush(null);
+        releaseAfterSafariSelectionSettles();
+      };
+
+      document.addEventListener("selectstart", blockSelection, true);
+      document.addEventListener("dragstart", blockSelection, true);
+      document.addEventListener("selectionchange", onSelectionChange, true);
+      document.addEventListener("pointermove", onMove, true);
+      document.addEventListener("pointerup", onUp, true);
+      document.addEventListener("pointercancel", onCancel, true);
+
+      stopBrushCaptureRef.current = cleanup;
+    },
+    [clientXToBrushX, finishBrush, setBrush, stopBrushCapture],
+  );
+
+  const onPointerDown = useCallback(
+    (e: React.PointerEvent) => {
+      if (e.button !== 0) return;
+      e.preventDefault();
+      e.stopPropagation();
+      const x = clientXToBrushX(e.clientX);
+      setBrush({ startX: x, currentX: x });
+      startBrushCapture(e.pointerId);
+    },
+    [clientXToBrushX, setBrush, startBrushCapture],
+  );
 
   // Render brush rect for active selection
   let brushRect = null;
@@ -157,7 +273,14 @@ function BrushLayer({
     const x = Math.min(brushState.startX, brushState.currentX);
     const w = Math.abs(brushState.currentX - brushState.startX);
     brushRect = (
-      <rect x={x} y={0} width={w} height={CHART_HEIGHT} fill="var(--sift-accent)" opacity={0.2} />
+      <div
+        className="sift-brush-selection"
+        style={{
+          left: x,
+          width: w,
+          opacity: 0.2,
+        }}
+      />
     );
   } else if (activeFilter) {
     // When the filtered slice has collapsed to a single value (span === 0),
@@ -189,37 +312,28 @@ function BrushLayer({
       w = valueToX(activeFilter.max) - x;
     }
     brushRect = (
-      <rect
-        x={x}
-        y={0}
-        width={w}
-        height={CHART_HEIGHT}
-        fill="var(--sift-accent)"
-        opacity={0.15}
-        rx={2}
+      <div
+        className="sift-brush-selection sift-brush-selection-active"
+        style={{
+          left: x,
+          width: w,
+        }}
       />
     );
   }
 
   return (
-    <svg
-      ref={svgRef}
-      width={width}
-      height={CHART_HEIGHT}
-      viewBox={`0 0 ${width} ${CHART_HEIGHT}`}
+    <div
+      ref={hitTargetRef}
+      className="sift-brush-hit-target"
       style={{
-        position: "absolute",
-        top: 0,
-        left: 0,
-        cursor: "crosshair",
-        touchAction: "none",
+        width,
+        height: CHART_HEIGHT,
       }}
       onPointerDown={onPointerDown}
-      onPointerMove={onPointerMove}
-      onPointerUp={onPointerUp}
     >
       {brushRect}
-    </svg>
+    </div>
   );
 }
 

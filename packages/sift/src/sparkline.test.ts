@@ -1,5 +1,23 @@
-import { describe, expect, it } from "vite-plus/test";
-import { binOverlapsFilter } from "./sparkline";
+import { act } from "react";
+import { afterEach, describe, expect, it, vi } from "vite-plus/test";
+import { binOverlapsFilter, renderColumnSummary, unmountColumnSummary } from "./sparkline";
+
+function pointerEvent(type: string, clientX: number) {
+  const event = new Event(type, { bubbles: true, cancelable: true });
+  Object.defineProperties(event, {
+    button: { value: 0 },
+    clientX: { value: clientX },
+    clientY: { value: 0 },
+    pointerId: { value: 1 },
+    pointerType: { value: "mouse" },
+  });
+  return event;
+}
+
+afterEach(() => {
+  document.querySelector(".sift-brush-overlay")?.remove();
+  document.documentElement.classList.remove("sift-brushing");
+});
 
 describe("binOverlapsFilter", () => {
   it("treats overlapping ranges as active (normal case)", () => {
@@ -53,5 +71,80 @@ describe("binOverlapsFilter", () => {
   it("point-bin and point-filter at the same value overlap", () => {
     expect(binOverlapsFilter(5, 5, 5, 5)).toBe(true);
     expect(binOverlapsFilter(5, 5, 6, 6)).toBe(false);
+  });
+});
+
+describe("histogram brushing", () => {
+  it("captures document-level drag and blocks native text selection", async () => {
+    const onFilter = vi.fn();
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+
+    try {
+      await act(async () => {
+        renderColumnSummary(
+          container,
+          {
+            kind: "numeric",
+            min: 0,
+            max: 100,
+            bins: [
+              { x0: 0, x1: 50, count: 10 },
+              { x0: 50, x1: 100, count: 5 },
+            ],
+          },
+          100,
+          undefined,
+          undefined,
+          onFilter,
+        );
+      });
+
+      const brushTarget = container.querySelector<HTMLDivElement>(".sift-brush-hit-target");
+      expect(brushTarget).toBeTruthy();
+
+      Object.defineProperty(brushTarget, "getBoundingClientRect", {
+        configurable: true,
+        value: () => ({
+          x: 0,
+          y: 0,
+          top: 0,
+          left: 0,
+          right: 100,
+          bottom: 48,
+          width: 100,
+          height: 48,
+          toJSON: () => ({}),
+        }),
+      });
+
+      const down = pointerEvent("pointerdown", 20);
+      await act(async () => {
+        brushTarget!.dispatchEvent(down);
+      });
+
+      expect(down.defaultPrevented).toBe(true);
+      expect(document.documentElement.classList.contains("sift-brushing")).toBe(true);
+      expect(document.querySelector(".sift-brush-overlay")).toBeTruthy();
+
+      const selectStart = new Event("selectstart", { bubbles: true, cancelable: true });
+      document.dispatchEvent(selectStart);
+      expect(selectStart.defaultPrevented).toBe(true);
+
+      await act(async () => {
+        document.dispatchEvent(pointerEvent("pointermove", 80));
+        document.dispatchEvent(pointerEvent("pointerup", 80));
+      });
+
+      expect(document.querySelector(".sift-brush-overlay")).toBeTruthy();
+      await new Promise((resolve) => setTimeout(resolve, 180));
+
+      expect(document.querySelector(".sift-brush-overlay")).toBeNull();
+      expect(document.documentElement.classList.contains("sift-brushing")).toBe(false);
+      expect(onFilter).toHaveBeenCalledWith({ kind: "range", min: 20, max: 80 });
+    } finally {
+      unmountColumnSummary(container);
+      container.remove();
+    }
   });
 });
