@@ -1,5 +1,5 @@
 import { ChevronDown, ChevronRight } from "lucide-react";
-import { type ReactNode, useCallback, useEffect, useId, useMemo, useRef } from "react";
+import { type ReactNode, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import {
   CommBridgeManager,
   type IframeToParentMessage,
@@ -261,6 +261,8 @@ export function OutputArea({
   const frameRef = useRef<IsolatedFrameHandle>(null);
   const bridgeRef = useRef<CommBridgeManager | null>(null);
   const inDomOutputRef = useRef<HTMLDivElement>(null);
+  const outputWellRef = useRef<HTMLDivElement>(null);
+  const [isIframeInteractive, setIsIframeInteractive] = useState(false);
   const injectedLibsRef = useRef(new Set<string>());
   const renderGenRef = useRef(0);
   const searchQueryRef = useRef(searchQuery);
@@ -507,13 +509,39 @@ export function OutputArea({
     return cleanup;
   }, [searchQuery, shouldIsolate, outputs, onSearchMatchCount]);
 
+  // Hide the entire output area when only preloading (no visible outputs)
+  const isPreloadOnly = showPreloadedIframe && outputs.length === 0;
+
+  useEffect(() => {
+    if (!shouldIsolate || collapsed || isPreloadOnly) {
+      setIsIframeInteractive(false);
+    }
+  }, [collapsed, isPreloadOnly, shouldIsolate]);
+
+  useEffect(() => {
+    if (!isIframeInteractive) {
+      return;
+    }
+
+    const handlePointerDown = (event: PointerEvent) => {
+      if (!outputWellRef.current?.contains(event.target as Node | null)) {
+        setIsIframeInteractive(false);
+      }
+    };
+
+    window.addEventListener("pointerdown", handlePointerDown, true);
+    return () => window.removeEventListener("pointerdown", handlePointerDown, true);
+  }, [isIframeInteractive]);
+
+  const activateOutputWell = useCallback(() => {
+    onIframeMouseDown?.();
+    setIsIframeInteractive(true);
+  }, [onIframeMouseDown]);
+
   // Empty state: render nothing (unless preloading iframe)
   if (outputs.length === 0 && !showPreloadedIframe) {
     return null;
   }
-
-  // Hide the entire output area when only preloading (no visible outputs)
-  const isPreloadOnly = showPreloadedIframe && outputs.length === 0;
 
   // pl-6 pr-3 matches the code editor row padding so outputs align
   // flush with the editor content. The CellContainer output wrapper
@@ -551,13 +579,20 @@ export function OutputArea({
         >
           {/* Preloaded or active isolated frame */}
           {(shouldIsolate || showPreloadedIframe) && (
-            <div className={shouldIsolate ? undefined : "hidden"}>
+            <div
+              ref={outputWellRef}
+              data-slot="output-well"
+              data-interactive={isIframeInteractive ? "true" : "false"}
+              className={cn("relative", shouldIsolate ? undefined : "hidden")}
+            >
               <IsolatedFrame
                 ref={frameRef}
                 darkMode={darkMode}
                 colorTheme={colorTheme}
                 minHeight={24}
                 maxHeight={maxHeight ?? 2000}
+                className={cn(!isIframeInteractive && "pointer-events-none")}
+                allowWheelBoundaryScroll={false}
                 onReady={handleFrameReady}
                 onLinkClick={onLinkClick}
                 onMouseDown={onIframeMouseDown}
@@ -565,6 +600,15 @@ export function OutputArea({
                 onMessage={handleIframeMessage}
                 onError={handleIframeError}
               />
+              {shouldIsolate && !isIframeInteractive && (
+                <button
+                  type="button"
+                  data-slot="output-well-activator"
+                  aria-label="Activate interactive output"
+                  className="absolute inset-0 z-10 cursor-default bg-transparent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+                  onClick={activateOutputWell}
+                />
+              )}
             </div>
           )}
 

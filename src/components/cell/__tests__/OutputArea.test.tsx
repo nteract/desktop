@@ -1,4 +1,4 @@
-import { render, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { OutputArea, type JupyterOutput } from "../OutputArea";
 
@@ -32,17 +32,24 @@ vi.mock("@/components/isolated/iframe-libraries", () => ({
 vi.mock("@/components/isolated", async () => {
   const React = await import("react");
 
-  const MockIsolatedFrame = React.forwardRef<typeof mockFrameHandle, { onReady?: () => void }>(
-    function MockIsolatedFrame({ onReady }, ref) {
-      React.useImperativeHandle(ref, () => mockFrameHandle);
+  const MockIsolatedFrame = React.forwardRef<
+    typeof mockFrameHandle,
+    { allowWheelBoundaryScroll?: boolean; className?: string; onReady?: () => void }
+  >(function MockIsolatedFrame({ allowWheelBoundaryScroll, className, onReady }, ref) {
+    React.useImperativeHandle(ref, () => mockFrameHandle);
 
-      React.useEffect(() => {
-        onReady?.();
-      }, [onReady]);
+    React.useEffect(() => {
+      onReady?.();
+    }, [onReady]);
 
-      return <div data-testid="isolated-frame" />;
-    },
-  );
+    return (
+      <div
+        className={className}
+        data-allow-wheel-boundary-scroll={String(allowWheelBoundaryScroll)}
+        data-testid="isolated-frame"
+      />
+    );
+  });
 
   return {
     CommBridgeManager: class CommBridgeManager {},
@@ -60,7 +67,7 @@ function makeMarkdownOutput(content = "```python\nprint('hello')\n```"): Jupyter
   ];
 }
 
-describe("OutputArea iframe theme sync", () => {
+describe("OutputArea isolated iframe", () => {
   beforeEach(() => {
     mockDarkMode = false;
     mockColorTheme = undefined;
@@ -106,5 +113,26 @@ describe("OutputArea iframe theme sync", () => {
     await waitFor(() => {
       expect(mockFrameHandle.setTheme).toHaveBeenCalledWith(false, null);
     });
+  });
+
+  it("keeps isolated output iframes passive until the output well is activated", async () => {
+    const onIframeMouseDown = vi.fn();
+
+    render(
+      <OutputArea outputs={makeMarkdownOutput()} isolated onIframeMouseDown={onIframeMouseDown} />,
+    );
+
+    const frame = screen.getByTestId("isolated-frame");
+    expect(frame.getAttribute("class") ?? "").toContain("pointer-events-none");
+    expect(frame.getAttribute("data-allow-wheel-boundary-scroll")).toBe("false");
+
+    const activator = screen.getByRole("button", { name: "Activate interactive output" });
+    fireEvent.click(activator);
+
+    await waitFor(() => {
+      expect(screen.queryByRole("button", { name: "Activate interactive output" })).toBeNull();
+    });
+    expect(frame.getAttribute("class") ?? "").not.toContain("pointer-events-none");
+    expect(onIframeMouseDown).toHaveBeenCalled();
   });
 });
