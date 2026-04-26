@@ -4,6 +4,7 @@
       "command": "cargo",
       "args": ["run", "-p", "mcp-supervisor"],
       "env": {
+        "NTERACT_DEV_MODE": "owner",
         "RUNTIMED_DEV": "1",
         "SKIP_MATURIN": "1"
       }
