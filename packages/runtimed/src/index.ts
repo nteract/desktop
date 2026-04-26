@@ -43,6 +43,11 @@ export {
   type KernelActivity,
   type KernelErrorReasonKey,
   type KernelState,
+  type ProjectContext,
+  type ProjectFile,
+  type ProjectFileExtras,
+  type ProjectFileKind,
+  type ProjectFileParsed,
   type QueueEntry,
   type QueueState,
   type RuntimeLifecycle,
@@ -81,9 +86,13 @@ export {
 // Derived state
 export {
   type DaemonQueueState,
+  deriveEnvManager,
   deriveEnvSyncState,
   deriveKernelInfo,
   deriveQueueState,
+  deriveRuntimeKind,
+  type EnvManager,
+  type EnvManagerMetadataInputs,
   type EnvSyncDiff,
   type EnvSyncState,
   isKernelStatus,
@@ -93,6 +102,7 @@ export {
   lifecycleToLegacyStatus,
   RUNTIME_STATUS,
   runtimeStatusKey,
+  type RuntimeKind,
   type RuntimeStatusKey,
   statusKeyToLegacyStatus,
 } from "./derived-state";

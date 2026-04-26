@@ -155,7 +155,8 @@ pub(crate) async fn handle(
             crate::notebook_sync_server::refresh_project_context_on_save_as(
                 room,
                 canonical.as_path(),
-            );
+            )
+            .await;
         }
         // If path didn't change, this is save-in-place: nothing else.
     }

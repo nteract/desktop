@@ -59,6 +59,11 @@ pub struct ProjectFileParsed {
     /// (e.g. `"pandas>=2.0"`, `"numpy"`, `"pip:requests"`).
     #[serde(default)]
     pub dependencies: Vec<String>,
+    /// Dev-only dependencies. Currently populated from pyproject.toml's
+    /// `[tool.uv.dev-dependencies]`; empty for pixi / environment.yml
+    /// (they have their own sublist conventions in `extras`).
+    #[serde(default)]
+    pub dev_dependencies: Vec<String>,
     /// `requires-python` / Python constraint, when the file carries one.
     #[serde(default)]
     pub requires_python: Option<String>,
@@ -90,8 +95,11 @@ pub enum ProjectFileExtras {
         #[serde(default)]
         pypi_dependencies: Vec<String>,
     },
-    /// `environment.yml` carries a pip sub-list that is not a conda dep.
+    /// `environment.yml` carries conda channels and a pip sub-list
+    /// that lives outside the main `dependencies` array.
     EnvironmentYml {
+        #[serde(default)]
+        channels: Vec<String>,
         #[serde(default)]
         pip: Vec<String>,
     },
@@ -739,6 +747,7 @@ mod tests {
             },
             parsed: ProjectFileParsed {
                 dependencies: vec!["pandas>=2.0".into(), "numpy".into()],
+                dev_dependencies: vec![],
                 requires_python: Some(">=3.10".into()),
                 prerelease: None,
                 extras: ProjectFileExtras::None,

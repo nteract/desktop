@@ -139,31 +139,10 @@ export type EnvProgressEvent = EnvProgressPhase & {
   env_type: "conda" | "uv";
 };
 
-// pixi.toml detection info
-export interface PixiInfo {
-  path: string;
-  relative_path: string;
-  workspace_name: string | null;
-  has_dependencies: boolean;
-  dependency_count: number;
-  has_pypi_dependencies: boolean;
-  pypi_dependency_count: number;
-  python: string | null;
-  channels: string[];
-}
-
-// environment.yml detection info
-export interface EnvironmentYmlInfo {
-  path: string;
-  relative_path: string;
-  name: string | null;
-  has_dependencies: boolean;
-  dependency_count: number;
-  has_pip_dependencies: boolean;
-  pip_dependency_count: number;
-  python: string | null;
-  channels: string[];
-}
+// pixi.toml / environment.yml detection types now live in their
+// respective hooks (`hooks/usePixiDetection.ts`,
+// `hooks/useCondaDependencies.ts`). Both are derived from
+// `RuntimeState.project_context` rather than Tauri commands.
 
 // =============================================================================
 // Daemon Broadcast Types (Phase 8: Daemon-owned kernel execution)

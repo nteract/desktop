@@ -164,11 +164,17 @@ export interface ProjectFile {
 export type ProjectFileExtras =
   | { kind: "None" }
   | { kind: "Pixi"; channels: string[]; pypi_dependencies: string[] }
-  | { kind: "EnvironmentYml"; pip: string[] };
+  | { kind: "EnvironmentYml"; channels: string[]; pip: string[] };
 
 /** Snapshot of the daemon's parse of a detected project file. */
 export interface ProjectFileParsed {
   dependencies: string[];
+  /**
+   * Dev-only dependencies. Populated from pyproject.toml's
+   * `[tool.uv.dev-dependencies]`; always empty for pixi and
+   * environment.yml (they carry their own sublists in `extras`).
+   */
+  dev_dependencies: string[];
   requires_python: string | null;
   prerelease: string | null;
   extras: ProjectFileExtras;

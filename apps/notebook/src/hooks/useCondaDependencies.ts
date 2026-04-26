@@ -1,5 +1,5 @@
-import { invoke } from "@tauri-apps/api/core";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
+import type { ProjectContext, ProjectFileExtras } from "runtimed";
 import { logger } from "../lib/logger";
 import {
   addCondaDependency as addCondaDepWasm,
@@ -9,6 +9,7 @@ import {
   setCondaPython as setCondaPythonWasm,
   useCondaDeps,
 } from "../lib/notebook-metadata";
+import { useRuntimeState } from "../lib/runtime-state";
 
 export interface CondaDependencies {
   dependencies: string[];
@@ -16,7 +17,14 @@ export interface CondaDependencies {
   python: string | null;
 }
 
-/** Info about a detected environment.yml */
+/**
+ * Info about a detected environment.yml.
+ *
+ * Derived from `RuntimeState.project_context` (see #2208). Some fields
+ * that the old app-side walker produced (`name`) are not currently
+ * surfaced through `ProjectFileParsed`; they're emitted as `null` and
+ * the UI treats them as optional display.
+ */
 export interface EnvironmentYmlInfo {
   path: string;
   relative_path: string;
@@ -29,7 +37,7 @@ export interface EnvironmentYmlInfo {
   channels: string[];
 }
 
-/** Full environment.yml dependencies for display */
+/** Full environment.yml dependencies for display. */
 export interface EnvironmentYmlDeps {
   path: string;
   relative_path: string;
@@ -47,12 +55,53 @@ export type CondaSyncState =
   | { status: "synced" }
   | { status: "dirty" };
 
+function envYmlExtras(extras: ProjectFileExtras): { channels: string[]; pip: string[] } {
+  if (extras.kind === "EnvironmentYml") {
+    return { channels: extras.channels, pip: extras.pip };
+  }
+  return { channels: [], pip: [] };
+}
+
+/**
+ * Derive `EnvironmentYmlInfo` + `EnvironmentYmlDeps` from a
+ * `ProjectContext`. Pure; exported for tests.
+ *
+ * Returns both `null` when the context is not a Detected environment.yml.
+ */
+export function deriveEnvironmentYml(ctx: ProjectContext): {
+  environmentYmlInfo: EnvironmentYmlInfo | null;
+  environmentYmlDeps: EnvironmentYmlDeps | null;
+} {
+  if (ctx.state !== "Detected" || ctx.project_file.kind !== "EnvironmentYml") {
+    return { environmentYmlInfo: null, environmentYmlDeps: null };
+  }
+  const { channels, pip } = envYmlExtras(ctx.parsed.extras);
+  const shared = {
+    path: ctx.project_file.absolute_path,
+    relative_path: ctx.project_file.relative_to_notebook,
+    name: null,
+    python: ctx.parsed.requires_python,
+    channels,
+  };
+  return {
+    environmentYmlInfo: {
+      ...shared,
+      has_dependencies: ctx.parsed.dependencies.length > 0,
+      dependency_count: ctx.parsed.dependencies.length,
+      has_pip_dependencies: pip.length > 0,
+      pip_dependency_count: pip.length,
+    },
+    environmentYmlDeps: {
+      ...shared,
+      dependencies: ctx.parsed.dependencies,
+      pip_dependencies: pip,
+    },
+  };
+}
+
 export function useCondaDependencies() {
   const [loading, setLoading] = useState(false);
-
-  // environment.yml detection state
-  const [environmentYmlInfo, setEnvironmentYmlInfo] = useState<EnvironmentYmlInfo | null>(null);
-  const [environmentYmlDeps, setEnvironmentYmlDeps] = useState<EnvironmentYmlDeps | null>(null);
+  const runtimeState = useRuntimeState();
 
   // Reactive read from the WASM Automerge doc via useSyncExternalStore.
   // Re-renders automatically when the doc changes (bootstrap, sync, writes).
@@ -65,27 +114,11 @@ export function useCondaDependencies() {
       }
     : null;
 
-  // Load full environment.yml dependencies
-  const loadEnvironmentYmlDeps = useCallback(async () => {
-    try {
-      const deps = await invoke<EnvironmentYmlDeps | null>("get_environment_yml_dependencies");
-      setEnvironmentYmlDeps(deps);
-    } catch (e) {
-      logger.error("Failed to load environment.yml dependencies:", e);
-    }
-  }, []);
-
-  // Detect environment.yml on mount
-  useEffect(() => {
-    invoke<EnvironmentYmlInfo | null>("detect_environment_yml").then(setEnvironmentYmlInfo);
-  }, []);
-
-  // Load environment.yml deps when we detect one
-  useEffect(() => {
-    if (environmentYmlInfo?.has_dependencies) {
-      loadEnvironmentYmlDeps();
-    }
-  }, [environmentYmlInfo, loadEnvironmentYmlDeps]);
+  // Derive environment.yml info + deps from RuntimeState.project_context.
+  const { environmentYmlInfo, environmentYmlDeps } = useMemo(
+    () => deriveEnvironmentYml(runtimeState.project_context),
+    [runtimeState.project_context],
+  );
 
   // Trust re-signing lives on the daemon now (issue #2118). The daemon
   // keeps a previously Trusted notebook Trusted by auto re-signing when

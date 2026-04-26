@@ -55,7 +55,6 @@ dirs = "6"
 toml = "1"
 serde_yaml = "0.9"
 pathdiff = "0.2"
-pyproject-toml = "0.13"
 rfd = "0.17"  # Native dialogs for pre-window error display
 
 # WebDriver plugin for E2E testing

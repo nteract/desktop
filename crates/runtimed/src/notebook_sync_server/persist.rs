@@ -370,7 +370,7 @@ pub(crate) async fn finalize_untitled_promotion(room: &Arc<NotebookRoom>, canoni
     // Project context was `Pending` for untitled; now that we have a
     // real path, walk up from it. Same call shape catalog uses on room
     // creation.
-    super::project_context::refresh_project_context(room, Some(canonical.as_path()));
+    super::project_context::refresh_project_context_async(room, Some(canonical.as_path())).await;
 
     info!(
         "[notebook-sync] Promoted untitled room {} to file-backed path {:?}",

@@ -2,7 +2,7 @@ import { Check, FileText, Info, Package, Plus, RefreshCw, Terminal, X } from "lu
 import { type KeyboardEvent, useCallback, useState } from "react";
 import type { EnvSyncState } from "../hooks/useDependencies";
 import { addPixiDependency, removePixiDependency, usePixiDeps } from "../lib/notebook-metadata";
-import type { PixiInfo } from "../types";
+import type { PixiInfo } from "../hooks/usePixiDetection";
 import { PixiIcon } from "./icons";
 
 interface PixiDependencyHeaderProps {

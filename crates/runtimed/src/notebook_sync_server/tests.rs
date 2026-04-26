@@ -6327,3 +6327,92 @@ async fn test_file_watcher_replacement_drops_stale_top_level_metadata() {
         after.extras.keys().collect::<Vec<_>>()
     );
 }
+
+/// The daemon now arms a `notify` watcher on the detected project file
+/// during `refresh_project_context_async` and re-parses whenever it
+/// fires. External edits (git pull, user editing pyproject.toml in
+/// another editor) should flow into `RuntimeStateDoc.project_context`
+/// without any client round-trip.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial]
+async fn project_file_watcher_refreshes_context_on_external_edit() {
+    use runtime_doc::ProjectContext;
+    use tokio::time::{sleep, Duration};
+
+    let tmp = tempfile::TempDir::new().unwrap();
+    let notebook_path = tmp.path().join("demo.ipynb");
+    let pyproject_path = tmp.path().join("pyproject.toml");
+    std::fs::write(&notebook_path, "{}").unwrap();
+    std::fs::write(
+        &pyproject_path,
+        "[project]\nname = \"demo\"\ndependencies = [\"pandas\"]\n",
+    )
+    .unwrap();
+
+    let (room, _) = test_room_with_path(&tmp, "demo.ipynb");
+    let room = std::sync::Arc::new(room);
+
+    // Initial refresh arms the watcher and writes the first context.
+    super::project_context::refresh_project_context_async(&room, Some(notebook_path.as_path()))
+        .await;
+
+    let first = room.state.with_doc(|sd| Ok(sd.project_context())).unwrap();
+    let ProjectContext::Detected { parsed, .. } = first else {
+        panic!("expected Detected for initial pyproject");
+    };
+    assert_eq!(parsed.dependencies, vec!["pandas".to_string()]);
+
+    // Sanity: watcher state is armed.
+    assert!(room
+        .persistence
+        .project_file_watcher_shutdown_tx
+        .lock()
+        .await
+        .is_some());
+
+    // Give FSEvents a moment to wire up the watch. Without this the
+    // write below can race the kernel-side subscription registration
+    // (observed empirically on macOS).
+    sleep(Duration::from_millis(500)).await;
+
+    // External edit: add a dep. `notify` picks up the write, debounces
+    // for 500ms, then fires. We poll the CRDT up to 15s for the new
+    // state to appear so the test stays robust across CI jitter.
+    std::fs::write(
+        &pyproject_path,
+        "[project]\nname = \"demo\"\ndependencies = [\"pandas\", \"numpy\"]\n",
+    )
+    .unwrap();
+
+    let mut observed: Option<ProjectContext> = None;
+    for _ in 0..150 {
+        sleep(Duration::from_millis(100)).await;
+        let ctx = room.state.with_doc(|sd| Ok(sd.project_context())).unwrap();
+        if let ProjectContext::Detected { ref parsed, .. } = ctx {
+            if parsed.dependencies.iter().any(|d| d == "numpy") {
+                observed = Some(ctx);
+                break;
+            }
+        }
+    }
+
+    let observed = observed.expect("watcher didn't refresh within 5s");
+    let ProjectContext::Detected { parsed, .. } = observed else {
+        panic!("expected Detected after external edit");
+    };
+    assert_eq!(
+        parsed.dependencies,
+        vec!["pandas".to_string(), "numpy".to_string()]
+    );
+
+    // Tear down the watcher so the temp dir can drop cleanly.
+    let shutdown = room
+        .persistence
+        .project_file_watcher_shutdown_tx
+        .lock()
+        .await
+        .take();
+    if let Some(tx) = shutdown {
+        let _ = tx.send(());
+    }
+}

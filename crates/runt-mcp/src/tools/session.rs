@@ -243,6 +243,21 @@ fn read_runtime_info(handle: &notebook_sync::handle::DocHandle) -> serde_json::V
     serde_json::Value::Object(info)
 }
 
+/// Snapshot `RuntimeState.project_context` for MCP responses.
+///
+/// Returns the tagged-union shape verbatim so agents (and developers
+/// iterating on the sync path) can see exactly what the daemon wrote.
+/// `Pending` surfaces as `{"state": "Pending"}` for symmetry; we don't
+/// omit the field because "no project context yet" is a real observation.
+fn read_project_context(handle: &notebook_sync::handle::DocHandle) -> serde_json::Value {
+    match handle.get_runtime_state() {
+        Ok(state) => {
+            serde_json::to_value(&state.project_context).unwrap_or(serde_json::Value::Null)
+        }
+        Err(_) => serde_json::Value::Null,
+    }
+}
+
 /// Get dependencies from notebook metadata.
 fn get_dependencies(handle: &notebook_sync::handle::DocHandle) -> Vec<String> {
     handle
@@ -406,12 +421,14 @@ pub async fn open_notebook(
                 let runtime_info = collect_runtime_info(handle).await;
                 let deps = get_dependencies(handle);
                 let cells_summary = format_cell_summaries(handle);
+                let project_context = read_project_context(handle);
 
                 let mut response = serde_json::json!({
                     "notebook_id": notebook_id,
                     "path": abs_path.to_string_lossy(),
                     "runtime": runtime_info,
                     "dependencies": deps,
+                    "project_context": project_context,
                     "cells": cells_summary,
                 });
 
@@ -476,12 +493,14 @@ pub async fn open_notebook(
                 let runtime_info = collect_runtime_info(handle).await;
                 let deps = get_dependencies(handle);
                 let cells_summary = format_cell_summaries(handle);
+                let project_context = read_project_context(handle);
 
                 let mut response = serde_json::json!({
                     "notebook_id": handle.notebook_id(),
                     "connected": true,
                     "runtime": runtime_info,
                     "dependencies": deps,
+                    "project_context": project_context,
                     "cells": cells_summary,
                 });
 
@@ -590,6 +609,13 @@ pub async fn create_notebook(
                 })
             };
 
+            let project_context = {
+                let guard = server.session.read().await;
+                guard
+                    .as_ref()
+                    .map_or(serde_json::Value::Null, |s| read_project_context(&s.handle))
+            };
+
             let mut info = serde_json::json!({
                 "notebook_id": notebook_id,
                 "runtime": runtime_info,
@@ -597,6 +623,7 @@ pub async fn create_notebook(
                 "added_dependencies": deps,
                 "package_manager": pkg_manager.as_str(),
                 "ephemeral": ephemeral,
+                "project_context": project_context,
             });
 
             if let Some(ref prev_id) = prev {
