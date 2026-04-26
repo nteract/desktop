@@ -4455,7 +4455,6 @@ dependencies = [
  "notebook-doc",
  "notebook-protocol",
  "notebook-sync",
- "pathdiff",
  "rfd 0.17.2",
  "runt-trust",
  "runt-workspace",

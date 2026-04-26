@@ -2,7 +2,6 @@
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 
 pub mod cli_install;
-pub mod deno_env;
 pub mod mcpb_install;
 pub mod menu;
 
@@ -379,67 +378,6 @@ fn working_dir_for_window(
     registry: &WindowNotebookRegistry,
 ) -> Result<Option<PathBuf>, String> {
     Ok(registry.get(window.label())?.working_dir.clone())
-}
-
-/// Resolve a filesystem anchor for project-file searches (pyproject.toml,
-/// environment.yml, pixi.toml, deno.json).
-///
-/// - If the notebook is file-backed, returns its path as-is. Walkers take
-///   `.parent()` when they see a file.
-/// - Otherwise, if the window's context carries a `working_dir`, returns
-///   `{working_dir}/{UNTITLED_ANCHOR}` — a synthetic path that makes the
-///   downstream helpers behave the same way they do for file-backed
-///   notebooks. See `UNTITLED_ANCHOR` for why.
-/// - Otherwise, returns `None`.
-///
-/// Root-level working_dirs (`/`, `C:\`) don't need special handling: each
-/// `find_*` walker terminates at the filesystem root via its own
-/// `match current.parent()` arm, same as the daemon-side
-/// `find_nearest_project_file`.
-///
-/// Untitled notebooks (including ephemeral clones) inherit a `working_dir`
-/// at create/fork time, so this fallback keeps the UI's project-file
-/// detection working between Clone and the first Save-As.
-fn project_search_path_for_window(
-    window: &tauri::Window,
-    registry: &WindowNotebookRegistry,
-) -> Result<Option<PathBuf>, String> {
-    let path_lock = path_for_window(window, registry)?;
-    let notebook_path = path_lock.lock().map_err(|e| e.to_string())?.clone();
-    let working_dir = working_dir_for_window(window, registry)?;
-    Ok(resolve_project_search_path(notebook_path, working_dir))
-}
-
-/// Synthetic filename appended to an untitled notebook's `working_dir`.
-///
-/// The downstream `find_*` walkers and `create_*_info` helpers both take
-/// a `notebook_path` parameter. Walkers look at `.parent()` when they see
-/// a file, so passing the directory directly works. But the `create_*_info`
-/// helpers compute `relative_path` via
-/// `pathdiff::diff_paths(&config.path, notebook_path.parent().unwrap_or(notebook_path))`
-/// — if we passed the directory directly, `.parent()` would climb one
-/// level too high and relative paths would include an extra segment.
-///
-/// Joining this sentinel onto the directory makes `.parent()` resolve
-/// back to the directory, so both walker and info-helper behave as if
-/// the notebook were a real file at this synthetic path. The string is
-/// never written to disk or shown to users.
-///
-/// Cleaner long-term: change `create_*_info` to take an anchor directory
-/// directly. Left as a follow-up to keep this patch small.
-const UNTITLED_ANCHOR: &str = ".__untitled__.ipynb";
-
-/// Pure helper used by `project_search_path_for_window`. Factored out so
-/// the fallback logic can be unit-tested without constructing a
-/// `tauri::Window`.
-fn resolve_project_search_path(
-    notebook_path: Option<PathBuf>,
-    working_dir: Option<PathBuf>,
-) -> Option<PathBuf> {
-    if let Some(p) = notebook_path {
-        return Some(p);
-    }
-    working_dir.map(|d| d.join(UNTITLED_ANCHOR))
 }
 
 fn notebook_id_for_window(
@@ -881,47 +819,8 @@ async fn setup_sync_receivers(
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        extract_commit_hash, next_available_sample_path, reopen_action,
-        resolve_project_search_path, ReopenAction, UNTITLED_ANCHOR,
-    };
-    use std::path::PathBuf;
+    use super::{extract_commit_hash, next_available_sample_path, reopen_action, ReopenAction};
     use tempfile::TempDir;
-
-    #[test]
-    fn resolve_project_search_path_prefers_notebook_path() {
-        let nb = PathBuf::from("/tmp/foo/bar.ipynb");
-        let wd = PathBuf::from("/tmp/other");
-        assert_eq!(
-            resolve_project_search_path(Some(nb.clone()), Some(wd)),
-            Some(nb)
-        );
-    }
-
-    #[test]
-    fn resolve_project_search_path_falls_back_to_working_dir() {
-        let wd = PathBuf::from("/tmp/proj");
-        let result = resolve_project_search_path(None, Some(wd.clone()));
-        assert_eq!(result, Some(wd.join(UNTITLED_ANCHOR)));
-        // `.parent()` of the synthetic path lines up with working_dir so
-        // walkers start in the right place and relative_path stays sane.
-        assert_eq!(result.unwrap().parent(), Some(wd.as_path()));
-    }
-
-    #[test]
-    fn resolve_project_search_path_returns_none_when_both_missing() {
-        assert_eq!(resolve_project_search_path(None, None), None);
-    }
-
-    #[test]
-    fn resolve_project_search_path_accepts_root_working_dir() {
-        // Root-level working_dirs are fine: the `find_*` walkers
-        // terminate at the filesystem root on their own, so we don't
-        // need a special guard here.
-        let root = PathBuf::from("/");
-        let result = resolve_project_search_path(None, Some(root.clone()));
-        assert_eq!(result, Some(root.join(UNTITLED_ANCHOR)));
-    }
 
     #[test]
     fn extract_commit_hash_returns_sha_without_dirty_suffix() {
@@ -2967,40 +2866,6 @@ async fn check_typosquats(packages: Vec<String>) -> Vec<typosquat::TyposquatWarn
     typosquat::check_packages(&packages)
 }
 
-// ============================================================================
-// pixi.toml / environment.yml Discovery
-// ============================================================================
-//
-// Deleted in favour of daemon-side walk-up (#2208). Same pattern as the
-// pyproject cutover: the daemon writes `RuntimeStateDoc.project_context`
-// on notebook open and save-as; the `usePixiDetection` /
-// `useCondaDependencies` hooks read it via `useRuntimeState()` and map
-// to their serializable shapes in TypeScript. Imports (pixi → conda
-// metadata) happen frontend-side via the existing conda WASM helpers.
-
-// ========== Deno kernel support ==========
-
-/// Detect deno.json/deno.jsonc near the notebook and return info about it
-#[tauri::command]
-async fn detect_deno_config(
-    window: tauri::Window,
-    registry: tauri::State<'_, WindowNotebookRegistry>,
-) -> Result<Option<deno_env::DenoConfigInfo>, String> {
-    let Some(notebook_path) = project_search_path_for_window(&window, registry.inner())? else {
-        return Ok(None);
-    };
-
-    let Some(config_path) = deno_env::find_deno_config(&notebook_path) else {
-        return Ok(None);
-    };
-
-    let config = deno_env::parse_deno_config(&config_path).map_err(|e| e.to_string())?;
-    Ok(Some(deno_env::create_deno_config_info(
-        &config,
-        &notebook_path,
-    )))
-}
-
 /// Get synced settings from the Automerge settings document via runtimed.
 /// Falls back to reading settings.json when the daemon is unavailable,
 /// so the frontend always gets real settings instead of hardcoded defaults.
@@ -3943,8 +3808,6 @@ pub fn run(
             verify_notebook_trust,
             approve_notebook_trust,
             check_typosquats,
-            // Deno kernel support
-            detect_deno_config,
             // Synced settings (via runtimed Automerge)
             get_synced_settings,
             set_synced_setting,
