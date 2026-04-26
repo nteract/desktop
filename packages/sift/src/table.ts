@@ -1428,7 +1428,10 @@ export function createTable(
   }
 
   viewport.addEventListener("scroll", onScroll, { passive: true });
-  viewport.addEventListener("wheel", onWheel, { passive: false });
+  // Trap wheel at the table root in capture phase. In embedded notebook iframes,
+  // momentum can hand off to the parent page if the event is only handled by the
+  // inner scroller after WebKit has already decided it is at a boundary.
+  container.addEventListener("wheel", onWheel, { passive: false, capture: true });
 
   const onWindowResize = () => {
     fitLastColumnToViewport();
@@ -1838,7 +1841,7 @@ export function createTable(
     // Remove event listeners and observers
     headerResizeObserver?.disconnect();
     viewport.removeEventListener("scroll", onScroll);
-    viewport.removeEventListener("wheel", onWheel);
+    container.removeEventListener("wheel", onWheel, { capture: true });
 
     container.removeEventListener("keydown", onKeyDown);
     window.removeEventListener("resize", onWindowResize);

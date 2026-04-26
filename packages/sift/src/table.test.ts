@@ -662,6 +662,22 @@ describe("createTable", () => {
       expect(viewport.scrollTop).toBe(150);
     });
 
+    it("traps wheel events from the table root before iframe handoff", async () => {
+      await flushRAF();
+      const viewport = container.querySelector<HTMLElement>(".sift-viewport")!;
+      setScrollMetrics(viewport, {
+        clientHeight: 100,
+        scrollHeight: 1000,
+      });
+      viewport.scrollTop = 100;
+
+      const event = wheelEvent(0, -50);
+      container.dispatchEvent(event);
+
+      expect(event.defaultPrevented).toBe(true);
+      expect(viewport.scrollTop).toBe(50);
+    });
+
     it("swallows vertical wheel momentum at table boundaries", async () => {
       await flushRAF();
       const viewport = container.querySelector<HTMLElement>(".sift-viewport")!;
