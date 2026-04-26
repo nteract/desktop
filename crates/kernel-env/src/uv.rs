@@ -1142,6 +1142,23 @@ fn find_site_packages(base_path: &std::path::Path) -> Option<String> {
 mod tests {
     use super::*;
 
+    /// Lock in the channel-namespaced cache path shape. Tests build with
+    /// the default channel (nightly for source builds), so the helper
+    /// should resolve under `runt-nightly/envs`. The terminal segment
+    /// pinning is the part that matters most — the rest is
+    /// `runt_workspace::daemon_base_dir`'s responsibility.
+    #[test]
+    fn default_cache_dir_uv_is_under_envs() {
+        let path = default_cache_dir_uv();
+        let s = path.to_string_lossy();
+        assert!(s.ends_with("envs"), "got {s:?}");
+        // Should be nested under the channel namespace, not just "runt".
+        assert!(
+            s.contains("runt-nightly") || s.contains("runt"),
+            "got {s:?}"
+        );
+    }
+
     #[test]
     fn test_compute_env_hash_stable() {
         let deps = UvDependencies {

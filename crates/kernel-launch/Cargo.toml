@@ -16,6 +16,9 @@ log = "0.4"
 dirs = "6"
 sha2 = "0.11"
 hex = "0.4"
+
+# Channel-aware tools cache (nightly vs stable, dev worktree isolation).
+runt-workspace = { path = "../runt-workspace" }
 zip = { version = "8", default-features = false, features = ["deflate"] }
 flate2 = "1"
 tar = "0.4"
