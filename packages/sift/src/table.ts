@@ -147,7 +147,7 @@ const LINE_HEIGHT = 20;
 const CELL_PAD_H = 24; // 12px each side
 const CELL_PAD_V = 16; // 8px top + 8px bottom
 const MIN_COL_WIDTH = 60;
-const OVERSCAN = 80; // buffer rows above and below viewport
+const OVERSCAN = 40; // buffer rows above and below viewport
 
 // --- Table Engine ---
 
