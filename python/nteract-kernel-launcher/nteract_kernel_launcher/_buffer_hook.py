@@ -120,7 +120,7 @@ def buffer_hook(msg: dict) -> dict | None:
 
 
 # Tag the callable so re-installs can detect us without stacking duplicates.
-buffer_hook._nteract_installed = True  # type: ignore[attr-defined]
+buffer_hook._nteract_installed = True
 
 
 def install(ip: Any) -> None:

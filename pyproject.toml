@@ -109,6 +109,15 @@ include = ["python/gremlin/**"]
 [tool.ty.overrides.rules]
 unresolved-import = "ignore"
 
+# nteract_kernel_launcher uses function-attribute idempotency tags
+# (`hook._nteract_installed = True`). ruff's B010 refactors away the
+# alternative `setattr(...)` form, so we can't mask this on the call
+# site. Scope the override narrowly to the launcher package.
+[[tool.ty.overrides]]
+include = ["python/nteract-kernel-launcher/**"]
+[tool.ty.overrides.rules]
+unresolved-attribute = "ignore"
+
 
 
 [tool.ruff.format]
