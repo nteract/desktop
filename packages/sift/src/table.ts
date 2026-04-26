@@ -248,8 +248,13 @@ export function createTable(
       const cell = cache[c];
       const cellW = Math.max(1, colWidths[c] - CELL_PAD_H);
       if (cell.lastWidth !== cellW) {
-        const { height } = layout(cell.prepared, cellW, LINE_HEIGHT);
-        cell.lastHeight = height;
+        const colType = columns[c].columnType;
+        if (colType === "numeric" || colType === "timestamp" || colType === "boolean") {
+          cell.lastHeight = LINE_HEIGHT;
+        } else {
+          const { height } = layout(cell.prepared, cellW, LINE_HEIGHT);
+          cell.lastHeight = height;
+        }
         cell.lastWidth = cellW;
       }
       if (cell.lastHeight > maxH) maxH = cell.lastHeight;
@@ -905,6 +910,7 @@ export function createTable(
   // user resizes the last column explicitly. Re-runs on viewport resize and
   // after non-last column resizes, so maximize/restore just works.
   let lastColumnAutoFill = true;
+  const lastColumnAutoFillMinWidth = colWidths[columns.length - 1] ?? MIN_COL_WIDTH;
 
   function fitLastColumnToViewport() {
     if (!lastColumnAutoFill) return;
@@ -914,7 +920,7 @@ export function createTable(
     if (viewportW <= 0) return;
     let fixedW = 0;
     for (let c = 0; c < last; c++) fixedW += colWidths[c];
-    const target = Math.max(MIN_COL_WIDTH, viewportW - fixedW);
+    const target = Math.max(lastColumnAutoFillMinWidth, viewportW - fixedW);
     if (target === colWidths[last]) return;
     colWidths[last] = target;
     headerCells[last].style.width = target + "px";
@@ -1149,6 +1155,9 @@ export function createTable(
         break;
       }
       default:
+        if (col.columnType === "numeric") {
+          cellEl.classList.add("sift-cell-numeric");
+        }
         if (
           Array.isArray(raw) &&
           raw.length > 0 &&
