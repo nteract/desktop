@@ -22,6 +22,19 @@ daemon:
       - 'crates/runt-trust/**'
       - 'crates/runt-workspace/**'
 
+trust:
+  - changed-files:
+    - any-glob-to-any-file:
+      - 'crates/runt-trust/**'
+      - 'crates/notebook/src/trust.rs'
+      - 'crates/runtimed/src/requests/guarded.rs'
+      - 'apps/notebook/src/hooks/useTrust.ts'
+      - 'apps/notebook/src/components/TrustDialog.tsx'
+      - 'apps/notebook/src/components/UntrustedBanner.tsx'
+      - 'apps/notebook/src/components/__tests__/trust-dialog.test.tsx'
+      - 'e2e/specs/trust-*.spec.js'
+      - 'crates/notebook/fixtures/trust-tests/**'
+
 editor:
   - changed-files:
     - any-glob-to-any-file:
