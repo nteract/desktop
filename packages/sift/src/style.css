@@ -631,7 +631,8 @@ h1 {
   min-height: 0; /* allow flex shrinking */
   overflow-y: auto;
   overflow-x: auto;
-  overscroll-behavior: none; /* kill elastic bounce entirely — no rubberbanding on iOS */
+  overscroll-behavior-x: contain;
+  overscroll-behavior-y: none; /* iframe wheel-boundary RPC handles notebook scroll handoff */
   position: relative;
 }
 

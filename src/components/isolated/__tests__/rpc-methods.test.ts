@@ -20,6 +20,7 @@ import {
   NTERACT_EVAL,
   NTERACT_EVAL_RESULT,
   NTERACT_LINK_CLICK,
+  NTERACT_MOUSE_DOWN,
   NTERACT_PING,
   NTERACT_PONG,
   NTERACT_READY,
@@ -36,6 +37,7 @@ import {
   NTERACT_WIDGET_READY,
   NTERACT_WIDGET_STATE,
   NTERACT_WIDGET_UPDATE,
+  NTERACT_WHEEL_BOUNDARY,
 } from "../rpc-methods";
 
 describe("nteract JSON-RPC method constants", () => {
@@ -58,6 +60,8 @@ describe("nteract JSON-RPC method constants", () => {
     NTERACT_RENDER_COMPLETE,
     NTERACT_RESIZE,
     NTERACT_LINK_CLICK,
+    NTERACT_MOUSE_DOWN,
+    NTERACT_WHEEL_BOUNDARY,
     NTERACT_DOUBLE_CLICK,
     NTERACT_ERROR,
     NTERACT_WIDGET_READY,
@@ -98,6 +102,8 @@ describe("nteract JSON-RPC method constants", () => {
     expect(NTERACT_WIDGET_COMM_CLOSE).toBe("nteract/widgetCommClose");
     expect(NTERACT_RENDER_COMPLETE).toBe("nteract/renderComplete");
     expect(NTERACT_DOUBLE_CLICK).toBe("nteract/doubleClick");
+    expect(NTERACT_MOUSE_DOWN).toBe("nteract/mouseDown");
+    expect(NTERACT_WHEEL_BOUNDARY).toBe("nteract/wheelBoundary");
     expect(NTERACT_WIDGET_UPDATE).toBe("nteract/widgetUpdate");
     expect(NTERACT_WIDGET_STATE).toBe("nteract/widgetState");
     expect(NTERACT_SEARCH_NAVIGATE).toBe("nteract/searchNavigate");

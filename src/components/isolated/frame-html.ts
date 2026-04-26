@@ -603,6 +603,51 @@ export function generateFrameHtml(options: FrameHtmlOptions = {}): string {
         sendRpc('nteract/mouseDown', {});
       });
 
+      // --- Wheel Boundary Forwarding ---
+      // Native scroll chaining stops at the iframe boundary. When a scrollable
+      // renderer is already at its vertical edge, ask the host to apply the
+      // wheel delta to the notebook scroll container.
+      function wheelTargetElement(target) {
+        if (!target) return null;
+        if (target.nodeType === Node.ELEMENT_NODE) return target;
+        return target.parentElement || null;
+      }
+
+      function hasScrollableOverflowY(element) {
+        var overflowY = window.getComputedStyle(element).overflowY;
+        return overflowY === 'auto' || overflowY === 'scroll' || overflowY === 'overlay';
+      }
+
+      function canScrollVertically(element) {
+        return hasScrollableOverflowY(element) && element.scrollHeight > element.clientHeight + 1;
+      }
+
+      function nearestVerticalScroller(target) {
+        var element = wheelTargetElement(target);
+        while (element && element !== document.documentElement) {
+          if (canScrollVertically(element)) return element;
+          element = element.parentElement;
+        }
+        return null;
+      }
+
+      function isWheelAtScrollBoundary(scroller, deltaY) {
+        if (!scroller) return true;
+        if (deltaY < 0) return scroller.scrollTop <= 0;
+        if (deltaY > 0) {
+          return scroller.scrollTop + scroller.clientHeight >= scroller.scrollHeight - 1;
+        }
+        return false;
+      }
+
+      document.addEventListener('wheel', function(e) {
+        if (!e.deltaY) return;
+        var scroller = nearestVerticalScroller(e.target);
+        if (isWheelAtScrollBoundary(scroller, e.deltaY)) {
+          sendRpc('nteract/wheelBoundary', { deltaY: e.deltaY });
+        }
+      }, { capture: true, passive: true });
+
       // --- Double Click Forwarding ---
       document.addEventListener('dblclick', function(e) {
         // Don't forward double-clicks on links (user is selecting text)

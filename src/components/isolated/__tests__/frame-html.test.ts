@@ -55,6 +55,12 @@ describe("generateFrameHtml", () => {
     expect(html).toContain("postMessage");
   });
 
+  it("forwards wheel deltas when iframe scroll reaches a boundary", () => {
+    expect(html).toContain("document.addEventListener('wheel'");
+    expect(html).toContain("isWheelAtScrollBoundary");
+    expect(html).toContain("sendRpc('nteract/wheelBoundary'");
+  });
+
   describe("dark mode", () => {
     it("bakes theme-correct background to prevent flash", () => {
       // --bg-primary is always transparent; the notebook background shows through
