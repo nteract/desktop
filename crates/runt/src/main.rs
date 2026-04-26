@@ -4685,7 +4685,7 @@ struct EnvCacheDir {
 /// channel roots instead of scoping into the current worktree. The CLI
 /// is meant to show the whole cache, not just one worktree's slice.
 fn get_env_cache_dirs() -> Vec<EnvCacheDir> {
-    use runt_workspace::{cache_namespace_for, BuildChannel};
+    use runt_workspace::{cache_namespace_for, daemon_base_dir, is_dev_mode, BuildChannel};
 
     // Leaf dirs a daemon writes directly under its base. Kept as
     // (subdir, human-label) pairs so the listing stays consistent even
@@ -4717,6 +4717,22 @@ fn get_env_cache_dirs() -> Vec<EnvCacheDir> {
             path: base.join("worktrees"),
         });
     }
+
+    // Dev mode: the running daemon writes envs under
+    // `$CACHE/<channel>/worktrees/{hash}/…`. Those live behind the
+    // "Worktrees" container entries above, which `env clean` filters out
+    // by label. Surface them as first-class entries so the dev CLI
+    // actually cleans the cache its own daemon is using.
+    if is_dev_mode() {
+        let worktree_base = daemon_base_dir();
+        for (sub, label) in ENV_SUBDIRS {
+            dirs.push(EnvCacheDir {
+                label: format!("{label} (dev worktree)"),
+                path: worktree_base.join(sub),
+            });
+        }
+    }
+
     dirs
 }
 
