@@ -18,6 +18,7 @@
 //! down when the process exits; no explicit cancellation is implemented yet.
 
 use std::convert::Infallible;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use http_body_util::Full;
@@ -150,7 +151,7 @@ async fn handle_request(
     } else if let Some(hash) = path.strip_prefix("/blob/") {
         serve_blob(&store, hash).await
     } else if let Some(name) = path.strip_prefix("/plugins/") {
-        serve_embedded_plugin(name)
+        serve_plugin(name).await
     } else {
         text_response(StatusCode::NOT_FOUND, "Not Found")
     };
@@ -187,15 +188,89 @@ async fn serve_blob(store: &BlobStore, hash: &str) -> Response<Full<Bytes>> {
     }
 }
 
-/// Serve an embedded renderer plugin asset (JS or CSS).
+/// Serve a renderer plugin asset.
+///
+/// Dev worktree daemons prefer the workspace's on-disk plugin assets so
+/// `cargo xtask renderer-plugins` can update MCP Apps without requiring a
+/// daemon rebuild. Release builds, and dev builds missing an on-disk asset,
+/// continue to use the embedded assets.
+async fn serve_plugin(name: &str) -> Response<Full<Bytes>> {
+    if !is_valid_plugin_name(name) {
+        return text_response(StatusCode::NOT_FOUND, "Not Found");
+    }
+
+    let dev_assets_dir = dev_plugin_assets_dir();
+    serve_plugin_with_dev_assets(name, dev_assets_dir.as_deref()).await
+}
+
+async fn serve_plugin_with_dev_assets(
+    name: &str,
+    dev_assets_dir: Option<&Path>,
+) -> Response<Full<Bytes>> {
+    if !is_valid_plugin_name(name) {
+        return text_response(StatusCode::NOT_FOUND, "Not Found");
+    }
+
+    if let Some(dir) = dev_assets_dir {
+        if let Some(response) = serve_dev_plugin_file(name, dir).await {
+            return response;
+        }
+    }
+
+    serve_embedded_plugin(name)
+}
+
+fn is_valid_plugin_name(name: &str) -> bool {
+    !name.is_empty() && !name.contains('/') && !name.contains("..")
+}
+
+fn dev_plugin_assets_dir() -> Option<PathBuf> {
+    if !runt_workspace::is_dev_mode() {
+        return None;
+    }
+
+    let workspace = runt_workspace::get_workspace_path()?;
+    Some(workspace.join("crates/runt-mcp/assets/plugins"))
+}
+
+async fn serve_dev_plugin_file(name: &str, dir: &Path) -> Option<Response<Full<Bytes>>> {
+    let content_type = embedded_plugins::content_type_for(name)?;
+    let path = dir.join(name);
+
+    match tokio::fs::read(&path).await {
+        Ok(bytes) => Some(
+            Response::builder()
+                .status(StatusCode::OK)
+                .header("Content-Type", content_type)
+                .header("Content-Length", bytes.len().to_string())
+                .header("Cache-Control", "no-store")
+                .header("Access-Control-Allow-Origin", "*")
+                .header("X-Content-Type-Options", "nosniff")
+                .body(Full::new(Bytes::from(bytes)))
+                .unwrap_or_else(|_| {
+                    text_response(StatusCode::INTERNAL_SERVER_ERROR, "Internal Server Error")
+                }),
+        ),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => {
+            warn!(
+                "[blob-server] failed to read dev plugin asset {}: {}",
+                path.display(),
+                e
+            );
+            Some(text_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Internal Server Error",
+            ))
+        }
+    }
+}
+
+/// Serve an embedded renderer plugin asset (JS, CSS, or WASM).
 ///
 /// Plugins are embedded in the binary at compile time via `include_bytes!`
 /// and served directly from memory — zero-copy via `Bytes::from_static`.
 fn serve_embedded_plugin(name: &str) -> Response<Full<Bytes>> {
-    if name.contains('/') || name.contains("..") {
-        return text_response(StatusCode::NOT_FOUND, "Not Found");
-    }
-
     match embedded_plugins::get(name) {
         Some((bytes, content_type)) => Response::builder()
             .status(StatusCode::OK)
@@ -290,6 +365,26 @@ mod tests {
             .map(|(_, v)| v.clone())
     }
 
+    fn response_header(response: &Response<Full<Bytes>>, name: &str) -> Option<String> {
+        response
+            .headers()
+            .get(name)
+            .and_then(|value| value.to_str().ok())
+            .map(ToOwned::to_owned)
+    }
+
+    async fn response_body(response: Response<Full<Bytes>>) -> Vec<u8> {
+        use http_body_util::BodyExt;
+
+        response
+            .into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes()
+            .to_vec()
+    }
+
     #[tokio::test]
     async fn test_health_endpoint() {
         let (_dir, _store, port) = setup().await;
@@ -380,25 +475,57 @@ mod tests {
     #[tokio::test]
     async fn test_embedded_plugin_served() {
         let (_dir, _store, port) = setup().await;
-        // This test only verifies the route exists and returns 200 or 404
-        // depending on whether plugins were built before compilation.
-        // The embedded_plugins module is generated by build.rs.
         let (status, headers, _body) = get(port, "/plugins/plotly.js").await;
-        if status == StatusCode::OK {
-            assert_eq!(
-                header_value(&headers, "content-type"),
-                Some("application/javascript; charset=utf-8".into())
-            );
-            assert_eq!(
-                header_value(&headers, "cache-control"),
-                Some("public, max-age=86400".into())
-            );
-            assert_eq!(
-                header_value(&headers, "access-control-allow-origin"),
-                Some("*".into())
-            );
-        }
-        // If 404, plugins weren't built — that's expected on clean checkouts
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            header_value(&headers, "content-type"),
+            Some("application/javascript; charset=utf-8".into())
+        );
+        assert_eq!(
+            header_value(&headers, "cache-control"),
+            Some("public, max-age=86400".into())
+        );
+        assert_eq!(
+            header_value(&headers, "access-control-allow-origin"),
+            Some("*".into())
+        );
+    }
+
+    #[tokio::test]
+    async fn test_dev_filesystem_plugin_wins_over_embedded() {
+        let dir = TempDir::new().unwrap();
+        let plugin_dir = dir.path().join("plugins");
+        tokio::fs::create_dir_all(&plugin_dir).await.unwrap();
+        tokio::fs::write(plugin_dir.join("plotly.js"), b"dev plotly")
+            .await
+            .unwrap();
+
+        let response = serve_plugin_with_dev_assets("plotly.js", Some(&plugin_dir)).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response_header(&response, "content-type"),
+            Some("application/javascript; charset=utf-8".into())
+        );
+        assert_eq!(
+            response_header(&response, "cache-control"),
+            Some("no-store".into())
+        );
+        assert_eq!(
+            response_header(&response, "access-control-allow-origin"),
+            Some("*".into())
+        );
+        assert_eq!(response_body(response).await, b"dev plotly");
+    }
+
+    #[tokio::test]
+    async fn test_dev_filesystem_missing_asset_falls_back_to_embedded() {
+        let dir = TempDir::new().unwrap();
+        let response = serve_plugin_with_dev_assets("plotly.js", Some(dir.path())).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response_header(&response, "cache-control"),
+            Some("public, max-age=86400".into())
+        );
     }
 
     #[tokio::test]

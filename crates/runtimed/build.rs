@@ -11,6 +11,9 @@ fn main() {
         "vega.js",
         "leaflet.js",
         "leaflet.css",
+        "sift.js",
+        "sift.css",
+        "sift_wasm.wasm",
     ] {
         println!("cargo:rerun-if-changed=../runt-mcp/assets/plugins/{file}");
     }
