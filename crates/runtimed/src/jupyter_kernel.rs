@@ -430,6 +430,17 @@ impl KernelConnection for JupyterKernel {
                                     cmd.arg(&connection_file_path);
                                     cmd.stdout(Stdio::null());
                                     cmd.stderr(Stdio::piped());
+                                    if bootstrap_dx {
+                                        // pixi.toml envs belong to the user.
+                                        // Installing nteract_kernel_launcher
+                                        // into their env is a cleanup hazard,
+                                        // so inject via PYTHONPATH — same
+                                        // pattern as uv:pyproject,
+                                        // conda:env_yml, and pixi exec.
+                                        let dir =
+                                            crate::launcher_cache::launcher_cache_dir().await?;
+                                        cmd.env("PYTHONPATH", &dir);
+                                    }
                                     cmd
                                 }
                                 Err(e) => {
@@ -453,6 +464,11 @@ impl KernelConnection for JupyterKernel {
                                     if let Some(parent) = manifest.parent() {
                                         cmd.current_dir(parent);
                                     }
+                                    if bootstrap_dx {
+                                        let dir =
+                                            crate::launcher_cache::launcher_cache_dir().await?;
+                                        cmd.env("PYTHONPATH", &dir);
+                                    }
                                     cmd
                                 }
                             }
@@ -474,6 +490,10 @@ impl KernelConnection for JupyterKernel {
                                 if let Some(parent) = nb_path.parent() {
                                     cmd.current_dir(parent);
                                 }
+                            }
+                            if bootstrap_dx {
+                                let dir = crate::launcher_cache::launcher_cache_dir().await?;
+                                cmd.env("PYTHONPATH", &dir);
                             }
                             cmd
                         }
