@@ -14,12 +14,13 @@ automerge = "0.8"
 notebook-doc = { path = "../notebook-doc" }
 runtime-doc = { path = "../runtime-doc" }
 wasm-bindgen = "0.2"
-js-sys = "0.3"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde-wasm-bindgen = "0.6"
-log = "0.4"
 web-sys = { version = "0.3", features = ["console"] }
+# getrandom (both versions) stays to activate the wasm_js / js feature
+# for transitive crates. Removing either line breaks the wasm build
+# because uuid / rand can't find a browser RNG.
 getrandom = { version = "0.3", features = ["wasm_js"] }
 getrandom_02 = { package = "getrandom", version = "0.2", features = ["js"] }
 console_error_panic_hook = "0.1"
@@ -29,6 +30,12 @@ wasm-bindgen-test = "0.3"
 
 [package.metadata.wasm-pack.profile.release]
 wasm-opt = false
+
+[package.metadata.cargo-machete]
+# Both `getrandom` entries are here purely to activate the `wasm_js` /
+# `js` feature on the transitive dep so uuid / rand can find a browser
+# RNG. No direct code uses them; deleting either breaks the wasm build.
+ignored = ["getrandom", "getrandom_02"]
 
 [lints]
 workspace = true

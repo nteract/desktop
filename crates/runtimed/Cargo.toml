@@ -91,12 +91,6 @@ kernel-launch = { path = "../kernel-launch" }
 # Shared environment management (UV + Conda) with progress reporting
 kernel-env = { path = "../kernel-env" }
 
-# JSON Schema generation
-schemars = { workspace = true }
-
-# TypeScript type generation
-ts-rs = { workspace = true }
-
 # File watching for external settings.json changes
 notify = { workspace = true }
 notify-debouncer-mini = { workspace = true }

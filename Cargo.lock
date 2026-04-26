@@ -4520,7 +4520,6 @@ dependencies = [
  "notebook-protocol",
  "runt-workspace",
  "runtime-doc",
- "serde",
  "serde_json",
  "thiserror 2.0.18",
  "tokio",
@@ -4584,12 +4583,8 @@ name = "nteract-predicate"
 version = "0.1.5"
 dependencies = [
  "arrow",
- "arrow-array",
- "arrow-buffer",
  "arrow-cast",
- "arrow-ord",
  "arrow-select",
- "arrow-string",
  "bytes",
  "chrono",
  "parquet",
@@ -6938,13 +6933,10 @@ name = "runt-mcp-proxy"
 version = "0.1.5"
 dependencies = [
  "rmcp",
- "schemars 1.2.1",
- "serde",
  "serde_json",
  "tempfile",
  "tokio",
  "tracing",
- "uuid",
 ]
 
 [[package]]
@@ -7034,7 +7026,6 @@ dependencies = [
  "runtime-doc",
  "runtimed-client",
  "runtimelib",
- "schemars 1.2.1",
  "serde",
  "serde_json",
  "serial_test",
@@ -7045,7 +7036,6 @@ dependencies = [
  "toml 1.1.2+spec-1.1.0",
  "tracing",
  "tracing-subscriber",
- "ts-rs",
  "uuid",
  "windows-sys 0.52.0",
 ]
@@ -7085,11 +7075,9 @@ dependencies = [
  "arrow",
  "base64 0.22.1",
  "bytes",
- "log",
  "napi",
  "napi-build",
  "napi-derive",
- "notebook-doc",
  "notebook-protocol",
  "notebook-sync",
  "nteract-predicate",
@@ -7131,8 +7119,6 @@ dependencies = [
  "console_error_panic_hook",
  "getrandom 0.2.17",
  "getrandom 0.3.4",
- "js-sys",
- "log",
  "notebook-doc",
  "runtime-doc",
  "serde",

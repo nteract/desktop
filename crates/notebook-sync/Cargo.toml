@@ -15,7 +15,6 @@ notebook-doc = { path = "../notebook-doc" }
 runtime-doc = { path = "../runtime-doc" }
 notebook-protocol = { path = "../notebook-protocol" }
 tokio = { workspace = true }
-serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 

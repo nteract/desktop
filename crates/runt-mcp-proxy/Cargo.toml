@@ -10,11 +10,8 @@ publish = false
 [dependencies]
 rmcp = { version = "1.4", features = ["server", "client", "transport-child-process", "transport-io"] }
 tokio = { workspace = true }
-serde = { workspace = true }
 serde_json = { workspace = true }
-schemars = { workspace = true }
 tracing = "0.1"
-uuid = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"

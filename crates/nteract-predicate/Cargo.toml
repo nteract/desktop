@@ -12,14 +12,13 @@ serde = { workspace = true }
 bytes = { workspace = true }
 chrono = { version = "0.4", default-features = false }
 
-# Arrow with compute kernels
+# Arrow with compute kernels. `arrow` re-exports array/buffer/ord/string
+# under its own module tree; those sub-crates are pulled in transitively
+# and don't need direct entries. `arrow-cast` and `arrow-select` are
+# imported directly (see `summary.rs`, `filter.rs`) and stay explicit.
 arrow = { version = "54", default-features = false, features = ["ipc", "ffi"] }
-arrow-array = { version = "54", default-features = false }
-arrow-buffer = { version = "54", default-features = false }
 arrow-cast = { version = "54", default-features = false }
-arrow-ord = { version = "54", default-features = false }
 arrow-select = { version = "54", default-features = false }
-arrow-string = { version = "54", default-features = false }
 
 # Parquet reader
 parquet = { version = "54", default-features = false, features = ["arrow", "snap", "flate2", "zstd"] }
