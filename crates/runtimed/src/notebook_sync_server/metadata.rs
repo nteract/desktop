@@ -1000,9 +1000,10 @@ pub(crate) fn project_file_deps_match_trust_info(
                 && env_config.channels == info.conda_channels
         }
         crate::project_file::ProjectFileKind::PixiToml => {
-            // Pixi deps currently bypass the HMAC check entirely
-            // (see #2151). Reconciliation is a no-op here until that
-            // lands — returning false keeps behavior unchanged.
+            // Keep pixi.toml reconciliation conservative: inline
+            // `metadata.runt.pixi` is trust-checked, but auto-signing an
+            // unsigned notebook from a project file needs an exact manifest
+            // comparison that preserves version specs and PyPI/conda splits.
             false
         }
     }
@@ -1042,6 +1043,9 @@ pub(crate) fn verify_trust_from_file(notebook_path: &Path) -> TrustState {
                 uv_dependencies: vec![],
                 conda_dependencies: vec![],
                 conda_channels: vec![],
+                pixi_dependencies: vec![],
+                pixi_pypi_dependencies: vec![],
+                pixi_channels: vec![],
             },
             pending_launch: false,
         },
@@ -1080,6 +1084,9 @@ pub(crate) fn verify_trust_from_snapshot(snapshot: &NotebookMetadataSnapshot) ->
                 uv_dependencies: vec![],
                 conda_dependencies: vec![],
                 conda_channels: vec![],
+                pixi_dependencies: vec![],
+                pixi_pypi_dependencies: vec![],
+                pixi_channels: vec![],
             },
             pending_launch: false,
         },

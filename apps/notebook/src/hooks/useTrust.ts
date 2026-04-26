@@ -3,6 +3,7 @@ import type { TrustInfo, TyposquatWarning } from "@nteract/notebook-host";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { logger } from "../lib/logger";
 import { useRuntimeState, useRuntimeStateLoaded } from "../lib/runtime-state";
+import { usePixiDeps } from "../lib/notebook-metadata";
 import { useCondaDependencies } from "./useCondaDependencies";
 import { useDependencies } from "./useDependencies";
 
@@ -28,6 +29,7 @@ export function useTrust() {
   const runtimeLoaded = useRuntimeStateLoaded();
   const { dependencies: uvDeps } = useDependencies();
   const { dependencies: condaDeps } = useCondaDependencies();
+  const pixiDeps = usePixiDeps();
 
   const [typosquatWarnings, setTyposquatWarnings] = useState<TyposquatWarning[]>([]);
   const [loading, setLoading] = useState(false);
@@ -41,11 +43,17 @@ export function useTrust() {
     const uvList = uvDeps?.dependencies ?? [];
     const condaList = condaDeps?.dependencies ?? [];
     const channels = condaDeps?.channels ?? [];
+    const pixiList = pixiDeps?.dependencies ?? [];
+    const pixiPypiList = pixiDeps?.pypiDependencies ?? [];
+    const pixiChannels = pixiDeps?.channels ?? [];
     return {
       status: runtimeState.trust.status,
       uv_dependencies: uvList,
       conda_dependencies: condaList,
       conda_channels: channels,
+      pixi_dependencies: pixiList,
+      pixi_pypi_dependencies: pixiPypiList,
+      pixi_channels: pixiChannels,
     };
   }, [
     runtimeLoaded,
@@ -53,15 +61,20 @@ export function useTrust() {
     uvDeps?.dependencies,
     condaDeps?.dependencies,
     condaDeps?.channels,
+    pixiDeps?.dependencies,
+    pixiDeps?.pypiDependencies,
+    pixiDeps?.channels,
   ]);
 
   // Typosquat check is the only piece still on the host. Reruns whenever
   // the effective dep list changes.
   const uvList = trustInfo?.uv_dependencies;
   const condaList = trustInfo?.conda_dependencies;
+  const pixiList = trustInfo?.pixi_dependencies;
+  const pixiPypiList = trustInfo?.pixi_pypi_dependencies;
   useEffect(() => {
-    if (!uvList || !condaList) return;
-    const allDeps = [...uvList, ...condaList];
+    if (!uvList || !condaList || !pixiList || !pixiPypiList) return;
+    const allDeps = [...uvList, ...condaList, ...pixiList, ...pixiPypiList];
     if (allDeps.length === 0) {
       setTyposquatWarnings([]);
       return;
@@ -86,7 +99,7 @@ export function useTrust() {
     return () => {
       cancelled = true;
     };
-  }, [host, uvList, condaList]);
+  }, [host, uvList, condaList, pixiList, pixiPypiList]);
 
   // Approve the notebook (sign dependencies)
   const approveTrust = useCallback(
@@ -122,7 +135,10 @@ export function useTrust() {
     : false;
   const hasDependencies = trustInfo ? trustInfo.status !== "no_dependencies" : false;
   const totalDependencies = trustInfo
-    ? trustInfo.uv_dependencies.length + trustInfo.conda_dependencies.length
+    ? trustInfo.uv_dependencies.length +
+      trustInfo.conda_dependencies.length +
+      trustInfo.pixi_dependencies.length +
+      trustInfo.pixi_pypi_dependencies.length
     : 0;
 
   return {

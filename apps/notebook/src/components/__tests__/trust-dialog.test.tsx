@@ -18,6 +18,9 @@ function makeTrustInfo(overrides: Partial<TrustInfo> = {}): TrustInfo {
     uv_dependencies: [],
     conda_dependencies: [],
     conda_channels: [],
+    pixi_dependencies: [],
+    pixi_pypi_dependencies: [],
+    pixi_channels: [],
     ...overrides,
   };
 }
@@ -310,6 +313,35 @@ describe("TrustDialog", () => {
       expect(screen.getByText("Conda Packages")).toBeInTheDocument();
       expect(screen.getByText("scipy")).toBeInTheDocument();
       expect(screen.getByText("(conda-forge, defaults)")).toBeInTheDocument();
+    });
+
+    it("shows Pixi dependencies with channels", () => {
+      render(
+        <TrustDialog
+          {...defaultProps}
+          trustInfo={makeTrustInfo({
+            pixi_dependencies: ["polars", "ipykernel"],
+            pixi_channels: ["conda-forge"],
+          })}
+        />,
+      );
+      expect(screen.getByText("Pixi Packages")).toBeInTheDocument();
+      expect(screen.getByText("polars")).toBeInTheDocument();
+      expect(screen.getByText("(conda-forge)")).toBeInTheDocument();
+    });
+
+    it("shows Pixi PyPI dependencies separately", () => {
+      render(
+        <TrustDialog
+          {...defaultProps}
+          trustInfo={makeTrustInfo({
+            pixi_pypi_dependencies: ["requests", "rich"],
+          })}
+        />,
+      );
+      expect(screen.getByText("Pixi PyPI Packages")).toBeInTheDocument();
+      expect(screen.getByText("requests")).toBeInTheDocument();
+      expect(screen.getByText("rich")).toBeInTheDocument();
     });
 
     it("hides PyPI section when no UV dependencies", () => {

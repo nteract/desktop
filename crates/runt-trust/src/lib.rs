@@ -52,6 +52,15 @@ pub struct TrustInfo {
     pub conda_dependencies: Vec<String>,
     /// Conda channels configured.
     pub conda_channels: Vec<String>,
+    /// The Pixi conda-style dependencies that will be installed (if any).
+    #[serde(default)]
+    pub pixi_dependencies: Vec<String>,
+    /// The Pixi PyPI dependencies that will be installed (if any).
+    #[serde(default)]
+    pub pixi_pypi_dependencies: Vec<String>,
+    /// Pixi channels configured.
+    #[serde(default)]
+    pub pixi_channels: Vec<String>,
 }
 
 /// Path to the trust key file.
@@ -296,13 +305,55 @@ pub fn verify_notebook_trust(
         })
         .unwrap_or_default();
 
+    let pixi_meta = get_pixi_metadata(metadata);
+
+    let pixi_dependencies: Vec<String> = pixi_meta
+        .as_ref()
+        .and_then(|v| v.get("dependencies"))
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let pixi_pypi_dependencies: Vec<String> = pixi_meta
+        .as_ref()
+        .and_then(|v| v.get("pypi_dependencies"))
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let pixi_channels: Vec<String> = pixi_meta
+        .as_ref()
+        .and_then(|v| v.get("channels"))
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
+
     // If no dependencies, no trust check needed
-    if uv_dependencies.is_empty() && conda_dependencies.is_empty() {
+    if uv_dependencies.is_empty()
+        && conda_dependencies.is_empty()
+        && pixi_dependencies.is_empty()
+        && pixi_pypi_dependencies.is_empty()
+    {
         return Ok(TrustInfo {
             status: TrustStatus::NoDependencies,
             uv_dependencies,
             conda_dependencies,
             conda_channels,
+            pixi_dependencies,
+            pixi_pypi_dependencies,
+            pixi_channels,
         });
     }
 
@@ -331,6 +382,9 @@ pub fn verify_notebook_trust(
         uv_dependencies,
         conda_dependencies,
         conda_channels,
+        pixi_dependencies,
+        pixi_pypi_dependencies,
+        pixi_channels,
     })
 }
 
@@ -391,6 +445,24 @@ mod tests {
         metadata
     }
 
+    fn make_pixi_test_metadata(
+        dependencies: Vec<&str>,
+        pypi_dependencies: Vec<&str>,
+    ) -> HashMap<String, serde_json::Value> {
+        let mut metadata = HashMap::new();
+        metadata.insert(
+            "runt".to_string(),
+            serde_json::json!({
+                "pixi": {
+                    "dependencies": dependencies,
+                    "pypi_dependencies": pypi_dependencies,
+                    "channels": ["conda-forge"],
+                },
+            }),
+        );
+        metadata
+    }
+
     #[test]
     fn test_no_dependencies_is_trusted() {
         let metadata = HashMap::new();
@@ -406,6 +478,45 @@ mod tests {
         let info = verify_notebook_trust(&metadata).unwrap();
         teardown_test_trust_key();
         assert_eq!(info.status, TrustStatus::Untrusted);
+    }
+
+    #[test]
+    #[serial]
+    fn test_unsigned_pixi_notebook_is_untrusted() {
+        let _temp = setup_test_trust_key();
+        let metadata = make_pixi_test_metadata(vec!["pandas"], vec!["requests"]);
+        let info = verify_notebook_trust(&metadata).unwrap();
+        teardown_test_trust_key();
+
+        assert_eq!(info.status, TrustStatus::Untrusted);
+        assert_eq!(info.pixi_dependencies, vec!["pandas"]);
+        assert_eq!(info.pixi_pypi_dependencies, vec!["requests"]);
+        assert_eq!(info.pixi_channels, vec!["conda-forge"]);
+    }
+
+    #[test]
+    #[serial]
+    fn test_signed_pixi_notebook_is_trusted() {
+        let _temp = setup_test_trust_key();
+        let metadata = make_pixi_test_metadata(vec!["pandas"], vec!["requests"]);
+        let signature = sign_notebook_dependencies(&metadata).unwrap();
+
+        let mut signed_metadata = metadata.clone();
+        signed_metadata.insert(
+            "runt".to_string(),
+            serde_json::json!({
+                "pixi": {
+                    "dependencies": ["pandas"],
+                    "pypi_dependencies": ["requests"],
+                    "channels": ["conda-forge"],
+                },
+                "trust_signature": signature,
+            }),
+        );
+
+        let info = verify_notebook_trust(&signed_metadata).unwrap();
+        teardown_test_trust_key();
+        assert_eq!(info.status, TrustStatus::Trusted);
     }
 
     #[test]
@@ -482,6 +593,9 @@ mod tests {
             uv_dependencies: vec![],
             conda_dependencies: vec![],
             conda_channels: vec![],
+            pixi_dependencies: vec![],
+            pixi_pypi_dependencies: vec![],
+            pixi_channels: vec![],
         };
 
         let json = serde_json::to_value(&info).unwrap();
