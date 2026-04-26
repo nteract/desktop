@@ -22,6 +22,10 @@ import { NotebookView } from "./components/NotebookView";
 import { PixiDependencyHeader } from "./components/PixiDependencyHeader";
 import { PoolErrorBanner } from "./components/PoolErrorBanner";
 import { TrustDialog } from "./components/TrustDialog";
+import {
+  KernelLaunchErrorBanner,
+  shouldShowKernelLaunchErrorBanner,
+} from "./components/KernelLaunchErrorBanner";
 import { UntrustedBanner } from "./components/UntrustedBanner";
 import { PresenceProvider } from "./contexts/PresenceContext";
 import { useAutomergeNotebook } from "./hooks/useAutomergeNotebook";
@@ -186,6 +190,11 @@ function AppContent() {
   const [clearingDeps, setClearingDeps] = useState(false);
   // Track when sync/restart just completed for success feedback
   const [justSynced, setJustSynced] = useState(false);
+  // Per-error-instance dismissal for the kernel-launch error banner.
+  // Stores the `errorDetails` string the user dismissed; cleared
+  // whenever the kernel transitions out of Error (so the next failure
+  // shows the banner fresh) or a different details string arrives.
+  const [dismissedLaunchError, setDismissedLaunchError] = useState<string | null>(null);
 
   // Daemon startup status (installing, starting, failed, etc.)
   const [daemonStatus, setDaemonStatus] = useState<DaemonStatus>(null);
@@ -335,6 +344,15 @@ function AppContent() {
 
   // Derive values from daemon kernel
   const envSource = kernelInfo.envSource ?? null;
+
+  // Clear banner dismissal whenever the kernel leaves Error or the
+  // details text changes, so the next failure re-presents the banner
+  // even if the user dismissed an earlier identical-looking one.
+  useEffect(() => {
+    if (lifecycle.lifecycle !== "Error") {
+      setDismissedLaunchError(null);
+    }
+  }, [lifecycle.lifecycle]);
 
   // Set up daemon comm sender for widget messages
   useEffect(() => {
@@ -1152,6 +1170,22 @@ function AppContent() {
                 pendingKernelStartRef.current = true;
                 setTrustDialogOpen(true);
               }}
+            />
+          )}
+        {shouldShowKernelLaunchErrorBanner({
+          lifecycle,
+          errorDetails,
+          errorReason,
+          runtime,
+        }) &&
+          dismissedLaunchError !== errorDetails && (
+            <KernelLaunchErrorBanner
+              errorDetails={errorDetails as string}
+              onRetry={() => {
+                setDismissedLaunchError(null);
+                tryStartKernel();
+              }}
+              onDismiss={() => setDismissedLaunchError(errorDetails)}
             />
           )}
         <NotebookToolbar
