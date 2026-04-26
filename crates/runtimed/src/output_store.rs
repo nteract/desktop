@@ -1032,9 +1032,15 @@ async fn convert_data_bundle(
             (Some(h), Some(ct)) => {
                 if blob_store.exists(h) {
                     result.insert(ct.to_string(), ContentRef::from_hash(h.to_string(), size));
+                    // Claimed the target MIME via the blob-ref. Any
+                    // fallback entry the kernel inlined under the same
+                    // key is redundant; strip it so the Media pass below
+                    // doesn't overwrite the authoritative ContentRef.
+                    bundle.remove(ct);
                 } else {
                     tracing::warn!(
-                        "[dx] blob-ref MIME references missing blob hash={} (dropping)",
+                        "[dx] blob-ref MIME references missing blob hash={} (falling back to \
+                         inline entry if present)",
                         h
                     );
                 }
@@ -1397,6 +1403,97 @@ mod tests {
                 assert_eq!(*size, raw.len() as u64);
             }
             other => panic!("expected blob ref, got {other:?}"),
+        }
+    }
+
+    /// When a bundle carries BOTH a BLOB_REF_MIME and a fallback entry under
+    /// the same target content_type (e.g. a kernel that emits `parquet` via
+    /// a blob-ref but also inlines a small base64 body for backward
+    /// compatibility), the blob-ref wins — it's the authoritative content
+    /// and we don't want to double-store or reinterpret the base64.
+    #[tokio::test]
+    async fn blob_ref_wins_over_duplicate_fallback_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        let blob_store = test_store(&dir);
+
+        let raw = b"PAR1-authoritative-parquet-body";
+        let hash = blob_store
+            .put(raw, "application/vnd.apache.parquet")
+            .await
+            .unwrap();
+
+        // Fallback body the kernel also included — a short base64 string
+        // under the same MIME. If the blob-ref path didn't win, ingest
+        // would base64-decode this instead and lose the canonical blob.
+        let fallback_body = base64::engine::general_purpose::STANDARD.encode(b"fallback-bytes");
+
+        let output = serde_json::json!({
+            "output_type": "display_data",
+            "data": {
+                notebook_doc::mime::BLOB_REF_MIME: {
+                    "hash": hash,
+                    "content_type": "application/vnd.apache.parquet",
+                    "size": raw.len(),
+                },
+                "application/vnd.apache.parquet": fallback_body,
+            },
+        });
+
+        let manifest = create_manifest(&output, &blob_store, 1024).await.unwrap();
+        let data = match manifest {
+            OutputManifest::DisplayData { data, .. } => data,
+            other => panic!("expected DisplayData, got {other:?}"),
+        };
+
+        match data.get("application/vnd.apache.parquet").unwrap() {
+            ContentRef::Blob { blob, size } => {
+                assert_eq!(blob, &hash, "blob-ref hash should win over fallback");
+                assert_eq!(*size, raw.len() as u64);
+            }
+            other => panic!("expected blob ref to win, got {other:?}"),
+        }
+    }
+
+    /// If the blob-ref references a hash that isn't in the store, the ref
+    /// can't be honored. In that case the fallback body (if the bundle
+    /// carries one under the target content_type) should be used instead
+    /// of dropping the entry entirely.
+    #[tokio::test]
+    async fn missing_blob_ref_falls_back_to_duplicate_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        let blob_store = test_store(&dir);
+
+        let fallback_body = base64::engine::general_purpose::STANDARD.encode(b"fallback-bytes");
+
+        let output = serde_json::json!({
+            "output_type": "display_data",
+            "data": {
+                notebook_doc::mime::BLOB_REF_MIME: {
+                    "hash": "0000000000000000000000000000000000000000000000000000000000000000",
+                    "content_type": "application/vnd.apache.parquet",
+                    "size": 999,
+                },
+                "application/vnd.apache.parquet": fallback_body,
+            },
+        });
+
+        let manifest = create_manifest(&output, &blob_store, 1024).await.unwrap();
+        let data = match manifest {
+            OutputManifest::DisplayData { data, .. } => data,
+            other => panic!("expected DisplayData, got {other:?}"),
+        };
+
+        let entry = data
+            .get("application/vnd.apache.parquet")
+            .expect("fallback should have landed");
+        match entry {
+            ContentRef::Blob { blob, .. } => {
+                assert_ne!(
+                    blob, "0000000000000000000000000000000000000000000000000000000000000000",
+                    "should not reuse the missing blob-ref hash"
+                );
+            }
+            ContentRef::Inline { .. } => {}
         }
     }
 
