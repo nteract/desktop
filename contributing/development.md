@@ -195,16 +195,20 @@ cargo xtask build --rust-only && cargo xtask run  # Fast iteration
 
 The app detects dev mode and connects to the per-worktree daemon instead of installing/starting the system daemon.
 
-**Conductor users:** When using `cargo xtask dev`, `cargo xtask notebook`, or `cargo xtask dev-daemon`, the xtask commands automatically translate `CONDUCTOR_WORKSPACE_PATH` to `RUNTIMED_WORKSPACE_PATH`, enabling dev mode.
+**Worktree isolation:** When using `cargo xtask dev`, `cargo xtask notebook`,
+`cargo xtask dev-daemon`, or `cargo xtask run-mcp`, xtask automatically enables
+dev mode and passes the current git worktree as `RUNTIMED_WORKSPACE_PATH` to the
+subprocesses it starts. Conductor users get the same behavior via
+`CONDUCTOR_WORKSPACE_PATH`.
 
-**Non-Conductor users:** Set `RUNTIMED_DEV=1`:
+**Non-Conductor users:** No extra environment is needed for xtask commands:
 
 ```bash
 # Terminal 1
-RUNTIMED_DEV=1 cargo xtask dev-daemon
+cargo xtask dev-daemon
 
 # Terminal 2
-RUNTIMED_DEV=1 cargo xtask notebook
+cargo xtask notebook
 ```
 
 **Useful commands:**
@@ -217,7 +221,7 @@ RUNTIMED_DEV=1 cargo xtask notebook
 
 Per-worktree state is stored in `<cache>/{cache_namespace}/worktrees/{hash}/` (macOS: `~/Library/Caches/`, Linux: `~/.cache/`). Source builds default to `runt-nightly`; set `RUNT_BUILD_CHANNEL=stable` only when you intentionally need the stable flow.
 
-**For AI agents:** If the repo-local `nteract-dev` MCP entry is available, prefer its `up` / `down` / `status` / `logs` / `vite_logs` tools — they handle env vars and daemon lifecycle automatically. Keep `nteract` as the name for the global/system-installed MCP server. When using a raw terminal (not Zed tasks), set the env vars manually:
+**For AI agents:** If the repo-local `nteract-dev` MCP entry is available, prefer its `up` / `down` / `status` / `logs` / `vite_logs` tools — they handle env vars and daemon lifecycle automatically. Keep `nteract` as the name for the global/system-installed MCP server. When using raw `./target/debug/runt` commands outside an xtask-managed subprocess, set the env vars manually:
 
 ```bash
 export RUNTIMED_DEV=1
@@ -441,12 +445,14 @@ docs(agents): enforce conventional commit format
 
 ## Zed Editor Integration
 
-The repo includes `.zed/tasks.json` with pre-configured tasks that set the correct environment variables for dev mode. Use `task: spawn` (cmd-shift-t) to run them:
+The repo includes `.zed/tasks.json` with pre-configured tasks. xtask-managed
+tasks derive the correct worktree environment automatically. Use `task: spawn`
+(cmd-shift-t) to run them:
 
 | Task | What it does |
 |------|-------------|
-| **Dev Daemon** | `cargo xtask dev-daemon` with `RUNTIMED_DEV=1` and `RUNTIMED_WORKSPACE_PATH` |
-| **Dev App** | `cargo xtask notebook` with dev env vars and auto-assigned Vite port |
+| **Dev Daemon** | `cargo xtask dev-daemon`; xtask derives the worktree env |
+| **Dev App** | `cargo xtask notebook`; xtask derives the worktree env and auto-assigned Vite port |
 | **Daemon Status** | `./target/debug/runt daemon status` pointed at the worktree daemon |
 | **Daemon Logs** | `./target/debug/runt daemon logs -f` with live tail |
 | **Format** | `cargo xtask lint --fix` (Rust + JS/TS via vp + Python ruff) |

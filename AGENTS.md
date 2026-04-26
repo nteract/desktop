@@ -12,9 +12,19 @@ Codex-specific repo skills live in `.codex/skills/`. Prefer them when the task m
 
 ## Development Setup Requirements
 
-### direnv (Required for Daemon Isolation)
+### direnv (Optional Convenience)
 
-**direnv is required** to automatically set `RUNTIMED_DEV=1` and `RUNTIMED_WORKSPACE_PATH` when you enter the repo directory. Without it, the dev daemon and system nightly daemon will conflict, and nteract-dev MCP will connect to the wrong daemon.
+direnv is useful because it automatically puts the repo's `bin/` wrappers on
+`PATH` and enables the local linker/cache environment when you enter the repo
+directory. It is **not required** for `cargo xtask dev-daemon`, `cargo xtask
+notebook`, or `cargo xtask run-mcp`: xtask detects the current git worktree and
+passes `RUNTIMED_DEV=1` plus `RUNTIMED_WORKSPACE_PATH` to the subprocesses it
+starts.
+
+You still want direnv if you run unqualified commands like `runt daemon status`
+and expect the repo's `bin/runt` wrapper to shadow the system install. Without
+direnv, use `./target/debug/runt ...` or pass the dev env vars explicitly for raw
+commands.
 
 **Install and configure:**
 ```bash
@@ -40,8 +50,8 @@ The `.envrc` file sets:
 **Verify it works:**
 ```bash
 cd /path/to/nteract/desktop
-echo $RUNTIMED_DEV              # Should print "1"
-echo $RUNTIMED_WORKSPACE_PATH   # Should print the repo path
+echo $RUNTIMED_DEV              # Should print "1" when direnv is active
+echo $RUNTIMED_WORKSPACE_PATH   # Should print the repo path when direnv is active
 which runt                      # Should be repo/bin/runt (not /usr/local/bin/runt)
 ```
 
@@ -68,7 +78,7 @@ The rustflag goes through direnv, not `.cargo/config.toml`, so CI runners and co
 1. **nteract-dev** (development, per-worktree daemon)
    - Command: `cargo run -p mcp-supervisor` (used by `.mcp.json`). Build cost is small now that the supervisor no longer links `runtimed-client` — first run after `cargo clean` takes a few seconds, warm runs are instant.
    - Working directory: `/path/to/nteract/desktop`
-   - Env vars: Inherits from shell (direnv provides RUNTIMED_DEV, RUNTIMED_WORKSPACE_PATH)
+   - Env vars: `.mcp.json`/`.codex/config.toml` set the mode; the supervisor derives the worktree path from the repo root
    - Socket: `~/.cache/runt-nightly/worktrees/{hash}/runtimed.sock`
    - Tools: 26 nteract tools (proxied from `runt mcp`) + 5 dev tools (`up`, `down`, `status`, `logs`, `vite_logs`)
 
@@ -118,10 +128,15 @@ If your MCP client provides `up`, `down`, `status`, `logs`, `vite_logs` (provide
 
 ### Manual commands (when nteract-dev is not available)
 
-For raw terminal commands, opt into dev mode explicitly. `RUNTIMED_DEV=1` is what enables per-worktree daemon isolation. `RUNTIMED_WORKSPACE_PATH` is the safest way to pin the current worktree, though binaries launched from the repo root can also discover the worktree via git.
+For `cargo xtask dev-daemon`, `cargo xtask notebook`, and `cargo xtask run-mcp`,
+no extra env vars are needed: xtask derives the current git worktree and passes
+the dev env to subprocesses. For raw `./target/debug/runt ...` commands, opt
+into dev mode explicitly. `RUNTIMED_DEV=1` is what enables per-worktree daemon
+isolation. `RUNTIMED_WORKSPACE_PATH` is the safest way to pin the current
+worktree.
 
 ```bash
-# ── Recommended env vars for raw dev-daemon commands ───────────────
+# ── Recommended env vars for raw runt commands ───────────────
 export RUNTIMED_DEV=1
 export RUNTIMED_WORKSPACE_PATH="$(pwd)"
 ```
@@ -183,8 +198,8 @@ Without `nteract-dev` (human runs both):
 # Terminal 1: Start dev daemon
 cargo xtask dev-daemon
 
-# Terminal 2: Start the app (MUST have env vars to avoid clobbering system daemon)
-RUNTIMED_DEV=1 RUNTIMED_WORKSPACE_PATH=$(pwd) cargo xtask notebook
+# Terminal 2: Start the app
+cargo xtask notebook
 ```
 
 ### WASM rebuild (after changing notebook-doc, runtimed-wasm, or sift-wasm)
