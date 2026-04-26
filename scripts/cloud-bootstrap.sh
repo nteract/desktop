@@ -6,12 +6,12 @@
 # rebuild does the full work.
 #
 # Scope: prepare the workspace for tier-(i) read and tier-(ii) build. We do
-# NOT pull LFS — the Anthropic sandbox blocks the GitHub LFS object hosts and
+# NOT pull LFS. The Anthropic sandbox blocks the GitHub LFS object hosts and
 # the local git proxy returns 502 on the batch endpoint. Instead we regenerate
 # the LFS-tracked build artifacts from source via `cargo xtask wasm`, which
 # produces real .wasm + plugin .js/.css bundles in their checked-in locations.
 #
-# Always exits 0 so a bootstrap failure never blocks the session — the agent
+# Always exits 0 so a bootstrap failure never blocks the session. The agent
 # can still read the log and recover. Full transcript at /tmp/cloud-bootstrap.log.
 
 set -uo pipefail
@@ -61,13 +61,28 @@ fi
 if [ "$NEEDS_REGEN" = "1" ]; then
   log "  lfs artifacts: pointer files detected, regenerating via cargo xtask wasm"
   if command -v wasm-pack >/dev/null 2>&1; then
-    if run cargo xtask wasm; then
+    # Retry on transient network failures. The dominant flake is rustup
+    # re-fetching the toolchain channel manifest from static.rust-lang.org
+    # and getting a 5xx; backoff is enough to ride out the blip.
+    WASM_OK=0
+    for attempt in 1 2 3; do
+      if run cargo xtask wasm; then
+        WASM_OK=1
+        break
+      fi
+      if [ "$attempt" -lt 3 ]; then
+        delay=$((attempt * 4))
+        log "  cargo xtask wasm: attempt $attempt failed, retrying in ${delay}s"
+        sleep "$delay"
+      fi
+    done
+    if [ "$WASM_OK" = "1" ]; then
       log "  cargo xtask wasm: ok"
     else
-      log "  cargo xtask wasm: FAILED (see $LOG) — runtimed/runt won't compile, frontend plugin tests will fail"
+      log "  cargo xtask wasm: FAILED after 3 attempts (see $LOG); runtimed/runt won't compile, frontend plugin tests will fail"
     fi
   else
-    log "  cargo xtask wasm: skipped (wasm-pack missing; configure cloud-env setup script — see contributing/cloud-sessions.md)"
+    log "  cargo xtask wasm: skipped (wasm-pack missing; configure cloud-env setup script. See contributing/cloud-sessions.md)"
   fi
 else
   log "  lfs artifacts: real content present (skipping wasm regen)"
