@@ -180,6 +180,7 @@ export type DaemonNotebookResponse =
   | { result: "interrupt_sent" }
   | { result: "kernel_shutting_down" }
   | { result: "no_kernel" }
+  | { result: "guard_rejected"; reason: string }
   | {
       result: "kernel_info";
       kernel_type?: string;

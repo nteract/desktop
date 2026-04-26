@@ -8,6 +8,15 @@
 
 // ── Requests ────────────────────────────────────────────────────────
 
+export interface GuardedNotebookProvenance {
+  observed_heads: string[];
+}
+
+export interface GuardedDependencyProvenance {
+  observed_heads: string[];
+  dependency_fingerprint: string;
+}
+
 export type NotebookRequest =
   | {
       type: "launch_kernel";
@@ -16,11 +25,14 @@ export type NotebookRequest =
       notebook_path?: string;
     }
   | { type: "execute_cell"; cell_id: string }
+  | { type: "execute_cell_guarded"; cell_id: string; observed_heads: string[] }
   | { type: "clear_outputs"; cell_id: string }
   | { type: "interrupt_execution" }
   | { type: "shutdown_kernel" }
   | { type: "sync_environment" }
+  | { type: "sync_environment_guarded"; observed_heads: string[]; dependency_fingerprint: string }
   | { type: "run_all_cells" }
+  | { type: "run_all_cells_guarded"; observed_heads: string[] }
   | { type: "send_comm"; message: CommRequestMessage }
   | {
       type: "get_history";
@@ -77,6 +89,7 @@ export type NotebookResponse =
   | { result: "interrupt_sent" }
   | { result: "kernel_shutting_down" }
   | { result: "no_kernel" }
+  | { result: "guard_rejected"; reason: string }
   | {
       result: "kernel_info";
       kernel_type?: string;

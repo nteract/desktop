@@ -33,6 +33,8 @@ function createMockHandle(overrides: Partial<SyncableHandle> = {}): SyncableHand
     generate_pool_state_sync_reply: vi.fn(() => null),
     reset_sync_state: vi.fn(),
     cell_count: vi.fn(() => 0),
+    get_heads_hex: vi.fn(() => []),
+    get_dependency_fingerprint: vi.fn(() => undefined),
     ...overrides,
   };
 }

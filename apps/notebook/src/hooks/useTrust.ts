@@ -11,6 +11,10 @@ export type { TrustInfo, TyposquatWarning };
 /** Trust status from the backend */
 export type TrustStatusType = TrustInfo["status"];
 
+interface ApproveTrustOptions {
+  dependencyFingerprint?: string;
+}
+
 export function useTrust() {
   const host = useNotebookHost();
   const runtimeState = useRuntimeState();
@@ -85,21 +89,24 @@ export function useTrust() {
   }, [host, uvList, condaList]);
 
   // Approve the notebook (sign dependencies)
-  const approveTrust = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      await host.trust.approve();
-      return true;
-    } catch (e) {
-      const message = e instanceof Error ? e.message : String(e);
-      setError(message);
-      logger.error("Failed to approve trust:", e);
-      return false;
-    } finally {
-      setLoading(false);
-    }
-  }, [host]);
+  const approveTrust = useCallback(
+    async (options?: ApproveTrustOptions) => {
+      setLoading(true);
+      setError(null);
+      try {
+        await host.trust.approve(options);
+        return true;
+      } catch (e) {
+        const message = e instanceof Error ? e.message : String(e);
+        setError(message);
+        logger.error("Failed to approve trust:", e);
+        return false;
+      } finally {
+        setLoading(false);
+      }
+    },
+    [host],
+  );
 
   // Computed properties. While `trustInfo` is null (daemon hasn't pushed
   // a state yet), nothing is known — default everything to the safe side:

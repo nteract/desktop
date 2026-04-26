@@ -14,6 +14,8 @@ import {
   deriveEnvSyncState,
   deriveKernelInfo,
   deriveQueueState,
+  type GuardedDependencyProvenance,
+  type GuardedNotebookProvenance,
   type KernelStatus,
   type NotebookClient,
   type NotebookResponse,
@@ -269,6 +271,12 @@ export function useDaemonKernel({
     [client],
   );
 
+  const executeCellGuarded = useCallback(
+    (cellId: string, provenance: GuardedNotebookProvenance) =>
+      client.executeCellGuarded(cellId, provenance) as Promise<NotebookResponse>,
+    [client],
+  );
+
   const clearOutputs = useCallback(
     (cellId: string) => client.clearOutputs(cellId) as Promise<NotebookResponse>,
     [client],
@@ -289,8 +297,20 @@ export function useDaemonKernel({
     [client],
   );
 
+  const syncEnvironmentGuarded = useCallback(
+    (provenance: GuardedDependencyProvenance) =>
+      client.syncEnvironmentGuarded(provenance) as Promise<NotebookResponse>,
+    [client],
+  );
+
   const runAllCells = useCallback(
     () => client.runAllCells() as Promise<NotebookResponse>,
+    [client],
+  );
+
+  const runAllCellsGuarded = useCallback(
+    (provenance: GuardedNotebookProvenance) =>
+      client.runAllCellsGuarded(provenance) as Promise<NotebookResponse>,
     [client],
   );
 
@@ -317,11 +337,14 @@ export function useDaemonKernel({
     envSyncState,
     launchKernel,
     executeCell,
+    executeCellGuarded,
     clearOutputs,
     interruptKernel,
     shutdownKernel,
     syncEnvironment,
+    syncEnvironmentGuarded,
     runAllCells,
+    runAllCellsGuarded,
     sendCommMessage,
     isCellExecuting: (cellId: string) => queueState.executing?.cell_id === cellId,
     isCellQueued: (cellId: string) =>

@@ -17,8 +17,10 @@ export {
 } from "runtimed";
 
 import {
+  KERNEL_STATUS,
   RUNTIME_STATUS,
   runtimeStatusKey,
+  type KernelStatus,
   type RuntimeLifecycle,
   type RuntimeStatusKey,
 } from "runtimed";
@@ -76,4 +78,26 @@ export function getLifecycleLabel(
   errorReason: string | null,
 ): string {
   return getStatusKeyLabel(runtimeStatusKey(lifecycle), errorReason);
+}
+
+export function getTrustApprovalHandoffDisplayStatus({
+  pending,
+  kernelStatus,
+  statusKey,
+}: {
+  pending: boolean;
+  kernelStatus: KernelStatus;
+  statusKey: RuntimeStatusKey;
+}): { kernelStatus: KernelStatus; statusKey: RuntimeStatusKey } {
+  if (
+    pending &&
+    (statusKey === RUNTIME_STATUS.AWAITING_TRUST || statusKey === RUNTIME_STATUS.NOT_STARTED)
+  ) {
+    return {
+      kernelStatus: KERNEL_STATUS.STARTING,
+      statusKey: RUNTIME_STATUS.RESOLVING,
+    };
+  }
+
+  return { kernelStatus, statusKey };
 }

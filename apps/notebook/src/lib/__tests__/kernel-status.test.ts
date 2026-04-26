@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 import {
+  getTrustApprovalHandoffDisplayStatus,
   getLifecycleLabel,
   getStatusKeyLabel,
   isKernelStatus,
@@ -117,5 +118,59 @@ describe("getStatusKeyLabel", () => {
     expect(getStatusKeyLabel(RUNTIME_STATUS.ERROR, "")).toBe(
       RUNTIME_STATUS_LABELS[RUNTIME_STATUS.ERROR],
     );
+  });
+});
+
+describe("getTrustApprovalHandoffDisplayStatus", () => {
+  it("projects stale awaiting-trust status to a launch transition after approval", () => {
+    expect(
+      getTrustApprovalHandoffDisplayStatus({
+        pending: true,
+        kernelStatus: KERNEL_STATUS.AWAITING_TRUST,
+        statusKey: RUNTIME_STATUS.AWAITING_TRUST,
+      }),
+    ).toEqual({
+      kernelStatus: KERNEL_STATUS.STARTING,
+      statusKey: RUNTIME_STATUS.RESOLVING,
+    });
+  });
+
+  it("projects not-started status while the approved launch request is in flight", () => {
+    expect(
+      getTrustApprovalHandoffDisplayStatus({
+        pending: true,
+        kernelStatus: KERNEL_STATUS.NOT_STARTED,
+        statusKey: RUNTIME_STATUS.NOT_STARTED,
+      }),
+    ).toEqual({
+      kernelStatus: KERNEL_STATUS.STARTING,
+      statusKey: RUNTIME_STATUS.RESOLVING,
+    });
+  });
+
+  it("leaves status unchanged when there is no approved handoff", () => {
+    expect(
+      getTrustApprovalHandoffDisplayStatus({
+        pending: false,
+        kernelStatus: KERNEL_STATUS.AWAITING_TRUST,
+        statusKey: RUNTIME_STATUS.AWAITING_TRUST,
+      }),
+    ).toEqual({
+      kernelStatus: KERNEL_STATUS.AWAITING_TRUST,
+      statusKey: RUNTIME_STATUS.AWAITING_TRUST,
+    });
+  });
+
+  it("leaves active runtime statuses unchanged during the handoff", () => {
+    expect(
+      getTrustApprovalHandoffDisplayStatus({
+        pending: true,
+        kernelStatus: KERNEL_STATUS.BUSY,
+        statusKey: RUNTIME_STATUS.RUNNING_BUSY,
+      }),
+    ).toEqual({
+      kernelStatus: KERNEL_STATUS.BUSY,
+      statusKey: RUNTIME_STATUS.RUNNING_BUSY,
+    });
   });
 });

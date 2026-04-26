@@ -731,6 +731,19 @@ export class NotebookHandle {
         }
     }
     /**
+     * Return a stable fingerprint of dependency metadata covered by trust approval.
+     * @returns {string | undefined}
+     */
+    get_dependency_fingerprint() {
+        const ret = wasm.notebookhandle_get_dependency_fingerprint(this.__wbg_ptr);
+        let v1;
+        if (ret[0] !== 0) {
+            v1 = getStringFromWasm0(ret[0], ret[1]).slice();
+            wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+        }
+        return v1;
+    }
+    /**
      * Return a summary of the execution for the given `execution_id`, or
      * `undefined` when that execution is unknown.
      *
@@ -747,6 +760,16 @@ export class NotebookHandle {
         const len0 = WASM_VECTOR_LEN;
         const ret = wasm.notebookhandle_get_execution_by_id(this.__wbg_ptr, ptr0, len0);
         return ret;
+    }
+    /**
+     * Return the current Automerge notebook document heads as hex strings.
+     * @returns {string[]}
+     */
+    get_heads_hex() {
+        const ret = wasm.notebookhandle_get_heads_hex(this.__wbg_ptr);
+        var v1 = getArrayJsValueFromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
+        return v1;
     }
     /**
      * Get a metadata value by key (legacy string API).

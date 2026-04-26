@@ -189,9 +189,38 @@ describe("TrustDialog", () => {
       expect(screen.getByTestId("trust-approve-button")).toHaveTextContent("Approving...");
     });
 
+    it("shows custom action labels when provided", () => {
+      render(
+        <TrustDialog
+          {...defaultProps}
+          approveLabel="Trust and Run Cell"
+          approveOnlyLabel="Trust & Start"
+          onApproveOnly={vi.fn().mockResolvedValue(true)}
+        />,
+      );
+      expect(screen.getByTestId("trust-approve-button")).toHaveTextContent("Trust and Run Cell");
+      expect(screen.getByTestId("trust-approve-only-button")).toHaveTextContent("Trust & Start");
+    });
+
+    it("shows sync-specific primary label with plain trust secondary label", () => {
+      render(
+        <TrustDialog
+          {...defaultProps}
+          approveLabel="Trust and Sync"
+          approveOnlyLabel="Trust Notebook"
+          onApproveOnly={vi.fn().mockResolvedValue(true)}
+        />,
+      );
+      expect(screen.getByTestId("trust-approve-button")).toHaveTextContent("Trust and Sync");
+      expect(screen.getByTestId("trust-approve-only-button")).toHaveTextContent("Trust Notebook");
+    });
+
     it("disables both buttons when loading", () => {
-      render(<TrustDialog {...defaultProps} loading />);
+      render(
+        <TrustDialog {...defaultProps} loading onApproveOnly={vi.fn().mockResolvedValue(true)} />,
+      );
       expect(screen.getByTestId("trust-approve-button")).toBeDisabled();
+      expect(screen.getByTestId("trust-approve-only-button")).toBeDisabled();
       expect(screen.getByTestId("trust-decline-button")).toBeDisabled();
     });
   });
@@ -228,6 +257,27 @@ describe("TrustDialog", () => {
 
       await userEvent.click(screen.getByTestId("trust-decline-button"));
       expect(onDecline).toHaveBeenCalled();
+      expect(onOpenChange).toHaveBeenCalledWith(false);
+    });
+
+    it("uses onApproveOnly for the secondary approval action", async () => {
+      const onApprove = vi.fn().mockResolvedValue(true);
+      const onApproveOnly = vi.fn().mockResolvedValue(true);
+      const onOpenChange = vi.fn();
+      render(
+        <TrustDialog
+          {...defaultProps}
+          onApprove={onApprove}
+          onApproveOnly={onApproveOnly}
+          onOpenChange={onOpenChange}
+        />,
+      );
+
+      await userEvent.click(screen.getByTestId("trust-approve-only-button"));
+      await waitFor(() => {
+        expect(onApproveOnly).toHaveBeenCalled();
+      });
+      expect(onApprove).not.toHaveBeenCalled();
       expect(onOpenChange).toHaveBeenCalledWith(false);
     });
   });

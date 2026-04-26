@@ -17,10 +17,14 @@ interface TrustDialogProps {
   trustInfo: TrustInfo | null;
   typosquatWarnings: TyposquatWarning[];
   onApprove: () => Promise<boolean>;
+  onApproveOnly?: () => Promise<boolean>;
   onDecline: () => void;
   loading?: boolean;
   /** When true, shows daemon-specific messaging about auto-launch */
   daemonMode?: boolean;
+  approveLabel?: string;
+  approveOnlyLabel?: string;
+  description?: string;
 }
 
 /** Package list item with optional typosquat warning */
@@ -45,9 +49,13 @@ export function TrustDialog({
   trustInfo,
   typosquatWarnings,
   onApprove,
+  onApproveOnly,
   onDecline,
   loading = false,
   daemonMode = false,
+  approveLabel,
+  approveOnlyLabel,
+  description,
 }: TrustDialogProps) {
   const handleApprove = useCallback(async () => {
     const success = await onApprove();
@@ -60,6 +68,13 @@ export function TrustDialog({
     onDecline();
     onOpenChange(false);
   }, [onDecline, onOpenChange]);
+
+  const handleApproveOnly = useCallback(async () => {
+    const success = await (onApproveOnly ?? onApprove)();
+    if (success) {
+      onOpenChange(false);
+    }
+  }, [onApproveOnly, onApprove, onOpenChange]);
 
   // Build a map of package -> warning for quick lookup
   const warningMap = new Map<string, TyposquatWarning>();
@@ -87,11 +102,12 @@ export function TrustDialog({
             {isSignatureInvalid ? "Dependencies Modified" : "Review Dependencies"}
           </DialogTitle>
           <DialogDescription>
-            {isSignatureInvalid
-              ? "This notebook's dependencies have been modified since you last approved them. Review and approve to continue."
-              : daemonMode
-                ? "This notebook wants to install packages. Once approved, the kernel will start automatically."
-                : "This notebook wants to install packages. Review them before running code."}
+            {description ??
+              (isSignatureInvalid
+                ? "This notebook's dependencies have been modified since you last approved them. Review and approve to continue."
+                : daemonMode
+                  ? "This notebook wants to install packages. Once approved, the kernel will start automatically."
+                  : "This notebook wants to install packages. Review them before running code.")}
           </DialogDescription>
         </DialogHeader>
 
@@ -153,8 +169,20 @@ export function TrustDialog({
           >
             Don't Install
           </Button>
+          {onApproveOnly && (
+            <Button
+              variant="outline"
+              onClick={handleApproveOnly}
+              disabled={loading}
+              data-testid="trust-approve-only-button"
+            >
+              {approveOnlyLabel ?? "Trust Notebook"}
+            </Button>
+          )}
           <Button onClick={handleApprove} disabled={loading} data-testid="trust-approve-button">
-            {loading ? "Approving..." : daemonMode ? "Trust & Start" : "Trust & Install"}
+            {loading
+              ? "Approving..."
+              : (approveLabel ?? (daemonMode ? "Trust & Start" : "Trust & Install"))}
           </Button>
         </DialogFooter>
       </DialogContent>

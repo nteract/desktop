@@ -1037,6 +1037,16 @@ impl NotebookHandle {
         Some(fp)
     }
 
+    /// Return the current Automerge notebook document heads as hex strings.
+    pub fn get_heads_hex(&mut self) -> Vec<String> {
+        self.doc.get_heads_hex()
+    }
+
+    /// Return a stable fingerprint of dependency metadata covered by trust approval.
+    pub fn get_dependency_fingerprint(&self) -> Option<String> {
+        self.doc.get_dependency_fingerprint()
+    }
+
     /// Set a metadata value (legacy string API).
     pub fn set_metadata(&mut self, key: &str, value: &str) -> Result<(), JsError> {
         self.invalidate_metadata_cache();

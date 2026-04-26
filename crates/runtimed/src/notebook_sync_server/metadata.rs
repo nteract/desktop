@@ -3439,6 +3439,11 @@ pub(crate) async fn handle_notebook_request(
             crate::requests::execute_cell::handle(room, cell_id).await
         }
 
+        NotebookRequest::ExecuteCellGuarded {
+            cell_id,
+            observed_heads,
+        } => crate::requests::execute_cell::handle_guarded(room, cell_id, observed_heads).await,
+
         NotebookRequest::ClearOutputs { cell_id } => {
             crate::requests::clear_outputs::handle(room, cell_id).await
         }
@@ -3454,6 +3459,10 @@ pub(crate) async fn handle_notebook_request(
         NotebookRequest::GetQueueState {} => crate::requests::get_queue_state::handle(room).await,
 
         NotebookRequest::RunAllCells {} => crate::requests::run_all_cells::handle(room).await,
+
+        NotebookRequest::RunAllCellsGuarded { observed_heads } => {
+            crate::requests::run_all_cells::handle_guarded(room, observed_heads).await
+        }
 
         NotebookRequest::SendComm { message } => {
             crate::requests::send_comm::handle(room, message).await
@@ -3477,6 +3486,18 @@ pub(crate) async fn handle_notebook_request(
 
         NotebookRequest::SyncEnvironment {} => {
             crate::requests::sync_environment::handle(room).await
+        }
+
+        NotebookRequest::SyncEnvironmentGuarded {
+            observed_heads,
+            dependency_fingerprint,
+        } => {
+            crate::requests::sync_environment::handle_guarded(
+                room,
+                observed_heads,
+                dependency_fingerprint,
+            )
+            .await
         }
 
         NotebookRequest::GetDocBytes {} => crate::requests::get_doc_bytes::handle(room).await,

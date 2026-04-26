@@ -235,6 +235,14 @@ impl NotebookDoc {
         self.doc.get_heads()
     }
 
+    /// Get the current document heads as hex strings for JS/protocol guards.
+    pub fn get_heads_hex(&mut self) -> Vec<String> {
+        self.get_heads()
+            .into_iter()
+            .map(|head| head.to_string())
+            .collect()
+    }
+
     /// Merge another document's changes into this one.
     ///
     /// Returns the change hashes that were applied. Changes made on both
@@ -501,6 +509,11 @@ impl NotebookDoc {
     pub fn get_metadata_fingerprint(&self) -> Option<String> {
         let snapshot = self.get_metadata_snapshot()?;
         serde_json::to_string(&snapshot).ok()
+    }
+
+    /// Return a stable fingerprint of dependency metadata covered by trust approval.
+    pub fn get_dependency_fingerprint(&self) -> Option<String> {
+        Some(self.get_metadata_snapshot()?.dependency_fingerprint())
     }
 
     // ── UV dependency convenience methods ─────────────────────────
@@ -1000,6 +1013,30 @@ impl NotebookDoc {
         cells
     }
 
+    /// Get cells at a historical document head set for guard comparison.
+    ///
+    /// Populates the fields needed to compare executable cell identity,
+    /// ordering, type, source, and execution count. Cell metadata and resolved
+    /// markdown assets are intentionally left empty.
+    pub fn get_cells_at_heads(&self, heads: &[automerge::ChangeHash]) -> Vec<CellSnapshot> {
+        let cells_id = match self.cells_map_id_at(heads) {
+            Some(id) => id,
+            None => return vec![],
+        };
+
+        let mut cells: Vec<CellSnapshot> = self
+            .doc
+            .keys_at(&cells_id, heads)
+            .filter_map(|key| {
+                let cell_obj = self.cell_obj_id_at(&cells_id, &key, heads)?;
+                self.read_cell_at(&cell_obj, heads)
+            })
+            .collect();
+
+        cells.sort_by(|a, b| a.position.cmp(&b.position).then_with(|| a.id.cmp(&b.id)));
+        cells
+    }
+
     /// Get a single cell by ID (O(1) lookup).
     pub fn get_cell(&self, cell_id: &str) -> Option<CellSnapshot> {
         let cell_obj = self.cell_obj_for(cell_id)?;
@@ -1406,6 +1443,17 @@ impl NotebookDoc {
                 },
                 _ => None,
             })
+    }
+
+    /// Read the execution_id pointer from a cell at a historical head set, if set.
+    pub fn get_execution_id_at_heads(
+        &self,
+        cell_id: &str,
+        heads: &[automerge::ChangeHash],
+    ) -> Option<String> {
+        let cells_id = self.cells_map_id_at(heads)?;
+        let cell_obj = self.cell_obj_id_at(&cells_id, cell_id, heads)?;
+        read_str_at(&self.doc, &cell_obj, "execution_id", heads)
     }
 
     // ── Cell type ───────────────────────────────────────────────────
@@ -1837,9 +1885,52 @@ impl NotebookDoc {
             })
     }
 
+    fn text_id_at(
+        &self,
+        parent: &ObjId,
+        key: &str,
+        heads: &[automerge::ChangeHash],
+    ) -> Option<ObjId> {
+        self.doc
+            .get_at(parent, key, heads)
+            .ok()
+            .flatten()
+            .and_then(|(value, id)| match value {
+                automerge::Value::Object(ObjType::Text) => Some(id),
+                _ => None,
+            })
+    }
+
     fn map_id(&self, parent: &ObjId, key: &str) -> Option<ObjId> {
         self.doc
             .get(parent, key)
+            .ok()
+            .flatten()
+            .and_then(|(value, id)| match value {
+                automerge::Value::Object(ObjType::Map) => Some(id),
+                _ => None,
+            })
+    }
+
+    fn cells_map_id_at(&self, heads: &[automerge::ChangeHash]) -> Option<ObjId> {
+        self.doc
+            .get_at(automerge::ROOT, "cells", heads)
+            .ok()
+            .flatten()
+            .and_then(|(value, id)| match value {
+                automerge::Value::Object(ObjType::Map) => Some(id),
+                _ => None,
+            })
+    }
+
+    fn cell_obj_id_at(
+        &self,
+        cells_id: &ObjId,
+        cell_id: &str,
+        heads: &[automerge::ChangeHash],
+    ) -> Option<ObjId> {
+        self.doc
+            .get_at(cells_id, cell_id, heads)
             .ok()
             .flatten()
             .and_then(|(value, id)| match value {
@@ -1895,6 +1986,34 @@ impl NotebookDoc {
             resolved_assets,
         })
     }
+
+    fn read_cell_at(
+        &self,
+        cell_obj: &ObjId,
+        heads: &[automerge::ChangeHash],
+    ) -> Option<CellSnapshot> {
+        let id = read_str_at(&self.doc, cell_obj, "id", heads)?;
+        let cell_type = read_str_at(&self.doc, cell_obj, "cell_type", heads).unwrap_or_default();
+        let position =
+            read_str_at(&self.doc, cell_obj, "position", heads).unwrap_or_else(|| "80".to_string());
+        let execution_count = read_str_at(&self.doc, cell_obj, "execution_count", heads)
+            .unwrap_or_else(|| "null".to_string());
+
+        let source = self
+            .text_id_at(cell_obj, "source", heads)
+            .and_then(|text_id| self.doc.text_at(&text_id, heads).ok())
+            .unwrap_or_default();
+
+        Some(CellSnapshot {
+            id,
+            cell_type,
+            position,
+            source,
+            execution_count,
+            metadata: serde_json::json!({}),
+            resolved_assets: HashMap::new(),
+        })
+    }
 }
 
 // ── Free helpers ─────────────────────────────────────────────────────
@@ -1906,6 +2025,24 @@ fn read_str<O: AsRef<automerge::ObjId>, P: Into<automerge::Prop>>(
     prop: P,
 ) -> Option<String> {
     doc.get(obj, prop)
+        .ok()
+        .flatten()
+        .and_then(|(value, _)| match value {
+            automerge::Value::Scalar(s) => match s.as_ref() {
+                automerge::ScalarValue::Str(s) => Some(s.to_string()),
+                _ => None,
+            },
+            _ => None,
+        })
+}
+
+fn read_str_at<O: AsRef<automerge::ObjId>, P: Into<automerge::Prop>>(
+    doc: &AutoCommit,
+    obj: O,
+    prop: P,
+    heads: &[automerge::ChangeHash],
+) -> Option<String> {
+    doc.get_at(obj, prop, heads)
         .ok()
         .flatten()
         .and_then(|(value, _)| match value {

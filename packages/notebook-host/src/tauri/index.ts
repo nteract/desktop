@@ -114,8 +114,10 @@ export function createTauriHost(opts: CreateTauriHostOptions = {}): NotebookHost
   };
 
   const trust: HostTrust = {
-    async approve() {
-      await invoke("approve_notebook_trust");
+    async approve(options) {
+      await invoke("approve_notebook_trust", {
+        dependencyFingerprint: options?.dependencyFingerprint,
+      });
     },
   };
 

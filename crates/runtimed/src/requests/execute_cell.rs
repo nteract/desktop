@@ -9,42 +9,29 @@ use crate::notebook_sync_server::{
     catch_automerge_panic, detect_room_runtime, format_source, formatter_actor, NotebookRoom,
 };
 use crate::protocol::NotebookResponse;
+use crate::requests::guarded;
 use crate::task_supervisor::spawn_best_effort;
 
 pub(crate) async fn handle(room: &Arc<NotebookRoom>, cell_id: String) -> NotebookResponse {
-    // Read cell source FIRST (before kernel lock) to avoid holding
-    // kernel mutex while waiting on doc lock
-    let (source, cell_type) = {
-        let doc = room.doc.read().await;
-        match doc.get_cell(&cell_id) {
-            Some(c) => (c.source, c.cell_type),
-            None => {
-                let cells = doc.get_cells();
-                let cell_ids: Vec<&str> = cells.iter().map(|c| c.id.as_str()).collect();
-                warn!(
-                    "[notebook-sync] ExecuteCell: cell {} not found in document \
-                     (doc has {} cells: {:?})",
-                    cell_id,
-                    cells.len(),
-                    cell_ids,
-                );
-                return NotebookResponse::Error {
-                    error: format!("Cell not found in document: {}", cell_id),
-                };
-            }
-        }
-    }; // doc lock released here
+    handle_inner(room, cell_id, None).await
+}
 
-    // Only execute code cells
-    if cell_type != "code" {
-        return NotebookResponse::Error {
-            error: format!(
-                "Cannot execute non-code cell: {} (type: {})",
-                cell_id, cell_type
-            ),
-        };
+pub(crate) async fn handle_guarded(
+    room: &Arc<NotebookRoom>,
+    cell_id: String,
+    observed_heads: Vec<String>,
+) -> NotebookResponse {
+    if let Err(rejection) = guarded::ensure_trusted(room).await {
+        return rejection.into_response();
     }
+    handle_inner(room, cell_id, Some(observed_heads)).await
+}
 
+async fn handle_inner(
+    room: &Arc<NotebookRoom>,
+    cell_id: String,
+    observed_heads: Option<Vec<String>>,
+) -> NotebookResponse {
     // Agent-backed kernel: write execution to RuntimeStateDoc queue.
     // The runtime agent discovers it via CRDT sync and executes.
     // Check runtime_agent_request_tx (not runtime_agent_handle) to ensure the runtime agent's
@@ -68,60 +55,20 @@ pub(crate) async fn handle(room: &Arc<NotebookRoom>, cell_id: String) -> Noteboo
                 }
             }
 
-            // Idempotency: if the cell already has an active (queued or
-            // running) execution, return the existing execution_id instead
-            // of creating a new one. Lookup follows the ownership model:
-            // NotebookDoc owns the cell→execution_id mapping,
-            // RuntimeStateDoc owns execution lifecycle state.
-            {
-                let eid = {
-                    let doc = room.doc.read().await;
-                    doc.get_execution_id(&cell_id)
-                };
-                if let Some(eid) = eid {
-                    let is_active = room
-                        .state
-                        .read(|sd| {
-                            sd.get_execution(&eid).is_some_and(|exec| {
-                                exec.status == "queued" || exec.status == "running"
-                            })
-                        })
-                        .unwrap_or(false);
-                    if is_active {
+            let (source, execution_id) =
+                match queue_cell_if_current(room, &cell_id, observed_heads.as_deref()).await {
+                    QueueCellResult::Queued {
+                        source,
+                        execution_id,
+                    } => (source, execution_id),
+                    QueueCellResult::AlreadyActive { execution_id } => {
                         return NotebookResponse::CellQueued {
                             cell_id,
-                            execution_id: eid,
+                            execution_id,
                         };
                     }
-                }
-            }
-
-            let execution_id = uuid::Uuid::new_v4().to_string();
-            let seq = room
-                .next_queue_seq
-                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-
-            // Write execution entry with source to RuntimeStateDoc first
-            // so that NotebookDoc's cell→execution_id pointer never
-            // dangles. If this fails we bail before stamping the cell.
-            if let Err(e) = room.state.with_doc(|sd| {
-                sd.create_execution_with_source(&execution_id, &cell_id, &source, seq)
-            }) {
-                warn!(
-                    "[notebook-sync] Failed to create_execution_with_source for {}: {}",
-                    execution_id, e
-                );
-                return NotebookResponse::Error {
-                    error: format!("failed to queue execution: {e}"),
+                    QueueCellResult::Response(response) => return *response,
                 };
-            }
-
-            // Stamp execution_id on the cell in NotebookDoc
-            {
-                let mut doc = room.doc.write().await;
-                let _ = doc.set_execution_id(&cell_id, Some(&execution_id));
-                let _ = room.broadcasts.changed_tx.send(());
-            }
 
             // Best-effort background formatting via fork+merge
             let fork = {
@@ -168,4 +115,96 @@ pub(crate) async fn handle(room: &Arc<NotebookRoom>, cell_id: String) -> Noteboo
 
     // No runtime agent available — kernel not running
     NotebookResponse::NoKernel {}
+}
+
+enum QueueCellResult {
+    Queued {
+        source: String,
+        execution_id: String,
+    },
+    AlreadyActive {
+        execution_id: String,
+    },
+    Response(Box<NotebookResponse>),
+}
+
+async fn queue_cell_if_current(
+    room: &Arc<NotebookRoom>,
+    cell_id: &str,
+    observed_heads: Option<&[String]>,
+) -> QueueCellResult {
+    let mut doc = room.doc.write().await;
+    if let Some(observed_heads) = observed_heads {
+        if let Err(rejection) = guarded::validate_execute_cell(&mut doc, cell_id, observed_heads) {
+            return QueueCellResult::Response(Box::new(rejection.into_response()));
+        }
+    }
+
+    let cell = match doc.get_cell(cell_id) {
+        Some(c) => c,
+        None => {
+            let cells = doc.get_cells();
+            let cell_ids: Vec<&str> = cells.iter().map(|c| c.id.as_str()).collect();
+            warn!(
+                "[notebook-sync] ExecuteCell: cell {} not found in document \
+                 (doc has {} cells: {:?})",
+                cell_id,
+                cells.len(),
+                cell_ids,
+            );
+            return QueueCellResult::Response(Box::new(NotebookResponse::Error {
+                error: format!("Cell not found in document: {}", cell_id),
+            }));
+        }
+    };
+
+    if cell.cell_type != "code" {
+        return QueueCellResult::Response(Box::new(NotebookResponse::Error {
+            error: format!(
+                "Cannot execute non-code cell: {} (type: {})",
+                cell_id, cell.cell_type
+            ),
+        }));
+    }
+
+    let current_execution_id = doc.get_execution_id(cell_id);
+    if let Some(eid) = current_execution_id {
+        let is_active = room
+            .state
+            .read(|sd| {
+                sd.get_execution(&eid)
+                    .is_some_and(|exec| exec.status == "queued" || exec.status == "running")
+            })
+            .unwrap_or(false);
+        if is_active {
+            return QueueCellResult::AlreadyActive { execution_id: eid };
+        }
+    }
+
+    let execution_id = uuid::Uuid::new_v4().to_string();
+    let seq = room
+        .next_queue_seq
+        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
+    if let Err(e) = room
+        .state
+        .with_doc(|sd| sd.create_execution_with_source(&execution_id, cell_id, &cell.source, seq))
+    {
+        warn!(
+            "[notebook-sync] Failed to create_execution_with_source for {}: {}",
+            execution_id, e
+        );
+        return QueueCellResult::Response(Box::new(NotebookResponse::Error {
+            error: format!("failed to queue execution: {e}"),
+        }));
+    }
+
+    let source = cell.source;
+    let _ = doc.set_execution_id(cell_id, Some(&execution_id));
+    let _ = room.broadcasts.changed_tx.send(());
+
+    QueueCellResult::Queued {
+        source,
+        execution_id,
+    }
 }

@@ -23,6 +23,7 @@ pub(crate) mod get_kernel_info;
 pub(crate) mod get_metadata_snapshot;
 pub(crate) mod get_queue_state;
 pub(crate) mod get_raw_metadata;
+pub(crate) mod guarded;
 pub(crate) mod interrupt_execution;
 pub(crate) mod launch_kernel;
 pub(crate) mod run_all_cells;
