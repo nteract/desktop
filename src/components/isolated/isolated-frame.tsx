@@ -33,7 +33,9 @@ import {
   NTERACT_WIDGET_READY,
   NTERACT_WIDGET_STATE,
   NTERACT_WIDGET_UPDATE,
+  NTERACT_WHEEL_BOUNDARY,
 } from "./rpc-methods";
+import { scrollFrameWheelBoundary } from "./scroll-boundary";
 
 export interface IsolatedFrameProps {
   /**
@@ -539,6 +541,9 @@ export const IsolatedFrame = forwardRef<IsolatedFrameHandle, IsolatedFrameProps>
               });
               transport.onNotification(NTERACT_MOUSE_DOWN, () => {
                 onMouseDownRef.current?.();
+              });
+              transport.onNotification(NTERACT_WHEEL_BOUNDARY, (params) => {
+                scrollFrameWheelBoundary(iframeRef.current, params as { deltaY?: number });
               });
               transport.onNotification(NTERACT_DOUBLE_CLICK, () => {
                 onDoubleClickRef.current?.();
