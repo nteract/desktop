@@ -103,6 +103,15 @@ interface OutputAreaProps {
    * Use to update cell focus when the click is captured by the iframe.
    */
   onIframeMouseDown?: () => void;
+  /**
+   * Controlled interaction state for isolated output iframes.
+   * When false, the iframe is visible but pointer-inert so page scrolling wins.
+   */
+  iframeInteractive?: boolean;
+  /**
+   * Callback when the isolated output iframe interaction state changes.
+   */
+  onIframeInteractiveChange?: (interactive: boolean) => void;
 }
 
 /**
@@ -149,7 +158,7 @@ function outputNeedsIsolation(
  * Check if any outputs in the array need iframe isolation.
  * If any output needs isolation, ALL outputs should go to the iframe.
  */
-function anyOutputNeedsIsolation(
+export function anyOutputNeedsIsolation(
   outputs: JupyterOutput[],
   priority: readonly string[] = DEFAULT_PRIORITY,
 ): boolean {
@@ -256,13 +265,15 @@ export function OutputArea({
   searchQuery,
   onSearchMatchCount,
   onIframeMouseDown,
+  iframeInteractive,
+  onIframeInteractiveChange,
 }: OutputAreaProps) {
   const id = useId();
   const frameRef = useRef<IsolatedFrameHandle>(null);
   const bridgeRef = useRef<CommBridgeManager | null>(null);
   const inDomOutputRef = useRef<HTMLDivElement>(null);
   const outputWellRef = useRef<HTMLDivElement>(null);
-  const [isIframeInteractive, setIsIframeInteractive] = useState(false);
+  const [uncontrolledIframeInteractive, setUncontrolledIframeInteractive] = useState(false);
   const injectedLibsRef = useRef(new Set<string>());
   const renderGenRef = useRef(0);
   const searchQueryRef = useRef(searchQuery);
@@ -291,6 +302,16 @@ export function OutputArea({
   // When preloading, we render the iframe even with no outputs (hidden)
   // This allows it to bootstrap ahead of time for instant rendering
   const showPreloadedIframe = preloadIframe && !collapsed;
+  const isIframeInteractive = iframeInteractive ?? uncontrolledIframeInteractive;
+  const setIframeInteractive = useCallback(
+    (interactive: boolean) => {
+      if (iframeInteractive === undefined) {
+        setUncontrolledIframeInteractive(interactive);
+      }
+      onIframeInteractiveChange?.(interactive);
+    },
+    [iframeInteractive, onIframeInteractiveChange],
+  );
 
   // Check if we have widgets and should set up comm bridge
   const hasWidgets = hasWidgetOutputs(outputs, priority);
@@ -514,9 +535,9 @@ export function OutputArea({
 
   useEffect(() => {
     if (!shouldIsolate || collapsed || isPreloadOnly) {
-      setIsIframeInteractive(false);
+      setIframeInteractive(false);
     }
-  }, [collapsed, isPreloadOnly, shouldIsolate]);
+  }, [collapsed, isPreloadOnly, setIframeInteractive, shouldIsolate]);
 
   useEffect(() => {
     if (!isIframeInteractive) {
@@ -525,18 +546,27 @@ export function OutputArea({
 
     const handlePointerDown = (event: PointerEvent) => {
       if (!outputWellRef.current?.contains(event.target as Node | null)) {
-        setIsIframeInteractive(false);
+        setIframeInteractive(false);
+      }
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setIframeInteractive(false);
       }
     };
 
     window.addEventListener("pointerdown", handlePointerDown, true);
-    return () => window.removeEventListener("pointerdown", handlePointerDown, true);
-  }, [isIframeInteractive]);
+    window.addEventListener("keydown", handleKeyDown, true);
+    return () => {
+      window.removeEventListener("pointerdown", handlePointerDown, true);
+      window.removeEventListener("keydown", handleKeyDown, true);
+    };
+  }, [isIframeInteractive, setIframeInteractive]);
 
   const activateOutputWell = useCallback(() => {
     onIframeMouseDown?.();
-    setIsIframeInteractive(true);
-  }, [onIframeMouseDown]);
+    setIframeInteractive(true);
+  }, [onIframeMouseDown, setIframeInteractive]);
 
   // Empty state: render nothing (unless preloading iframe)
   if (outputs.length === 0 && !showPreloadedIframe) {
@@ -583,7 +613,11 @@ export function OutputArea({
               ref={outputWellRef}
               data-slot="output-well"
               data-interactive={isIframeInteractive ? "true" : "false"}
-              className={cn("relative", shouldIsolate ? undefined : "hidden")}
+              className={cn(
+                "relative rounded-sm ring-1 ring-transparent transition-shadow",
+                isIframeInteractive && "ring-ring/60",
+                shouldIsolate ? undefined : "hidden",
+              )}
             >
               <IsolatedFrame
                 ref={frameRef}
