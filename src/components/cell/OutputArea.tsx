@@ -692,7 +692,7 @@ export function OutputArea({
               }
               className={cn(
                 needsBoundedInDomWell && "relative border-y border-border/50 transition-colors",
-                needsBoundedInDomWell && isOutputWellInteractive && "border-ring/50",
+                needsBoundedInDomWell && isOutputWellInteractive && "border-border/70",
               )}
             >
               <div

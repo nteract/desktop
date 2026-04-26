@@ -21,6 +21,8 @@ interface CellContainerProps {
   rightGutterContent?: ReactNode;
   /** Content to render in the right margin aligned with output row (e.g., output controls) */
   outputRightGutterContent?: ReactNode;
+  /** Whether the output row has active user interaction focus. */
+  isOutputActive?: boolean;
   /** Remote peer presence indicators (colored dots showing who's on this cell) */
   presenceIndicators?: ReactNode;
   /** Custom color configuration for cell types not in defaults */
@@ -50,6 +52,7 @@ export const CellContainer = forwardRef<HTMLDivElement, CellContainerProps>(
       gutterContent,
       rightGutterContent,
       outputRightGutterContent,
+      isOutputActive = false,
       presenceIndicators,
       customGutterColors,
       isPreviousCellFromFocused = false,
@@ -62,8 +65,10 @@ export const CellContainer = forwardRef<HTMLDivElement, CellContainerProps>(
   ) => {
     const colors = getGutterColors(cellType, customGutterColors);
     const ribbonColor = isFocused ? colors.ribbon.focused : colors.ribbon.default;
-    const outputRibbonColor = isFocused ? colors.outputRibbon.focused : colors.outputRibbon.default;
+    const outputRibbonColor =
+      isFocused || isOutputActive ? colors.outputRibbon.focused : colors.outputRibbon.default;
     const bgColor = isFocused ? colors.background.focused : undefined;
+    const outputBgColor = isOutputActive ? colors.background.focused : undefined;
 
     // Use segmented ribbon when codeContent is provided
     const useSegmentedRibbon = codeContent !== undefined;
@@ -122,7 +127,16 @@ export const CellContainer = forwardRef<HTMLDivElement, CellContainerProps>(
             {/* Output row - ribbon + content + right gutter
                 onMouseDown sets visual focus (ribbon/bg) without stealing editor focus */}
             {hasOutput && (
-              <div className={cn("flex", hideOutput && "hidden")} onMouseDown={onFocus}>
+              <div
+                className={cn(
+                  "flex transition-colors duration-150",
+                  outputBgColor,
+                  isOutputActive && "-mx-16 px-16",
+                  hideOutput && "hidden",
+                )}
+                data-output-active={isOutputActive ? "true" : "false"}
+                onMouseDown={onFocus}
+              >
                 <div className={cn("w-1 transition-colors duration-150", outputRibbonColor)} />
                 <div
                   className={cn(

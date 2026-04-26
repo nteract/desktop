@@ -307,6 +307,7 @@ export const CodeCell = memo(function CodeCell({
         presenceIndicators={<CellPresenceIndicators cellId={cell.id} />}
         dragHandleProps={dragHandleProps}
         isDragging={isDragging}
+        isOutputActive={isOutputWellInteractive}
         codeContent={
           <>
             {/* Source visibility toggle + Editor */}
