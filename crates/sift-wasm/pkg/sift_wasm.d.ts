@@ -182,6 +182,14 @@ export function store_temporal_histogram(handle: number, col: number): any;
 export function store_value_counts(handle: number, col: number): any;
 
 /**
+ * Batch-fetch display strings and raw numeric values for viewport rows.
+ *
+ * The frontend calls this once per render window instead of calling
+ * is_null/get_cell_string/get_cell_f64 for every visible cell.
+ */
+export function store_viewport_cells(handle: number, rows: Uint32Array): any;
+
+/**
  * Search a string column for values containing a substring.
  * Returns indices of matching rows as a Uint32Array.
  *
@@ -259,6 +267,7 @@ export interface InitOutput {
     readonly store_sort_indices: (a: number, b: number, c: number) => [number, number, number, number];
     readonly store_temporal_histogram: (a: number, b: number) => [number, number, number];
     readonly store_value_counts: (a: number, b: number) => [number, number, number];
+    readonly store_viewport_cells: (a: number, b: number, c: number) => [number, number, number];
     readonly string_contains: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
     readonly undo_cast_column: (a: number, b: number) => [number, number, number, number];
     readonly value_counts: (a: number, b: number, c: number) => [number, number, number];

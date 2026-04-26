@@ -12,7 +12,7 @@ use arrow_select::concat::concat;
 use chrono::DateTime;
 use nteract_predicate::summary::{CategoryCount, HistogramBin};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::io::Cursor;
 use std::sync::Mutex;
@@ -31,6 +31,14 @@ struct DataStore {
     /// Original column arrays saved before casting, keyed by column index.
     /// Used to restore original data when casting back to the original type.
     original_columns: HashMap<usize, (Vec<arrow::array::ArrayRef>, String)>,
+}
+
+#[derive(Serialize)]
+struct ViewportCells {
+    rows: Vec<u32>,
+    strings: Vec<String>,
+    numeric_values: Vec<Option<f64>>,
+    nulls: Vec<bool>,
 }
 
 impl DataStore {
@@ -297,6 +305,136 @@ fn format_timestamp_ms(ms: i64, tz: Option<&str>, has_time: bool) -> String {
     }
 }
 
+fn cell_string_for(store: &DataStore, col: usize, column: &dyn Array, local_row: usize) -> String {
+    if column.is_null(local_row) {
+        return String::new();
+    }
+
+    // Strings (Utf8 / LargeUtf8 / Utf8View / Dict<string>) route through
+    // the shared helper so all variants dispatch correctly.
+    if let Some(s) = nteract_predicate::arrow_utils::string_at(column, local_row) {
+        return s;
+    }
+
+    // Timestamps → human-readable date in the column's timezone (or UTC)
+    if let Some(ms) = timestamp_cell_ms(column, local_row) {
+        let tz = store.col_timezones.get(col).and_then(|t| t.as_deref());
+        let has_time = matches!(column.data_type(), DataType::Timestamp(_, _));
+        return format_timestamp_ms(ms, tz, has_time);
+    }
+
+    match column.data_type() {
+        DataType::Boolean => column
+            .as_any()
+            .downcast_ref::<BooleanArray>()
+            .map(|a| {
+                if a.value(local_row) {
+                    "Yes".into()
+                } else {
+                    "No".into()
+                }
+            })
+            .unwrap_or_default(),
+        DataType::Int32 => column
+            .as_any()
+            .downcast_ref::<Int32Array>()
+            .map(|a| a.value(local_row).to_string())
+            .unwrap_or_default(),
+        DataType::Int64 => column
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .map(|a| a.value(local_row).to_string())
+            .unwrap_or_default(),
+        DataType::Float64 => column
+            .as_any()
+            .downcast_ref::<Float64Array>()
+            .map(|a| format!("{}", a.value(local_row)))
+            .unwrap_or_default(),
+        _ => ArrayFormatter::try_new(column, &Default::default())
+            .ok()
+            .map(|f| f.value(local_row).to_string())
+            .unwrap_or_default(),
+    }
+}
+
+fn cell_f64_for(column: &dyn Array, local_row: usize) -> f64 {
+    if column.is_null(local_row) {
+        return f64::NAN;
+    }
+
+    // Timestamps → epoch ms as f64
+    if let Some(ms) = timestamp_cell_ms(column, local_row) {
+        return ms as f64;
+    }
+
+    match column.data_type() {
+        DataType::Float64 => column
+            .as_any()
+            .downcast_ref::<Float64Array>()
+            .map(|a| a.value(local_row))
+            .unwrap_or(f64::NAN),
+        DataType::Int32 => column
+            .as_any()
+            .downcast_ref::<Int32Array>()
+            .map(|a| a.value(local_row) as f64)
+            .unwrap_or(f64::NAN),
+        DataType::Int64 => column
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .map(|a| a.value(local_row) as f64)
+            .unwrap_or(f64::NAN),
+        _ => f64::NAN,
+    }
+}
+
+fn viewport_cells_for(s: &DataStore, rows: &[u32]) -> ViewportCells {
+    let cell_count = rows.len().saturating_mul(s.num_cols);
+    let mut out = ViewportCells {
+        rows: Vec::with_capacity(rows.len()),
+        strings: Vec::with_capacity(cell_count),
+        numeric_values: Vec::with_capacity(cell_count),
+        nulls: Vec::with_capacity(cell_count),
+    };
+
+    for &row_u32 in rows {
+        out.rows.push(row_u32);
+        let Some((batch_idx, local_row)) = s.resolve_row(row_u32 as usize) else {
+            for _ in 0..s.num_cols {
+                out.strings.push(String::new());
+                out.numeric_values.push(None);
+                out.nulls.push(true);
+            }
+            continue;
+        };
+
+        let batch = &s.batches[batch_idx];
+        for col in 0..s.num_cols {
+            let column = batch.column(col);
+            let is_null = column.is_null(local_row);
+            out.nulls.push(is_null);
+            if is_null {
+                out.strings.push(String::new());
+                out.numeric_values.push(None);
+                continue;
+            }
+
+            out.strings
+                .push(cell_string_for(s, col, column.as_ref(), local_row));
+            if matches!(
+                s.col_types.get(col).map(String::as_str),
+                Some("numeric" | "timestamp")
+            ) {
+                out.numeric_values
+                    .push(Some(cell_f64_for(column.as_ref(), local_row)));
+            } else {
+                out.numeric_values.push(None);
+            }
+        }
+    }
+
+    out
+}
+
 /// Get a cell value as a formatted string (for display).
 #[wasm_bindgen]
 pub fn get_cell_string(handle: u32, row: usize, col: usize) -> Result<String, JsValue> {
@@ -310,51 +448,7 @@ pub fn get_cell_string(handle: u32, row: usize, col: usize) -> Result<String, Js
             return String::new();
         }
 
-        // Strings (Utf8 / LargeUtf8 / Utf8View / Dict<string>) route through
-        // the shared helper so all variants dispatch correctly.
-        if let Some(s) = nteract_predicate::arrow_utils::string_at(column.as_ref(), local_row) {
-            return s;
-        }
-
-        // Timestamps → human-readable date in the column's timezone (or UTC)
-        if let Some(ms) = timestamp_cell_ms(column.as_ref(), local_row) {
-            let tz = s.col_timezones.get(col).and_then(|t| t.as_deref());
-            let has_time = matches!(column.data_type(), DataType::Timestamp(_, _));
-            return format_timestamp_ms(ms, tz, has_time);
-        }
-
-        match column.data_type() {
-            DataType::Boolean => column
-                .as_any()
-                .downcast_ref::<BooleanArray>()
-                .map(|a| {
-                    if a.value(local_row) {
-                        "Yes".into()
-                    } else {
-                        "No".into()
-                    }
-                })
-                .unwrap_or_default(),
-            DataType::Int32 => column
-                .as_any()
-                .downcast_ref::<Int32Array>()
-                .map(|a| a.value(local_row).to_string())
-                .unwrap_or_default(),
-            DataType::Int64 => column
-                .as_any()
-                .downcast_ref::<Int64Array>()
-                .map(|a| a.value(local_row).to_string())
-                .unwrap_or_default(),
-            DataType::Float64 => column
-                .as_any()
-                .downcast_ref::<Float64Array>()
-                .map(|a| format!("{}", a.value(local_row)))
-                .unwrap_or_default(),
-            _ => ArrayFormatter::try_new(column.as_ref(), &Default::default())
-                .ok()
-                .map(|f| f.value(local_row).to_string())
-                .unwrap_or_default(),
-        }
+        cell_string_for(s, col, column.as_ref(), local_row)
     })
     .map_err(|e| JsValue::from_str(&e))
 }
@@ -373,29 +467,20 @@ pub fn get_cell_f64(handle: u32, row: usize, col: usize) -> Result<f64, JsValue>
             return f64::NAN;
         }
 
-        // Timestamps → epoch ms as f64
-        if let Some(ms) = timestamp_cell_ms(column.as_ref(), local_row) {
-            return ms as f64;
-        }
+        cell_f64_for(column.as_ref(), local_row)
+    })
+    .map_err(|e| JsValue::from_str(&e))
+}
 
-        match column.data_type() {
-            DataType::Float64 => column
-                .as_any()
-                .downcast_ref::<Float64Array>()
-                .map(|a| a.value(local_row))
-                .unwrap_or(f64::NAN),
-            DataType::Int32 => column
-                .as_any()
-                .downcast_ref::<Int32Array>()
-                .map(|a| a.value(local_row) as f64)
-                .unwrap_or(f64::NAN),
-            DataType::Int64 => column
-                .as_any()
-                .downcast_ref::<Int64Array>()
-                .map(|a| a.value(local_row) as f64)
-                .unwrap_or(f64::NAN),
-            _ => f64::NAN,
-        }
+/// Batch-fetch display strings and raw numeric values for viewport rows.
+///
+/// The frontend calls this once per render window instead of calling
+/// is_null/get_cell_string/get_cell_f64 for every visible cell.
+#[wasm_bindgen]
+pub fn store_viewport_cells(handle: u32, rows: &[u32]) -> Result<JsValue, JsValue> {
+    with_store(handle, |s| {
+        let out = viewport_cells_for(s, rows);
+        serde_wasm_bindgen::to_value(&out).unwrap_or(JsValue::NULL)
     })
     .map_err(|e| JsValue::from_str(&e))
 }
@@ -1731,6 +1816,10 @@ fn get_string_value(arr: &dyn Array, row: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use arrow::array::{ArrayRef, BooleanArray, Float64Array, Int32Array, StringArray};
+    use arrow::datatypes::{Field, Schema};
+    use std::collections::HashMap;
+    use std::sync::Arc;
 
     #[test]
     fn format_date_only() {
@@ -1777,6 +1866,71 @@ mod tests {
         assert_eq!(
             format_timestamp_ms(i64::MAX, None, false),
             i64::MAX.to_string()
+        );
+    }
+
+    #[test]
+    fn viewport_cells_are_flattened_in_requested_order() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("name", DataType::Utf8, false),
+            Field::new("score", DataType::Float64, true),
+            Field::new("active", DataType::Boolean, false),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(Int32Array::from(vec![1, 2])) as ArrayRef,
+                Arc::new(StringArray::from(vec!["Alice", "Bob"])) as ArrayRef,
+                Arc::new(Float64Array::from(vec![None, Some(88.0)])) as ArrayRef,
+                Arc::new(BooleanArray::from(vec![true, false])) as ArrayRef,
+            ],
+        )
+        .expect("record batch");
+        let store = DataStore {
+            batches: vec![batch],
+            batch_offsets: vec![0],
+            total_rows: 2,
+            num_cols: 4,
+            col_names: vec![
+                "id".to_string(),
+                "name".to_string(),
+                "score".to_string(),
+                "active".to_string(),
+            ],
+            col_types: vec![
+                "numeric".to_string(),
+                "categorical".to_string(),
+                "numeric".to_string(),
+                "boolean".to_string(),
+            ],
+            col_timezones: vec![None, None, None, None],
+            original_columns: HashMap::new(),
+        };
+
+        let out = viewport_cells_for(&store, &[1, 0]);
+
+        assert_eq!(out.rows, vec![1, 0]);
+        assert_eq!(
+            out.strings,
+            vec!["2", "Bob", "88", "No", "1", "Alice", "", "Yes"]
+        );
+        assert_eq!(
+            out.numeric_values,
+            vec![
+                Some(2.0),
+                None,
+                Some(88.0),
+                None,
+                Some(1.0),
+                None,
+                None,
+                None
+            ]
+        );
+        assert_eq!(
+            out.nulls,
+            vec![false, false, false, false, false, false, true, false]
         );
     }
 }

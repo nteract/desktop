@@ -6,7 +6,7 @@
  * getCell/getCellRaw read from the JS-side cache — no per-cell FFI.
  */
 import { autoWidth } from "./auto-width";
-import type { FilterSpecJson } from "./predicate";
+import type { FilterSpecJson, ViewportCells } from "./predicate";
 import { getModuleSync } from "./predicate";
 import type { Column, ColumnType, TableData } from "./table";
 
@@ -72,23 +72,26 @@ export function createWasmTableData(
     const uncached = dataRowIndices.filter((r) => !cache.has(r));
     if (uncached.length === 0) return;
 
-    for (const dataRow of uncached) {
+    const batch = mod.store_viewport_cells(handle, Uint32Array.from(uncached)) as ViewportCells;
+    for (let rowOffset = 0; rowOffset < batch.rows.length; rowOffset++) {
+      const dataRow = batch.rows[rowOffset];
       const strings: string[] = [];
       const raws: unknown[] = [];
 
       for (let c = 0; c < numCols; c++) {
-        if (mod.is_null(handle, dataRow, c)) {
+        const cellOffset = rowOffset * numCols + c;
+        const s = batch.strings[cellOffset] ?? "";
+        if (batch.nulls[cellOffset]) {
           strings.push("");
           raws.push(null);
           continue;
         }
 
-        const s = mod.get_cell_string(handle, dataRow, c);
         strings.push(s);
 
         const colType = columns[c].columnType;
         if (colType === "numeric" || colType === "timestamp") {
-          raws.push(mod.get_cell_f64(handle, dataRow, c));
+          raws.push(batch.numeric_values[cellOffset] ?? Number.NaN);
         } else if (colType === "boolean") {
           raws.push(s === "Yes");
         } else {

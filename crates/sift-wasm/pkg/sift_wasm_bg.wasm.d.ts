@@ -31,6 +31,7 @@ export const store_histogram: (a: number, b: number, c: number) => [number, numb
 export const store_sort_indices: (a: number, b: number, c: number) => [number, number, number, number];
 export const store_temporal_histogram: (a: number, b: number) => [number, number, number];
 export const store_value_counts: (a: number, b: number) => [number, number, number];
+export const store_viewport_cells: (a: number, b: number, c: number) => [number, number, number];
 export const string_contains: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
 export const undo_cast_column: (a: number, b: number) => [number, number, number, number];
 export const value_counts: (a: number, b: number, c: number) => [number, number, number];
