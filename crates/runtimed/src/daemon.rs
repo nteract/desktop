@@ -714,7 +714,7 @@ pub struct Daemon {
 #[derive(Debug, thiserror::Error)]
 #[error("Another daemon is already running: {info:?}")]
 pub struct DaemonAlreadyRunning {
-    pub info: DaemonInfo,
+    pub info: Box<DaemonInfo>,
 }
 
 impl Daemon {
