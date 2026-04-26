@@ -1617,87 +1617,86 @@ pub fn store_filter_rows(handle: u32, filters_js: JsValue) -> Result<Vec<u32>, J
         })
         .collect();
 
-    with_store(handle, |s| {
-        // Concatenate each filtered column once (avoids per-row batch resolution)
-        let mut concat_cols: Vec<Option<arrow::array::ArrayRef>> = vec![None; s.num_cols];
-        for filter in &filters {
-            let col_idx = match filter {
-                FilterSpec::Range { col, .. } => *col,
-                FilterSpec::Set { col, .. } => *col,
-                FilterSpec::NotIn { col, .. } => *col,
-                FilterSpec::Boolean { col, .. } => *col,
-            };
-            if concat_cols[col_idx].is_none() {
-                let arrays: Vec<&dyn Array> = s
-                    .batches
-                    .iter()
-                    .map(|b| b.column(col_idx).as_ref())
-                    .collect();
-                if !arrays.is_empty() {
-                    if let Ok(combined) = concat(&arrays) {
-                        concat_cols[col_idx] = Some(combined);
+    with_store(handle, |s| filter_rows_in_store(s, &filters, &set_lookups))
+        .map_err(|e| JsValue::from_str(&e))
+}
+
+fn filter_rows_in_store(
+    s: &DataStore,
+    filters: &[FilterSpec],
+    set_lookups: &[Option<HashSet<&str>>],
+) -> Vec<u32> {
+    let total = s.total_rows;
+    let mut result = Vec::with_capacity(total);
+
+    'row: for row in 0..total {
+        let Some((batch_idx, local_row)) = s.resolve_row(row) else {
+            continue;
+        };
+        let batch = &s.batches[batch_idx];
+
+        for (fi, filter) in filters.iter().enumerate() {
+            match filter {
+                FilterSpec::Range { col, min, max } => {
+                    if *col >= batch.num_columns() {
+                        continue 'row;
+                    }
+                    let arr = batch.column(*col);
+                    if arr.is_null(local_row) {
+                        continue 'row;
+                    }
+                    let v = get_f64_value(arr.as_ref(), local_row);
+                    if v.is_nan() || v < *min || v > *max {
+                        continue 'row;
+                    }
+                }
+                FilterSpec::Set { col, .. } => {
+                    if *col >= batch.num_columns() {
+                        continue 'row;
+                    }
+                    let arr = batch.column(*col);
+                    let value = cell_string_for(s, *col, arr.as_ref(), local_row);
+                    if let Some(ref lookup) = set_lookups[fi] {
+                        if !lookup.contains(value.as_str()) {
+                            continue 'row;
+                        }
+                    }
+                }
+                FilterSpec::NotIn { col, .. } => {
+                    if *col >= batch.num_columns() {
+                        continue 'row;
+                    }
+                    let arr = batch.column(*col);
+                    let value = cell_string_for(s, *col, arr.as_ref(), local_row);
+                    if let Some(ref lookup) = set_lookups[fi] {
+                        // Inverted logic: skip row if value IS in the exclusion set
+                        if lookup.contains(value.as_str()) {
+                            continue 'row;
+                        }
+                    }
+                }
+                FilterSpec::Boolean { col, value } => {
+                    if *col >= batch.num_columns() {
+                        continue 'row;
+                    }
+                    let arr = batch.column(*col);
+                    if arr.is_null(local_row) {
+                        continue 'row;
+                    }
+                    if let Some(bool_arr) = arr.as_any().downcast_ref::<BooleanArray>() {
+                        if bool_arr.value(local_row) != *value {
+                            continue 'row;
+                        }
+                    } else {
+                        continue 'row;
                     }
                 }
             }
         }
+        result.push(row as u32);
+    }
 
-        let total = s.total_rows;
-        let mut result = Vec::with_capacity(total);
-
-        'row: for row in 0..total {
-            for (fi, filter) in filters.iter().enumerate() {
-                match filter {
-                    FilterSpec::Range { col, min, max } => {
-                        if let Some(ref arr) = concat_cols[*col] {
-                            if arr.is_null(row) {
-                                continue 'row;
-                            }
-                            let v = get_f64_value(arr.as_ref(), row);
-                            if v.is_nan() || v < *min || v > *max {
-                                continue 'row;
-                            }
-                        }
-                    }
-                    FilterSpec::Set { col, .. } => {
-                        if let Some(ref arr) = concat_cols[*col] {
-                            let s = get_string_value(arr.as_ref(), row);
-                            if let Some(ref lookup) = set_lookups[fi] {
-                                if !lookup.contains(s.as_str()) {
-                                    continue 'row;
-                                }
-                            }
-                        }
-                    }
-                    FilterSpec::NotIn { col, .. } => {
-                        if let Some(ref arr) = concat_cols[*col] {
-                            let s = get_string_value(arr.as_ref(), row);
-                            if let Some(ref lookup) = set_lookups[fi] {
-                                // Inverted logic: skip row if value IS in the exclusion set
-                                if lookup.contains(s.as_str()) {
-                                    continue 'row;
-                                }
-                            }
-                        }
-                    }
-                    FilterSpec::Boolean { col, value } => {
-                        if let Some(ref arr) = concat_cols[*col] {
-                            if arr.is_null(row) {
-                                continue 'row;
-                            }
-                            if let Some(bool_arr) = arr.as_any().downcast_ref::<BooleanArray>() {
-                                if bool_arr.value(row) != *value {
-                                    continue 'row;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            result.push(row as u32);
-        }
-        result
-    })
-    .map_err(|e| JsValue::from_str(&e))
+    result
 }
 
 /// Extract an f64 from any numeric or timestamp array at the given row.
@@ -1788,6 +1787,7 @@ fn get_f64_value(arr: &dyn Array, row: usize) -> f64 {
 }
 
 /// Extract a string value from any string, boolean, or dictionary-encoded column.
+#[cfg(test)]
 fn get_string_value(arr: &dyn Array, row: usize) -> String {
     // String-like types (Utf8 / LargeUtf8 / Utf8View / Dict<string>) via the
     // shared helper. Handles null internally.
@@ -1820,7 +1820,7 @@ fn get_string_value(arr: &dyn Array, row: usize) -> String {
 mod tests {
     use super::*;
     use arrow::array::{
-        ArrayRef, BooleanArray, Float64Array, Int32Array, StringArray, StructArray,
+        ArrayRef, BooleanArray, Float64Array, Int32Array, Int64Array, StringArray, StructArray,
     };
     use arrow::datatypes::{Field, Schema};
     use std::collections::HashMap;
@@ -1899,6 +1899,106 @@ mod tests {
         assert_ne!(
             get_string_value(&metrics, 1),
             format!("{:?}", metrics.as_any())
+        );
+    }
+
+    #[test]
+    fn filter_string_value_matches_display_formatter_after_concat() {
+        let first = StructArray::from(vec![
+            (
+                Arc::new(Field::new("clicks", DataType::Int32, false)),
+                Arc::new(Int32Array::from(vec![375])) as ArrayRef,
+            ),
+            (
+                Arc::new(Field::new("ratio", DataType::Float64, false)),
+                Arc::new(Float64Array::from(vec![0.353])) as ArrayRef,
+            ),
+        ]);
+        let second = StructArray::from(vec![
+            (
+                Arc::new(Field::new("clicks", DataType::Int32, false)),
+                Arc::new(Int32Array::from(vec![651])) as ArrayRef,
+            ),
+            (
+                Arc::new(Field::new("ratio", DataType::Float64, false)),
+                Arc::new(Float64Array::from(vec![0.118])) as ArrayRef,
+            ),
+        ]);
+        let arrays: Vec<&dyn Array> = vec![&first, &second];
+        let combined = concat(&arrays).unwrap();
+        let first_formatter = ArrayFormatter::try_new(&first, &Default::default()).unwrap();
+        let second_formatter = ArrayFormatter::try_new(&second, &Default::default()).unwrap();
+
+        assert_eq!(
+            get_string_value(combined.as_ref(), 0),
+            first_formatter.value(0).to_string()
+        );
+        assert_eq!(
+            get_string_value(combined.as_ref(), 1),
+            second_formatter.value(0).to_string()
+        );
+    }
+
+    #[test]
+    fn store_filter_rows_matches_struct_value_count_labels() {
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "metrics",
+            DataType::Struct(
+                vec![
+                    Field::new("clicks", DataType::Int64, false),
+                    Field::new("ratio", DataType::Float64, false),
+                ]
+                .into(),
+            ),
+            false,
+        )]));
+        let first_metrics = StructArray::from(vec![
+            (
+                Arc::new(Field::new("clicks", DataType::Int64, false)),
+                Arc::new(Int64Array::from(vec![375])) as ArrayRef,
+            ),
+            (
+                Arc::new(Field::new("ratio", DataType::Float64, false)),
+                Arc::new(Float64Array::from(vec![0.353])) as ArrayRef,
+            ),
+        ]);
+        let second_metrics = StructArray::from(vec![
+            (
+                Arc::new(Field::new("clicks", DataType::Int64, false)),
+                Arc::new(Int64Array::from(vec![651])) as ArrayRef,
+            ),
+            (
+                Arc::new(Field::new("ratio", DataType::Float64, false)),
+                Arc::new(Float64Array::from(vec![0.118])) as ArrayRef,
+            ),
+        ]);
+        let first_batch =
+            RecordBatch::try_new(schema.clone(), vec![Arc::new(first_metrics) as ArrayRef])
+                .expect("record batch");
+        let second_batch =
+            RecordBatch::try_new(schema, vec![Arc::new(second_metrics.clone()) as ArrayRef])
+                .expect("record batch");
+        let store = DataStore {
+            batches: vec![first_batch, second_batch],
+            batch_offsets: vec![0, 1],
+            total_rows: 2,
+            num_cols: 1,
+            col_names: vec!["metrics".to_string()],
+            col_types: vec!["categorical".to_string()],
+            col_timezones: vec![None],
+            original_columns: HashMap::new(),
+        };
+        let formatter = ArrayFormatter::try_new(&second_metrics, &Default::default()).unwrap();
+        let selected = formatter.value(0).to_string();
+        let filters = vec![FilterSpec::Set {
+            col: 0,
+            values: vec![selected.clone()],
+        }];
+        let set_lookups = vec![Some(HashSet::from([selected.as_str()]))];
+
+        assert_eq!(
+            filter_rows_in_store(&store, &filters, &set_lookups),
+            vec![1]
         );
     }
 
