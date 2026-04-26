@@ -34,6 +34,13 @@ let savedSelection: { anchor: number; head: number } | null = null;
 /** Whether the window currently has focus (dedup guard). */
 let windowFocused = true;
 
+/**
+ * Set when the parent document loses focus because the user entered an
+ * iframe output. Returning from that iframe should not restore the previous
+ * editor because the next click may be targeting a different cell.
+ */
+let skipNextRestoreFromIframe = false;
+
 // ── Editor focus tracking ────────────────────────────────────────────
 
 /**
@@ -49,6 +56,10 @@ let windowFocused = true;
 function trackEditorFocus(e: FocusEvent): void {
   const target = e.target as HTMLElement | null;
   if (!target) return;
+
+  if (target instanceof HTMLIFrameElement) {
+    skipNextRestoreFromIframe = true;
+  }
 
   const cmEditor = target.closest?.(".cm-editor");
   if (!cmEditor) {
@@ -68,11 +79,26 @@ function trackEditorFocus(e: FocusEvent): void {
   }
 }
 
+function trackIframePointerDown(e: PointerEvent): void {
+  if (e.target instanceof HTMLIFrameElement) {
+    skipNextRestoreFromIframe = true;
+    savedView = null;
+    savedSelection = null;
+  }
+}
+
 // ── Focus / blur handlers ────────────────────────────────────────────
 
 function handleWindowBlur(): void {
   if (!windowFocused) return; // already blurred (dedup)
   windowFocused = false;
+
+  if (document.activeElement instanceof HTMLIFrameElement) {
+    skipNextRestoreFromIframe = true;
+    savedSelection = null;
+    logger.debug("[window-focus] Window blur entered iframe; skipping next restore");
+    return;
+  }
 
   // Snapshot the selection from the tracked editor. CM6's internal
   // state.selection is always valid regardless of DOM focus.
@@ -105,6 +131,13 @@ function handleWindowFocus(): void {
  * during the focus event.
  */
 function restoreEditorFocus(): void {
+  if (skipNextRestoreFromIframe) {
+    skipNextRestoreFromIframe = false;
+    savedSelection = null;
+    logger.debug("[window-focus] Skipping restore after iframe interaction");
+    return;
+  }
+
   // Don't steal focus from iframe interactions (user may be in a widget)
   if (document.activeElement instanceof HTMLIFrameElement) {
     logger.debug("[window-focus] Skipping restore — iframe has focus");
@@ -171,6 +204,7 @@ function restoreEditorFocus(): void {
 export function startWindowFocusHandler(host: NotebookHost): () => void {
   // Track which CM editor has focus (capture phase for earliest signal).
   document.addEventListener("focusin", trackEditorFocus, true);
+  document.addEventListener("pointerdown", trackIframePointerDown, true);
 
   // Web-standard focus / blur on the window object. These fire
   // synchronously with the OS focus change — BEFORE any keystroke
@@ -201,12 +235,15 @@ export function startWindowFocusHandler(host: NotebookHost): () => void {
 
   return () => {
     document.removeEventListener("focusin", trackEditorFocus, true);
+    document.removeEventListener("pointerdown", trackIframePointerDown, true);
     window.removeEventListener("focus", handleWindowFocus);
     window.removeEventListener("blur", handleWindowBlur);
     document.removeEventListener("visibilitychange", handleVisibility);
     hostUnlisten();
     savedView = null;
     savedSelection = null;
+    windowFocused = true;
+    skipNextRestoreFromIframe = false;
     logger.info("[window-focus] Handler stopped");
   };
 }
