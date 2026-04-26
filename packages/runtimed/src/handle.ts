@@ -141,6 +141,12 @@ export interface SyncableHandle {
   /** Number of cells in the document. */
   cell_count(): number;
 
+  /** Current Automerge notebook document heads as hex strings. */
+  get_heads_hex(): string[];
+
+  /** Dependency metadata fingerprint covered by trust approval. */
+  get_dependency_fingerprint(): string | undefined;
+
   /**
    * Resolve ContentRef values in a comm's state.
    *

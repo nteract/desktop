@@ -129,6 +129,19 @@ pub struct QueueEntry {
     pub execution_id: String,
 }
 
+/// Frontend-observed notebook state used to guard trust-approved follow-up actions.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct GuardedNotebookProvenance {
+    pub observed_heads: Vec<String>,
+}
+
+/// Frontend-observed dependency state used to guard trust-approved sync.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct GuardedDependencyProvenance {
+    pub observed_heads: Vec<String>,
+    pub dependency_fingerprint: String,
+}
+
 /// Typed environment kind for sync operations.
 ///
 /// Replaces string-based env_type ("uv", "conda") with a discriminated union
@@ -322,6 +335,13 @@ pub enum NotebookRequest {
     /// Execute a cell by reading its source from the automerge doc.
     ExecuteCell { cell_id: String },
 
+    /// Execute a cell only if it still matches the frontend-observed state
+    /// captured when a trust gate opened.
+    ExecuteCellGuarded {
+        cell_id: String,
+        observed_heads: Vec<String>,
+    },
+
     /// Clear outputs for a cell (before re-execution).
     ClearOutputs { cell_id: String },
 
@@ -340,6 +360,10 @@ pub enum NotebookRequest {
     /// Run all code cells from the synced document.
     /// Daemon reads cell sources from the Automerge doc and queues them.
     RunAllCells {},
+
+    /// Run all code cells only if the current code-cell list still matches
+    /// the frontend-observed state captured when a trust gate opened.
+    RunAllCellsGuarded { observed_heads: Vec<String> },
 
     /// Send a comm message to the kernel (widget interactions).
     /// Accepts the full Jupyter message envelope to preserve header/session.
@@ -403,6 +427,13 @@ pub enum NotebookRequest {
     /// Sync environment with current metadata (hot-install new packages).
     /// Only supported for UV inline deps. Falls back to restart for removals/conda.
     SyncEnvironment {},
+
+    /// Sync environment only if dependency metadata still matches the state
+    /// the user approved in the trust dialog.
+    SyncEnvironmentGuarded {
+        observed_heads: Vec<String>,
+        dependency_fingerprint: String,
+    },
 
     /// Get the full Automerge document bytes from the daemon's canonical doc.
     /// Used by the frontend to bootstrap its WASM Automerge peer.
@@ -477,6 +508,10 @@ pub enum NotebookResponse {
 
     /// No kernel is running.
     NoKernel {},
+
+    /// A guarded action was not queued because current notebook state no
+    /// longer matches the state the user approved.
+    GuardRejected { reason: String },
 
     /// Kernel info response.
     KernelInfo {
@@ -900,6 +935,54 @@ mod tests {
         assert_eq!(parsed.id.as_deref(), Some("req-1"));
     }
 
+    #[test]
+    fn guarded_requests_round_trip() {
+        let observed_heads = vec!["0123456789abcdef".to_string()];
+        let dependency_fingerprint = "{\"uv\":{\"dependencies\":[\"numpy\"]}}".to_string();
+        let cases = vec![
+            NotebookRequest::ExecuteCellGuarded {
+                cell_id: "cell-1".to_string(),
+                observed_heads: observed_heads.clone(),
+            },
+            NotebookRequest::RunAllCellsGuarded {
+                observed_heads: observed_heads.clone(),
+            },
+            NotebookRequest::SyncEnvironmentGuarded {
+                observed_heads,
+                dependency_fingerprint,
+            },
+        ];
+
+        for request in cases {
+            let json = serde_json::to_string(&request).expect("serialize guarded request");
+            let parsed: NotebookRequest =
+                serde_json::from_str(&json).expect("deserialize guarded request");
+            assert_eq!(
+                serde_json::to_value(parsed).expect("reserialize guarded request"),
+                serde_json::to_value(request).expect("serialize original guarded request")
+            );
+        }
+    }
+
+    #[test]
+    fn guard_rejected_response_round_trip() {
+        let response = NotebookResponse::GuardRejected {
+            reason: "Notebook changed before the action could run.".to_string(),
+        };
+        let json = serde_json::to_value(&response).expect("serialize GuardRejected");
+        assert_eq!(json["result"], "guard_rejected");
+        assert_eq!(
+            json["reason"],
+            "Notebook changed before the action could run."
+        );
+        let parsed: NotebookResponse =
+            serde_json::from_value(json).expect("deserialize GuardRejected");
+        assert_eq!(
+            serde_json::to_value(parsed).expect("reserialize GuardRejected"),
+            serde_json::to_value(response).expect("serialize original GuardRejected")
+        );
+    }
+
     /// Locks in the exact JSON wire shape that the TypeScript frontend
     /// emits for each `NotebookRequest` variant. The TS `NotebookRequest`
     /// union's discriminator field names must match the Rust variant's
@@ -927,6 +1010,14 @@ mod tests {
                 serde_json::json!({ "action": "execute_cell", "cell_id": "c1" }),
             ),
             (
+                "execute_cell_guarded",
+                serde_json::json!({
+                    "action": "execute_cell_guarded",
+                    "cell_id": "c1",
+                    "observed_heads": ["abc"],
+                }),
+            ),
+            (
                 "clear_outputs",
                 serde_json::json!({ "action": "clear_outputs", "cell_id": "c1" }),
             ),
@@ -943,8 +1034,23 @@ mod tests {
                 serde_json::json!({ "action": "sync_environment" }),
             ),
             (
+                "sync_environment_guarded",
+                serde_json::json!({
+                    "action": "sync_environment_guarded",
+                    "observed_heads": ["abc"],
+                    "dependency_fingerprint": "{}",
+                }),
+            ),
+            (
                 "run_all_cells",
                 serde_json::json!({ "action": "run_all_cells" }),
+            ),
+            (
+                "run_all_cells_guarded",
+                serde_json::json!({
+                    "action": "run_all_cells_guarded",
+                    "observed_heads": ["abc"],
+                }),
             ),
             (
                 "get_history",

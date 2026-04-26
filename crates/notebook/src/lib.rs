@@ -2740,6 +2740,7 @@ async fn send_frame_bytes(
 async fn approve_notebook_trust(
     window: tauri::Window,
     registry: tauri::State<'_, WindowNotebookRegistry>,
+    dependency_fingerprint: Option<String>,
 ) -> Result<(), String> {
     let notebook_sync = notebook_sync_for_window(&window, registry.inner())?;
     let guard = notebook_sync.lock().await;
@@ -2750,6 +2751,16 @@ async fn approve_notebook_trust(
     let mut snapshot = get_metadata_snapshot(handle)
         .await
         .ok_or("No metadata in Automerge doc")?;
+
+    if let Some(expected) = dependency_fingerprint {
+        let current = snapshot.dependency_fingerprint();
+        if current != expected {
+            return Err(
+                "Dependencies changed while the trust dialog was open. Review before approving."
+                    .to_string(),
+            );
+        }
+    }
 
     let runt_value = serde_json::to_value(&snapshot.runt)
         .map_err(|e| format!("serialize runt metadata: {e}"))?;

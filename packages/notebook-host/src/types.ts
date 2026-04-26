@@ -119,7 +119,7 @@ export interface HostBlobs {
  * flow moves to the daemon.
  */
 export interface HostTrust {
-  approve(): Promise<void>;
+  approve(options?: { dependencyFingerprint?: string }): Promise<void>;
 }
 
 /**

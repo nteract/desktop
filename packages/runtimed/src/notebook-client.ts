@@ -13,6 +13,8 @@ import type { NotebookTransport } from "./transport";
 import type {
   CommRequestMessage,
   CompletionItem,
+  GuardedDependencyProvenance,
+  GuardedNotebookProvenance,
   HistoryEntry,
   NotebookRequest,
   NotebookResponse,
@@ -107,6 +109,24 @@ export class NotebookClient {
     }
   }
 
+  /** Execute a cell only if it still matches the observed trust-dialog state. */
+  async executeCellGuarded(
+    cellId: string,
+    provenance: GuardedNotebookProvenance,
+  ): Promise<NotebookResponse> {
+    this.log.debug("[notebook-client] Executing guarded cell:", cellId);
+    try {
+      return await this.sendRequest({
+        type: "execute_cell_guarded",
+        cell_id: cellId,
+        observed_heads: provenance.observed_heads,
+      });
+    } catch (e) {
+      this.log.error("[notebook-client] Guarded execute failed:", e);
+      throw e;
+    }
+  }
+
   /** Clear outputs for a cell. */
   async clearOutputs(cellId: string): Promise<NotebookResponse> {
     try {
@@ -154,6 +174,20 @@ export class NotebookClient {
     }
   }
 
+  /** Hot-sync environment only if dependencies still match the observed trust-dialog state. */
+  async syncEnvironmentGuarded(provenance: GuardedDependencyProvenance): Promise<NotebookResponse> {
+    try {
+      return await this.sendRequest({
+        type: "sync_environment_guarded",
+        observed_heads: provenance.observed_heads,
+        dependency_fingerprint: provenance.dependency_fingerprint,
+      });
+    } catch (e) {
+      this.log.error("[notebook-client] Guarded sync environment failed:", e);
+      throw e;
+    }
+  }
+
   /** Run all code cells (daemon reads from synced doc). */
   async runAllCells(): Promise<NotebookResponse> {
     this.log.debug("[notebook-client] Running all cells");
@@ -161,6 +195,20 @@ export class NotebookClient {
       return await this.sendRequest({ type: "run_all_cells" });
     } catch (e) {
       this.log.error("[notebook-client] Run all cells failed:", e);
+      throw e;
+    }
+  }
+
+  /** Run all code cells only if they still match the observed trust-dialog state. */
+  async runAllCellsGuarded(provenance: GuardedNotebookProvenance): Promise<NotebookResponse> {
+    this.log.debug("[notebook-client] Running all cells with guard");
+    try {
+      return await this.sendRequest({
+        type: "run_all_cells_guarded",
+        observed_heads: provenance.observed_heads,
+      });
+    } catch (e) {
+      this.log.error("[notebook-client] Guarded run all cells failed:", e);
       throw e;
     }
   }

@@ -288,6 +288,10 @@ export class NotebookHandle {
      */
     get_cells_json(): string;
     /**
+     * Return a stable fingerprint of dependency metadata covered by trust approval.
+     */
+    get_dependency_fingerprint(): string | undefined;
+    /**
      * Return a summary of the execution for the given `execution_id`, or
      * `undefined` when that execution is unknown.
      *
@@ -298,6 +302,10 @@ export class NotebookHandle {
      * subscriptions stay cheap.
      */
     get_execution_by_id(execution_id: string): any;
+    /**
+     * Return the current Automerge notebook document heads as hex strings.
+     */
+    get_heads_hex(): string[];
     /**
      * Get a metadata value by key (legacy string API).
      */
@@ -691,7 +699,9 @@ export interface InitOutput {
     readonly notebookhandle_get_cell_type: (a: number, b: number, c: number) => [number, number];
     readonly notebookhandle_get_cells: (a: number) => [number, number];
     readonly notebookhandle_get_cells_json: (a: number) => [number, number];
+    readonly notebookhandle_get_dependency_fingerprint: (a: number) => [number, number];
     readonly notebookhandle_get_execution_by_id: (a: number, b: number, c: number) => any;
+    readonly notebookhandle_get_heads_hex: (a: number) => [number, number];
     readonly notebookhandle_get_metadata: (a: number, b: number, c: number) => [number, number];
     readonly notebookhandle_get_metadata_fingerprint: (a: number) => [number, number];
     readonly notebookhandle_get_metadata_snapshot: (a: number) => any;

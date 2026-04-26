@@ -190,8 +190,11 @@ describe("createTauriHost()", () => {
 
   it("routes trust.approve to approve_notebook_trust", async () => {
     const host = createTauriHost({ transport: stubTransport });
-    await host.trust.approve();
-    expect(capturedInvokes.map((x) => x.cmd)).toContain("approve_notebook_trust");
+    await host.trust.approve({ dependencyFingerprint: "deps-v1" });
+    expect(capturedInvokes.at(-1)).toEqual({
+      cmd: "approve_notebook_trust",
+      args: { dependencyFingerprint: "deps-v1" },
+    });
   });
 
   it("routes deps.checkTyposquats to check_typosquats (not trust)", async () => {

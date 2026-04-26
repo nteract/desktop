@@ -270,6 +270,28 @@ impl NotebookMetadataSnapshot {
         snapshot
     }
 
+    /// Return a stable fingerprint of dependency metadata covered by notebook
+    /// trust approval.
+    pub fn dependency_fingerprint(&self) -> String {
+        let mut signable = serde_json::Map::new();
+        if let Some(uv) = &self.runt.uv {
+            if let Ok(value) = serde_json::to_value(uv) {
+                signable.insert("uv".to_string(), value);
+            }
+        }
+        if let Some(conda) = &self.runt.conda {
+            if let Ok(value) = serde_json::to_value(conda) {
+                signable.insert("conda".to_string(), value);
+            }
+        }
+        if let Some(pixi) = &self.runt.pixi {
+            if let Ok(value) = serde_json::to_value(pixi) {
+                signable.insert("pixi".to_string(), value);
+            }
+        }
+        serde_json::to_string(&serde_json::Value::Object(signable)).unwrap_or_default()
+    }
+
     /// Merge this snapshot into a mutable JSON object representing the full
     /// notebook metadata. Replaces `kernelspec`, `language_info`, and `runt`
     /// while preserving all other keys.
