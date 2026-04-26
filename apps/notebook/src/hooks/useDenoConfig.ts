@@ -1,5 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback } from "react";
 
 import { logger } from "../lib/logger";
 import {
@@ -7,6 +6,17 @@ import {
   useDenoFlexibleNpmImports,
 } from "../lib/notebook-metadata";
 
+/**
+ * Shape kept for components that used to render "Using deno.json (name)"
+ * against a daemon-reported config. The daemon never detected deno.json
+ * for anything load-bearing; the field is inlined here as `null` so
+ * render sites fall through to the "No deno.json found" branch, which
+ * was already the default-looking UI anyway.
+ *
+ * When deno kernels grow a real reason to sync config into the UI, this
+ * hook should read it from `RuntimeStateDoc.project_context` the same
+ * way `useDependencies` / `useCondaDependencies` / `usePixiDetection` do.
+ */
 export interface DenoConfigInfo {
   path: string;
   relative_path: string;
@@ -16,16 +26,8 @@ export interface DenoConfigInfo {
 }
 
 export function useDenoConfig() {
-  const [denoConfigInfo, setDenoConfigInfo] = useState<DenoConfigInfo | null>(null);
-  // Reactive read from the WASM Automerge doc via useSyncExternalStore.
-  // Re-renders automatically when the doc changes (bootstrap, sync, writes).
   const flexibleNpmImportsFromDoc = useDenoFlexibleNpmImports();
   const flexibleNpmImports = flexibleNpmImportsFromDoc ?? true;
-
-  // Detect deno config on mount
-  useEffect(() => {
-    invoke<DenoConfigInfo | null>("detect_deno_config").then(setDenoConfigInfo);
-  }, []);
 
   const setFlexibleNpmImports = useCallback(async (enabled: boolean) => {
     try {
@@ -36,7 +38,7 @@ export function useDenoConfig() {
   }, []);
 
   return {
-    denoConfigInfo,
+    denoConfigInfo: null as DenoConfigInfo | null,
     flexibleNpmImports,
     setFlexibleNpmImports,
   };
