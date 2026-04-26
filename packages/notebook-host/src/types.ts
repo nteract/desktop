@@ -51,6 +51,9 @@ export interface TrustInfo {
   uv_dependencies: string[];
   conda_dependencies: string[];
   conda_channels: string[];
+  pixi_dependencies: string[];
+  pixi_pypi_dependencies: string[];
+  pixi_channels: string[];
 }
 
 export interface TyposquatWarning {

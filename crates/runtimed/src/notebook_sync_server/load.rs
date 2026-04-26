@@ -578,9 +578,7 @@ where
         );
         if needs_reconcile {
             // Build a TrustInfo-shaped view of the parsed meta so we can
-            // reuse the existing match helper. Only uv/conda deps are in
-            // scope for the trust check today (pixi bypasses trust, see
-            // #2151) so we only need to populate those.
+            // reuse the existing match helper.
             let derived = runt_trust::TrustInfo {
                 status: runt_trust::TrustStatus::Untrusted,
                 uv_dependencies: meta
@@ -600,6 +598,24 @@ where
                     .conda
                     .as_ref()
                     .map(|c| c.channels.clone())
+                    .unwrap_or_default(),
+                pixi_dependencies: meta
+                    .runt
+                    .pixi
+                    .as_ref()
+                    .map(|p| p.dependencies.clone())
+                    .unwrap_or_default(),
+                pixi_pypi_dependencies: meta
+                    .runt
+                    .pixi
+                    .as_ref()
+                    .map(|p| p.pypi_dependencies.clone())
+                    .unwrap_or_default(),
+                pixi_channels: meta
+                    .runt
+                    .pixi
+                    .as_ref()
+                    .map(|p| p.channels.clone())
                     .unwrap_or_default(),
             };
             if super::metadata::project_file_deps_match_trust_info(path, &derived) {

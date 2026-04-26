@@ -143,6 +143,37 @@ export function TrustDialog({
             </div>
           )}
 
+          {/* Pixi Dependencies */}
+          {trustInfo && trustInfo.pixi_dependencies.length > 0 && (
+            <div>
+              <h4 className="text-sm font-medium text-muted-foreground mb-2">
+                Pixi Packages
+                {trustInfo.pixi_channels.length > 0 && (
+                  <span className="font-normal text-xs ml-2">
+                    ({trustInfo.pixi_channels.join(", ")})
+                  </span>
+                )}
+              </h4>
+              <div className="border rounded-md divide-y">
+                {trustInfo.pixi_dependencies.map((pkg) => (
+                  <PackageItem key={pkg} pkg={pkg} warning={getWarning(pkg)} />
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Pixi PyPI Dependencies */}
+          {trustInfo && trustInfo.pixi_pypi_dependencies.length > 0 && (
+            <div>
+              <h4 className="text-sm font-medium text-muted-foreground mb-2">Pixi PyPI Packages</h4>
+              <div className="border rounded-md divide-y">
+                {trustInfo.pixi_pypi_dependencies.map((pkg) => (
+                  <PackageItem key={pkg} pkg={pkg} warning={getWarning(pkg)} />
+                ))}
+              </div>
+            </div>
+          )}
+
           {/* Typosquat Warning */}
           {hasTyposquats && (
             <div className="flex items-start gap-2 p-3 rounded-md bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800">

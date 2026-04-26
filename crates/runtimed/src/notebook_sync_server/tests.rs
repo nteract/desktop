@@ -518,6 +518,31 @@ fn snapshot_with_conda(deps: Vec<String>) -> NotebookMetadataSnapshot {
     }
 }
 
+/// Helper to build a snapshot with Pixi inline deps.
+fn snapshot_with_pixi(deps: Vec<String>, pypi_deps: Vec<String>) -> NotebookMetadataSnapshot {
+    NotebookMetadataSnapshot {
+        kernelspec: None,
+        language_info: None,
+        runt: crate::notebook_metadata::RuntMetadata {
+            schema_version: "1".to_string(),
+            env_id: None,
+            uv: None,
+            conda: None,
+            pixi: Some(crate::notebook_metadata::PixiInlineMetadata {
+                dependencies: deps,
+                pypi_dependencies: pypi_deps,
+                channels: vec!["conda-forge".to_string()],
+                python: None,
+            }),
+            deno: None,
+            trust_signature: None,
+            trust_timestamp: None,
+            extra: std::collections::BTreeMap::new(),
+        },
+        extras: std::collections::BTreeMap::new(),
+    }
+}
+
 /// Helper to build an empty snapshot (no deps).
 fn snapshot_empty() -> NotebookMetadataSnapshot {
     NotebookMetadataSnapshot {
@@ -674,6 +699,9 @@ fn test_room_with_path(
                 uv_dependencies: vec![],
                 conda_dependencies: vec![],
                 conda_channels: vec![],
+                pixi_dependencies: vec![],
+                pixi_pypi_dependencies: vec![],
+                pixi_channels: vec![],
             },
             pending_launch: false,
         })),
@@ -3322,6 +3350,23 @@ fn test_verify_trust_from_snapshot_unsigned_deps() {
 
 #[test]
 #[serial]
+fn test_verify_trust_from_snapshot_unsigned_pixi_deps() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let key_path = temp_dir.path().join("trust-key");
+    std::env::set_var("RUNT_TRUST_KEY_PATH", key_path.to_str().unwrap());
+
+    let snapshot = snapshot_with_pixi(vec!["pandas".to_string()], vec!["requests".to_string()]);
+    let result = verify_trust_from_snapshot(&snapshot);
+    assert_eq!(result.status, runt_trust::TrustStatus::Untrusted);
+    assert_eq!(result.info.pixi_dependencies, vec!["pandas"]);
+    assert_eq!(result.info.pixi_pypi_dependencies, vec!["requests"]);
+    assert!(!result.pending_launch);
+
+    std::env::remove_var("RUNT_TRUST_KEY_PATH");
+}
+
+#[test]
+#[serial]
 fn test_verify_trust_from_snapshot_signed_trusted() {
     let temp_dir = tempfile::tempdir().unwrap();
     let key_path = temp_dir.path().join("trust-key");
@@ -3712,12 +3757,6 @@ async fn test_auto_sign_in_place_conda_yields_trusted() {
     std::env::remove_var("RUNT_TRUST_KEY_PATH");
 }
 
-// Pixi deps currently bypass the HMAC trust check entirely —
-// `runt_trust::verify_notebook_trust` only short-circuits on uv+conda
-// emptiness and never looks at pixi, so a pixi-only snapshot always
-// returns NoDependencies regardless of signature state. Covering pixi
-// in `auto_sign_in_place` is still worth it (forward-compat for when
-// pixi joins the trust check), but the test asserts today's behavior.
 #[tokio::test]
 #[serial]
 async fn test_auto_sign_in_place_pixi_writes_signature() {
@@ -3739,7 +3778,7 @@ async fn test_auto_sign_in_place_pixi_writes_signature() {
     assert!(snap.runt.trust_timestamp.is_some());
     assert_eq!(
         verify_trust_from_snapshot(&snap).status,
-        runt_trust::TrustStatus::NoDependencies,
+        runt_trust::TrustStatus::Trusted,
     );
 
     std::env::remove_var("RUNT_TRUST_KEY_PATH");
