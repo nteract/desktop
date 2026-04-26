@@ -1055,6 +1055,14 @@ async fn convert_data_bundle(
                         )
                     })?;
                 ContentRef::from_binary(&raw_bytes, mime_type, blob_store).await?
+            } else if mime_type == "application/json" || mime_type.ends_with("+json") {
+                // JSON-shaped MIME: kernels emit these as structured
+                // `Value::Object`/`Value::Array`. Serialize to JSON text for
+                // storage; `resolve_data_bundle` parses them back into
+                // structured form on save. Pairs with the symmetric branch
+                // in that function.
+                let content_str = value_to_string(value);
+                ContentRef::from_data(&content_str, mime_type, blob_store, threshold).await?
             } else {
                 // Text MIME type: store as a single string. Jupyter writes
                 // multi-line text as `["<div>\n", "<style>\n", ...]` — join
@@ -1482,6 +1490,49 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(html, "<div>\n<style>\n  x\n</style>\n</div>");
+    }
+
+    /// JSON-shaped MIME types (`application/json`, `*+json`) arrive from
+    /// the kernel as structured `Value::Object` or `Value::Array`. They must
+    /// be serialized to JSON before hitting the blob store — `normalize_text`
+    /// would flatten them to empty string.
+    #[tokio::test]
+    async fn json_mime_object_value_is_serialized_to_json_text() {
+        let dir = tempfile::tempdir().unwrap();
+        let blob_store = test_store(&dir);
+
+        let payload = serde_json::json!({
+            "spec": {"mark": "bar"},
+            "data": [1, 2, 3],
+        });
+        let output = serde_json::json!({
+            "output_type": "display_data",
+            "data": {
+                "application/json": payload.clone(),
+                "application/vnd.vegalite.v5+json": payload.clone(),
+            },
+            "metadata": {},
+        });
+
+        let manifest = create_manifest(&output, &blob_store, DEFAULT_INLINE_THRESHOLD)
+            .await
+            .unwrap();
+        let data = match manifest {
+            OutputManifest::DisplayData { data, .. } => data,
+            other => panic!("expected DisplayData, got {other:?}"),
+        };
+
+        for mime in ["application/json", "application/vnd.vegalite.v5+json"] {
+            let content = data
+                .get(mime)
+                .unwrap_or_else(|| panic!("{mime} missing"))
+                .resolve(&blob_store)
+                .await
+                .unwrap();
+            let parsed: Value =
+                serde_json::from_str(&content).expect("stored content should parse as JSON");
+            assert_eq!(parsed, payload, "round-trip mismatch for {mime}");
+        }
     }
 
     #[tokio::test]
