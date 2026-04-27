@@ -79,3 +79,17 @@ MCP paths that issue parallel cell mutations, add or run tests with this shape:
   return responses out of order, interleave a broadcast, and assert each caller
   receives its own response while broadcasts still reach request progress
   subscribers.
+
+## Protocol upgrade compatibility
+
+When a change touches the connection preamble, handshake routing, pool daemon
+requests, or `PROTOCOL_VERSION`, keep a raw daemon integration test with this
+shape:
+
+- Send the magic preamble with a stable-era older protocol byte (for example,
+  `2`), then a Pool handshake, then `{"type":"ping"}`.
+- Assert the daemon returns `Pong` with the current `protocol_version` and a
+  non-empty `daemon_version`. This is the launcher upgrade probe and must keep
+  working across protocol bumps.
+- If changing non-Pool version checks, also assert an old-version notebook sync
+  handshake is rejected before any notebook/session state is created.

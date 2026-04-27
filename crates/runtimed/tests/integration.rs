@@ -1661,11 +1661,11 @@ async fn test_streaming_load_second_client_joins() {
     let _ = tokio::time::timeout(Duration::from_secs(2), daemon_handle).await;
 }
 
-/// An older stable app (e.g. protocol v2) pings the daemon during upgrade to
-/// check if it's running and query its version. The pool channel must accept
-/// any preamble version so the upgrade flow doesn't break.
+/// An older stable app sends a pool ping during upgrade to check whether a
+/// daemon is already running and whether it needs replacement. The pool channel
+/// must accept the old preamble version and still return version metadata.
 #[tokio::test]
-async fn test_pool_ping_accepts_older_preamble_version() {
+async fn test_pool_ping_from_old_stable_preamble_returns_version_metadata() {
     let temp_dir = TempDir::new().unwrap();
     let config = test_config(&temp_dir);
     let socket_path = config.socket_path.clone();
@@ -1703,7 +1703,8 @@ async fn test_pool_ping_accepts_older_preamble_version() {
     stream.write_all(ping).await.unwrap();
     stream.flush().await.unwrap();
 
-    // Should get a Pong back despite the version mismatch
+    // Should get a Pong back despite the version mismatch, including the
+    // metadata older launchers need to decide whether to upgrade the daemon.
     let mut resp_len = [0u8; 4];
     stream.read_exact(&mut resp_len).await.unwrap();
     let resp_size = u32::from_be_bytes(resp_len) as usize;
@@ -1714,6 +1715,17 @@ async fn test_pool_ping_accepts_older_preamble_version() {
     assert_eq!(
         resp["type"], "pong",
         "pool ping from older client should get a Pong"
+    );
+    assert_eq!(
+        resp["protocol_version"],
+        serde_json::json!(notebook_protocol::connection::PROTOCOL_VERSION),
+        "pool ping should report the daemon's current protocol version"
+    );
+    assert!(
+        resp["daemon_version"]
+            .as_str()
+            .is_some_and(|version| !version.is_empty()),
+        "pool ping should report a daemon version for upgrade checks"
     );
 
     client.shutdown().await.ok();

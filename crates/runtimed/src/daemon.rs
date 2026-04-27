@@ -1751,8 +1751,8 @@ impl Daemon {
                     self.clone(),
                     working_dir_path,
                     initial_metadata,
-                    false, // Send ProtocolCapabilities for legacy NotebookSync handshake
-                    None,  // No streaming load for legacy handshake
+                    false, // Send ProtocolCapabilities for direct NotebookSync handshake
+                    None,  // No streaming load for direct NotebookSync handshake
                     false, // Not a newly-created notebook at path
                     client_protocol_version,
                 )

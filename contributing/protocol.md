@@ -6,7 +6,7 @@ This document describes the wire protocol between notebook clients (frontend WAS
 
 Two independent version numbers handle compatibility, separate from the artifact version:
 
-- **Protocol version** (`PROTOCOL_VERSION` in `connection.rs`, currently `4`) — governs wire compatibility. Validated by the 5-byte magic preamble (`0xC0DE01AC` + version byte) at the start of every connection. Bump when the framing, handshake shape, or message serialization format changes. Protocol v4 removes legacy environment-sync request/response variants and requires current clients.
+- **Protocol version** (`PROTOCOL_VERSION` in `connection.rs`, currently `4`) — governs wire compatibility. Every connection sends the 5-byte magic preamble (`0xC0DE01AC` + version byte) at the start of the stream. Bump when the framing, handshake shape, or message serialization format changes. Protocol v4 removes legacy environment-sync request/response variants. The Pool channel remains version-tolerant for daemon upgrade probes; all notebook/runtime channels require current clients.
 - **Schema version** (`SCHEMA_VERSION` in `notebook-doc/src/lib.rs`, currently `4`) — governs Automerge document compatibility. Stored in the doc root as `schema_version`. Bump when the document structure changes. The current schema stores cells as a fractional-indexed `Map` and keeps outputs in `RuntimeStateDoc` keyed by `execution_id`, with per-output `output_id` UUIDs on manifests. Future bumps MUST ship a `migrate_vN_to_v(N+1)` function that preserves user data — v1–v3 were pre-release and the v4 load path discards older docs on load, which is only safe because no real user data lives at those versions.
 
 These are just incrementing integers. They evolve independently from each other and from the artifact version. A protocol or schema bump doesn't automatically force a major version bump — that depends on whether the change is user-facing.
@@ -32,7 +32,16 @@ Every connection starts with a 5-byte preamble before the JSON handshake frame:
 | 0–3 | Magic: `0xC0 0xDE 0x01 0xAC` |
 | 4 | Protocol version (currently `4`) |
 
-The daemon validates both before reading the handshake. Non-runtimed connections get a clear "invalid magic bytes" error. Protocol mismatches are rejected before any JSON parsing.
+There is no no-preamble fallback. The daemon validates magic bytes before
+reading the handshake, so non-runtimed connections get a clear "invalid magic
+bytes" error. It checks the protocol version after parsing the handshake
+channel:
+
+- `Pool` accepts any preamble version so older stable apps can ping the daemon
+  during upgrade and read `protocol_version` / `daemon_version` metadata from
+  the `Pong` response.
+- All other channels reject versions outside
+  `MIN_PROTOCOL_VERSION..=PROTOCOL_VERSION`.
 
 After the preamble, the notebook sync path also returns `protocol_version` and `daemon_version` in its `ProtocolCapabilities` / `NotebookConnectionInfo` responses for informational purposes.
 
