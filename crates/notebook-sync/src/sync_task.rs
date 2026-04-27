@@ -115,6 +115,14 @@ pub enum SyncCommand {
     },
 }
 
+/// Interval for the maintenance tick that re-drives sync for pending waiters.
+///
+/// This is the safety-net retry: after an inbound `AutomergeSync` frame clears
+/// Automerge's in_flight state, `generate_sync_message()` may now succeed for
+/// changes that were previously blocked. The primary re-drive happens inline in
+/// the Frame arm; this tick catches edge cases (e.g. no further inbound frames).
+const MAINTENANCE_TICK: Duration = Duration::from_millis(200);
+
 /// A pending `ConfirmSync` waiter.
 ///
 /// Instead of blocking the select loop for up to 10s (5 rounds × 2s),
@@ -163,6 +171,48 @@ fn resolve_sync_waiters(waiters: &mut Vec<SyncWaiter>, doc: &Arc<Mutex<SharedDoc
         }
         i += 1;
     }
+}
+
+/// Re-drive Automerge sync if waiters are pending and `generate_sync_message`
+/// was previously blocked by in_flight state.
+///
+/// **Why this is needed:** Automerge's sync protocol marks outbound messages
+/// as `in_flight` until the peer acknowledges them. While in_flight,
+/// `generate_sync_message()` returns `None` — even if newer local changes
+/// exist that the peer hasn't seen. When a `ConfirmSync` arrives during this
+/// window, the sync task registers the waiter but can't send the new changes.
+/// Once the daemon's ack clears `in_flight`, we must re-call
+/// `generate_sync_message()` to flush those blocked changes; otherwise the
+/// waiter hangs until its 5s timeout and the caller reads a stale doc.
+///
+/// Returns `Err` only on fatal write errors (caller should break the loop).
+async fn drive_sync_for_waiters<W: AsyncWrite + Unpin>(
+    doc: &Arc<Mutex<SharedDocState>>,
+    writer: &mut W,
+    waiters: &[SyncWaiter],
+    notebook_id: &str,
+) -> Result<(), SyncError> {
+    if waiters.is_empty() {
+        return Ok(());
+    }
+
+    let msg_bytes = {
+        let mut state = doc.lock().unwrap_or_else(|e| e.into_inner());
+        state.generate_sync_message().map(|m| m.encode())
+    };
+
+    if let Some(bytes) = msg_bytes {
+        debug!(
+            "[notebook-sync] Re-driving sync for {} pending waiter(s) on {}",
+            waiters.len(),
+            notebook_id
+        );
+        connection::send_typed_frame(writer, NotebookFrameType::AutomergeSync, &bytes)
+            .await
+            .map_err(SyncError::Io)?;
+    }
+
+    Ok(())
 }
 
 /// Configuration for the sync task.
@@ -214,7 +264,7 @@ where
     // exact failure mode that desyncs the wire under stream-output
     // pressure.
     let buffered = tokio::io::BufReader::new(reader);
-    let mut framed_reader = connection::FramedReader::spawn(buffered, 16);
+    let mut framed_reader = connection::FramedReader::spawn(buffered, 64);
     let mut writer = tokio::io::BufWriter::new(writer);
 
     let notebook_id = {
@@ -230,6 +280,13 @@ where
     // advance shared_heads past the waiter's target. This replaces the old
     // blocking confirm_sync_impl that monopolized the select loop.
     let mut sync_waiters: Vec<SyncWaiter> = Vec::new();
+
+    // Maintenance tick: safety-net retry for pending waiters. When Automerge's
+    // in_flight state clears, we may need to re-drive generate_sync_message()
+    // to flush changes that were blocked. The primary re-drive happens inline
+    // after each AutomergeSync frame; this tick catches edge cases.
+    let mut maintenance = tokio::time::interval(MAINTENANCE_TICK);
+    maintenance.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     // Track last metadata for change detection (used for SyncUpdate-like behavior)
     let mut _last_metadata: Option<notebook_doc::metadata::NotebookMetadataSnapshot> = {
@@ -247,9 +304,10 @@ where
         // > Frame), bursts of local mutations and confirm_sync commands starved
         // inbound frame processing, causing daemon write failures.
         enum SelectResult {
-            Changed,
-            Command(Option<SyncCommand>),
             Frame(Option<std::io::Result<connection::TypedNotebookFrame>>),
+            Command(Option<SyncCommand>),
+            Changed,
+            Maintenance,
         }
 
         let select_result = tokio::select! {
@@ -270,6 +328,9 @@ where
                 }
                 SelectResult::Changed
             }
+
+            // Maintenance tick — re-drive sync for pending waiters
+            _ = maintenance.tick() => SelectResult::Maintenance,
         };
 
         match select_result {
@@ -435,6 +496,27 @@ where
                     // Resolve any ConfirmSync waiters whose targets are now met.
                     if is_sync_frame {
                         resolve_sync_waiters(&mut sync_waiters, &config.doc);
+
+                        // P1 correctness fix: if waiters remain, re-drive
+                        // generate_sync_message(). The ack we just processed may
+                        // have cleared Automerge's in_flight state, unblocking
+                        // newer changes that were queued when confirm_sync arrived
+                        // but couldn't be sent. Without this, those changes never
+                        // reach the daemon and the waiter times out → stale doc.
+                        if let Err(e) = drive_sync_for_waiters(
+                            &config.doc,
+                            &mut writer,
+                            &sync_waiters,
+                            &notebook_id,
+                        )
+                        .await
+                        {
+                            warn!(
+                                "[notebook-sync] Failed to re-drive sync for {}: {}",
+                                notebook_id, e
+                            );
+                            break;
+                        }
                     }
                 }
                 None => {
@@ -452,6 +534,30 @@ where
                     break;
                 }
             },
+
+            // ─── Maintenance tick ─────────────────────────────────────────
+            SelectResult::Maintenance => {
+                // Prune closed waiters and re-drive sync for any that remain.
+                // This is the safety-net for edge cases where no further inbound
+                // frames arrive after in_flight clears.
+                if !sync_waiters.is_empty() {
+                    resolve_sync_waiters(&mut sync_waiters, &config.doc);
+                    if let Err(e) = drive_sync_for_waiters(
+                        &config.doc,
+                        &mut writer,
+                        &sync_waiters,
+                        &notebook_id,
+                    )
+                    .await
+                    {
+                        warn!(
+                            "[notebook-sync] Failed to re-drive sync on maintenance tick for {}: {}",
+                            notebook_id, e
+                        );
+                        break;
+                    }
+                }
+            }
         }
     }
 
