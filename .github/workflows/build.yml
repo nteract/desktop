@@ -712,6 +712,10 @@ jobs:
           export RUNTIMED_BINARY="${GITHUB_WORKSPACE}/target/release/runtimed"
           export RUNTIMED_LOG_LEVEL=debug
           export RUNTIMED_WORKSPACE_PATH="${GITHUB_WORKSPACE}"
+          # Tells the test fixture to copy daemon.log into the artifact
+          # dir on teardown so a post-mortem has the daemon's side of any
+          # failure (see #2290).
+          export RUNTIMED_INTEGRATION_LOG_DIR="${GITHUB_WORKSPACE}/python/runtimed/integration-logs"
 
           # Pin uv to the workspace venv so dx + pandas + pyarrow + polars
           # are importable for test_dx_integration. The cwd stays at

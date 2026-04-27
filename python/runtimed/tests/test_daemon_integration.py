@@ -482,6 +482,21 @@ def daemon_process():
                 proc.kill()
                 proc.wait()
 
+            # Copy daemon.log into the persistent artifact dir (CI sets this).
+            # The tmpdir gets cleaned up when this `with` block exits, taking
+            # the daemon log with it. Without this copy, post-mortem on test
+            # failures has only the pytest stdout, never the daemon's side
+            # of any failure (see #2290).
+            artifact_dir = os.environ.get("RUNTIMED_INTEGRATION_LOG_DIR")
+            if artifact_dir and log_file.exists():
+                import shutil
+
+                dest_dir = Path(artifact_dir)
+                dest_dir.mkdir(parents=True, exist_ok=True)
+                dest = dest_dir / "daemon.log"
+                shutil.copy2(log_file, dest)
+                print(f"[test] Copied daemon log to {dest}", file=sys.stderr)
+
             # Print daemon logs for debugging
             if log_file.exists():
                 logs = log_file.read_text()
