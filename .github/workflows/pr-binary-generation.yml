@@ -76,7 +76,6 @@ jobs:
         with:
           ref: ${{ needs.resolve-pr.outputs.head_sha }}
           fetch-depth: 1
-          lfs: true
 
       - name: Install Linux system dependencies
         if: runner.os == 'Linux'
@@ -91,15 +90,9 @@ jobs:
         with:
           shared-key: pr-binary-${{ inputs.target_os }}
 
-      - uses: voidzero-dev/setup-vp@v1
-        with:
-          run-install: false
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v6
-        with:
-          node-version: "22"
-          cache: pnpm
-      - run: pnpm install
+      # Build wasm + renderer plugins (gitignored; runtimed embeds them).
+      # Also handles node + pnpm + vp + pnpm install setup.
+      - uses: ./.github/actions/build-runtime-artifacts
 
       - name: Build frontend
         run: pnpm build
@@ -159,10 +152,9 @@ jobs:
       - name: Generate icons
         run: cargo xtask icons
 
-      # Build wasm + renderer plugins (gitignored; runtimed embeds them)
-      - uses: ./.github/actions/build-runtime-artifacts
-
-      # Build MCP output widget HTML (needed by runt-mcp's include_str!)
+      # Build MCP output widget HTML (needed by runt-mcp's include_str!).
+      # build-runtime-artifacts already ran the cargo xtask wasm chain
+      # earlier in this job; this only adds the small _output.html file.
       - name: Build MCP output widget
         run: pnpm --filter nteract-mcp-app install && vp run nteract-mcp-app#build
 

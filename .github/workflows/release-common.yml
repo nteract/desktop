@@ -83,7 +83,6 @@ jobs:
         uses: actions/checkout@v6
         with:
           fetch-depth: 0
-          lfs: true
 
       - name: Install system dependencies
         run: |
@@ -98,15 +97,9 @@ jobs:
         with:
           shared-key: "linux-release"
 
-      - uses: voidzero-dev/setup-vp@v1
-        with:
-          run-install: false
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v6
-        with:
-          node-version: "22"
-          cache: pnpm
-      - run: pnpm install
+      # Build wasm + renderer plugins (gitignored; runtimed embeds them).
+      # Also handles node + pnpm + vp + pnpm install setup.
+      - uses: ./.github/actions/build-runtime-artifacts
 
       - name: Build UI
         run: pnpm build
@@ -117,9 +110,6 @@ jobs:
           echo "Setting version to: ${VERSION}"
           sed -i "s/^version = .*/version = \"${VERSION}\"/" crates/runt/Cargo.toml
           sed -i "s/^version = .*/version = \"${VERSION}\"/" crates/runtimed/Cargo.toml
-
-      # Build wasm + renderer plugins (gitignored; runtimed embeds them)
-      - uses: ./.github/actions/build-runtime-artifacts
 
       # Build MCP output widget HTML (needed by runt-mcp's include_str!)
       - name: Build MCP output widget
@@ -149,7 +139,6 @@ jobs:
         uses: actions/checkout@v6
         with:
           fetch-depth: 0
-          lfs: true
 
       - name: Set up Rust
         uses: dsherret/rust-toolchain-file@v1
@@ -161,15 +150,9 @@ jobs:
         with:
           shared-key: "macos-release"
 
-      - uses: voidzero-dev/setup-vp@v1
-        with:
-          run-install: false
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v6
-        with:
-          node-version: "22"
-          cache: pnpm
-      - run: pnpm install
+      # Build wasm + renderer plugins (gitignored; runtimed embeds them).
+      # Also handles node + pnpm + vp + pnpm install setup.
+      - uses: ./.github/actions/build-runtime-artifacts
 
       - name: Build UI
         run: pnpm build
@@ -180,9 +163,6 @@ jobs:
           echo "Setting version to: ${VERSION}"
           sed -i '' "s/^version = .*/version = \"${VERSION}\"/" crates/runt/Cargo.toml
           sed -i '' "s/^version = .*/version = \"${VERSION}\"/" crates/runtimed/Cargo.toml
-
-      # Build wasm + renderer plugins (gitignored; runtimed embeds them)
-      - uses: ./.github/actions/build-runtime-artifacts
 
       # Build MCP output widget HTML (needed by runt-mcp's include_str!)
       - name: Build MCP output widget
@@ -218,7 +198,6 @@ jobs:
         uses: actions/checkout@v6
         with:
           fetch-depth: 0
-          lfs: true
 
       - name: Set up Rust
         uses: dsherret/rust-toolchain-file@v1
@@ -227,15 +206,9 @@ jobs:
         with:
           shared-key: "macos-notebook-arm64"
 
-      - uses: voidzero-dev/setup-vp@v1
-        with:
-          run-install: false
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v6
-        with:
-          node-version: "22"
-          cache: pnpm
-      - run: pnpm install
+      # Build wasm + renderer plugins (gitignored; runtimed embeds them).
+      # Also handles node + pnpm + vp + pnpm install setup.
+      - uses: ./.github/actions/build-runtime-artifacts
 
       - name: Build frontend
         run: pnpm build
@@ -301,9 +274,6 @@ jobs:
             ICON_SOURCE="crates/notebook/icons/source-nightly.png"
           fi
           cargo xtask icons "$ICON_SOURCE"
-
-      # Build wasm + renderer plugins (gitignored; runtimed embeds them)
-      - uses: ./.github/actions/build-runtime-artifacts
 
       # Build MCP output widget HTML (needed by runt-mcp's include_str!)
       - name: Build MCP output widget
@@ -391,7 +361,6 @@ jobs:
         uses: actions/checkout@v6
         with:
           fetch-depth: 0
-          lfs: true
 
       - name: Set up Rust
         uses: dsherret/rust-toolchain-file@v1
@@ -403,15 +372,9 @@ jobs:
         with:
           shared-key: "macos-notebook-x64"
 
-      - uses: voidzero-dev/setup-vp@v1
-        with:
-          run-install: false
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v6
-        with:
-          node-version: "22"
-          cache: pnpm
-      - run: pnpm install
+      # Build wasm + renderer plugins (gitignored; runtimed embeds them).
+      # Also handles node + pnpm + vp + pnpm install setup.
+      - uses: ./.github/actions/build-runtime-artifacts
 
       - name: Build frontend
         run: pnpm build
@@ -477,9 +440,6 @@ jobs:
             ICON_SOURCE="crates/notebook/icons/source-nightly.png"
           fi
           cargo xtask icons "$ICON_SOURCE"
-
-      # Build wasm + renderer plugins (gitignored; runtimed embeds them)
-      - uses: ./.github/actions/build-runtime-artifacts
 
       # Build MCP output widget HTML (needed by runt-mcp's include_str!)
       - name: Build MCP output widget
@@ -567,7 +527,6 @@ jobs:
         uses: actions/checkout@v6
         with:
           fetch-depth: 0
-          lfs: true
 
       - name: Set up Rust
         uses: dsherret/rust-toolchain-file@v1
@@ -576,15 +535,9 @@ jobs:
         with:
           shared-key: "windows-notebook-x64"
 
-      - uses: voidzero-dev/setup-vp@v1
-        with:
-          run-install: false
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v6
-        with:
-          node-version: "22"
-          cache: pnpm
-      - run: pnpm install
+      # Build wasm + renderer plugins (gitignored; runtimed embeds them).
+      # Also handles node + pnpm + vp + pnpm install setup.
+      - uses: ./.github/actions/build-runtime-artifacts
 
       - name: Build frontend
         run: pnpm build
@@ -633,9 +586,6 @@ jobs:
             $iconSource = "crates/notebook/icons/source-nightly.png"
           }
           cargo xtask icons $iconSource
-
-      # Build wasm + renderer plugins (gitignored; runtimed embeds them)
-      - uses: ./.github/actions/build-runtime-artifacts
 
       # Build MCP output widget HTML (needed by runt-mcp's include_str!)
       - name: Build MCP output widget
@@ -707,7 +657,6 @@ jobs:
         uses: actions/checkout@v6
         with:
           fetch-depth: 0
-          lfs: true
 
       - name: Install system dependencies
         run: |
@@ -722,15 +671,9 @@ jobs:
         with:
           shared-key: "linux-notebook-x64"
 
-      - uses: voidzero-dev/setup-vp@v1
-        with:
-          run-install: false
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v6
-        with:
-          node-version: "22"
-          cache: pnpm
-      - run: pnpm install
+      # Build wasm + renderer plugins (gitignored; runtimed embeds them).
+      # Also handles node + pnpm + vp + pnpm install setup.
+      - uses: ./.github/actions/build-runtime-artifacts
 
       - name: Build frontend
         run: pnpm build
@@ -768,9 +711,6 @@ jobs:
             ICON_SOURCE="crates/notebook/icons/source-nightly.png"
           fi
           cargo xtask icons "$ICON_SOURCE"
-
-      # Build wasm + renderer plugins (gitignored; runtimed embeds them)
-      - uses: ./.github/actions/build-runtime-artifacts
 
       # Build MCP output widget HTML (needed by runt-mcp's include_str!)
       - name: Build MCP output widget
@@ -825,8 +765,6 @@ jobs:
     needs: compute-version
     steps:
       - uses: actions/checkout@v6
-        with:
-          lfs: true
 
       - name: Install uv
         uses: astral-sh/setup-uv@v7
@@ -866,8 +804,6 @@ jobs:
     needs: compute-version
     steps:
       - uses: actions/checkout@v6
-        with:
-          lfs: true
 
       - name: Install uv
         uses: astral-sh/setup-uv@v7
@@ -918,8 +854,6 @@ jobs:
             target: x86_64-pc-windows-msvc
     steps:
       - uses: actions/checkout@v6
-        with:
-          lfs: true
 
       - name: Set up Rust
         uses: dsherret/rust-toolchain-file@v1

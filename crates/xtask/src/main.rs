@@ -1243,14 +1243,30 @@ fn cmd_wasm(target: Option<&str>, skip_renderer_plugins: bool) {
             }
         }
         // Copy the WASM binary to the daemon's embedded plugins directory so
-        // `/plugins/sift_wasm.wasm` serves the freshly-built binary.
+        // `/plugins/sift_wasm.wasm` serves the freshly-built binary. The
+        // destination directory is gitignored, so create it before copying
+        // (fresh checkouts won't have it yet). Failure here is fatal:
+        // runtimed's `include_bytes!` will silently embed a stale binary
+        // (or fail to compile if absent) on the next cargo build.
         let src = Path::new("crates/sift-wasm/pkg/sift_wasm_bg.wasm");
         let dest = Path::new("crates/runt-mcp/assets/plugins/sift_wasm.wasm");
-        if let Err(e) = fs::copy(src, dest) {
-            eprintln!("Warning: failed to copy sift_wasm.wasm to daemon assets: {e}");
-        } else {
-            println!("Copied {} -> {}", src.display(), dest.display());
+        if let Some(parent) = dest.parent() {
+            if let Err(e) = fs::create_dir_all(parent) {
+                panic!(
+                    "Failed to create {}: {e}. Re-run after fixing permissions.",
+                    parent.display()
+                );
+            }
         }
+        if let Err(e) = fs::copy(src, dest) {
+            panic!(
+                "Failed to copy {} to {}: {e}. \
+                 wasm-pack output may be missing or the destination unwritable.",
+                src.display(),
+                dest.display()
+            );
+        }
+        println!("Copied {} -> {}", src.display(), dest.display());
         println!(
             "WASM build complete. Output: crates/sift-wasm/pkg/ (mirrored to packages/sift/public/wasm/)"
         );
