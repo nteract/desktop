@@ -133,9 +133,13 @@ jobs:
         # Service install would write to the registry / Startup folder. For a
         # one-shot CI smoke, just spawn the daemon directly and let the OS
         # reap it when the job ends.
+        #
+        # Pool sizes: 1 UV env to back our smoke notebook, no conda or pixi.
+        # Default would warm 3+3+2 = 8 envs on a cold runner. We need exactly
+        # one for the smoke; the rest is wasted bandwidth.
         shell: pwsh
         run: |
-          Start-Process -FilePath $env:RUNTIMED -WindowStyle Hidden -RedirectStandardOutput "$env:RUNNER_TEMP\runtimed.stdout.log" -RedirectStandardError "$env:RUNNER_TEMP\runtimed.stderr.log"
+          Start-Process -FilePath $env:RUNTIMED -ArgumentList "run", "--uv-pool-size", "1", "--conda-pool-size", "0", "--pixi-pool-size", "0" -WindowStyle Hidden -RedirectStandardOutput "$env:RUNNER_TEMP\runtimed.stdout.log" -RedirectStandardError "$env:RUNNER_TEMP\runtimed.stderr.log"
           # Give the named pipe a moment to come up.
           for ($i = 0; $i -lt 30; $i++) {
             Start-Sleep -Seconds 1
