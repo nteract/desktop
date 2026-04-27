@@ -180,6 +180,35 @@ async fn wait_for_cell_count(
     false
 }
 
+#[cfg(unix)]
+type RawStream = tokio::net::UnixStream;
+
+#[cfg(windows)]
+type RawStream = tokio::net::windows::named_pipe::NamedPipeClient;
+
+#[cfg(unix)]
+async fn connect_raw_stream(socket_path: &std::path::Path) -> Result<RawStream, std::io::Error> {
+    tokio::net::UnixStream::connect(socket_path).await
+}
+
+#[cfg(windows)]
+async fn connect_raw_stream(socket_path: &std::path::Path) -> Result<RawStream, std::io::Error> {
+    const ERROR_PIPE_BUSY: i32 = 231;
+    let pipe_name = socket_path.to_string_lossy().to_string();
+    let mut attempts = 0;
+
+    loop {
+        match tokio::net::windows::named_pipe::ClientOptions::new().open(&pipe_name) {
+            Ok(client) => return Ok(client),
+            Err(err) if err.raw_os_error() == Some(ERROR_PIPE_BUSY) && attempts < 5 => {
+                attempts += 1;
+                sleep(Duration::from_millis(50)).await;
+            }
+            Err(err) => return Err(err),
+        }
+    }
+}
+
 #[tokio::test]
 async fn test_daemon_ping_pong() {
     let temp_dir = TempDir::new().unwrap();
@@ -1651,7 +1680,7 @@ async fn test_pool_ping_accepts_older_preamble_version() {
 
     // Connect a raw stream and send a preamble with an older protocol version
     // (simulating a v2.2.0 stable app that ships protocol v2).
-    let mut stream = tokio::net::UnixStream::connect(&socket_path)
+    let mut stream = connect_raw_stream(&socket_path)
         .await
         .expect("should connect");
 

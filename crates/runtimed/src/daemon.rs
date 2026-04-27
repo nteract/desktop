@@ -1642,17 +1642,16 @@ impl Daemon {
 
         // Pool connections accept any preamble version (upgrade compat).
         // Everything else must be within the supported range.
-        if !matches!(handshake, Handshake::Pool) {
-            if client_protocol_version < connection::MIN_PROTOCOL_VERSION as u8
-                || client_protocol_version > connection::PROTOCOL_VERSION as u8
-            {
-                anyhow::bail!(
-                    "unsupported protocol version: got {}, supported range [{}, {}]",
-                    client_protocol_version,
-                    connection::MIN_PROTOCOL_VERSION,
-                    connection::PROTOCOL_VERSION
-                );
-            }
+        if !matches!(handshake, Handshake::Pool)
+            && (client_protocol_version < connection::MIN_PROTOCOL_VERSION as u8
+                || client_protocol_version > connection::PROTOCOL_VERSION as u8)
+        {
+            anyhow::bail!(
+                "unsupported protocol version: got {}, supported range [{}, {}]",
+                client_protocol_version,
+                connection::MIN_PROTOCOL_VERSION,
+                connection::PROTOCOL_VERSION
+            );
         }
 
         match handshake {
