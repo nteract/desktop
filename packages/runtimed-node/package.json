@@ -1,6 +1,6 @@
 {
   "name": "@nteract/runtimed-node",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Node.js bindings for the runtimed daemon client (napi-rs).",
   "private": true,
   "type": "module",

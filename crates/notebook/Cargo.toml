@@ -1,6 +1,6 @@
 [package]
 name = "notebook"
-version = "2.3.4"
+version = "2.3.5"
 edition.workspace = true
 description = "Tauri-based notebook UI for Jupyter kernels"
 repository.workspace = true

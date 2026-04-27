@@ -1,6 +1,6 @@
 [package]
 name = "automunge"
-version = "0.1.4"
+version = "0.1.5"
 edition.workspace = true
 description = "JSON-to-Automerge helpers — recursive read, write, and update for serde_json::Value in Automerge documents"
 repository.workspace = true
