@@ -31,6 +31,13 @@ set -euo pipefail
 
 corepack enable
 
+# clang is required for cross-compiling zstd-sys (used by sift-wasm) to
+# wasm32-unknown-unknown. Without it, `cargo xtask wasm` fails on the
+# sift-wasm step. The Anthropic base image ships gcc but not clang.
+if ! command -v clang >/dev/null 2>&1; then
+  apt-get update -qq && apt-get install -y -qq clang >/dev/null
+fi
+
 if ! command -v wasm-pack >/dev/null 2>&1; then
   cargo install --locked wasm-pack
 fi
