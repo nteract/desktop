@@ -139,6 +139,7 @@ beforeEach(() => {
   updateCheckResult = null;
   mockUnlisten.mockReset();
   mockWindowUnlisten.mockReset();
+  vi.mocked(stubTransport.sendRequest).mockReset();
   capturedFocusCb = null;
   mockWindowTitle = "notebook";
 });
@@ -188,13 +189,28 @@ describe("createTauriHost()", () => {
     expect(capturedInvokes.at(-1)?.cmd).toBe("get_blob_port");
   });
 
-  it("routes trust.approve to approve_notebook_trust", async () => {
+  it("routes trust.approve through the notebook transport", async () => {
     const host = createTauriHost({ transport: stubTransport });
-    await host.trust.approve({ dependencyFingerprint: "deps-v1" });
-    expect(capturedInvokes.at(-1)).toEqual({
-      cmd: "approve_notebook_trust",
-      args: { dependencyFingerprint: "deps-v1" },
+    vi.mocked(stubTransport.sendRequest).mockResolvedValueOnce({ result: "ok" });
+
+    await expect(host.trust.approve({ dependencyFingerprint: "deps-v1" })).resolves.toBeUndefined();
+
+    expect(stubTransport.sendRequest).toHaveBeenCalledWith({
+      type: "approve_trust",
+      dependency_fingerprint: "deps-v1",
     });
+  });
+
+  it("surfaces daemon trust approval guard rejections", async () => {
+    const host = createTauriHost({ transport: stubTransport });
+    vi.mocked(stubTransport.sendRequest).mockResolvedValueOnce({
+      result: "guard_rejected",
+      reason: "Dependencies changed while the trust dialog was open.",
+    });
+
+    await expect(host.trust.approve({ dependencyFingerprint: "stale" })).rejects.toThrow(
+      "Dependencies changed while the trust dialog was open.",
+    );
   });
 
   it("routes deps.checkTyposquats to check_typosquats (not trust)", async () => {

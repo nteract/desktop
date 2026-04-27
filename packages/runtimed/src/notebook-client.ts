@@ -188,6 +188,21 @@ export class NotebookClient {
     }
   }
 
+  /** Approve the current dependency metadata and let the daemon write trust fields. */
+  async approveTrust(dependencyFingerprint?: string): Promise<NotebookResponse> {
+    try {
+      return await this.sendRequest({
+        type: "approve_trust",
+        ...(dependencyFingerprint !== undefined
+          ? { dependency_fingerprint: dependencyFingerprint }
+          : {}),
+      });
+    } catch (e) {
+      this.log.error("[notebook-client] Approve trust failed:", e);
+      throw e;
+    }
+  }
+
   /** Run all code cells (daemon reads from synced doc). */
   async runAllCells(): Promise<NotebookResponse> {
     this.log.debug("[notebook-client] Running all cells");

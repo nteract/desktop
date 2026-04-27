@@ -101,13 +101,16 @@ export function useTrust() {
     };
   }, [host, uvList, condaList, pixiList, pixiPypiList]);
 
-  // Approve the notebook (sign dependencies)
+  // Approve the notebook. The daemon signs dependencies and writes trust
+  // metadata into the CRDT so trust state stays on the backend side.
   const approveTrust = useCallback(
     async (options?: ApproveTrustOptions) => {
       setLoading(true);
       setError(null);
       try {
-        await host.trust.approve(options);
+        await host.trust.approve({
+          dependencyFingerprint: options?.dependencyFingerprint,
+        });
         return true;
       } catch (e) {
         const message = e instanceof Error ? e.message : String(e);

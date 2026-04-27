@@ -117,9 +117,8 @@ export interface HostBlobs {
  *
  * Trust *status* is read from `RuntimeStateDoc.trust` via
  * `useRuntimeState()`; the daemon is the sole writer. This namespace
- * exists only for the explicit user action (signing with the local
- * HMAC key), which still has to happen Tauri-side until the signing
- * flow moves to the daemon.
+ * exists only for the explicit user action: asking the daemon to sign
+ * current dependency metadata and apply the CRDT mutation.
  */
 export interface HostTrust {
   approve(options?: { dependencyFingerprint?: string }): Promise<void>;

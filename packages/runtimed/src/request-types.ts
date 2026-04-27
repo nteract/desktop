@@ -31,6 +31,7 @@ export type NotebookRequest =
   | { type: "shutdown_kernel" }
   | { type: "sync_environment" }
   | { type: "sync_environment_guarded"; observed_heads: string[]; dependency_fingerprint: string }
+  | { type: "approve_trust"; dependency_fingerprint?: string }
   | { type: "run_all_cells" }
   | { type: "run_all_cells_guarded"; observed_heads: string[] }
   | { type: "send_comm"; message: CommRequestMessage }

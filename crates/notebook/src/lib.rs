@@ -8,7 +8,6 @@ pub mod menu;
 pub mod session;
 pub mod settings;
 pub mod shell_env;
-pub mod trust;
 pub mod typosquat;
 
 extern crate runtimed_client as runtimed;
@@ -398,42 +397,6 @@ where
         event,
         payload,
     )
-}
-
-/// Read the notebook metadata from the daemon's canonical Automerge doc.
-/// Returns the deserialized NotebookMetadataSnapshot, or None if not available.
-async fn get_metadata_snapshot(
-    handle: &RelayHandle,
-) -> Option<notebook_doc::metadata::NotebookMetadataSnapshot> {
-    match handle
-        .send_request(NotebookRequest::GetMetadataSnapshot {})
-        .await
-    {
-        Ok(NotebookResponse::MetadataSnapshot {
-            snapshot: Some(json),
-        }) => serde_json::from_str(&json).ok(),
-        _ => None,
-    }
-}
-
-/// Write a NotebookMetadataSnapshot to the daemon's canonical Automerge doc.
-async fn set_metadata_snapshot(
-    handle: &RelayHandle,
-    snapshot: &notebook_doc::metadata::NotebookMetadataSnapshot,
-) -> Result<(), String> {
-    let snapshot_json =
-        serde_json::to_string(snapshot).map_err(|e| format!("serialize metadata: {}", e))?;
-    match handle
-        .send_request(NotebookRequest::SetMetadataSnapshot {
-            snapshot: snapshot_json,
-        })
-        .await
-    {
-        Ok(NotebookResponse::MetadataSet {}) => Ok(()),
-        Ok(NotebookResponse::Error { error }) => Err(error),
-        Ok(other) => Err(format!("Unexpected response: {:?}", other)),
-        Err(e) => Err(format!("set_metadata request failed: {}", e)),
-    }
 }
 
 /// Connect to the daemon by opening an existing notebook file.
@@ -2722,59 +2685,6 @@ async fn send_frame_bytes(
     }
 }
 
-// ============================================================================
-// Trust approval
-// ============================================================================
-//
-// Trust *status* is authored by the daemon on `RuntimeStateDoc.trust` and
-// reaches the frontend via CRDT sync. Only the explicit approval action
-// stays Tauri-side, because it needs the local HMAC key to sign. That
-// will move to the daemon in a follow-up, at which point this command
-// (and the `runt-trust` crate dep on `notebook`) can be dropped too.
-
-/// Approve the notebook's dependencies and sign them with the local trust key.
-///
-/// After calling this, the notebook will be trusted on subsequent opens (until
-/// the dependency metadata is modified externally).
-#[tauri::command]
-async fn approve_notebook_trust(
-    window: tauri::Window,
-    registry: tauri::State<'_, WindowNotebookRegistry>,
-    dependency_fingerprint: Option<String>,
-) -> Result<(), String> {
-    let notebook_sync = notebook_sync_for_window(&window, registry.inner())?;
-    let guard = notebook_sync.lock().await;
-    let handle = guard.as_ref().ok_or("Not connected to daemon")?;
-
-    // Single snapshot fetch: sign and set trust fields on the same snapshot to
-    // avoid a TOCTOU race where deps change between signing and writing.
-    let mut snapshot = get_metadata_snapshot(handle)
-        .await
-        .ok_or("No metadata in Automerge doc")?;
-
-    if let Some(expected) = dependency_fingerprint {
-        let current = snapshot.dependency_fingerprint();
-        if current != expected {
-            return Err(
-                "Dependencies changed while the trust dialog was open. Review before approving."
-                    .to_string(),
-            );
-        }
-    }
-
-    let runt_value = serde_json::to_value(&snapshot.runt)
-        .map_err(|e| format!("serialize runt metadata: {e}"))?;
-    let mut additional = HashMap::new();
-    additional.insert("runt".to_string(), runt_value);
-
-    let signature = trust::sign_notebook_dependencies(&additional)?;
-
-    snapshot.runt.trust_signature = Some(signature);
-    snapshot.runt.trust_timestamp = Some(chrono::Utc::now().to_rfc3339());
-
-    set_metadata_snapshot(handle, &snapshot).await
-}
-
 /// Check packages for typosquatting (similar names to popular packages).
 ///
 /// Returns warnings for any packages that look like potential typosquats.
@@ -3722,10 +3632,9 @@ pub fn run(
             // pyproject / pixi / environment.yml: discovery + import
             // now flow through RuntimeStateDoc.project_context and
             // WASM metadata writes. No Tauri commands live here.
-            // Trust. Status reads come off `RuntimeStateDoc.trust` via
-            // CRDT sync; only the explicit approval (HMAC signing with the
-            // local trust key) stays on the Tauri side for now.
-            approve_notebook_trust,
+            // Trust approval flows through the notebook transport as a
+            // daemon-owned semantic request. Tauri no longer signs or writes
+            // trust metadata directly.
             check_typosquats,
             // Synced settings (via runtimed Automerge)
             get_synced_settings,
