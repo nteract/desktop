@@ -703,7 +703,28 @@ impl KernelConnection for JupyterKernel {
                 )
                 .await?;
 
+                // Order the listener drop relative to spawn per platform.
+                //
+                // Windows: child processes inherit the parent's socket handles
+                // by default. If `cmd.spawn()` ran while the listeners were
+                // alive, the kernel would inherit handles for ports 9000-9004
+                // and ipykernel's first `s.bind('tcp://...:9003')` would fail
+                // with EADDRINUSE - the kernel itself already owns a listener
+                // on that port via inheritance. The 9000-9999 reserved range
+                // is outside the dynamic ephemeral pool, so the OS allocator
+                // can't reclaim a freed port between drop and the kernel's
+                // bind. Drop early.
+                //
+                // Linux/macOS: FD_CLOEXEC is the default, so the child can't
+                // inherit the listener. The risk is the opposite - on the
+                // fallback path where ports come from the OS ephemeral
+                // allocator, the OS could re-hand a freed port to some other
+                // process between drop and the kernel's bind. Hold the
+                // listeners across spawn so that window stays closed.
+                #[cfg(windows)]
+                drop(listeners);
                 let mut process = cmd.spawn()?;
+                #[cfg(not(windows))]
                 drop(listeners);
 
                 let stderr_buffer: Arc<StdMutex<VecDeque<String>>> =
