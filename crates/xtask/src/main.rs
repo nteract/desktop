@@ -1278,10 +1278,10 @@ fn cmd_renderer_plugins() {
     ensure_workspace_root_cwd();
     require_pnpm();
     println!("Building renderer plugins...");
-    // Build both the notebook renderer plugins and the runt-mcp plugin assets.
-    // Uses the shared renderer-plugin-builder.ts to produce:
-    //   - apps/notebook/src/renderer-plugins/ (IIFE + 4 CJS plugins, checked in via git LFS)
-    //   - crates/runt-mcp/assets/plugins/ (MCP-wrapped plugins, checked in via git LFS)
+    // Build both the notebook renderer plugins and the runt-mcp plugin
+    // assets. Uses the shared renderer-plugin-builder.ts to produce:
+    //   - apps/notebook/src/renderer-plugins/ (IIFE + 4 CJS plugins, gitignored)
+    //   - crates/runt-mcp/assets/plugins/    (MCP-wrapped plugins, gitignored)
     run_cmd(
         "node",
         &[
@@ -1292,7 +1292,7 @@ fn cmd_renderer_plugins() {
     println!("Renderer plugins built.");
     println!("  Notebook: apps/notebook/src/renderer-plugins/");
     println!("  MCP:      crates/runt-mcp/assets/plugins/");
-    println!("Commit the updated artifacts (they're tracked via git LFS).");
+    println!("Outputs are gitignored — CI rebuilds them as a prerequisite step.");
 }
 
 /// Verify renderer plugin bundles are coherent with their paired wasm binaries.

@@ -2,16 +2,17 @@
  * Build pre-built renderer plugin artifacts.
  *
  * Produces two sets of outputs:
- *   1. apps/notebook/src/renderer-plugins/ — Core IIFE + 4 CJS plugins for the notebook app
- *   2. crates/runt-mcp/assets/plugins/ — MCP-wrapped plugins for the daemon's MCP server
+ *   1. apps/notebook/src/renderer-plugins/ : core IIFE + 4 CJS plugins for the notebook app
+ *   2. crates/runt-mcp/assets/plugins/     : MCP-wrapped plugins for the daemon's MCP server
  *
- * Both are checked into the repo via git LFS. Run this script when renderer
- * source files or vendored libraries change:
+ * Both directories are gitignored. CI rebuilds them as a prerequisite step
+ * before any job that compiles the runtimed daemon (which `include_bytes!`s
+ * them) or runs the notebook Vite build (which loads them at runtime).
+ *
+ * Run locally after a fresh clone, or when renderer source or vendored
+ * libraries change:
  *
  *   cargo xtask renderer-plugins
- *
- * The notebook Vite build reads from (1) instead of rebuilding plugins on
- * every build. The runtimed daemon embeds (2) via include_str!().
  */
 
 import fs from "node:fs";
