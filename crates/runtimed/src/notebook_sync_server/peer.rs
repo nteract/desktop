@@ -1186,6 +1186,15 @@ impl PeerWriter {
         let payload = serde_json::to_vec(value)?;
         self.send_frame(frame_type, payload)
     }
+
+    /// Number of free slots in the outbound channel.
+    ///
+    /// `PEER_OUTBOUND_QUEUE_CAPACITY - capacity()` gives the number of
+    /// in-flight frames waiting to be flushed to the socket — useful as a
+    /// backpressure signal in telemetry.
+    fn capacity(&self) -> usize {
+        self.tx.capacity()
+    }
 }
 
 impl PeerRequestWorker {
@@ -1240,7 +1249,22 @@ fn spawn_peer_request_worker(
     );
     let handle = tokio::spawn(async move {
         while let Some(envelope) = rx.recv().await {
+            let label = metadata::request_label(&envelope.request);
+            let req_id = envelope.id.as_deref().unwrap_or("-");
+            let writer_queue_depth = PEER_OUTBOUND_QUEUE_CAPACITY - writer.capacity();
+            debug!(
+                "[notebook-sync] Request {} id={} peer={} notebook={} writer_queue={}",
+                label, req_id, peer_id, notebook_id, writer_queue_depth,
+            );
+
+            let start = std::time::Instant::now();
             let response = handle_notebook_request(&room, envelope.request, daemon.clone()).await;
+            let elapsed = start.elapsed();
+            debug!(
+                "[notebook-sync] Request {} id={} completed in {:?}",
+                label, req_id, elapsed,
+            );
+
             let reply = notebook_protocol::protocol::NotebookResponseEnvelope {
                 id: envelope.id,
                 response,
@@ -1778,6 +1802,13 @@ where
                                 // request order and echoes the id on the response.
                                 let envelope: notebook_protocol::protocol::NotebookRequestEnvelope =
                                     serde_json::from_slice(&frame.payload)?;
+                                debug!(
+                                    "[notebook-sync] Enqueuing {} id={} peer={} notebook={}",
+                                    metadata::request_label(&envelope.request),
+                                    envelope.id.as_deref().unwrap_or("-"),
+                                    peer_id,
+                                    notebook_id,
+                                );
                                 if let Err(e) = request_worker.enqueue(envelope) {
                                     match e {
                                         RequestEnqueueError::Full(envelope) => {

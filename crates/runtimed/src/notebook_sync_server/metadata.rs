@@ -3418,13 +3418,49 @@ pub(crate) async fn update_kernel_presence(
     }
 }
 
+/// Short label for a request variant, used in telemetry logs.
+///
+/// Returns a static string — no allocation — suitable for structured logging
+/// fields.  Intentionally avoids `Debug` formatting because some variants
+/// carry large payloads (snapshot JSON, doc bytes) that would bloat log lines.
+pub(crate) fn request_label(req: &NotebookRequest) -> &'static str {
+    match req {
+        NotebookRequest::LaunchKernel { .. } => "LaunchKernel",
+        NotebookRequest::ExecuteCell { .. } => "ExecuteCell",
+        NotebookRequest::ExecuteCellGuarded { .. } => "ExecuteCellGuarded",
+        NotebookRequest::ClearOutputs { .. } => "ClearOutputs",
+        NotebookRequest::InterruptExecution { .. } => "InterruptExecution",
+        NotebookRequest::ShutdownKernel { .. } => "ShutdownKernel",
+        NotebookRequest::GetKernelInfo { .. } => "GetKernelInfo",
+        NotebookRequest::GetQueueState { .. } => "GetQueueState",
+        NotebookRequest::RunAllCells { .. } => "RunAllCells",
+        NotebookRequest::RunAllCellsGuarded { .. } => "RunAllCellsGuarded",
+        NotebookRequest::SendComm { .. } => "SendComm",
+        NotebookRequest::GetHistory { .. } => "GetHistory",
+        NotebookRequest::Complete { .. } => "Complete",
+        NotebookRequest::SaveNotebook { .. } => "SaveNotebook",
+        NotebookRequest::CloneAsEphemeral { .. } => "CloneAsEphemeral",
+        NotebookRequest::SyncEnvironment { .. } => "SyncEnvironment",
+        NotebookRequest::SyncEnvironmentGuarded { .. } => "SyncEnvironmentGuarded",
+        NotebookRequest::GetDocBytes { .. } => "GetDocBytes",
+        NotebookRequest::GetRawMetadata { .. } => "GetRawMetadata",
+        NotebookRequest::SetRawMetadata { .. } => "SetRawMetadata",
+        NotebookRequest::GetMetadataSnapshot { .. } => "GetMetadataSnapshot",
+        NotebookRequest::SetMetadataSnapshot { .. } => "SetMetadataSnapshot",
+        NotebookRequest::CheckToolAvailable { .. } => "CheckToolAvailable",
+    }
+}
+
 /// Handle a NotebookRequest and return a NotebookResponse.
 pub(crate) async fn handle_notebook_request(
     room: &Arc<NotebookRoom>,
     request: NotebookRequest,
     daemon: std::sync::Arc<crate::daemon::Daemon>,
 ) -> NotebookResponse {
-    debug!("[notebook-sync] Handling request: {:?}", request);
+    debug!(
+        "[notebook-sync] Handling request: {}",
+        request_label(&request)
+    );
 
     match request {
         NotebookRequest::LaunchKernel {
