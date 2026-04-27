@@ -189,7 +189,12 @@ enum Commands {
         #[arg(long, short)]
         runtime: Option<String>,
     },
-    /// Jupyter kernel utilities
+    /// [DEPRECATED] Standalone Jupyter kernel utilities.
+    ///
+    /// These verbs spawn or manage a kernel from a system-installed Jupyter
+    /// kernelspec, independent of the runtimed daemon. Will be removed in
+    /// v2.5. Use the daemon path instead: launch the notebook app, or drive
+    /// `runt mcp` from any MCP client.
     #[command(hide = true)]
     Jupyter {
         #[command(subcommand)]
@@ -660,25 +665,29 @@ async fn async_main(command: Option<Commands>) -> Result<()> {
             dev_command(dev_cmd).await?
         }
 
-        // Deprecated aliases (with warnings)
+        // Deprecated aliases (with warnings).
+        //
+        // These standalone-kernel verbs are scheduled for removal in v2.5
+        // alongside `runt jupyter`. The replacement is the runtimed daemon:
+        // launch the notebook app, or drive `runt mcp` from any MCP client.
         Some(Commands::Start { name }) => {
-            eprintln!("Warning: 'runt start' is deprecated. Use 'runt jupyter start' instead.");
+            eprintln!("Warning: 'runt start' is deprecated and will be removed in v2.5.");
+            eprintln!("         Use the daemon (notebook app or `runt mcp`) instead.");
             start_kernel(&name).await?
         }
         Some(Commands::StopKernel { id, all }) => {
-            eprintln!(
-                "Warning: 'runt stop-kernel' is deprecated. Use 'runt jupyter stop' instead."
-            );
+            eprintln!("Warning: 'runt stop-kernel' is deprecated and will be removed in v2.5.");
+            eprintln!("         Use the daemon (notebook app or `runt mcp`) instead.");
             stop_kernels(id.as_deref(), all).await?
         }
         Some(Commands::Interrupt { id }) => {
-            eprintln!(
-                "Warning: 'runt interrupt' is deprecated. Use 'runt jupyter interrupt' instead."
-            );
+            eprintln!("Warning: 'runt interrupt' is deprecated and will be removed in v2.5.");
+            eprintln!("         Use the daemon (notebook app or `runt mcp`) instead.");
             interrupt_kernel(&id).await?
         }
         Some(Commands::Exec { id, code }) => {
-            eprintln!("Warning: 'runt exec' is deprecated. Use 'runt jupyter exec' instead.");
+            eprintln!("Warning: 'runt exec' is deprecated and will be removed in v2.5.");
+            eprintln!("         Use the daemon (notebook app or `runt mcp`) instead.");
             execute_code(&id, code.as_deref()).await?
         }
         Some(Commands::Console {
@@ -686,11 +695,13 @@ async fn async_main(command: Option<Commands>) -> Result<()> {
             cmd,
             verbose,
         }) => {
-            eprintln!("Warning: 'runt console' is deprecated. Use 'runt jupyter console' instead.");
+            eprintln!("Warning: 'runt console' is deprecated and will be removed in v2.5.");
+            eprintln!("         Use the daemon (notebook app or `runt mcp`) instead.");
             console(kernel.as_deref(), cmd.as_deref(), verbose).await?
         }
         Some(Commands::Clean { timeout, dry_run }) => {
-            eprintln!("Warning: 'runt clean' is deprecated. Use 'runt jupyter clean' instead.");
+            eprintln!("Warning: 'runt clean' is deprecated and will be removed in v2.5.");
+            eprintln!("         Use the daemon (notebook app or `runt mcp`) instead.");
             clean_kernels(timeout, dry_run).await?
         }
         Some(Commands::Pool { command }) => {
@@ -946,6 +957,14 @@ fn is_file_locked(path: &std::path::Path) -> bool {
 }
 
 async fn jupyter_command(command: JupyterCommands) -> Result<()> {
+    use colored::Colorize;
+    eprintln!(
+        "{} `runt jupyter` is deprecated and will be removed in v2.5.",
+        "warning:".yellow().bold()
+    );
+    eprintln!("         Use the runtimed daemon instead: launch the notebook app, or");
+    eprintln!("         drive `runt mcp` from any MCP client.");
+    eprintln!();
     match command {
         JupyterCommands::Ps { json, verbose } => list_kernels(json, verbose).await,
         JupyterCommands::Start { name } => start_kernel(&name).await,
