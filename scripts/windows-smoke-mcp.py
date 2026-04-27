@@ -10,12 +10,17 @@ Usage:
 from __future__ import annotations
 
 import asyncio
-import json
+import re
 import sys
 from pathlib import Path
 
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
+
+CELL_ID_RE = re.compile(r"cell-[0-9a-f-]{36}")
+EXEC_ID_RE = re.compile(r"exec=([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})")
+DONE_RE = re.compile(r"\bdone\b", re.IGNORECASE)
+ERROR_RE = re.compile(r"\berror\b", re.IGNORECASE)
 
 
 def fail(msg: str) -> None:
@@ -57,23 +62,10 @@ async def smoke(runt_exe: Path) -> None:
             fail(f"create_cell errored: {text_of(cell)}")
         print(text_of(cell))
 
-        cell_id = None
-        for c in cell.content:
-            if hasattr(c, "text"):
-                try:
-                    parsed = json.loads(c.text)
-                    cell_id = parsed.get("cell_id") or parsed.get("id")
-                    if cell_id:
-                        break
-                except (json.JSONDecodeError, AttributeError):
-                    continue
-        if not cell_id and cell.structuredContent:
-            cell_id = cell.structuredContent.get("cell_id") or cell.structuredContent.get("id")
-        if not cell_id:
-            print("[smoke] WARN: could not parse cell_id from response, trying get_all_cells")
-            allcells = await session.call_tool("get_all_cells", {"format": "json"})
-            print(text_of(allcells))
-            fail("no cell_id available to execute")
+        match = CELL_ID_RE.search(text_of(cell))
+        if not match:
+            fail(f"could not parse cell_id from create_cell response: {text_of(cell)}")
+        cell_id = match.group(0)
 
         print(f"[smoke] execute_cell {cell_id}")
         exec_result = await session.call_tool("execute_cell", {"cell_id": cell_id})
@@ -81,35 +73,44 @@ async def smoke(runt_exe: Path) -> None:
             fail(f"execute_cell errored: {text_of(exec_result)}")
         print(text_of(exec_result))
 
-        execution_id = None
-        for c in exec_result.content:
-            if hasattr(c, "text"):
-                try:
-                    parsed = json.loads(c.text)
-                    execution_id = parsed.get("execution_id")
-                    if execution_id:
-                        break
-                except (json.JSONDecodeError, AttributeError):
-                    continue
-        if not execution_id and exec_result.structuredContent:
-            execution_id = exec_result.structuredContent.get("execution_id")
-        if not execution_id:
-            fail("no execution_id from execute_cell")
+        match = EXEC_ID_RE.search(text_of(exec_result))
+        if not match:
+            fail(f"could not parse execution_id from execute_cell response: {text_of(exec_result)}")
+        execution_id = match.group(1)
+        print(f"[smoke] execution_id={execution_id}")
+
+        # Two paths: execute_cell can return synchronously (small fast cell) or
+        # leave us to poll get_results. Treat both uniformly by extracting the
+        # actual stdout portion (after the trailing ━━━ separator from the
+        # rich tool formatter).
+        def stdout_of(body: str) -> str:
+            parts = body.split("━━━")
+            return parts[-1].strip() if len(parts) > 1 else body.strip()
+
+        if DONE_RE.search(text_of(exec_result)):
+            out = stdout_of(text_of(exec_result))
+            if out == "2":
+                print("[smoke] PASS - synchronous execution returned '2'")
+                return
+            if ERROR_RE.search(text_of(exec_result)):
+                fail(f"execute_cell reported error: {text_of(exec_result)}")
+            print(f"[smoke] execute_cell returned 'done' but output was {out!r}; polling anyway")
 
         print(f"[smoke] poll get_results({execution_id})")
         for attempt in range(60):
             await asyncio.sleep(2)
             results = await session.call_tool("get_results", {"execution_id": execution_id})
             body = text_of(results)
-            if "done" in body.lower() or "2" in body:
+            if ERROR_RE.search(body) and "Execution not found" not in body:
+                fail(f"execution errored: {body}")
+            if DONE_RE.search(body):
                 print(f"[smoke] result after {attempt * 2}s:")
                 print(body)
-                if "2" in body:
-                    print("[smoke] PASS - got expected output 2")
+                out = stdout_of(body)
+                if out == "2":
+                    print("[smoke] PASS - polled result was '2'")
                     return
-                fail(f"execution finished but output didn't contain '2': {body}")
-            if "error" in body.lower():
-                fail(f"execution errored: {body}")
+                fail(f"execution finished but stdout was {out!r}, expected '2'")
             print(f"[smoke] attempt {attempt}: still pending")
 
         fail("execution did not complete within 120s")
