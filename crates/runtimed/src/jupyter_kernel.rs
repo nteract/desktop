@@ -9,7 +9,7 @@
 //! **not** hold queue, executing cell, or status — those live in `KernelState`.
 
 use std::collections::{HashMap, VecDeque};
-use std::net::Ipv4Addr;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -22,6 +22,7 @@ use jupyter_protocol::{
     JupyterMessage, JupyterMessageContent, KernelInfoRequest, ShutdownRequest,
 };
 use runtime_doc::{KernelActivity, RuntimeLifecycle};
+use tokio::net::TcpListener;
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tracing::{debug, error, info, warn};
@@ -40,6 +41,65 @@ use crate::task_supervisor::{spawn_best_effort, spawn_supervised};
 use crate::terminal_size::{TERMINAL_COLUMNS_STR, TERMINAL_LINES_STR};
 use crate::EnvType;
 use notebook_protocol::protocol::LaunchedEnvConfig;
+
+/// Reserved port range for Jupyter kernel ZMQ sockets.
+///
+/// Outside the Windows dynamic ephemeral range (49152-65535) and the IANA
+/// registered range (the conventional ceiling for system ports on Linux is
+/// also `ip_local_port_range` start, typically 32768). 9000-9999 is in the
+/// IANA user-port range, far from any default ephemeral pool, and unlikely
+/// to clash with common services on a developer machine.
+const KERNEL_PORT_RANGE: std::ops::RangeInclusive<u16> = 9000..=9999;
+
+/// Reserve `num` TCP ports for a kernel's ZMQ sockets.
+///
+/// Wraps `runtimelib::peek_ports_with_listeners` to address a TOCTOU race
+/// observed on Windows: that function binds to port 0, asks the OS for a
+/// port (in the dynamic ephemeral range on Windows: 49152-65535), then
+/// drops the listener and tells the kernel to bind that same port. The
+/// 100-200ms window between drop and the kernel's bind is long enough on
+/// Windows for the OS to hand the port to another process as an outbound
+/// ephemeral source - the kernel's bind() then fails with EADDRINUSE and
+/// the daemon sees it as `Codec Error: WSAECONNRESET (10054)`.
+///
+/// We try the reserved range 9000-9999 first. If we can't fill `num` from
+/// the reserved range, fall back to the OS-assigned ports - the race is
+/// rarer on Linux/macOS and the reserved range is small enough that we
+/// might collide with something, so the fallback keeps developer machines
+/// working.
+async fn reserve_kernel_ports(ip: IpAddr, num: usize) -> Result<(Vec<u16>, Vec<TcpListener>)> {
+    let mut ports: Vec<u16> = Vec::with_capacity(num);
+    let mut listeners: Vec<TcpListener> = Vec::with_capacity(num);
+
+    for port in KERNEL_PORT_RANGE {
+        if ports.len() == num {
+            break;
+        }
+        let addr = SocketAddr::new(ip, port);
+        if let Ok(listener) = TcpListener::bind(addr).await {
+            ports.push(port);
+            listeners.push(listener);
+        }
+    }
+
+    if ports.len() == num {
+        debug!(
+            "[jupyter-kernel] Reserved {} ports from KERNEL_PORT_RANGE: {:?}",
+            num, ports
+        );
+        return Ok((ports, listeners));
+    }
+
+    warn!(
+        "[jupyter-kernel] Reserved range exhausted ({}/{} filled); falling back to OS-assigned",
+        ports.len(),
+        num
+    );
+    drop(listeners);
+    runtimelib::peek_ports_with_listeners(ip, num)
+        .await
+        .map_err(Into::into)
+}
 
 /// Type alias for pending completion response channels.
 type PendingCompletions =
@@ -179,7 +239,7 @@ impl KernelConnection for JupyterKernel {
 
         // Reserve ports — hold listeners until after spawn() to prevent TOCTOU races
         let ip = std::net::IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
-        let (ports, listeners) = runtimelib::peek_ports_with_listeners(ip, 5).await?;
+        let (ports, listeners) = reserve_kernel_ports(ip, 5).await?;
 
         let connection_info = ConnectionInfo {
             transport: jupyter_protocol::connection_info::Transport::TCP,
