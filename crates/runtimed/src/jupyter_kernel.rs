@@ -675,12 +675,13 @@ impl KernelConnection for JupyterKernel {
         // with `Address in use`. Retry up to a few times with fresh ports
         // so a single unlucky pick doesn't sink the launch.
         const MAX_LAUNCH_ATTEMPTS: usize = 4;
+        type LaunchedKernel = (
+            tokio::process::Child,
+            Arc<StdMutex<VecDeque<String>>>,
+            ConnectionInfo,
+        );
         let (mut process, _stderr_buffer, connection_info) = {
-            let mut accepted: Option<(
-                tokio::process::Child,
-                Arc<StdMutex<VecDeque<String>>>,
-                ConnectionInfo,
-            )> = None;
+            let mut accepted: Option<LaunchedKernel> = None;
             let mut last_failure: Option<anyhow::Error> = None;
             for attempt in 1..=MAX_LAUNCH_ATTEMPTS {
                 let (ports, listeners) = reserve_kernel_ports(ip, 5).await?;
