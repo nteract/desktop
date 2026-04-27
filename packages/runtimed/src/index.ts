@@ -114,7 +114,6 @@ export type {
   CommRequestMessage,
   CompletionItem,
   DependencyGuard,
-  GuardedDependencyProvenance,
   GuardedNotebookProvenance,
   HistoryEntry,
   NotebookRequest,

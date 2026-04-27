@@ -12,11 +12,6 @@ export interface GuardedNotebookProvenance {
   observed_heads: string[];
 }
 
-export interface GuardedDependencyProvenance {
-  observed_heads: string[];
-  dependency_fingerprint: string;
-}
-
 export interface DependencyGuard {
   observed_heads: string[];
   dependency_fingerprint: string;

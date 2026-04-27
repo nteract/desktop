@@ -2,7 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import {
   deriveEnvManager,
   deriveRuntimeKind,
-  type GuardedDependencyProvenance,
+  type DependencyGuard,
   type GuardedNotebookProvenance,
   NotebookClient,
   type SessionStatus,
@@ -85,7 +85,7 @@ type PendingTrustAction =
       provenance: GuardedNotebookProvenance;
       dependencyFingerprint: string;
     }
-  | { kind: "sync_deps"; provenance: GuardedDependencyProvenance };
+  | { kind: "sync_deps"; provenance: DependencyGuard };
 
 const EMPTY_DEPENDENCY_FINGERPRINT = "{}";
 
@@ -751,7 +751,7 @@ function AppContent() {
   );
 
   const performTrustedSyncDeps = useCallback(
-    async (guard?: GuardedDependencyProvenance): Promise<boolean> => {
+    async (guard?: DependencyGuard): Promise<boolean> => {
       // For UV or Conda inline deps with only additions, try hot-sync first
       const isUvInline = envSource === "uv:inline";
       const isCondaInline = envSource === "conda:inline";

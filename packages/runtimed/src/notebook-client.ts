@@ -13,7 +13,7 @@ import type { NotebookTransport } from "./transport";
 import type {
   CommRequestMessage,
   CompletionItem,
-  GuardedDependencyProvenance,
+  DependencyGuard,
   GuardedNotebookProvenance,
   HistoryEntry,
   NotebookRequest,
@@ -161,15 +161,15 @@ export class NotebookClient {
   }
 
   /** Hot-sync environment — install new packages without restart (UV only). */
-  async syncEnvironment(provenance?: GuardedDependencyProvenance): Promise<NotebookResponse> {
+  async syncEnvironment(guard?: DependencyGuard): Promise<NotebookResponse> {
     try {
       const response = await this.sendRequest({
         type: "sync_environment",
-        ...(provenance
+        ...(guard
           ? {
               guard: {
-                observed_heads: provenance.observed_heads,
-                dependency_fingerprint: provenance.dependency_fingerprint,
+                observed_heads: guard.observed_heads,
+                dependency_fingerprint: guard.dependency_fingerprint,
               },
             }
           : {}),
