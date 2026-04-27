@@ -30,8 +30,6 @@ jobs:
     timeout-minutes: 75
     steps:
       - uses: actions/checkout@v6
-        with:
-          lfs: true
 
       - name: Set up Rust
         uses: dsherret/rust-toolchain-file@v1
@@ -40,15 +38,8 @@ jobs:
         with:
           shared-key: windows-smoke
 
-      - uses: voidzero-dev/setup-vp@v1
-        with:
-          run-install: false
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v6
-        with:
-          node-version: "22"
-          cache: pnpm
-      - run: pnpm install
+      - name: Build runtime artifacts (wasm + renderer plugins)
+        uses: ./.github/actions/build-runtime-artifacts
 
       - name: Build frontend
         run: pnpm build
@@ -297,8 +288,6 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v6
-        with:
-          lfs: true
 
       - name: Set up Rust
         uses: dsherret/rust-toolchain-file@v1
@@ -307,15 +296,8 @@ jobs:
         with:
           shared-key: linux-smoke
 
-      - uses: voidzero-dev/setup-vp@v1
-        with:
-          run-install: false
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v6
-        with:
-          node-version: "22"
-          cache: pnpm
-      - run: pnpm install
+      - name: Build runtime artifacts (wasm + renderer plugins)
+        uses: ./.github/actions/build-runtime-artifacts
 
       # runt-mcp's include_str! pulls in the MCP output widget HTML. Build
       # before compiling Rust so the assets/_output.html target exists.
