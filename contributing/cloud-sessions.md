@@ -28,7 +28,7 @@ Two layers, picked from Anthropic's [cloud sessions documentation](https://code.
 | Runs as | root | Same user as Claude |
 | Canonical content | `scripts/cloud-setup.sh` | `scripts/cloud-bootstrap.sh` |
 
-`scripts/cloud-setup.sh` installs the tools the Anthropic image is missing (`wasm-pack`, `corepack`-managed pnpm). The output snapshots into the cached environment, so subsequent cold sessions skip the install cost. It cannot reference any repo files because the repo isn't cloned yet when it runs.
+`scripts/cloud-setup.sh` installs the tools the Anthropic image is missing (`clang`, `wasm-pack`, `corepack`-managed pnpm). `clang` is required for cross-compiling `zstd-sys` (used by `sift-wasm`) to `wasm32-unknown-unknown`. The output snapshots into the cached environment, so subsequent cold sessions skip the install cost. It cannot reference any repo files because the repo isn't cloned yet when it runs.
 
 `scripts/cloud-bootstrap.sh` runs every session, after the clone. It does `pnpm install --frozen-lockfile`, builds the gitignored wasm + renderer-plugin artifacts when missing (see below), and warms the cargo registry. All steps are idempotent: fast no-ops when caches are warm.
 
@@ -70,6 +70,7 @@ Common symptoms:
 | Symptom | Likely cause | Fix |
 | --- | --- | --- |
 | `cargo build` fails with `Missing renderer plugin asset` | wasm build didn't run, or all 3 retries failed | Check `/tmp/cloud-bootstrap.log`. If `wasm-pack` is missing, configure the setup script (above). If retries hit a non-transient error, run `cargo xtask wasm` manually. |
+| `cargo xtask wasm` fails with `ToolNotFound: failed to find tool "clang"` | `clang` not installed; needed by `zstd-sys` for sift-wasm cross-compilation | `sudo apt-get install -y clang`, then re-run `cargo xtask wasm`. Update the cloud-env setup script if it's missing `clang`. |
 | Bootstrap reports `pnpm install: FAILED` | Lockfile drift or proxy issue | Check the log; try `pnpm install --force`. |
 
 ## Future work
