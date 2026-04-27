@@ -445,8 +445,8 @@ All build, lint, and dev commands go through `cargo xtask`. **Run `cargo xtask h
 
 | Category | Command | Description |
 |----------|---------|-------------|
-| Dev | `cargo xtask dev` | Full setup: deps + build + daemon + app |
-| | `cargo xtask dev --skip-build` | Reuse existing build artifacts before launch |
+| Dev | `cargo xtask dev` | deps + sidecars + dev daemon + `cargo tauri dev` (Vite HMR). Skips the production bundle / `cargo tauri build` that the dev path discards anyway. |
+| | `cargo xtask dev --skip-build` | Skip sidecar rebuild and launch directly (the daemon spawn still rebuilds sidecars on demand if missing). |
 | | `cargo xtask dev --skip-install` | Reuse existing pnpm install before launch |
 | | `cargo xtask notebook` | Hot-reload dev server (Vite on port 5174) |
 | | `cargo xtask notebook --attach` | Attach Tauri to existing Vite server |

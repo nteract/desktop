@@ -383,12 +383,22 @@ fn cmd_dev(notebook: Option<&str>, skip_install: bool, skip_build: bool) {
         ensure_python_env();
     }
 
+    // `cargo tauri dev` boots its own Vite dev server and recompiles the
+    // notebook crate fresh, so the Phase 2 production bundle and Phase 3
+    // tauri build that `cargo xtask build` runs would be ~40s of warm work
+    // whose output the dev path immediately discards. Skip both. We still
+    // need:
+    //   - the gitignored wasm + renderer-plugin outputs (Vite imports
+    //     them as virtual modules)
+    //   - the MCP widget HTML (`runt-mcp` `include_str!`s `_output.html`)
+    //   - the runtimed/runt/nteract-mcp sidecars when the dev daemon
+    //     spawn falls through below
+    ensure_build_artifacts();
     if skip_build {
-        println!("Skipping cargo xtask build (--skip-build)");
-        ensure_dev_daemon_binaries();
+        println!("Skipping sidecar build (--skip-build)");
     } else {
-        println!("Running cargo xtask build for first-time setup...");
-        cmd_build(false);
+        build_mcp_widget();
+        ensure_dev_daemon_binaries();
     }
 
     println!();
