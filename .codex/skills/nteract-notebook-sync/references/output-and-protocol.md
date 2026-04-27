@@ -14,6 +14,27 @@ When changing the wire handshake or typed frame semantics, also inspect:
 - `crates/notebook-protocol/src/protocol.rs`
 - `contributing/protocol.md`
 
+## Frame pump invariants
+
+Frame readers are only half the fix. A dedicated reader prevents cancel-unsafe
+partial reads, but the consumer must also stay hot enough to drain the bounded
+frame queue.
+
+- Confirmation waits must be waiter-based: register the target heads, send any
+  immediate sync frame, and let normal inbound `AutomergeSync` handling resolve
+  the waiter.
+- Request waits must be pending-map based: every overlapping request needs a
+  correlation id, and responses must route by id instead of by "next response
+  wins".
+- Do not put `recv()` loops inside command handlers. Long waits in command code
+  starve broadcasts, state sync, session-control frames, and sync replies.
+- Bounded frame queues still backpressure the socket when the consumer is
+  blocked. Treat any per-command sleep, timeout loop, or "drain a few frames"
+  helper in the sync task as a potential session-drop bug.
+- Broadcasts and RuntimeStateSync frames can arrive while requests and confirms
+  are pending. Route them through the main frame handler instead of dropping or
+  deferring them.
+
 ## MIME classification contract
 
 Single canonical Rust implementation in `crates/notebook-doc/src/mime.rs` (`is_binary_mime()`, `mime_kind()`, `MimeKind` enum). All Rust crates use this module. The old per-crate copies have been deleted. WASM owns MIME classification end-to-end. A `looksLikeBinaryMime()` safety net remains in `manifest-resolution.ts` for blob refs that WASM couldn't resolve — it is not an authoritative copy.

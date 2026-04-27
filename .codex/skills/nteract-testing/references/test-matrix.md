@@ -61,3 +61,21 @@ cargo xtask e2e test-fixture crates/notebook/fixtures/audit-test/1-vanilla.ipynb
 - Some Deno tests type-check poorly in spite of working at runtime; `--no-check` is often the intended mode in this repo.
 - Python integration failures are often socket-selection problems before they are logic regressions.
 - E2E flows should go through `cargo xtask e2e ...`; it builds the webdriver-enabled binary, launches the app on port `4445`, and runs `pnpm test:e2e` with the right wiring.
+
+## Sync backpressure regressions
+
+When a change touches `crates/notebook-sync/src/sync_task.rs`,
+`crates/notebook-sync/src/relay_task.rs`, request/response envelopes, or
+MCP paths that issue parallel cell mutations, add or run tests with this shape:
+
+- Tiny-buffer duplex unit test: issue concurrent `confirm_sync()` calls while a
+  fake daemon sends interleaved `AutomergeSync`, `RuntimeStateSync`, broadcast,
+  or `SessionControl` frames. The sync task must keep draining and every waiter
+  must resolve without a socket close.
+- Daemon integration test: create 8-10 cells through the same session with
+  parallel mutation/confirm tasks, assert the original peer remains connected,
+  then reconnect a fresh peer and verify every cell converged.
+- Request-routing unit test: send overlapping daemon requests with request ids,
+  return responses out of order, interleave a broadcast, and assert each caller
+  receives its own response while broadcasts still reach request progress
+  subscribers.

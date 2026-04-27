@@ -164,6 +164,21 @@ async fn wait_for_session_ready(handle: &notebook_sync::DocHandle, timeout: Dura
     )
 }
 
+async fn wait_for_cell_count(
+    handle: &notebook_sync::DocHandle,
+    expected: usize,
+    timeout: Duration,
+) -> bool {
+    let start = std::time::Instant::now();
+    while start.elapsed() < timeout {
+        if handle.get_cells().len() >= expected {
+            return true;
+        }
+        sleep(Duration::from_millis(20)).await;
+    }
+    false
+}
+
 #[cfg(unix)]
 type LegacyPoolStream = tokio::net::UnixStream;
 
@@ -597,6 +612,94 @@ async fn test_notebook_sync_cross_window_propagation() {
     // is resolved from RuntimeStateDoc at save time and by the frontend.
 
     // Shutdown
+    pool_client.shutdown().await.ok();
+    let _ = tokio::time::timeout(Duration::from_secs(2), daemon_handle).await;
+}
+
+#[tokio::test]
+async fn test_parallel_cell_mutations_same_session_no_disconnect() {
+    let temp_dir = TempDir::new().unwrap();
+    let config = test_config(&temp_dir);
+    let socket_path = config.socket_path.clone();
+
+    let daemon = Daemon::new(config).unwrap();
+    let daemon_handle = tokio::spawn(async move {
+        daemon.run().await.ok();
+    });
+
+    let pool_client = PoolClient::new(socket_path.clone());
+    assert!(wait_for_daemon(&pool_client).await);
+
+    let result = connect::connect_create(
+        socket_path.clone(),
+        "python",
+        None,
+        "test",
+        false,
+        None,
+        vec![],
+    )
+    .await
+    .unwrap();
+    let notebook_id = result.info.notebook_id.clone();
+    let handle = result.handle;
+
+    assert!(
+        wait_for_session_ready(&handle, SESSION_READY_TIMEOUT).await,
+        "client should reach session-ready state"
+    );
+    assert!(
+        wait_for_cells_map(&handle, Duration::from_secs(5)).await,
+        "client should receive daemon-created cells map"
+    );
+
+    let mut joins = Vec::new();
+    for index in 0..10 {
+        let handle = handle.clone();
+        joins.push(tokio::spawn(async move {
+            let cell_id = format!("parallel-{index}");
+            handle.add_cell_with_source(&cell_id, "code", None, &format!("print({index})"))?;
+            handle.confirm_sync().await
+        }));
+    }
+
+    tokio::time::timeout(Duration::from_secs(20), async {
+        for join in joins {
+            join.await.unwrap().unwrap();
+        }
+    })
+    .await
+    .expect("parallel cell mutations should sync without hanging");
+
+    assert_eq!(
+        handle.status().connection,
+        notebook_sync::ConnectionState::Connected,
+        "original client should stay connected after parallel confirms"
+    );
+
+    let fresh = connect::connect(socket_path.clone(), notebook_id, "test")
+        .await
+        .unwrap()
+        .handle;
+    assert!(
+        wait_for_session_ready(&fresh, SESSION_READY_TIMEOUT).await,
+        "fresh client should reach session-ready state"
+    );
+    assert!(
+        wait_for_cells_map(&fresh, Duration::from_secs(5)).await,
+        "fresh client should receive cells map"
+    );
+    assert!(
+        wait_for_cell_count(&fresh, 10, Duration::from_secs(5)).await,
+        "fresh client should see every parallel-created cell"
+    );
+
+    let ids: std::collections::HashSet<_> =
+        fresh.get_cells().into_iter().map(|cell| cell.id).collect();
+    for index in 0..10 {
+        assert!(ids.contains(&format!("parallel-{index}")));
+    }
+
     pool_client.shutdown().await.ok();
     let _ = tokio::time::timeout(Duration::from_secs(2), daemon_handle).await;
 }
