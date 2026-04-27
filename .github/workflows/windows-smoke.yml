@@ -1,0 +1,224 @@
+name: Windows smoke
+
+# Builds the NSIS installer, installs it on a windows-latest runner, and
+# exercises the bundled `runt.exe` / `runtimed.exe` CLIs without a GUI.
+# Goal: catch breakage in the install + kernel-launch path that the existing
+# release pipeline never exercises (it builds Windows artifacts but doesn't
+# install or run them).
+#
+# Triggered manually via workflow_dispatch and on every push to this branch
+# while we iterate. Will tighten triggers once it's stable.
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - windows-ci-smoke
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUNT_BUILD_CHANNEL: stable
+
+jobs:
+  build-and-smoke:
+    name: Build, install, smoke
+    runs-on: windows-latest
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          lfs: true
+
+      - name: Set up Rust
+        uses: dsherret/rust-toolchain-file@v1
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: windows-smoke
+
+      - uses: voidzero-dev/setup-vp@v1
+        with:
+          run-install: false
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: pnpm
+      - run: pnpm install
+
+      - name: Build frontend
+        run: pnpm build
+
+      - name: Install cargo-binstall
+        shell: pwsh
+        run: |
+          Set-ExecutionPolicy Unrestricted -Scope Process -Force
+          iex (iwr "https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.ps1").Content
+
+      - name: Install Tauri CLI
+        run: cargo binstall tauri-cli --no-confirm --locked --force
+
+      # Build the MCP output widget HTML. runt-mcp's include_str! needs it
+      # before we compile the Rust binaries.
+      - name: Build MCP output widget
+        run: pnpm --filter nteract-mcp-app install && vp run nteract-mcp-app#build
+
+      - name: Build external binaries
+        shell: bash
+        run: |
+          cargo build --release -p runtimed -p runt -p nteract-mcp
+          TARGET=$(rustc --print host-tuple)
+          mkdir -p crates/notebook/binaries
+          cp target/release/runtimed.exe "crates/notebook/binaries/runtimed-$TARGET.exe"
+          cp target/release/runt.exe "crates/notebook/binaries/runt-$TARGET.exe"
+          cp target/release/nteract-mcp.exe "crates/notebook/binaries/nteract-mcp-$TARGET.exe"
+
+      - name: Build NSIS installer
+        # No signing key. tauri-action skips the updater signature step when
+        # TAURI_SIGNING_PRIVATE_KEY is unset, which is what we want here.
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: crates/notebook
+          args: --bundles nsis --config '{"build":{"beforeBuildCommand":""}}'
+          includeUpdaterJson: false
+
+      - name: Locate installer
+        id: locate
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem -Path target/release/bundle/nsis -Filter *.exe | Select-Object -First 1
+          if (-not $exe) {
+            Write-Error "No NSIS installer (.exe) found in target/release/bundle/nsis"
+            exit 1
+          }
+          Write-Host "Installer: $($exe.FullName)"
+          "installer=$($exe.FullName)" | Out-File -Append -FilePath $env:GITHUB_OUTPUT
+
+      - name: Install silently
+        # NSIS /S = silent. /D=path must be the LAST argument and unquoted (NSIS
+        # convention). We pin the install dir so the smoke script knows where
+        # to find runt.exe regardless of Tauri's installMode default.
+        shell: pwsh
+        run: |
+          $installer = "${{ steps.locate.outputs.installer }}"
+          $installDir = "$env:RUNNER_TEMP\nteract"
+          Write-Host "Installing $installer to $installDir"
+          $proc = Start-Process -FilePath $installer -ArgumentList "/S", "/D=$installDir" -Wait -PassThru -NoNewWindow
+          if ($proc.ExitCode -ne 0) {
+            Write-Error "Installer exited with code $($proc.ExitCode)"
+            exit $proc.ExitCode
+          }
+          Write-Host "Install dir contents:"
+          Get-ChildItem -Path $installDir -Recurse | Select-Object FullName | Format-Table -AutoSize
+          "INSTALL_DIR=$installDir" | Out-File -Append -FilePath $env:GITHUB_ENV
+          "RUNT=$installDir\runt.exe" | Out-File -Append -FilePath $env:GITHUB_ENV
+          "RUNTIMED=$installDir\runtimed.exe" | Out-File -Append -FilePath $env:GITHUB_ENV
+
+      - name: runt --version
+        shell: pwsh
+        run: |
+          if (-not (Test-Path $env:RUNT)) {
+            Write-Error "runt.exe not found at $env:RUNT"
+            exit 1
+          }
+          & $env:RUNT --version
+
+      - name: Start daemon in background
+        # Service install would write to the registry / Startup folder. For a
+        # one-shot CI smoke, just spawn the daemon directly and let the OS
+        # reap it when the job ends.
+        shell: pwsh
+        run: |
+          Start-Process -FilePath $env:RUNTIMED -WindowStyle Hidden -RedirectStandardOutput "$env:RUNNER_TEMP\runtimed.stdout.log" -RedirectStandardError "$env:RUNNER_TEMP\runtimed.stderr.log"
+          # Give the named pipe a moment to come up.
+          for ($i = 0; $i -lt 30; $i++) {
+            Start-Sleep -Seconds 1
+            $result = & $env:RUNT daemon status --json 2>$null
+            if ($LASTEXITCODE -eq 0) {
+              Write-Host "Daemon ready after ${i}s"
+              Write-Host $result
+              exit 0
+            }
+          }
+          Write-Error "Daemon did not become ready within 30s"
+          Write-Host "--- stdout ---"
+          if (Test-Path "$env:RUNNER_TEMP\runtimed.stdout.log") { Get-Content "$env:RUNNER_TEMP\runtimed.stdout.log" }
+          Write-Host "--- stderr ---"
+          if (Test-Path "$env:RUNNER_TEMP\runtimed.stderr.log") { Get-Content "$env:RUNNER_TEMP\runtimed.stderr.log" }
+          exit 1
+
+      - name: runt ps (no notebooks expected)
+        shell: pwsh
+        run: |
+          & $env:RUNT ps
+
+      - name: Run runt diagnostics
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path "$env:RUNNER_TEMP\diag" | Out-Null
+          Push-Location "$env:RUNNER_TEMP\diag"
+          & $env:RUNT diagnostics
+          $exit = $LASTEXITCODE
+          Pop-Location
+          if ($exit -ne 0) {
+            Write-Error "runt diagnostics exited with $exit"
+            exit $exit
+          }
+          Get-ChildItem "$env:RUNNER_TEMP\diag"
+
+      - name: Set up Python for MCP smoke
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install MCP client SDK
+        shell: pwsh
+        run: pip install "mcp>=1.0"
+
+      - name: Drive daemon over MCP
+        # Spawns `runt.exe mcp` over stdio and exercises the real daemon path:
+        # create_notebook -> create_cell -> execute_cell -> get_results.
+        # This is the same surface the desktop app uses, with no GUI and no
+        # dependence on legacy Jupyter kernelspecs. If kernel launch is broken
+        # on Windows (the bug from #2274), this is what catches it.
+        shell: pwsh
+        timeout-minutes: 10
+        run: python scripts/windows-smoke-mcp.py "$env:RUNT"
+
+      - name: Re-run diagnostics post-smoke
+        if: always()
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path "$env:RUNNER_TEMP\diag-post" | Out-Null
+          Push-Location "$env:RUNNER_TEMP\diag-post"
+          & $env:RUNT diagnostics
+          Pop-Location
+          Get-ChildItem "$env:RUNNER_TEMP\diag-post"
+
+      - name: Upload diagnostics tarballs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-smoke-diagnostics
+          path: |
+            ${{ runner.temp }}\diag\*.tar.gz
+            ${{ runner.temp }}\diag-post\*.tar.gz
+            ${{ runner.temp }}\runtimed.stdout.log
+            ${{ runner.temp }}\runtimed.stderr.log
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Upload installer
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-smoke-installer
+          path: target/release/bundle/nsis/*.exe
+          if-no-files-found: warn
+          retention-days: 14
