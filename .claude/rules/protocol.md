@@ -26,7 +26,7 @@ Every connection starts with 5 bytes before the JSON handshake:
 | 0-3 | Magic: `0xC0 0xDE 0x01 0xAC` |
 | 4 | Protocol version (currently `4`) |
 
-The daemon validates both before reading the handshake. Non-runtimed connections get "invalid magic bytes". Protocol mismatches are rejected before JSON parsing.
+The daemon validates magic bytes before reading the handshake. Protocol version is checked after parsing the handshake channel: the Pool channel accepts any version (older stable apps ping during upgrade), all other channels require `MIN_PROTOCOL_VERSION..=PROTOCOL_VERSION`.
 
 ## Connection Lifecycle
 
