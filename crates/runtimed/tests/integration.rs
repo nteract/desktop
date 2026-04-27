@@ -704,6 +704,77 @@ async fn test_parallel_cell_mutations_same_session_no_disconnect() {
     let _ = tokio::time::timeout(Duration::from_secs(2), daemon_handle).await;
 }
 
+#[tokio::test]
+async fn test_parallel_daemon_requests_same_session_no_disconnect() {
+    let temp_dir = TempDir::new().unwrap();
+    let config = test_config(&temp_dir);
+    let socket_path = config.socket_path.clone();
+
+    let daemon = Daemon::new(config).unwrap();
+    let daemon_handle = tokio::spawn(async move {
+        daemon.run().await.ok();
+    });
+
+    let pool_client = PoolClient::new(socket_path.clone());
+    assert!(wait_for_daemon(&pool_client).await);
+
+    let result = connect::connect_create(
+        socket_path.clone(),
+        "python",
+        None,
+        "test",
+        false,
+        None,
+        vec![],
+    )
+    .await
+    .unwrap();
+    let handle = result.handle;
+
+    assert!(
+        wait_for_session_ready(&handle, SESSION_READY_TIMEOUT).await,
+        "client should reach session-ready state"
+    );
+    assert!(
+        wait_for_cells_map(&handle, Duration::from_secs(5)).await,
+        "client should receive daemon-created cells map"
+    );
+
+    let mut joins = Vec::new();
+    for index in 0..10 {
+        let handle = handle.clone();
+        joins.push(tokio::spawn(async move {
+            if index % 2 == 0 {
+                handle.send_request(NotebookRequest::GetDocBytes {}).await
+            } else {
+                handle.send_request(NotebookRequest::GetKernelInfo {}).await
+            }
+        }));
+    }
+
+    tokio::time::timeout(Duration::from_secs(20), async {
+        for (index, join) in joins.into_iter().enumerate() {
+            let response = join.await.unwrap().unwrap();
+            if index % 2 == 0 {
+                assert!(matches!(response, NotebookResponse::DocBytes { .. }));
+            } else {
+                assert!(matches!(response, NotebookResponse::KernelInfo { .. }));
+            }
+        }
+    })
+    .await
+    .expect("parallel daemon requests should complete without hanging");
+
+    assert_eq!(
+        handle.status().connection,
+        notebook_sync::ConnectionState::Connected,
+        "client should stay connected after parallel daemon requests"
+    );
+
+    pool_client.shutdown().await.ok();
+    let _ = tokio::time::timeout(Duration::from_secs(2), daemon_handle).await;
+}
+
 /// Test that untitled notebook state survives room eviction via Automerge persistence.
 ///
 /// Design: Untitled notebooks (UUID IDs) have no .ipynb on disk — their Automerge

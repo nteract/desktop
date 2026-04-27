@@ -1121,6 +1121,7 @@ where
 }
 
 const PEER_OUTBOUND_QUEUE_CAPACITY: usize = 1024;
+const PEER_REQUEST_QUEUE_CAPACITY: usize = 64;
 
 struct OutboundFrame {
     frame_type: NotebookFrameType,
@@ -1136,7 +1137,24 @@ struct PeerWriterTask {
     handle: tokio::task::JoinHandle<anyhow::Result<()>>,
 }
 
+struct PeerRequestWorker {
+    tx: mpsc::Sender<notebook_protocol::protocol::NotebookRequestEnvelope>,
+    handle: tokio::task::JoinHandle<anyhow::Result<()>>,
+}
+
+#[derive(Debug)]
+enum RequestEnqueueError {
+    Full(notebook_protocol::protocol::NotebookRequestEnvelope),
+    Closed(notebook_protocol::protocol::NotebookRequestEnvelope),
+}
+
 impl Drop for PeerWriterTask {
+    fn drop(&mut self) {
+        self.handle.abort();
+    }
+}
+
+impl Drop for PeerRequestWorker {
     fn drop(&mut self) {
         self.handle.abort();
     }
@@ -1170,6 +1188,18 @@ impl PeerWriter {
     }
 }
 
+impl PeerRequestWorker {
+    fn enqueue(
+        &self,
+        envelope: notebook_protocol::protocol::NotebookRequestEnvelope,
+    ) -> Result<(), RequestEnqueueError> {
+        self.tx.try_send(envelope).map_err(|e| match e {
+            mpsc::error::TrySendError::Full(envelope) => RequestEnqueueError::Full(envelope),
+            mpsc::error::TrySendError::Closed(envelope) => RequestEnqueueError::Closed(envelope),
+        })
+    }
+}
+
 fn spawn_peer_writer<W>(
     mut writer: W,
     notebook_id: String,
@@ -1196,6 +1226,55 @@ where
         Ok(())
     });
     (PeerWriter { tx }, PeerWriterTask { handle })
+}
+
+fn spawn_peer_request_worker(
+    room: Arc<NotebookRoom>,
+    daemon: std::sync::Arc<crate::daemon::Daemon>,
+    writer: PeerWriter,
+    notebook_id: String,
+    peer_id: String,
+) -> PeerRequestWorker {
+    let (tx, mut rx) = mpsc::channel::<notebook_protocol::protocol::NotebookRequestEnvelope>(
+        PEER_REQUEST_QUEUE_CAPACITY,
+    );
+    let handle = tokio::spawn(async move {
+        while let Some(envelope) = rx.recv().await {
+            let response = handle_notebook_request(&room, envelope.request, daemon.clone()).await;
+            let reply = notebook_protocol::protocol::NotebookResponseEnvelope {
+                id: envelope.id,
+                response,
+            };
+            writer
+                .send_json(NotebookFrameType::Response, &reply)
+                .map_err(|e| {
+                    anyhow::anyhow!(
+                        "failed to queue response to peer {} for {}: {}",
+                        peer_id,
+                        notebook_id,
+                        e
+                    )
+                })?;
+        }
+        Ok(())
+    });
+    PeerRequestWorker { tx, handle }
+}
+
+fn queue_request_error(
+    writer: &PeerWriter,
+    id: Option<String>,
+    error: impl Into<String>,
+) -> anyhow::Result<()> {
+    writer.send_json(
+        NotebookFrameType::Response,
+        &notebook_protocol::protocol::NotebookResponseEnvelope {
+            id,
+            response: notebook_protocol::protocol::NotebookResponse::Error {
+                error: error.into(),
+            },
+        },
+    )
 }
 
 fn queue_session_status(
@@ -1540,6 +1619,13 @@ where
     // client is temporarily slow to read daemon frames.
     let (peer_writer, mut writer_task) =
         spawn_peer_writer(writer, notebook_id.clone(), peer_id.to_string());
+    let mut request_worker = spawn_peer_request_worker(
+        room.clone(),
+        daemon.clone(),
+        peer_writer.clone(),
+        notebook_id.clone(),
+        peer_id.to_string(),
+    );
 
     // Hand the reader off to a dedicated FramedReader actor before
     // entering the busy `select!` below. `recv_typed_frame`'s internal
@@ -1558,6 +1644,17 @@ where
                     Ok(result) => result,
                     Err(e) => Err(anyhow::anyhow!(
                         "peer writer task stopped for {}: {}",
+                        notebook_id,
+                        e
+                    )),
+                };
+            }
+
+            request_worker_result = &mut request_worker.handle => {
+                return match request_worker_result {
+                    Ok(result) => result,
+                    Err(e) => Err(anyhow::anyhow!(
+                        "peer request worker stopped for {}: {}",
                         notebook_id,
                         e
                     )),
@@ -1676,27 +1773,41 @@ where
                             }
 
                             NotebookFrameType::Request => {
-                                // Decode the envelope, dispatch the inner request,
-                                // echo the id on the response envelope so the caller
-                                // can correlate multiple in-flight requests.
+                                // Decode and enqueue the request, then return to
+                                // frame reads. The per-peer request worker preserves
+                                // request order and echoes the id on the response.
                                 let envelope: notebook_protocol::protocol::NotebookRequestEnvelope =
                                     serde_json::from_slice(&frame.payload)?;
-                                let response = handle_notebook_request(
-                                    room,
-                                    envelope.request,
-                                    daemon.clone(),
-                                )
-                                .await;
-
-                                // Promotion from untitled → file-backed is now handled
-                                // entirely inside handle_notebook_request (SaveNotebook arm).
-                                // Save path update is handled inside handle_notebook_request.
-
-                                let reply = notebook_protocol::protocol::NotebookResponseEnvelope {
-                                    id: envelope.id,
-                                    response,
-                                };
-                                peer_writer.send_json(NotebookFrameType::Response, &reply)?;
+                                if let Err(e) = request_worker.enqueue(envelope) {
+                                    match e {
+                                        RequestEnqueueError::Full(envelope) => {
+                                            warn!(
+                                                "[notebook-sync] Peer request queue full for {} (peer_id={})",
+                                                notebook_id, peer_id
+                                            );
+                                            queue_request_error(
+                                                &peer_writer,
+                                                envelope.id,
+                                                "Peer request queue full",
+                                            )?;
+                                        }
+                                        RequestEnqueueError::Closed(envelope) => {
+                                            warn!(
+                                                "[notebook-sync] Peer request worker stopped for {} (peer_id={})",
+                                                notebook_id, peer_id
+                                            );
+                                            queue_request_error(
+                                                &peer_writer,
+                                                envelope.id,
+                                                "Peer request worker stopped",
+                                            )?;
+                                            return Err(anyhow::anyhow!(
+                                                "peer request worker stopped for {}",
+                                                notebook_id
+                                            ));
+                                        }
+                                    }
+                                }
                             }
 
                             NotebookFrameType::Presence => {
@@ -2372,5 +2483,44 @@ mod peer_writer_tests {
             result.is_err(),
             "closed socket should surface as a writer task error"
         );
+    }
+
+    #[tokio::test]
+    async fn peer_request_enqueue_reports_full_without_waiting_for_worker() {
+        let (tx, mut rx) = mpsc::channel::<notebook_protocol::protocol::NotebookRequestEnvelope>(1);
+        let (started_tx, started_rx) = oneshot::channel();
+        let handle = tokio::spawn(async move {
+            let _first = rx.recv().await;
+            let _ = started_tx.send(());
+            std::future::pending::<anyhow::Result<()>>().await
+        });
+        let worker = PeerRequestWorker { tx, handle };
+
+        worker
+            .enqueue(notebook_protocol::protocol::NotebookRequestEnvelope {
+                id: Some("first".to_string()),
+                request: NotebookRequest::GetKernelInfo {},
+            })
+            .expect("first request should enqueue");
+        started_rx.await.expect("worker should start first request");
+        worker
+            .enqueue(notebook_protocol::protocol::NotebookRequestEnvelope {
+                id: Some("second".to_string()),
+                request: NotebookRequest::GetKernelInfo {},
+            })
+            .expect("second request should fill the queue");
+
+        let start = std::time::Instant::now();
+        let err = worker
+            .enqueue(notebook_protocol::protocol::NotebookRequestEnvelope {
+                id: Some("third".to_string()),
+                request: NotebookRequest::GetKernelInfo {},
+            })
+            .expect_err("full queue should reject immediately");
+        assert!(
+            start.elapsed() < std::time::Duration::from_millis(50),
+            "request enqueue should not wait for the busy worker"
+        );
+        assert!(matches!(err, RequestEnqueueError::Full(_)));
     }
 }
