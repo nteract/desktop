@@ -1207,6 +1207,101 @@ where
     (PeerWriter { tx }, PeerWriterTask { handle })
 }
 
+// ---------------------------------------------------------------------------
+// Request offloading: categorised dispatch
+// ---------------------------------------------------------------------------
+//
+// The frame reactor (select! loop) must never block on request handling —
+// doing so stalls Automerge sync, presence, and broadcast arms for the full
+// handler duration.  Requests are split into two categories:
+//
+//   Mutations — order-sensitive side-effects.  Processed sequentially by a
+//               dedicated per-peer worker task.
+//   Queries  — read-only or RPC-wait-only.  Spawned concurrently, capped
+//               by a per-peer semaphore.
+//
+// Both paths send responses via the PeerWriter channel, so socket writes
+// remain ordered and non-blocking.
+
+/// Capacity of the per-peer mutation request channel.
+const MUTATION_QUEUE_CAPACITY: usize = 64;
+
+/// Maximum concurrent query tasks per peer.
+const MAX_CONCURRENT_QUERIES: usize = 32;
+
+/// Whether a request must be serialised (Mutation) or can run concurrently
+/// (Query).
+enum RequestCategory {
+    /// Side-effecting request — must be processed in FIFO order.
+    Mutation,
+    /// Read-only / RPC-wait request — safe to run concurrently.
+    Query,
+}
+
+fn categorize_request(req: &NotebookRequest) -> RequestCategory {
+    use NotebookRequest::*;
+    match req {
+        GetKernelInfo { .. }
+        | GetQueueState { .. }
+        | GetDocBytes { .. }
+        | GetHistory { .. }
+        | Complete { .. }
+        | GetRawMetadata { .. }
+        | GetMetadataSnapshot { .. }
+        | CheckToolAvailable { .. } => RequestCategory::Query,
+        _ => RequestCategory::Mutation,
+    }
+}
+
+/// Payload sent to the mutation worker.
+struct MutationWork {
+    id: Option<String>,
+    request: NotebookRequest,
+    label: &'static str,
+}
+
+/// Spawn a per-peer task that processes mutation requests sequentially.
+///
+/// The task reads from `rx`, runs each request through `handle_notebook_request`,
+/// and sends the response back via `peer_writer`.  Ordering is preserved: a
+/// SaveNotebook that arrives before an ExecuteCell is guaranteed to run first.
+fn spawn_mutation_worker(
+    room: Arc<NotebookRoom>,
+    daemon: std::sync::Arc<crate::daemon::Daemon>,
+    peer_writer: PeerWriter,
+    peer_id: String,
+    notebook_id: String,
+) -> (mpsc::Sender<MutationWork>, tokio::task::JoinHandle<()>) {
+    let (tx, mut rx) = mpsc::channel::<MutationWork>(MUTATION_QUEUE_CAPACITY);
+    let handle = tokio::spawn(async move {
+        while let Some(work) = rx.recv().await {
+            let start = std::time::Instant::now();
+            let response =
+                metadata::handle_notebook_request(&room, work.request, daemon.clone()).await;
+            let elapsed = start.elapsed();
+
+            let req_id = work.id.as_deref().unwrap_or("-");
+            debug!(
+                "[notebook-sync] Mutation {} id={} peer={} notebook={} completed in {:?}",
+                work.label, req_id, peer_id, notebook_id, elapsed,
+            );
+
+            let reply = notebook_protocol::protocol::NotebookResponseEnvelope {
+                id: work.id,
+                response,
+            };
+            if let Err(e) = peer_writer.send_json(NotebookFrameType::Response, &reply) {
+                warn!(
+                    "[notebook-sync] Failed to send mutation response to peer {} for {}: {}",
+                    peer_id, notebook_id, e,
+                );
+                break;
+            }
+        }
+    });
+    (tx, handle)
+}
+
 fn queue_session_status(
     writer: &PeerWriter,
     notebook_doc: notebook_protocol::protocol::NotebookDocPhaseWire,
@@ -1557,6 +1652,20 @@ where
     // arm wins mid-payload (see issue + production diagnostics).
     let mut framed_reader = connection::FramedReader::spawn(reader, 16);
 
+    // Spawn the mutation worker — processes order-sensitive requests
+    // sequentially off the frame reactor so the select! loop stays hot.
+    let (mutation_tx, mut mutation_handle) = spawn_mutation_worker(
+        Arc::clone(room),
+        daemon.clone(),
+        peer_writer.clone(),
+        peer_id.to_string(),
+        notebook_id.clone(),
+    );
+
+    // Semaphore for concurrent query tasks — prevents a flood of
+    // Complete/GetHistory requests from spawning unbounded tasks.
+    let query_semaphore = Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_QUERIES));
+
     // Phase 2: Exchange messages until sync is complete, then watch for changes
     loop {
         tokio::select! {
@@ -1571,6 +1680,19 @@ where
                         e
                     )),
                 };
+            }
+
+            _ = &mut mutation_handle => {
+                // The mutation worker exited (channel closed or panic).
+                // This is unexpected while the peer is still connected.
+                warn!(
+                    "[notebook-sync] Mutation worker exited unexpectedly for peer {} notebook {}",
+                    peer_id, notebook_id,
+                );
+                return Err(anyhow::anyhow!(
+                    "mutation worker exited for peer {} notebook {}",
+                    peer_id, notebook_id,
+                ));
             }
 
             // Incoming message from this client (cancel-safe via FramedReader actor)
@@ -1685,44 +1807,96 @@ where
                             }
 
                             NotebookFrameType::Request => {
-                                // Decode the envelope, dispatch the inner request,
-                                // echo the id on the response envelope so the caller
-                                // can correlate multiple in-flight requests.
+                                // Decode the envelope, classify, and dispatch
+                                // without blocking the select! loop.
                                 let envelope: notebook_protocol::protocol::NotebookRequestEnvelope =
                                     serde_json::from_slice(&frame.payload)?;
 
                                 let label = metadata::request_label(&envelope.request);
-                                let req_id = envelope.id.as_deref().unwrap_or("-");
+                                let req_id_display = envelope.id.as_deref().unwrap_or("-");
                                 let writer_queue_depth =
                                     PEER_OUTBOUND_QUEUE_CAPACITY - peer_writer.capacity();
                                 debug!(
                                     "[notebook-sync] Request {} id={} peer={} notebook={} writer_queue={}",
-                                    label, req_id, peer_id, notebook_id, writer_queue_depth,
+                                    label, req_id_display, peer_id, notebook_id, writer_queue_depth,
                                 );
 
-                                let start = std::time::Instant::now();
-                                let response = handle_notebook_request(
-                                    room,
-                                    envelope.request,
-                                    daemon.clone(),
-                                )
-                                .await;
-                                let elapsed = start.elapsed();
+                                match categorize_request(&envelope.request) {
+                                    RequestCategory::Mutation => {
+                                        let work = MutationWork {
+                                            id: envelope.id,
+                                            request: envelope.request,
+                                            label,
+                                        };
+                                        if let Err(e) = mutation_tx.try_send(work) {
+                                            let rejected = e.into_inner();
+                                            warn!(
+                                                "[notebook-sync] Mutation queue full for peer {} notebook {}, rejecting {}",
+                                                peer_id, notebook_id, label,
+                                            );
+                                            let reply = notebook_protocol::protocol::NotebookResponseEnvelope {
+                                                id: rejected.id,
+                                                response: NotebookResponse::Error {
+                                                    error: "Server busy: mutation queue full, retry shortly".into(),
+                                                },
+                                            };
+                                            peer_writer.send_json(NotebookFrameType::Response, &reply)?;
+                                        }
+                                    }
+                                    RequestCategory::Query => {
+                                        match query_semaphore.clone().try_acquire_owned() {
+                                            Ok(permit) => {
+                                                let room = Arc::clone(room);
+                                                let daemon = daemon.clone();
+                                                let pw = peer_writer.clone();
+                                                let pid = peer_id.to_string();
+                                                let nid = notebook_id.clone();
+                                                let req_id = envelope.id;
+                                                let request = envelope.request;
+                                                tokio::spawn(async move {
+                                                    let _permit = permit;
+                                                    let start = std::time::Instant::now();
+                                                    let response =
+                                                        metadata::handle_notebook_request(
+                                                            &room, request, daemon,
+                                                        )
+                                                        .await;
+                                                    let elapsed = start.elapsed();
 
-                                debug!(
-                                    "[notebook-sync] Request {} id={} completed in {:?}",
-                                    label, req_id, elapsed,
-                                );
+                                                    let id_str = req_id.as_deref().unwrap_or("-");
+                                                    debug!(
+                                                        "[notebook-sync] Query {} id={} peer={} notebook={} completed in {:?}",
+                                                        label, id_str, pid, nid, elapsed,
+                                                    );
 
-                                // Promotion from untitled → file-backed is now handled
-                                // entirely inside handle_notebook_request (SaveNotebook arm).
-                                // Save path update is handled inside handle_notebook_request.
-
-                                let reply = notebook_protocol::protocol::NotebookResponseEnvelope {
-                                    id: envelope.id,
-                                    response,
-                                };
-                                peer_writer.send_json(NotebookFrameType::Response, &reply)?;
+                                                    let reply = notebook_protocol::protocol::NotebookResponseEnvelope {
+                                                        id: req_id,
+                                                        response,
+                                                    };
+                                                    if let Err(e) = pw.send_json(NotebookFrameType::Response, &reply) {
+                                                        warn!(
+                                                            "[notebook-sync] Failed to send query response to peer {} for {}: {}",
+                                                            pid, nid, e,
+                                                        );
+                                                    }
+                                                });
+                                            }
+                                            Err(_) => {
+                                                warn!(
+                                                    "[notebook-sync] Too many concurrent queries for peer {} notebook {}, rejecting {}",
+                                                    peer_id, notebook_id, label,
+                                                );
+                                                let reply = notebook_protocol::protocol::NotebookResponseEnvelope {
+                                                    id: envelope.id,
+                                                    response: NotebookResponse::Error {
+                                                        error: "Server busy: too many concurrent queries, retry shortly".into(),
+                                                    },
+                                                };
+                                                peer_writer.send_json(NotebookFrameType::Response, &reply)?;
+                                            }
+                                        }
+                                    }
+                                }
                             }
 
                             NotebookFrameType::Presence => {
