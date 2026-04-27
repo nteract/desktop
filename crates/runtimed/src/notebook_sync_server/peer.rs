@@ -34,7 +34,7 @@ pub async fn handle_runtime_agent_sync_connection<R, W>(
     execution_store_dir: PathBuf,
 ) where
     R: tokio::io::AsyncRead + Unpin + Send + 'static,
-    W: tokio::io::AsyncWrite + Unpin + Send,
+    W: tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
     use notebook_protocol::connection::{send_typed_frame, FramedReader, NotebookFrameType};
     use notebook_protocol::protocol::RuntimeAgentResponse;
@@ -149,9 +149,31 @@ pub async fn handle_runtime_agent_sync_connection<R, W>(
         String,
         tokio::sync::oneshot::Sender<RuntimeAgentResponse>,
     > = std::collections::HashMap::new();
+    let (agent_writer, mut writer_task) = spawn_peer_writer(
+        writer,
+        notebook_id.clone(),
+        format!("runtime-agent:{runtime_agent_id}"),
+    );
 
     loop {
         tokio::select! {
+            biased;
+
+            writer_result = &mut writer_task.handle => {
+                match writer_result {
+                    Ok(Ok(())) => {
+                        info!("[notebook-sync] Runtime agent writer closed cleanly: {}", runtime_agent_id);
+                    }
+                    Ok(Err(e)) => {
+                        warn!("[notebook-sync] Runtime agent writer failed for {}: {}", runtime_agent_id, e);
+                    }
+                    Err(e) => {
+                        warn!("[notebook-sync] Runtime agent writer task stopped for {}: {}", runtime_agent_id, e);
+                    }
+                }
+                break;
+            }
+
             // Frames from runtime agent (cancel-safe via FramedReader actor)
             maybe_frame = framed_reader.recv() => {
                 let typed_frame = match maybe_frame {
@@ -175,11 +197,13 @@ pub async fn handle_runtime_agent_sync_connection<R, W>(
                             // Send sync reply
                             if let Some(reply) = doc.generate_sync_message(&mut doc_sync_state) {
                                 let encoded = reply.encode();
-                                let _ = send_typed_frame(
-                                    &mut writer,
+                                if let Err(e) = agent_writer.send_frame(
                                     NotebookFrameType::AutomergeSync,
-                                    &encoded,
-                                ).await;
+                                    encoded,
+                                ) {
+                                    warn!("[notebook-sync] Failed to queue doc sync reply to runtime agent: {}", e);
+                                    break;
+                                }
                             }
                         }
                     }
@@ -199,11 +223,13 @@ pub async fn handle_runtime_agent_sync_connection<R, W>(
                                     .map(|reply| reply.encode()))
                             }).ok().flatten();
                             if let Some(encoded) = reply_encoded {
-                                let _ = send_typed_frame(
-                                    &mut writer,
+                                if let Err(e) = agent_writer.send_frame(
                                     NotebookFrameType::RuntimeStateSync,
-                                    &encoded,
-                                ).await;
+                                    encoded,
+                                ) {
+                                    warn!("[notebook-sync] Failed to queue state sync reply to runtime agent: {}", e);
+                                    break;
+                                }
                             }
                             if state_changed {
                                 persist_terminal_execution_records(
@@ -237,12 +263,11 @@ pub async fn handle_runtime_agent_sync_connection<R, W>(
                 let mut doc = room.doc.write().await;
                 if let Some(msg) = doc.generate_sync_message(&mut doc_sync_state) {
                     let encoded = msg.encode();
-                    if let Err(e) = send_typed_frame(
-                        &mut writer,
+                    if let Err(e) = agent_writer.send_frame(
                         NotebookFrameType::AutomergeSync,
-                        &encoded,
-                    ).await {
-                        warn!("[notebook-sync] Failed to sync doc to runtime agent: {}", e);
+                        encoded,
+                    ) {
+                        warn!("[notebook-sync] Failed to queue doc sync to runtime agent: {}", e);
                         break;
                     }
                 }
@@ -256,12 +281,11 @@ pub async fn handle_runtime_agent_sync_connection<R, W>(
                         .map(|msg| msg.encode()))
                 }).ok().flatten();
                 if let Some(encoded) = encoded {
-                    if let Err(e) = send_typed_frame(
-                        &mut writer,
+                    if let Err(e) = agent_writer.send_frame(
                         NotebookFrameType::RuntimeStateSync,
-                        &encoded,
-                    ).await {
-                        warn!("[notebook-sync] Failed to sync state to runtime agent: {}", e);
+                        encoded,
+                    ) {
+                        warn!("[notebook-sync] Failed to queue state sync to runtime agent: {}", e);
                         break;
                     }
                 }
@@ -285,20 +309,20 @@ pub async fn handle_runtime_agent_sync_connection<R, W>(
                         continue;
                     }
                 };
-                if let Err(e) = send_typed_frame(
-                    &mut writer,
+                let reply_id = envelope.id.clone();
+                if let Some(tx) = reply_tx {
+                    pending_replies.insert(reply_id.clone(), tx);
+                }
+                if let Err(e) = agent_writer.send_frame(
                     NotebookFrameType::Request,
-                    &json,
-                ).await {
-                    if let Some(tx) = reply_tx {
+                    json,
+                ) {
+                    if let Some(tx) = pending_replies.remove(&reply_id) {
                         let _ = tx.send(RuntimeAgentResponse::Error {
                             error: format!("Send error: {}", e),
                         });
                     }
                     break;
-                }
-                if let Some(tx) = reply_tx {
-                    pending_replies.insert(envelope.id, tx);
                 }
             }
         }
@@ -368,7 +392,7 @@ pub async fn handle_notebook_sync_connection<R, W>(
 ) -> anyhow::Result<()>
 where
     R: AsyncRead + Unpin + Send + 'static,
-    W: AsyncWrite + Unpin,
+    W: AsyncWrite + Unpin + Send + 'static,
 {
     // Set working_dir on the room if provided (for untitled notebook project detection)
     if let Some(wd) = working_dir {
@@ -567,7 +591,7 @@ where
 
     let result = run_sync_loop_v2(
         reader,
-        &mut writer,
+        writer,
         &room,
         rooms.clone(),
         notebook_id.clone(),
@@ -1096,6 +1120,102 @@ where
     Ok(())
 }
 
+const PEER_OUTBOUND_QUEUE_CAPACITY: usize = 1024;
+
+struct OutboundFrame {
+    frame_type: NotebookFrameType,
+    payload: Vec<u8>,
+}
+
+#[derive(Clone)]
+struct PeerWriter {
+    tx: mpsc::Sender<OutboundFrame>,
+}
+
+struct PeerWriterTask {
+    handle: tokio::task::JoinHandle<anyhow::Result<()>>,
+}
+
+impl Drop for PeerWriterTask {
+    fn drop(&mut self) {
+        self.handle.abort();
+    }
+}
+
+impl PeerWriter {
+    fn send_frame(&self, frame_type: NotebookFrameType, payload: Vec<u8>) -> anyhow::Result<()> {
+        self.tx
+            .try_send(OutboundFrame {
+                frame_type,
+                payload,
+            })
+            .map_err(|e| match e {
+                mpsc::error::TrySendError::Full(frame) => anyhow::anyhow!(
+                    "peer outbound queue full while sending {:?} frame",
+                    frame.frame_type
+                ),
+                mpsc::error::TrySendError::Closed(frame) => anyhow::anyhow!(
+                    "peer writer stopped before sending {:?} frame",
+                    frame.frame_type
+                ),
+            })
+    }
+
+    fn send_json<T>(&self, frame_type: NotebookFrameType, value: &T) -> anyhow::Result<()>
+    where
+        T: serde::Serialize,
+    {
+        let payload = serde_json::to_vec(value)?;
+        self.send_frame(frame_type, payload)
+    }
+}
+
+fn spawn_peer_writer<W>(
+    mut writer: W,
+    notebook_id: String,
+    peer_id: String,
+) -> (PeerWriter, PeerWriterTask)
+where
+    W: AsyncWrite + Unpin + Send + 'static,
+{
+    let (tx, mut rx) = mpsc::channel::<OutboundFrame>(PEER_OUTBOUND_QUEUE_CAPACITY);
+    let handle = tokio::spawn(async move {
+        while let Some(frame) = rx.recv().await {
+            connection::send_typed_frame(&mut writer, frame.frame_type, &frame.payload)
+                .await
+                .map_err(|e| {
+                    anyhow::anyhow!(
+                        "failed to write {:?} frame to peer {} for {}: {}",
+                        frame.frame_type,
+                        peer_id,
+                        notebook_id,
+                        e
+                    )
+                })?;
+        }
+        Ok(())
+    });
+    (PeerWriter { tx }, PeerWriterTask { handle })
+}
+
+fn queue_session_status(
+    writer: &PeerWriter,
+    notebook_doc: notebook_protocol::protocol::NotebookDocPhaseWire,
+    runtime_state: notebook_protocol::protocol::RuntimeStatePhaseWire,
+    initial_load: notebook_protocol::protocol::InitialLoadPhaseWire,
+) -> anyhow::Result<()> {
+    writer.send_json(
+        NotebookFrameType::SessionControl,
+        &notebook_protocol::protocol::SessionControlMessage::SyncStatus(
+            notebook_protocol::protocol::SessionSyncStatusWire {
+                notebook_doc,
+                runtime_state,
+                initial_load,
+            },
+        ),
+    )
+}
+
 /// State carried from the initial notebook-doc sync into the steady-state loop.
 ///
 /// See [`send_initial_notebook_doc_sync`]. `peer_state` tracks what the
@@ -1168,10 +1288,10 @@ where
 #[allow(clippy::too_many_arguments)]
 async fn run_sync_loop_v2<R, W>(
     mut reader: R,
-    writer: &mut W,
+    mut writer: W,
     room: &Arc<NotebookRoom>,
     _rooms: NotebookRooms,
-    _notebook_id: String,
+    notebook_id: String,
     daemon: std::sync::Arc<crate::daemon::Daemon>,
     needs_load: Option<&Path>,
     peer_id: &str,
@@ -1179,7 +1299,7 @@ async fn run_sync_loop_v2<R, W>(
 ) -> anyhow::Result<()>
 where
     R: AsyncRead + Unpin + Send + 'static,
-    W: AsyncWrite + Unpin,
+    W: AsyncWrite + Unpin + Send + 'static,
 {
     // Subscribe before sending bootstrap traffic so any writes that land
     // during connection setup are still observed as steady-state deltas.
@@ -1201,7 +1321,7 @@ where
 
     if client_protocol_version >= 3 {
         send_session_status(
-            writer,
+            &mut writer,
             notebook_doc_phase,
             runtime_state_phase,
             initial_load_phase.clone(),
@@ -1209,11 +1329,12 @@ where
         .await?;
     }
 
-    let InitialSyncState { mut peer_state } = send_initial_notebook_doc_sync(writer, room).await?;
+    let InitialSyncState { mut peer_state } =
+        send_initial_notebook_doc_sync(&mut writer, room).await?;
     notebook_doc_phase = notebook_protocol::protocol::NotebookDocPhaseWire::Syncing;
     if client_protocol_version >= 3 {
         send_session_status(
-            writer,
+            &mut writer,
             notebook_doc_phase,
             runtime_state_phase,
             initial_load_phase.clone(),
@@ -1260,12 +1381,13 @@ where
         .ok()
         .flatten();
     if let Some(encoded) = initial_state_encoded {
-        connection::send_typed_frame(writer, NotebookFrameType::RuntimeStateSync, &encoded).await?;
+        connection::send_typed_frame(&mut writer, NotebookFrameType::RuntimeStateSync, &encoded)
+            .await?;
     }
     runtime_state_phase = notebook_protocol::protocol::RuntimeStatePhaseWire::Syncing;
     if client_protocol_version >= 3 {
         send_session_status(
-            writer,
+            &mut writer,
             notebook_doc_phase,
             runtime_state_phase,
             initial_load_phase.clone(),
@@ -1282,7 +1404,7 @@ where
             );
             match streaming_load_cells(
                 &mut reader,
-                writer,
+                &mut writer,
                 room,
                 load_path,
                 Some(&execution_store),
@@ -1300,7 +1422,7 @@ where
                     initial_load_phase = notebook_protocol::protocol::InitialLoadPhaseWire::Ready;
                     if client_protocol_version >= 3 {
                         send_session_status(
-                            writer,
+                            &mut writer,
                             notebook_doc_phase,
                             runtime_state_phase,
                             initial_load_phase.clone(),
@@ -1322,7 +1444,7 @@ where
                     );
                     if client_protocol_version >= 3 {
                         send_session_status(
-                            writer,
+                            &mut writer,
                             notebook_doc_phase,
                             runtime_state_phase,
                             notebook_protocol::protocol::InitialLoadPhaseWire::Failed {
@@ -1357,7 +1479,8 @@ where
         }
     };
     if let Some(encoded) = initial_pool_encoded {
-        connection::send_typed_frame(writer, NotebookFrameType::PoolStateSync, &encoded).await?;
+        connection::send_typed_frame(&mut writer, NotebookFrameType::PoolStateSync, &encoded)
+            .await?;
     }
 
     // Phase 1.5 (removed): CommSync broadcast is no longer needed.
@@ -1401,7 +1524,7 @@ where
             }
         }; // presence read guard dropped
         if let Some(snapshot_bytes) = snapshot_bytes {
-            connection::send_typed_frame(writer, NotebookFrameType::Presence, &snapshot_bytes)
+            connection::send_typed_frame(&mut writer, NotebookFrameType::Presence, &snapshot_bytes)
                 .await?;
         }
     }
@@ -1410,6 +1533,13 @@ where
     let prune_period = std::time::Duration::from_millis(presence::DEFAULT_HEARTBEAT_MS);
     let mut prune_interval = tokio::time::interval(prune_period);
     prune_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+    // Bootstrap sends stay synchronous so initial load failures surface to the
+    // caller. Once steady state starts, socket writes move to a single ordered
+    // writer task; the peer loop must keep draining client frames even when the
+    // client is temporarily slow to read daemon frames.
+    let (peer_writer, mut writer_task) =
+        spawn_peer_writer(writer, notebook_id.clone(), peer_id.to_string());
 
     // Hand the reader off to a dedicated FramedReader actor before
     // entering the busy `select!` below. `recv_typed_frame`'s internal
@@ -1421,6 +1551,19 @@ where
     // Phase 2: Exchange messages until sync is complete, then watch for changes
     loop {
         tokio::select! {
+            biased;
+
+            writer_result = &mut writer_task.handle => {
+                return match writer_result {
+                    Ok(result) => result,
+                    Err(e) => Err(anyhow::anyhow!(
+                        "peer writer task stopped for {}: {}",
+                        notebook_id,
+                        e
+                    )),
+                };
+            }
+
             // Incoming message from this client (cancel-safe via FramedReader actor)
             maybe_frame = framed_reader.recv() => {
                 let frame = match maybe_frame {
@@ -1491,15 +1634,13 @@ where
                                     (bytes, encoded, metadata_changed)
                                 };
 
-                                // Send reply outside the lock so other peers can
-                                // acquire it while we wait on the socket.
+                                // Queue the reply outside the lock so other peers can
+                                // acquire it while the writer task drains the socket.
                                 if let Some(encoded) = reply_encoded {
-                                    connection::send_typed_frame(
-                                        writer,
+                                    peer_writer.send_frame(
                                         NotebookFrameType::AutomergeSync,
-                                        &encoded,
-                                    )
-                                    .await?;
+                                        encoded,
+                                    )?;
                                 }
 
                                 if notebook_doc_phase
@@ -1508,13 +1649,12 @@ where
                                     notebook_doc_phase =
                                         notebook_protocol::protocol::NotebookDocPhaseWire::Interactive;
                                     if client_protocol_version >= 3 {
-                                        send_session_status(
-                                            writer,
+                                        queue_session_status(
+                                            &peer_writer,
                                             notebook_doc_phase,
                                             runtime_state_phase,
                                             initial_load_phase.clone(),
-                                        )
-                                        .await?;
+                                        )?;
                                     }
                                 }
 
@@ -1556,12 +1696,7 @@ where
                                     id: envelope.id,
                                     response,
                                 };
-                                connection::send_typed_json_frame(
-                                    writer,
-                                    NotebookFrameType::Response,
-                                    &reply,
-                                )
-                                .await?;
+                                peer_writer.send_json(NotebookFrameType::Response, &reply)?;
                             }
 
                             NotebookFrameType::Presence => {
@@ -1629,12 +1764,10 @@ where
                                                         &other_peers,
                                                     ) {
                                                         Ok(snapshot_bytes) => {
-                                                            connection::send_typed_frame(
-                                                                writer,
+                                                            peer_writer.send_frame(
                                                                 NotebookFrameType::Presence,
-                                                                &snapshot_bytes,
-                                                            )
-                                                            .await?;
+                                                                snapshot_bytes,
+                                                            )?;
                                                         }
                                                         Err(e) => warn!(
                                                             "[notebook-sync] Failed to encode presence snapshot for new peer: {}",
@@ -1739,12 +1872,10 @@ where
                                     None => continue, // receive failed
                                 };
                                 if let Some(encoded) = reply_encoded {
-                                    connection::send_typed_frame(
-                                        writer,
+                                    peer_writer.send_frame(
                                         NotebookFrameType::RuntimeStateSync,
-                                        &encoded,
-                                    )
-                                    .await?;
+                                        encoded,
+                                    )?;
                                 }
 
                                 persist_terminal_execution_records(
@@ -1762,13 +1893,12 @@ where
                                     runtime_state_phase =
                                         notebook_protocol::protocol::RuntimeStatePhaseWire::Ready;
                                     if client_protocol_version >= 3 {
-                                        send_session_status(
-                                            writer,
+                                        queue_session_status(
+                                            &peer_writer,
                                             notebook_doc_phase,
                                             runtime_state_phase,
                                             initial_load_phase.clone(),
-                                        )
-                                        .await?;
+                                        )?;
                                     }
                                 }
                             }
@@ -1817,12 +1947,10 @@ where
                                     }
                                 };
                                 if let Some(encoded) = reply_encoded {
-                                    connection::send_typed_frame(
-                                        writer,
+                                    peer_writer.send_frame(
                                         NotebookFrameType::PoolStateSync,
-                                        &encoded,
-                                    )
-                                    .await?;
+                                        encoded,
+                                    )?;
                                 }
                             }
 
@@ -1862,12 +1990,7 @@ where
                     }
                 };
                 if let Some(encoded) = encoded {
-                    connection::send_typed_frame(
-                        writer,
-                        NotebookFrameType::AutomergeSync,
-                        &encoded,
-                    )
-                    .await?;
+                    peer_writer.send_frame(NotebookFrameType::AutomergeSync, encoded)?;
                 }
 
                 if matches!(
@@ -1878,13 +2001,12 @@ where
                     initial_load_phase =
                         notebook_protocol::protocol::InitialLoadPhaseWire::Ready;
                     if client_protocol_version >= 3 {
-                        send_session_status(
-                            writer,
+                        queue_session_status(
+                            &peer_writer,
                             notebook_doc_phase,
                             runtime_state_phase,
                             initial_load_phase.clone(),
-                        )
-                        .await?;
+                        )?;
                     }
                 }
             }
@@ -1911,12 +2033,10 @@ where
                             }
                         }).ok().flatten();
                         if let Some(encoded) = encoded {
-                            connection::send_typed_frame(
-                                writer,
+                            peer_writer.send_frame(
                                 NotebookFrameType::RuntimeStateSync,
-                                &encoded,
-                            )
-                            .await?;
+                                encoded,
+                            )?;
                         }
                     }
                     Err(broadcast::error::RecvError::Lagged(n)) => {
@@ -1943,12 +2063,10 @@ where
                             }
                         }).ok().flatten();
                         if let Some(encoded) = encoded {
-                            connection::send_typed_frame(
-                                writer,
+                            peer_writer.send_frame(
                                 NotebookFrameType::RuntimeStateSync,
-                                &encoded,
-                            )
-                            .await?;
+                                encoded,
+                            )?;
                         }
                     }
                     Err(broadcast::error::RecvError::Closed) => {
@@ -1981,12 +2099,10 @@ where
                             }
                         };
                         if let Some(encoded) = encoded {
-                            connection::send_typed_frame(
-                                writer,
+                            peer_writer.send_frame(
                                 NotebookFrameType::PoolStateSync,
-                                &encoded,
-                            )
-                            .await?;
+                                encoded,
+                            )?;
                         }
                     }
                     Err(broadcast::error::RecvError::Lagged(n)) => {
@@ -2013,12 +2129,10 @@ where
                             }
                         };
                         if let Some(encoded) = encoded {
-                            connection::send_typed_frame(
-                                writer,
+                            peer_writer.send_frame(
                                 NotebookFrameType::PoolStateSync,
-                                &encoded,
-                            )
-                            .await?;
+                                encoded,
+                            )?;
                         }
                     }
                     Err(broadcast::error::RecvError::Closed) => {
@@ -2034,12 +2148,10 @@ where
                     Ok((ref sender_peer_id, ref bytes)) => {
                         // Don't echo back to the sender
                         if sender_peer_id != peer_id {
-                            connection::send_typed_frame(
-                                writer,
+                            peer_writer.send_frame(
                                 NotebookFrameType::Presence,
-                                bytes,
-                            )
-                            .await?;
+                                bytes.clone(),
+                            )?;
                         }
                     }
                     Err(broadcast::error::RecvError::Lagged(n)) => {
@@ -2050,12 +2162,10 @@ where
                         );
                         match room.broadcasts.presence.read().await.encode_snapshot(peer_id) {
                             Ok(snapshot_bytes) => {
-                                connection::send_typed_frame(
-                                    writer,
+                                peer_writer.send_frame(
                                     NotebookFrameType::Presence,
-                                    &snapshot_bytes,
-                                )
-                                .await?;
+                                    snapshot_bytes,
+                                )?;
                             }
                             Err(e) => warn!(
                                 "[notebook-sync] Failed to encode lag-recovery snapshot: {}",
@@ -2074,12 +2184,7 @@ where
             result = kernel_broadcast_rx.recv() => {
                 match result {
                     Ok(broadcast) => {
-                        connection::send_typed_json_frame(
-                            writer,
-                            NotebookFrameType::Broadcast,
-                            &broadcast,
-                        )
-                        .await?;
+                        peer_writer.send_json(NotebookFrameType::Broadcast, &broadcast)?;
                     }
                     Err(broadcast::error::RecvError::Lagged(n)) => {
                         warn!(
@@ -2089,10 +2194,10 @@ where
                         // The peer missed some broadcasts (outputs, status changes).
                         // The Automerge doc contains the persisted state, so send a
                         // sync message to catch the peer up on any missed output data.
-                        send_doc_sync(
+                        queue_doc_sync(
                             room,
                             &mut peer_state,
-                            writer,
+                            &peer_writer,
                         )
                         .await?;
                     }
@@ -2132,15 +2237,15 @@ where
     }
 }
 
-/// Send a doc sync message to a peer if there are pending changes.
+/// Queue a doc sync message to a peer if there are pending changes.
 ///
-/// Generates an Automerge sync message from the room's doc and sends it
-/// as a typed frame. Used before forwarding ExecutionDone (to ensure
-/// outputs are synced) and after broadcast lag recovery.
-async fn send_doc_sync<W: tokio::io::AsyncWrite + Unpin>(
+/// Generates an Automerge sync message from the room's doc and hands it to the
+/// ordered peer writer. Used before forwarding ExecutionDone (to ensure outputs
+/// are synced) and after broadcast lag recovery.
+async fn queue_doc_sync(
     room: &NotebookRoom,
     peer_state: &mut automerge::sync::State,
-    writer: &mut W,
+    writer: &PeerWriter,
 ) -> anyhow::Result<()> {
     let encoded = {
         let mut doc = room.doc.write().await;
@@ -2159,7 +2264,7 @@ async fn send_doc_sync<W: tokio::io::AsyncWrite + Unpin>(
         }
     };
     if let Some(encoded) = encoded {
-        connection::send_typed_frame(writer, NotebookFrameType::AutomergeSync, &encoded).await?;
+        writer.send_frame(NotebookFrameType::AutomergeSync, encoded)?;
     }
     Ok(())
 }
@@ -2229,4 +2334,43 @@ pub(crate) fn notebook_execution_context_id(
     notebook_path
         .map(str::to_string)
         .unwrap_or_else(|| room.id.to_string())
+}
+
+#[cfg(test)]
+mod peer_writer_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn peer_writer_enqueue_does_not_wait_for_socket_drain() {
+        let (server, client) = tokio::io::duplex(16);
+        let (writer, mut task) =
+            spawn_peer_writer(server, "notebook".to_string(), "peer".to_string());
+
+        writer
+            .send_frame(NotebookFrameType::AutomergeSync, vec![1; 4096])
+            .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        assert!(
+            !task.handle.is_finished(),
+            "writer task should be backpressured by the socket"
+        );
+
+        for index in 0..32 {
+            writer
+                .send_frame(NotebookFrameType::Presence, vec![index])
+                .unwrap();
+        }
+
+        drop(writer);
+        drop(client);
+
+        let result = tokio::time::timeout(std::time::Duration::from_secs(1), &mut task.handle)
+            .await
+            .expect("writer task should observe the closed socket")
+            .expect("writer task should not panic");
+        assert!(
+            result.is_err(),
+            "closed socket should surface as a writer task error"
+        );
+    }
 }
