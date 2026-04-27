@@ -1,0 +1,421 @@
+name: Smoke
+
+# Cross-platform end-to-end smoke for the runtimed daemon: install (Windows)
+# or build-from-source (Linux), spawn the daemon, drive it via MCP through
+# `runt mcp`, and assert a real Python kernel launches and runs `print(1+1)`
+# returning "2". Catches breakage in the install + daemon + kernel-launch
+# path that the regular CI doesn't exercise.
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUNT_BUILD_CHANNEL: stable
+
+jobs:
+  windows-smoke:
+    name: Windows (build + install + smoke)
+    runs-on: windows-latest
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          lfs: true
+
+      - name: Set up Rust
+        uses: dsherret/rust-toolchain-file@v1
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: windows-smoke
+
+      - uses: voidzero-dev/setup-vp@v1
+        with:
+          run-install: false
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: pnpm
+      - run: pnpm install
+
+      - name: Build frontend
+        run: pnpm build
+
+      - name: Install cargo-binstall
+        shell: pwsh
+        run: |
+          Set-ExecutionPolicy Unrestricted -Scope Process -Force
+          iex (iwr "https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.ps1").Content
+
+      - name: Install Tauri CLI
+        run: cargo binstall tauri-cli --no-confirm --locked --force
+
+      # Build the MCP output widget HTML. runt-mcp's include_str! needs it
+      # before we compile the Rust binaries.
+      - name: Build MCP output widget
+        run: pnpm --filter nteract-mcp-app install && vp run nteract-mcp-app#build
+
+      - name: Build external binaries
+        shell: bash
+        run: |
+          cargo build --release -p runtimed -p runt -p nteract-mcp
+          TARGET=$(rustc --print host-tuple)
+          mkdir -p crates/notebook/binaries
+          cp target/release/runtimed.exe "crates/notebook/binaries/runtimed-$TARGET.exe"
+          cp target/release/runt.exe "crates/notebook/binaries/runt-$TARGET.exe"
+          cp target/release/nteract-mcp.exe "crates/notebook/binaries/nteract-mcp-$TARGET.exe"
+
+      - name: Generate throwaway updater keypair
+        # tauri.conf.json declares an updater pubkey for production releases,
+        # so Tauri's config validator requires a matching private key at
+        # build time. --config overrides can't skip this (an empty pubkey
+        # still counts as "set"). Generate a single-use keypair on the
+        # runner. The signature it produces is meaningless once the runner
+        # tears down, which matches the install-and-throw-away smoke shape.
+        shell: pwsh
+        run: |
+          $keyPath = "$env:RUNNER_TEMP\tauri-smoke.key"
+          npx -y @tauri-apps/cli signer generate -w $keyPath --ci
+          $keyContent = Get-Content $keyPath -Raw
+          "TAURI_SIGNING_PRIVATE_KEY<<EOF" | Out-File -Append -FilePath $env:GITHUB_ENV -Encoding utf8
+          "$keyContent" | Out-File -Append -FilePath $env:GITHUB_ENV -Encoding utf8
+          "EOF" | Out-File -Append -FilePath $env:GITHUB_ENV -Encoding utf8
+          "TAURI_SIGNING_PRIVATE_KEY_PASSWORD=" | Out-File -Append -FilePath $env:GITHUB_ENV -Encoding utf8
+
+      - name: Build NSIS installer
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ env.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ env.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          projectPath: crates/notebook
+          args: --bundles nsis --config '{"build":{"beforeBuildCommand":""}}'
+          includeUpdaterJson: false
+
+      - name: Locate installer
+        id: locate
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem -Path target/release/bundle/nsis -Filter *.exe | Select-Object -First 1
+          if (-not $exe) {
+            Write-Error "No NSIS installer (.exe) found in target/release/bundle/nsis"
+            exit 1
+          }
+          Write-Host "Installer: $($exe.FullName)"
+          "installer=$($exe.FullName)" | Out-File -Append -FilePath $env:GITHUB_OUTPUT
+
+      - name: Install silently
+        # NSIS /S = silent. /D=path must be the LAST argument and unquoted (NSIS
+        # convention). We pin the install dir so the smoke script knows where
+        # to find runt.exe regardless of Tauri's installMode default.
+        shell: pwsh
+        run: |
+          $installer = "${{ steps.locate.outputs.installer }}"
+          $installDir = "$env:RUNNER_TEMP\nteract"
+          Write-Host "Installing $installer to $installDir"
+          $proc = Start-Process -FilePath $installer -ArgumentList "/S", "/D=$installDir" -Wait -PassThru -NoNewWindow
+          if ($proc.ExitCode -ne 0) {
+            Write-Error "Installer exited with code $($proc.ExitCode)"
+            exit $proc.ExitCode
+          }
+          Write-Host "Install dir contents:"
+          Get-ChildItem -Path $installDir -Recurse | Select-Object FullName | Format-Table -AutoSize
+          "INSTALL_DIR=$installDir" | Out-File -Append -FilePath $env:GITHUB_ENV
+          "RUNT=$installDir\runt.exe" | Out-File -Append -FilePath $env:GITHUB_ENV
+          "RUNTIMED=$installDir\runtimed.exe" | Out-File -Append -FilePath $env:GITHUB_ENV
+
+      - name: runt --version
+        shell: pwsh
+        run: |
+          if (-not (Test-Path $env:RUNT)) {
+            Write-Error "runt.exe not found at $env:RUNT"
+            exit 1
+          }
+          & $env:RUNT --version
+
+      - name: Set up Python for MCP smoke
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install MCP client SDK
+        shell: pwsh
+        run: pip install "mcp>=1.0"
+
+      - name: Run daemon and smoke (single step)
+        # Variant 1: keep the daemon and the smoke script inside one step,
+        # so the daemon's parent pwsh process lives for the whole duration.
+        # Run #24972607401 spawned the daemon in one step and tried to use
+        # it in the next; the runner's job object reaped the daemon when
+        # the spawning step ended (visible as runtimed.log holding only
+        # the early-startup line, then `runt ps` failing with "file not
+        # found"). Collapsing into one step avoids that lifecycle issue.
+        #
+        # Pool sizes: 1 UV env, no conda or pixi. Pass args as a single
+        # string (PowerShell -ArgumentList array form re-tokenizes
+        # inconsistently and silently dropped --uv-pool-size 1 in the prior
+        # run, defaulting to a 3-env warm).
+        shell: pwsh
+        timeout-minutes: 15
+        run: |
+          $logOut = "$env:RUNNER_TEMP\runtimed.stdout.log"
+          $logErr = "$env:RUNNER_TEMP\runtimed.stderr.log"
+          $daemon = Start-Process -FilePath $env:RUNTIMED `
+            -ArgumentList @('run', '--uv-pool-size', '1', '--conda-pool-size', '0', '--pixi-pool-size', '0') `
+            -WindowStyle Hidden -PassThru `
+            -RedirectStandardOutput $logOut -RedirectStandardError $logErr
+          Write-Host "Daemon pid: $($daemon.Id)"
+
+          $ready = $false
+          for ($i = 0; $i -lt 30; $i++) {
+            Start-Sleep -Seconds 1
+            if ($daemon.HasExited) {
+              Write-Error "Daemon exited prematurely (code $($daemon.ExitCode)) after ${i}s"
+              break
+            }
+            $result = & $env:RUNT daemon status --json 2>$null
+            if ($LASTEXITCODE -eq 0) {
+              try {
+                $parsed = $result | ConvertFrom-Json
+                if ($parsed.running -eq $true) {
+                  Write-Host "Daemon ready after ${i}s"
+                  Write-Host $result
+                  $ready = $true
+                  break
+                }
+              } catch {}
+            }
+          }
+          if (-not $ready) {
+            Write-Host "--- runtimed.stdout ---"
+            if (Test-Path $logOut) { Get-Content $logOut }
+            Write-Host "--- runtimed.stderr ---"
+            if (Test-Path $logErr) { Get-Content $logErr }
+            exit 1
+          }
+
+          Write-Host "=== runt ps ==="
+          & $env:RUNT ps
+          if ($LASTEXITCODE -ne 0) { Write-Error "runt ps failed"; exit 1 }
+
+          Write-Host "=== runt diagnostics ==="
+          New-Item -ItemType Directory -Force -Path "$env:RUNNER_TEMP\diag" | Out-Null
+          Push-Location "$env:RUNNER_TEMP\diag"
+          & $env:RUNT diagnostics
+          $diagExit = $LASTEXITCODE
+          Pop-Location
+          if ($diagExit -ne 0) { Write-Error "runt diagnostics failed: $diagExit"; exit $diagExit }
+          Get-ChildItem "$env:RUNNER_TEMP\diag"
+
+          Write-Host "=== MCP smoke ==="
+          python scripts/smoke-mcp.py "$env:RUNT"
+          $smokeExit = $LASTEXITCODE
+
+          Write-Host "=== Tearing down daemon ==="
+          if (-not $daemon.HasExited) {
+            Stop-Process -Id $daemon.Id -Force -ErrorAction SilentlyContinue
+          }
+
+          if ($smokeExit -ne 0) { exit $smokeExit }
+
+      - name: Dump daemon stdout/stderr to CI console
+        if: always()
+        shell: pwsh
+        run: |
+          Write-Host "=== runtimed.stdout.log ==="
+          if (Test-Path "$env:RUNNER_TEMP\runtimed.stdout.log") {
+            Get-Content "$env:RUNNER_TEMP\runtimed.stdout.log"
+          } else {
+            Write-Host "(not present)"
+          }
+          Write-Host ""
+          Write-Host "=== runtimed.stderr.log ==="
+          if (Test-Path "$env:RUNNER_TEMP\runtimed.stderr.log") {
+            Get-Content "$env:RUNNER_TEMP\runtimed.stderr.log"
+          } else {
+            Write-Host "(not present)"
+          }
+          Write-Host ""
+          Write-Host "=== runtimed.log (daemon log via dirs::cache_dir) ==="
+          $logPath = "$env:LOCALAPPDATA\runt\runtimed.log"
+          if (Test-Path $logPath) {
+            Get-Content $logPath
+          } else {
+            Write-Host "(not present at $logPath)"
+            Write-Host "Searching for runtimed.log under LOCALAPPDATA..."
+            Get-ChildItem -Path $env:LOCALAPPDATA -Filter runtimed.log -Recurse -ErrorAction SilentlyContinue | Select-Object FullName | Format-Table -AutoSize
+          }
+
+      - name: Re-run diagnostics post-smoke
+        if: always()
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path "$env:RUNNER_TEMP\diag-post" | Out-Null
+          Push-Location "$env:RUNNER_TEMP\diag-post"
+          & $env:RUNT diagnostics
+          Pop-Location
+          Get-ChildItem "$env:RUNNER_TEMP\diag-post"
+
+      - name: Upload diagnostics tarballs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-smoke-diagnostics
+          path: |
+            ${{ runner.temp }}\diag\*.tar.gz
+            ${{ runner.temp }}\diag-post\*.tar.gz
+            ${{ runner.temp }}\runtimed.stdout.log
+            ${{ runner.temp }}\runtimed.stderr.log
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Upload installer
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-smoke-installer
+          path: target/release/bundle/nsis/*.exe
+          if-no-files-found: warn
+          retention-days: 14
+
+  linux-smoke:
+    name: Linux (build + smoke)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          lfs: true
+
+      - name: Set up Rust
+        uses: dsherret/rust-toolchain-file@v1
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: linux-smoke
+
+      - uses: voidzero-dev/setup-vp@v1
+        with:
+          run-install: false
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: pnpm
+      - run: pnpm install
+
+      # runt-mcp's include_str! pulls in the MCP output widget HTML. Build
+      # before compiling Rust so the assets/_output.html target exists.
+      - name: Build MCP output widget
+        run: pnpm --filter nteract-mcp-app install && vp run nteract-mcp-app#build
+
+      - name: Build runtimed and runt
+        run: cargo build --release -p runtimed -p runt -p nteract-mcp
+
+      - name: Set up Python for MCP smoke
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install MCP client SDK
+        run: pip install "mcp>=1.0"
+
+      - name: Run daemon and smoke
+        timeout-minutes: 15
+        run: |
+          set -uo pipefail
+          mkdir -p "$RUNNER_TEMP/diag"
+          LOG_OUT="$RUNNER_TEMP/runtimed.stdout.log"
+          LOG_ERR="$RUNNER_TEMP/runtimed.stderr.log"
+
+          ./target/release/runtimed run \
+            --uv-pool-size 1 \
+            --conda-pool-size 0 \
+            --pixi-pool-size 0 \
+            > "$LOG_OUT" 2> "$LOG_ERR" &
+          DAEMON_PID=$!
+          echo "Daemon pid: $DAEMON_PID"
+
+          ready=0
+          for i in $(seq 1 30); do
+            sleep 1
+            if ! kill -0 "$DAEMON_PID" 2>/dev/null; then
+              echo "Daemon exited prematurely"
+              break
+            fi
+            STATUS=$(./target/release/runt daemon status --json 2>/dev/null || true)
+            if [ -n "$STATUS" ] && echo "$STATUS" | python3 -c 'import sys,json; sys.exit(0 if json.load(sys.stdin).get("running") else 1)' 2>/dev/null; then
+              echo "Daemon ready after ${i}s"
+              echo "$STATUS"
+              ready=1
+              break
+            fi
+          done
+
+          if [ "$ready" -ne 1 ]; then
+            echo "--- runtimed.stdout ---"; cat "$LOG_OUT" 2>/dev/null || true
+            echo "--- runtimed.stderr ---"; cat "$LOG_ERR" 2>/dev/null || true
+            kill "$DAEMON_PID" 2>/dev/null || true
+            exit 1
+          fi
+
+          echo "=== runt ps ==="
+          ./target/release/runt ps || { kill "$DAEMON_PID" 2>/dev/null || true; exit 1; }
+
+          echo "=== runt diagnostics ==="
+          (cd "$RUNNER_TEMP/diag" && "$GITHUB_WORKSPACE/target/release/runt" diagnostics)
+          ls "$RUNNER_TEMP/diag"
+
+          echo "=== MCP smoke ==="
+          set +e
+          python scripts/smoke-mcp.py ./target/release/runt
+          smoke_exit=$?
+          set -e
+
+          echo "=== Tearing down daemon ==="
+          kill "$DAEMON_PID" 2>/dev/null || true
+          wait "$DAEMON_PID" 2>/dev/null || true
+
+          exit "$smoke_exit"
+
+      - name: Dump daemon stdout/stderr to CI console
+        if: always()
+        run: |
+          echo "=== runtimed.stdout.log ==="
+          cat "$RUNNER_TEMP/runtimed.stdout.log" 2>/dev/null || echo "(not present)"
+          echo
+          echo "=== runtimed.stderr.log ==="
+          cat "$RUNNER_TEMP/runtimed.stderr.log" 2>/dev/null || echo "(not present)"
+          echo
+          echo "=== runtimed.log (daemon log via dirs::cache_dir) ==="
+          for log in "$HOME/.cache/runt/runtimed.log" "$HOME/.cache/runt-nightly/runtimed.log"; do
+            if [ -f "$log" ]; then
+              echo "--- $log ---"
+              cat "$log"
+            fi
+          done
+
+      - name: Upload diagnostics tarballs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-smoke-diagnostics
+          path: |
+            ${{ runner.temp }}/diag/*.tar.gz
+            ${{ runner.temp }}/runtimed.stdout.log
+            ${{ runner.temp }}/runtimed.stderr.log
+          if-no-files-found: warn
+          retention-days: 14
