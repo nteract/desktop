@@ -573,15 +573,34 @@ impl DocHandle {
         reply_rx.await.map_err(|_| SyncError::Disconnected)?
     }
 
-    /// Confirm that the daemon has merged all our local changes.
+    /// Confirm that the daemon has merged our current local heads.
     ///
-    /// Performs up to 5 sync round-trips, checking that the daemon's
-    /// shared_heads include our local heads. Call this before executing
-    /// a cell to ensure the daemon has the cell's source.
+    /// Captures the current document heads and registers a passive waiter with
+    /// the sync task. The sync task keeps draining frames normally and resolves
+    /// the waiter once inbound Automerge sync advances the daemon's
+    /// `shared_heads` to include these heads. Timeout remains best-effort, so
+    /// this is a freshness hint rather than a strict durability barrier. Call
+    /// it before daemon RPCs that read notebook source from the Automerge doc.
     pub async fn confirm_sync(&self) -> Result<(), SyncError> {
+        let target_heads = {
+            let mut state = self.doc.lock().map_err(|_| SyncError::LockPoisoned)?;
+            let heads = state.doc.get_heads();
+            if heads.is_empty()
+                || heads
+                    .iter()
+                    .all(|head| state.peer_state.shared_heads.contains(head))
+            {
+                return Ok(());
+            }
+            heads
+        };
+
         let (reply_tx, reply_rx) = oneshot::channel();
         self.cmd_tx
-            .send(SyncCommand::ConfirmSync { reply: reply_tx })
+            .send(SyncCommand::ConfirmSync {
+                target_heads,
+                reply: reply_tx,
+            })
             .await
             .map_err(|_| SyncError::Disconnected)?;
         reply_rx.await.map_err(|_| SyncError::Disconnected)?

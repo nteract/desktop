@@ -12,7 +12,7 @@ paths:
 
 Two independent version numbers, separate from the artifact version:
 
-- **Protocol version** (`PROTOCOL_VERSION` in `connection.rs`, currently `2`) -- governs wire compatibility. Validated by the 5-byte magic preamble at connection start. Bump when framing, handshake shape, or serialization format changes.
+- **Protocol version** (`PROTOCOL_VERSION` in `connection.rs`, currently `3`) -- governs wire compatibility. Validated by the 5-byte magic preamble at connection start. Bump when framing, handshake shape, or serialization format changes. v3 adds `SessionControl`; v2 clients are still accepted but are served without `SessionControl` frames.
 - **Schema version** (`SCHEMA_VERSION` in `notebook-doc/src/lib.rs`, currently `4`) -- governs Automerge document compatibility. Bump when document structure changes.
 
 These are just incrementing integers that evolve independently from each other and from the artifact version.
@@ -24,7 +24,7 @@ Every connection starts with 5 bytes before the JSON handshake:
 | Bytes | Content |
 |-------|---------|
 | 0-3 | Magic: `0xC0 0xDE 0x01 0xAC` |
-| 4 | Protocol version (currently `2`) |
+| 4 | Protocol version (currently `3`) |
 
 The daemon validates both before reading the handshake. Non-runtimed connections get "invalid magic bytes". Protocol mismatches are rejected before JSON parsing.
 
@@ -32,8 +32,8 @@ The daemon validates both before reading the handshake. Non-runtimed connections
 
 1. **Opening** -- Frontend invokes Tauri command; relay connects to daemon Unix socket and sends handshake.
 2. **Handshake** -- JSON with `channel`, `notebook_id`, `protocol`. Daemon responds with `NotebookConnectionInfo` (protocol, notebook_id, cell_count, needs_trust_approval). The `Handshake` enum uses `#[serde(tag = "channel")]` -- flat wire format with `"channel"` discriminator.
-3. **Initial sync** -- Both sides exchange Automerge sync messages until convergence. Frontend starts empty; all state comes from daemon. 2s connection timeout, 100ms per-frame timeout.
-4. **Steady state** -- Concurrent Automerge sync, request/response, and broadcasts.
+3. **Initial sync** -- Both sides exchange Automerge sync messages until convergence. Frontend starts empty; all state comes from daemon. v3 clients also receive `SessionControl::SyncStatus` frames for notebook-doc, runtime-state, and initial-load readiness.
+4. **Steady state** -- Concurrent Automerge sync, request/response, RuntimeStateDoc sync, PoolDoc sync, presence, broadcasts, and session-control frames. The frame consumer must stay hot: request and confirmation waits belong in pending maps/waiter lists, not blocking `recv()` loops.
 5. **Disconnection** -- Relay emits `daemon:disconnected`. Generation counter prevents stale callbacks.
 
 ## Wire Format
@@ -53,8 +53,11 @@ After handshake, frames are typed by first byte:
 | `0x04` | Presence | Binary (CBOR) |
 | `0x05` | RuntimeStateSync | Binary (raw Automerge sync for RuntimeStateDoc) |
 | `0x06` | PoolStateSync | Binary (raw Automerge sync for PoolDoc — global daemon pool state) |
+| `0x07` | SessionControl | JSON (`SessionControlMessage`, daemon-originated readiness/status) |
 
-Only `0x00` (AutomergeSync), `0x04` (Presence), and `0x06` (PoolStateSync) are valid outgoing types from the frontend.
+Only `0x00` (AutomergeSync), `0x01` (NotebookRequest), `0x04` (Presence), and `0x06` (PoolStateSync) are valid outgoing frame types from the frontend/relay. `0x07` is daemon-originated.
+
+Notebook request and response frames use `NotebookRequestEnvelope` and `NotebookResponseEnvelope`. Every overlapping request must carry an `id`, and responses must route by id rather than by receive order.
 
 ## Key Request Types
 
@@ -90,6 +93,19 @@ After progressively migrating room state to `RuntimeStateDoc`, broadcasts are no
 |-----------|---------|
 | `Comm { msg_type, content, buffers }` | Jupyter comm message (widget). Custom one-shot events; widget *state* syncs via RuntimeStateDoc. |
 | `EnvProgress { env_type, phase }` | Environment install/solve/download progress (high-frequency stream). |
+
+## SessionControl
+
+`SessionControl` frames (`0x07`) are connection-local daemon messages, not room
+broadcasts. Today they carry `SessionControlMessage::SyncStatus`, a full
+readiness snapshot with:
+
+- `notebook_doc`: `pending | syncing | interactive`
+- `runtime_state`: `pending | syncing | ready`
+- `initial_load`: `not_needed | streaming | ready | failed`
+
+The daemon emits the full current state on transitions. v2 clients do not
+receive these frames.
 
 ## Tauri Event Bridge
 

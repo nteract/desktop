@@ -448,12 +448,13 @@ pub enum Handshake {
     SettingsSync,
     /// Automerge notebook sync (per-notebook room).
     ///
-    /// The optional `protocol` field is accepted for future version negotiation.
-    /// Currently only v2 (typed frames) is supported. After handshake, the server
-    /// sends a `ProtocolCapabilities` response before starting sync.
+    /// The optional `protocol` field is accepted for version negotiation.
+    /// v3 clients receive SessionControl frames; v2 clients are accepted for
+    /// compatibility without those frames. After handshake, the server sends a
+    /// `ProtocolCapabilities` response before starting sync.
     NotebookSync {
         notebook_id: String,
-        /// Protocol version requested by client. Currently only v2 is supported.
+        /// Protocol version requested by client (`v3` preferred, `v2` compatible).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         protocol: Option<String>,
         /// Working directory for untitled notebooks (used for project file detection).

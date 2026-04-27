@@ -77,9 +77,9 @@ pub async fn get_cell(
     let mut raw_outputs = handle.get_cell_outputs(cell_id).unwrap_or_default();
 
     // If the cell has been executed but outputs haven't synced yet,
-    // force a sync round-trip to process pending RuntimeStateSync frames.
+    // flush pending RuntimeStateSync frames.
     if raw_outputs.is_empty() && !ec.is_empty() {
-        let _ = handle.confirm_sync().await;
+        let _ = handle.confirm_state_sync().await;
         raw_outputs = handle.get_cell_outputs(cell_id).unwrap_or_default();
     }
 

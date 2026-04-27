@@ -142,9 +142,6 @@ pub async fn create_cell(
         (handle, cell_id)
     };
 
-    // Sync so the daemon (and peers) know about the new cell before we send presence
-    let _ = handle.confirm_sync().await;
-
     // Cursor at end of source (shows "finished typing")
     let peer_label = server.get_peer_label().await;
     let (end_line, end_col) = crate::presence::offset_to_line_col(source, source.len());
@@ -197,9 +194,6 @@ pub async fn set_cell(
         handle
             .update_source(cell_id, src)
             .map_err(|e| McpError::internal_error(format!("Failed to update source: {e}"), None))?;
-
-        // Sync so peers see the edit before the cursor
-        let _ = handle.confirm_sync().await;
 
         // Cursor at end of new source
         let peer_label = server.get_peer_label().await;

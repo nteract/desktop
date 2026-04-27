@@ -6,7 +6,7 @@ This document describes the wire protocol between notebook clients (frontend WAS
 
 Two independent version numbers handle compatibility, separate from the artifact version:
 
-- **Protocol version** (`PROTOCOL_VERSION` in `connection.rs`, currently `2`) — governs wire compatibility. Validated by the 5-byte magic preamble (`0xC0DE01AC` + version byte) at the start of every connection. Bump when the framing, handshake shape, or message serialization format changes.
+- **Protocol version** (`PROTOCOL_VERSION` in `connection.rs`, currently `3`) — governs wire compatibility. Validated by the 5-byte magic preamble (`0xC0DE01AC` + version byte) at the start of every connection. Bump when the framing, handshake shape, or message serialization format changes. Protocol v3 adds `SessionControl` readiness/status frames; v2 clients are accepted for compatibility but do not receive those frames.
 - **Schema version** (`SCHEMA_VERSION` in `notebook-doc/src/lib.rs`, currently `4`) — governs Automerge document compatibility. Stored in the doc root as `schema_version`. Bump when the document structure changes. The current schema stores cells as a fractional-indexed `Map` and keeps outputs in `RuntimeStateDoc` keyed by `execution_id`, with per-output `output_id` UUIDs on manifests. Future bumps MUST ship a `migrate_vN_to_v(N+1)` function that preserves user data — v1–v3 were pre-release and the v4 load path discards older docs on load, which is only safe because no real user data lives at those versions.
 
 These are just incrementing integers. They evolve independently from each other and from the artifact version. A protocol or schema bump doesn't automatically force a major version bump — that depends on whether the change is user-facing.
@@ -30,7 +30,7 @@ Every connection starts with a 5-byte preamble before the JSON handshake frame:
 | Bytes | Content |
 |-------|---------|
 | 0–3 | Magic: `0xC0 0xDE 0x01 0xAC` |
-| 4 | Protocol version (currently `2`) |
+| 4 | Protocol version (currently `3`) |
 
 The daemon validates both before reading the handshake. Non-runtimed connections get a clear "invalid magic bytes" error. Protocol mismatches are rejected before any JSON parsing.
 
@@ -42,11 +42,13 @@ The desktop app bundles its own daemon binary. Version-mismatch detection betwee
 
 ## Overview
 
-The notebook app communicates with runtimed over a Unix socket (named pipe on Windows) using length-prefixed, typed frames. The protocol carries three kinds of traffic:
+The notebook app communicates with runtimed over a Unix socket (named pipe on Windows) using length-prefixed, typed frames. The protocol carries several classes of traffic:
 
 1. **Automerge sync** — binary CRDT sync messages that keep the notebook document consistent between the frontend WASM peer and the daemon peer
 2. **Request/response** — JSON messages where a client asks the daemon to do something (execute a cell, launch a kernel) and gets a reply
-3. **Broadcasts** — JSON messages the daemon pushes to all connected clients (kernel output, status changes, environment progress)
+3. **Runtime and pool state sync** — binary Automerge sync for daemon-authored state documents
+4. **Broadcasts** — JSON messages the daemon pushes to all connected clients for comm messages and environment progress
+5. **Presence and session control** — binary presence updates plus daemon-originated readiness/status frames
 
 ## Connection Topology
 
@@ -85,7 +87,7 @@ The first frame is a JSON `Handshake` message:
 {
   "channel": "notebook_sync",
   "notebook_id": "/path/to/notebook.ipynb",
-  "protocol": "v2"
+  "protocol": "v3"
 }
 ```
 
@@ -97,7 +99,7 @@ The daemon responds with a `NotebookConnectionInfo`:
 
 ```json
 {
-  "protocol": "v2",
+  "protocol": "v3",
   "notebook_id": "derived-id",
   "cell_count": 5,
   "needs_trust_approval": false
@@ -108,11 +110,19 @@ The `protocol_version`, `daemon_version`, and `error` fields are `Option` types 
 
 ### 3. Initial Automerge sync
 
-After the handshake, both sides exchange Automerge sync messages until their documents converge. The frontend starts with an empty document — all notebook state comes from the daemon during this sync phase. A 2-second timeout guards against the initial socket connection; the sync loop itself uses a 100ms per-frame timeout to drain incoming frames.
+After the handshake, both sides exchange Automerge sync messages until their documents converge. The frontend starts with an empty document — all notebook state comes from the daemon during this sync phase. Protocol v3 clients receive `SessionControl::SyncStatus` frames as the daemon advances notebook-doc, runtime-state, and initial-load readiness.
 
 ### 4. Steady state
 
-Once synced, the connection carries all three frame types concurrently: ongoing Automerge sync for cell edits, request/response for explicit actions, and broadcasts for kernel activity.
+Once synced, the connection carries all frame classes concurrently: ongoing Automerge sync for cell edits, request/response for explicit actions, RuntimeStateDoc sync, PoolDoc sync, presence, broadcasts, and session-control frames.
+
+Steady-state frame fairness is a correctness requirement. A dedicated framed
+reader prevents cancel-unsafe partial reads, but the consumer must also keep
+draining its bounded queue. Confirmation waits should register target-head
+waiters, request waits should register id-keyed pending entries, and command
+handlers should return to the main frame loop after writing any immediate
+outbound frame. Blocking `recv()` loops inside a command path can backpressure
+the socket and make the daemon drop the peer.
 
 ### 5. Disconnection
 
@@ -147,6 +157,12 @@ After the handshake, frames are typed by their first byte:
 | `0x04`    | Presence           | Binary (CBOR, see `notebook_doc::presence`) |
 | `0x05`    | RuntimeStateSync   | Binary (raw Automerge sync for per-notebook `RuntimeStateDoc`) |
 | `0x06`    | PoolStateSync      | Binary (raw Automerge sync for the per-daemon `PoolDoc`) |
+| `0x07`    | SessionControl     | JSON (`SessionControlMessage`, daemon-originated readiness/status) |
+
+`NotebookRequest` and `NotebookResponse` payloads are carried in flattened
+`NotebookRequestEnvelope` and `NotebookResponseEnvelope` values. Concurrent
+requests must include an `id`, and clients must route responses by id because
+broadcasts, state sync, and out-of-order responses may interleave freely.
 
 ## Automerge Sync
 
