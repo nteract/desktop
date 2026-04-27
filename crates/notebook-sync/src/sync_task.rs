@@ -145,15 +145,6 @@ pub struct SyncTaskConfig {
     pub broadcast_tx: broadcast::Sender<NotebookBroadcast>,
 }
 
-struct SyncFrameContext<'a> {
-    doc: &'a Arc<Mutex<SharedDocState>>,
-    snapshot_tx: &'a Arc<tokio::sync::watch::Sender<NotebookSnapshot>>,
-    status_tx: &'a watch::Sender<SyncStatus>,
-    broadcast_tx: &'a broadcast::Sender<NotebookBroadcast>,
-    notebook_id: &'a str,
-    saw_session_status: &'a mut bool,
-}
-
 struct PendingRequest {
     reply: oneshot::Sender<Result<NotebookResponse, SyncError>>,
     broadcast_tx: Option<broadcast::Sender<NotebookBroadcast>>,
@@ -173,6 +164,70 @@ struct StateSyncWaiter {
     deadline: Instant,
 }
 
+struct ReactorIo {
+    doc: Arc<Mutex<SharedDocState>>,
+    snapshot_tx: Arc<tokio::sync::watch::Sender<NotebookSnapshot>>,
+    status_tx: watch::Sender<SyncStatus>,
+    broadcast_tx: broadcast::Sender<NotebookBroadcast>,
+    notebook_id: String,
+}
+
+struct ReactorState {
+    loop_count: u64,
+    saw_session_status: bool,
+    pending_requests: HashMap<String, PendingRequest>,
+    confirm_waiters: Vec<ConfirmWaiter>,
+    state_sync_waiters: Vec<StateSyncWaiter>,
+    next_confirm_sync_attempt: Instant,
+    sync_generation: u64,
+    acked_sync_generation: u64,
+}
+
+impl ReactorState {
+    fn new() -> Self {
+        Self {
+            loop_count: 0,
+            saw_session_status: false,
+            pending_requests: HashMap::new(),
+            confirm_waiters: Vec::new(),
+            state_sync_waiters: Vec::new(),
+            next_confirm_sync_attempt: Instant::now(),
+            sync_generation: 0,
+            acked_sync_generation: 0,
+        }
+    }
+}
+
+struct SyncReactor {
+    io: ReactorIo,
+    state: ReactorState,
+}
+
+impl SyncReactor {
+    fn new(
+        doc: Arc<Mutex<SharedDocState>>,
+        snapshot_tx: Arc<tokio::sync::watch::Sender<NotebookSnapshot>>,
+        status_tx: watch::Sender<SyncStatus>,
+        broadcast_tx: broadcast::Sender<NotebookBroadcast>,
+    ) -> Self {
+        let notebook_id = {
+            let state = doc.lock().unwrap_or_else(|e| e.into_inner());
+            state.notebook_id().to_string()
+        };
+
+        Self {
+            io: ReactorIo {
+                doc,
+                snapshot_tx,
+                status_tx,
+                broadcast_tx,
+                notebook_id,
+            },
+            state: ReactorState::new(),
+        }
+    }
+}
+
 /// Run the sync task.
 ///
 /// This is spawned as a background tokio task. It runs until the socket
@@ -180,7 +235,7 @@ struct StateSyncWaiter {
 ///
 /// The document mutex is held briefly for sync message generation/application.
 /// It is NEVER held across `.await` points (socket I/O).
-pub async fn run<R, W>(mut config: SyncTaskConfig, reader: R, writer: W)
+pub async fn run<R, W>(config: SyncTaskConfig, reader: R, writer: W)
 where
     R: AsyncRead + Unpin + Send + 'static,
     W: AsyncWrite + Unpin,
@@ -194,24 +249,20 @@ where
     let mut framed_reader = connection::FramedReader::spawn(buffered, 64);
     let mut writer = tokio::io::BufWriter::new(writer);
 
-    let notebook_id = {
-        let state = config.doc.lock().unwrap_or_else(|e| e.into_inner());
-        state.notebook_id().to_string()
-    };
-
-    let mut loop_count: u64 = 0;
-    let mut saw_session_status = false;
-    let mut pending_requests: HashMap<String, PendingRequest> = HashMap::new();
-    let mut confirm_waiters: Vec<ConfirmWaiter> = Vec::new();
-    let mut state_sync_waiters: Vec<StateSyncWaiter> = Vec::new();
-    let mut next_confirm_sync_attempt = Instant::now();
-    let mut sync_generation: u64 = 0;
-    let mut acked_sync_generation: u64 = 0;
+    let SyncTaskConfig {
+        doc,
+        mut changed_rx,
+        mut cmd_rx,
+        snapshot_tx,
+        status_tx,
+        broadcast_tx,
+    } = config;
+    let mut reactor = SyncReactor::new(doc, snapshot_tx, status_tx, broadcast_tx);
     let mut maintenance = tokio::time::interval(MAINTENANCE_TICK);
     maintenance.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     loop {
-        loop_count += 1;
+        reactor.state.loop_count += 1;
 
         // Keep the inbound frame pump hot. Commands must only register work
         // and write immediate outbound frames; waits resolve from the normal
@@ -230,10 +281,10 @@ where
             frame = framed_reader.recv() => SelectResult::Frame(frame),
 
             // Local document was mutated by a handle
-            result = config.changed_rx.recv() => SelectResult::Changed(result),
+            result = changed_rx.recv() => SelectResult::Changed(result),
 
             // Protocol command (request/response, confirm_sync, etc.)
-            cmd = config.cmd_rx.recv() => SelectResult::Command(cmd),
+            cmd = cmd_rx.recv() => SelectResult::Command(cmd),
 
             _ = maintenance.tick() => SelectResult::Maintenance,
         };
@@ -242,55 +293,25 @@ where
             // ─── Incoming frame from daemon ────────────────────────────────
             SelectResult::Frame(frame_result) => match frame_result {
                 Some(Ok(frame)) => {
-                    note_frame_activity(&mut state_sync_waiters);
-                    let mut ctx = SyncFrameContext {
-                        doc: &config.doc,
-                        snapshot_tx: &config.snapshot_tx,
-                        status_tx: &config.status_tx,
-                        broadcast_tx: &config.broadcast_tx,
-                        notebook_id: &notebook_id,
-                        saw_session_status: &mut saw_session_status,
-                    };
-                    handle_task_frame(&frame, &mut pending_requests, &mut ctx, &mut writer).await;
-                    if frame.frame_type == NotebookFrameType::AutomergeSync {
-                        acked_sync_generation = sync_generation;
-                    }
-                    resolve_confirm_waiters(
-                        &config.doc,
-                        &mut confirm_waiters,
-                        &notebook_id,
-                        acked_sync_generation,
-                    );
-                    if let Err(e) = drive_confirm_sync_round(
-                        &config.doc,
-                        &mut writer,
-                        &mut confirm_waiters,
-                        &notebook_id,
-                        &mut next_confirm_sync_attempt,
-                        &mut sync_generation,
-                        acked_sync_generation,
-                    )
-                    .await
-                    {
+                    if let Err(e) = reactor.on_frame(&frame, &mut writer).await {
                         warn!(
                             "[notebook-sync] Failed to continue confirm_sync for {}: {}",
-                            notebook_id, e
+                            reactor.io.notebook_id, e
                         );
                         break;
                     }
-                    resolve_state_sync_waiters(&mut state_sync_waiters);
                 }
                 None => {
                     info!(
                         "[notebook-sync] Disconnected from daemon for {}, loop_count={}",
-                        notebook_id, loop_count
+                        reactor.io.notebook_id, reactor.state.loop_count
                     );
                     break;
                 }
                 Some(Err(e)) => {
                     warn!(
                         "[notebook-sync] Socket error for {}: {}, loop_count={}",
-                        notebook_id, e, loop_count
+                        reactor.io.notebook_id, e, reactor.state.loop_count
                     );
                     break;
                 }
@@ -299,34 +320,21 @@ where
             // ─── Local changes: generate sync message and send to daemon ───
             SelectResult::Changed(Some(())) => {
                 // Drain any additional notifications (coalesce multiple mutations)
-                while config.changed_rx.try_recv().is_ok() {}
+                while changed_rx.try_recv().is_ok() {}
 
-                match send_doc_sync_round(&config.doc, &mut writer, &mut sync_generation).await {
-                    Ok(Some(generation)) => {
-                        mark_unsent_confirm_waiters(&mut confirm_waiters, generation);
-                    }
-                    Ok(None) => {}
-                    Err(e) => {
-                        warn!(
-                            "[notebook-sync] Failed to send sync message for {}: {}",
-                            notebook_id, e
-                        );
-                        break;
-                    }
+                if let Err(e) = reactor.on_changed(&mut writer).await {
+                    warn!(
+                        "[notebook-sync] Failed to send sync message for {}: {}",
+                        reactor.io.notebook_id, e
+                    );
+                    break;
                 }
-
-                resolve_confirm_waiters(
-                    &config.doc,
-                    &mut confirm_waiters,
-                    &notebook_id,
-                    acked_sync_generation,
-                );
             }
             SelectResult::Changed(None) => {
                 // All handles dropped — shut down
                 info!(
                     "[notebook-sync] All handles dropped for {}, shutting down",
-                    notebook_id
+                    reactor.io.notebook_id
                 );
                 break;
             }
@@ -337,131 +345,32 @@ where
                     // Command channel closed — shut down
                     info!(
                         "[notebook-sync] Command channel closed for {}, shutting down",
-                        notebook_id
+                        reactor.io.notebook_id
                     );
                     break;
                 };
 
-                match cmd {
-                    SyncCommand::SendRequest {
-                        request,
-                        reply,
-                        broadcast_tx: req_broadcast_tx,
-                    } => {
-                        register_request(
-                            &mut pending_requests,
-                            &mut writer,
-                            request,
-                            reply,
-                            req_broadcast_tx,
-                        )
-                        .await;
-                    }
-
-                    SyncCommand::ConfirmSync {
-                        target_heads,
-                        reply,
-                    } => {
-                        if target_heads_confirmed(&config.doc, &target_heads) {
-                            let _ = reply.send(Ok(()));
-                        } else {
-                            let sent_generation = match send_doc_sync_round(
-                                &config.doc,
-                                &mut writer,
-                                &mut sync_generation,
-                            )
-                            .await
-                            {
-                                Ok(generation) => generation,
-                                Err(e) => {
-                                    let _ = reply.send(Err(e));
-                                    continue;
-                                }
-                            };
-                            confirm_waiters.push(ConfirmWaiter {
-                                target_heads,
-                                sent_generation,
-                                reply,
-                                deadline: Instant::now() + CONFIRM_SYNC_TIMEOUT,
-                            });
-                            next_confirm_sync_attempt = Instant::now() + CONFIRM_SYNC_RETRY;
-                            resolve_confirm_waiters(
-                                &config.doc,
-                                &mut confirm_waiters,
-                                &notebook_id,
-                                acked_sync_generation,
-                            );
-                        }
-                    }
-
-                    SyncCommand::ConfirmStateSync { reply } => {
-                        if let Err(e) = send_state_sync_message(&config.doc, &mut writer).await {
-                            let _ = reply.send(Err(e));
-                        } else {
-                            let now = Instant::now();
-                            state_sync_waiters.push(StateSyncWaiter {
-                                reply,
-                                quiet_deadline: now + STATE_SYNC_QUIET_TIMEOUT,
-                                deadline: now + STATE_SYNC_MAX_TIMEOUT,
-                            });
-                        }
-                    }
-
-                    SyncCommand::SendPresence { data, reply } => {
-                        let result = connection::send_typed_frame(
-                            &mut writer,
-                            NotebookFrameType::Presence,
-                            &data,
-                        )
-                        .await
-                        .map_err(SyncError::Io);
-                        let _ = reply.send(result);
-                    }
-                }
+                reactor.on_command(cmd, &mut writer).await;
             }
 
             SelectResult::Maintenance => {
-                resolve_confirm_waiters(
-                    &config.doc,
-                    &mut confirm_waiters,
-                    &notebook_id,
-                    acked_sync_generation,
-                );
-                if !confirm_waiters.is_empty() && Instant::now() >= next_confirm_sync_attempt {
-                    if let Err(e) = drive_confirm_sync_round(
-                        &config.doc,
-                        &mut writer,
-                        &mut confirm_waiters,
-                        &notebook_id,
-                        &mut next_confirm_sync_attempt,
-                        &mut sync_generation,
-                        acked_sync_generation,
-                    )
-                    .await
-                    {
-                        warn!(
-                            "[notebook-sync] Failed to retry confirm_sync for {}: {}",
-                            notebook_id, e
-                        );
-                        break;
-                    }
+                if let Err(e) = reactor.on_maintenance(&mut writer).await {
+                    warn!(
+                        "[notebook-sync] Failed to retry confirm_sync for {}: {}",
+                        reactor.io.notebook_id, e
+                    );
+                    break;
                 }
-                resolve_state_sync_waiters(&mut state_sync_waiters);
-                expire_pending_requests(&mut pending_requests, &notebook_id);
             }
         }
     }
 
-    disconnect_pending(
-        &mut pending_requests,
-        &mut confirm_waiters,
-        &mut state_sync_waiters,
-    );
-    mark_disconnected(&config.status_tx);
+    reactor.disconnect_pending();
+    mark_disconnected(&reactor.io.status_tx);
 
     info!(
         "[notebook-sync] Stopped for {} after {} loop iterations",
-        notebook_id, loop_count
+        reactor.io.notebook_id, reactor.state.loop_count
     );
 }
 
@@ -469,8 +378,118 @@ where
 // Internal helpers
 // =========================================================================
 
-/// Handle an incoming typed frame from the daemon.
-impl SyncFrameContext<'_> {
+impl SyncReactor {
+    async fn on_frame<W: AsyncWrite + Unpin>(
+        &mut self,
+        frame: &connection::TypedNotebookFrame,
+        writer: &mut W,
+    ) -> Result<(), SyncError> {
+        self.note_frame_activity();
+        self.handle_task_frame(frame, writer).await;
+        if frame.frame_type == NotebookFrameType::AutomergeSync {
+            self.state.acked_sync_generation = self.state.sync_generation;
+        }
+        self.resolve_confirm_waiters();
+        self.drive_confirm_sync_round(writer).await?;
+        self.resolve_state_sync_waiters();
+        Ok(())
+    }
+
+    async fn on_changed<W: AsyncWrite + Unpin>(&mut self, writer: &mut W) -> Result<(), SyncError> {
+        if let Some(generation) = self.send_doc_sync_round(writer).await? {
+            mark_unsent_confirm_waiters(&mut self.state.confirm_waiters, generation);
+        }
+        self.resolve_confirm_waiters();
+        Ok(())
+    }
+
+    async fn on_command<W: AsyncWrite + Unpin>(&mut self, cmd: SyncCommand, writer: &mut W) {
+        match cmd {
+            SyncCommand::SendRequest {
+                request,
+                reply,
+                broadcast_tx,
+            } => {
+                self.register_request(writer, request, reply, broadcast_tx)
+                    .await;
+            }
+
+            SyncCommand::ConfirmSync {
+                target_heads,
+                reply,
+            } => {
+                if self.target_heads_confirmed(&target_heads) {
+                    let _ = reply.send(Ok(()));
+                } else {
+                    let sent_generation = match self.send_doc_sync_round(writer).await {
+                        Ok(generation) => generation,
+                        Err(e) => {
+                            let _ = reply.send(Err(e));
+                            return;
+                        }
+                    };
+                    self.state.confirm_waiters.push(ConfirmWaiter {
+                        target_heads,
+                        sent_generation,
+                        reply,
+                        deadline: Instant::now() + CONFIRM_SYNC_TIMEOUT,
+                    });
+                    self.state.next_confirm_sync_attempt = Instant::now() + CONFIRM_SYNC_RETRY;
+                    self.resolve_confirm_waiters();
+                }
+            }
+
+            SyncCommand::ConfirmStateSync { reply } => {
+                if let Err(e) = send_state_sync_message(&self.io.doc, writer).await {
+                    let _ = reply.send(Err(e));
+                } else {
+                    let now = Instant::now();
+                    self.state.state_sync_waiters.push(StateSyncWaiter {
+                        reply,
+                        quiet_deadline: now + STATE_SYNC_QUIET_TIMEOUT,
+                        deadline: now + STATE_SYNC_MAX_TIMEOUT,
+                    });
+                }
+            }
+
+            SyncCommand::SendPresence { data, reply } => {
+                let result =
+                    connection::send_typed_frame(writer, NotebookFrameType::Presence, &data)
+                        .await
+                        .map_err(SyncError::Io);
+                let _ = reply.send(result);
+            }
+        }
+    }
+
+    async fn on_maintenance<W: AsyncWrite + Unpin>(
+        &mut self,
+        writer: &mut W,
+    ) -> Result<(), SyncError> {
+        self.resolve_confirm_waiters();
+        if !self.state.confirm_waiters.is_empty()
+            && Instant::now() >= self.state.next_confirm_sync_attempt
+        {
+            self.drive_confirm_sync_round(writer).await?;
+        }
+        self.resolve_state_sync_waiters();
+        self.expire_pending_requests();
+        Ok(())
+    }
+
+    async fn send_doc_sync_round<W: AsyncWrite + Unpin>(
+        &mut self,
+        writer: &mut W,
+    ) -> Result<Option<u64>, SyncError> {
+        if send_doc_sync_message(&self.io.doc, writer).await? {
+            self.state.sync_generation += 1;
+            Ok(Some(self.state.sync_generation))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Handle an incoming typed frame from the daemon.
     async fn handle_incoming_frame<W: AsyncWrite + Unpin>(
         &mut self,
         frame: &connection::TypedNotebookFrame,
@@ -483,7 +502,7 @@ impl SyncFrameContext<'_> {
                     Err(e) => {
                         warn!(
                             "[notebook-sync] Failed to decode sync message for {}: {}",
-                            self.notebook_id, e
+                            self.io.notebook_id, e
                         );
                         return;
                     }
@@ -499,7 +518,7 @@ impl SyncFrameContext<'_> {
                 // By catching it, the MutexGuard drops normally and subsequent
                 // operations can still succeed.
                 let ack_bytes = {
-                    let mut state = self.doc.lock().unwrap_or_else(|e| e.into_inner());
+                    let mut state = self.io.doc.lock().unwrap_or_else(|e| e.into_inner());
                     let recv_result = std::panic::catch_unwind(AssertUnwindSafe(|| {
                         state.receive_sync_message(msg)
                     }));
@@ -508,7 +527,7 @@ impl SyncFrameContext<'_> {
                         Ok(Err(e)) => {
                             warn!(
                                 "[notebook-sync] Failed to apply sync message for {}: {}",
-                                self.notebook_id, e
+                                self.io.notebook_id, e
                             );
                             return;
                         }
@@ -523,7 +542,7 @@ impl SyncFrameContext<'_> {
                             warn!(
                                 "[notebook-sync] Automerge panicked during sync for {} \
                              (upstream bug automerge/automerge#1187): {}",
-                                self.notebook_id, msg
+                                self.io.notebook_id, msg
                             );
                             // Rebuild doc via save→load to clear corrupted indices,
                             // then reset peer state to force a fresh sync handshake.
@@ -541,7 +560,7 @@ impl SyncFrameContext<'_> {
                             warn!(
                             "[notebook-sync] Automerge panicked in generate_sync_message for {} \
                              (upstream MissingOps bug)",
-                            self.notebook_id
+                            self.io.notebook_id
                         );
                             rebuild_shared_doc_state(&mut state);
                             None
@@ -550,7 +569,7 @@ impl SyncFrameContext<'_> {
                 };
 
                 // Publish snapshot immediately (before sending ack — readers see changes fast)
-                publish_snapshot(self.doc, self.snapshot_tx);
+                publish_snapshot(&self.io.doc, &self.io.snapshot_tx);
 
                 // Send ack if needed (outside the lock — never hold across I/O)
                 if let Some(bytes) = ack_bytes {
@@ -563,7 +582,7 @@ impl SyncFrameContext<'_> {
                     {
                         warn!(
                             "[notebook-sync] Failed to send sync ack for {}: {}",
-                            self.notebook_id, e
+                            self.io.notebook_id, e
                         );
                     }
                 }
@@ -572,12 +591,12 @@ impl SyncFrameContext<'_> {
             NotebookFrameType::Broadcast => {
                 match serde_json::from_slice::<NotebookBroadcast>(&frame.payload) {
                     Ok(bc) => {
-                        let _ = self.broadcast_tx.send(bc);
+                        let _ = self.io.broadcast_tx.send(bc);
                     }
                     Err(e) => {
                         warn!(
                             "[notebook-sync] Failed to parse broadcast for {}: {}",
-                            self.notebook_id, e
+                            self.io.notebook_id, e
                         );
                     }
                 }
@@ -591,7 +610,7 @@ impl SyncFrameContext<'_> {
                 if let Err(e) = validate_frame_size(&frame.payload) {
                     debug!(
                         "[notebook-sync] Dropping oversized presence frame for {}: {}",
-                        self.notebook_id, e
+                        self.io.notebook_id, e
                     );
                     return;
                 }
@@ -602,7 +621,7 @@ impl SyncFrameContext<'_> {
                             .duration_since(std::time::UNIX_EPOCH)
                             .unwrap_or_default()
                             .as_millis() as u64;
-                        let mut state = self.doc.lock().unwrap_or_else(|e| e.into_inner());
+                        let mut state = self.io.doc.lock().unwrap_or_else(|e| e.into_inner());
                         match msg {
                             PresenceMessage::Update {
                                 peer_id,
@@ -636,7 +655,7 @@ impl SyncFrameContext<'_> {
                     Err(e) => {
                         debug!(
                             "[notebook-sync] Failed to decode presence for {}: {}",
-                            self.notebook_id, e
+                            self.io.notebook_id, e
                         );
                     }
                 }
@@ -646,14 +665,14 @@ impl SyncFrameContext<'_> {
                 // Unexpected outside of a request/response cycle
                 warn!(
                     "[notebook-sync] Unexpected Response frame for {} in background loop",
-                    self.notebook_id
+                    self.io.notebook_id
                 );
             }
 
             NotebookFrameType::Request => {
                 warn!(
                     "[notebook-sync] Unexpected Request frame from daemon for {}",
-                    self.notebook_id
+                    self.io.notebook_id
                 );
             }
 
@@ -663,7 +682,7 @@ impl SyncFrameContext<'_> {
                     Err(e) => {
                         warn!(
                             "[notebook-sync] Failed to decode RuntimeStateSync for {}: {}",
-                            self.notebook_id, e
+                            self.io.notebook_id, e
                         );
                         return;
                     }
@@ -671,11 +690,11 @@ impl SyncFrameContext<'_> {
 
                 // Apply and generate reply — same pattern as AutomergeSync
                 let reply_bytes = {
-                    let mut state = self.doc.lock().unwrap_or_else(|e| e.into_inner());
+                    let mut state = self.io.doc.lock().unwrap_or_else(|e| e.into_inner());
                     if let Err(e) = state.receive_state_sync_message(msg) {
                         warn!(
                             "[notebook-sync] Failed to apply RuntimeStateSync for {}: {}",
-                            self.notebook_id, e
+                            self.io.notebook_id, e
                         );
                         return;
                     }
@@ -692,7 +711,7 @@ impl SyncFrameContext<'_> {
                     {
                         warn!(
                             "[notebook-sync] Failed to send RuntimeStateSync reply for {}: {}",
-                            self.notebook_id, e
+                            self.io.notebook_id, e
                         );
                     }
                 }
@@ -703,7 +722,7 @@ impl SyncFrameContext<'_> {
                 // Ignore in the Python sync task.
                 debug!(
                     "[notebook-sync] Ignoring PoolStateSync frame for {} (handled by frontend)",
-                    self.notebook_id
+                    self.io.notebook_id
                 );
             }
 
@@ -714,7 +733,7 @@ impl SyncFrameContext<'_> {
                     Err(e) => {
                         warn!(
                             "[notebook-sync] Failed to parse SessionControl for {}: {}",
-                            self.notebook_id, e
+                            self.io.notebook_id, e
                         );
                         return;
                     }
@@ -722,15 +741,236 @@ impl SyncFrameContext<'_> {
 
                 match message {
                     SessionControlMessage::SyncStatus(status) => {
+                        let io = &self.io;
+                        let state = &mut self.state;
                         apply_sync_status(
-                            self.status_tx,
-                            self.notebook_id,
-                            self.saw_session_status,
+                            &io.status_tx,
+                            &io.notebook_id,
+                            &mut state.saw_session_status,
                             status,
                         );
                     }
                 }
             }
+        }
+    }
+
+    async fn register_request<W: AsyncWrite + Unpin>(
+        &mut self,
+        writer: &mut W,
+        request: NotebookRequest,
+        reply: oneshot::Sender<Result<NotebookResponse, SyncError>>,
+        broadcast_tx: Option<broadcast::Sender<NotebookBroadcast>>,
+    ) {
+        let id = uuid::Uuid::new_v4().to_string();
+        let deadline = Instant::now() + crate::relay_task::request_timeout(&request);
+        let envelope = NotebookRequestEnvelope {
+            id: Some(id.clone()),
+            request,
+        };
+
+        let payload = match serde_json::to_vec(&envelope) {
+            Ok(payload) => payload,
+            Err(e) => {
+                let _ = reply.send(Err(SyncError::Serialization(e.to_string())));
+                return;
+            }
+        };
+
+        // Register before sending so a fast daemon response cannot beat the
+        // pending entry. The main frame loop owns all response routing.
+        self.state.pending_requests.insert(
+            id.clone(),
+            PendingRequest {
+                reply,
+                broadcast_tx,
+                deadline,
+            },
+        );
+
+        if let Err(e) =
+            connection::send_typed_frame(writer, NotebookFrameType::Request, &payload).await
+        {
+            if let Some(entry) = self.state.pending_requests.remove(&id) {
+                let _ = entry.reply.send(Err(SyncError::Io(e)));
+            }
+        }
+    }
+
+    async fn handle_task_frame<W: AsyncWrite + Unpin>(
+        &mut self,
+        frame: &connection::TypedNotebookFrame,
+        writer: &mut W,
+    ) {
+        match frame.frame_type {
+            NotebookFrameType::Response => {
+                match serde_json::from_slice::<NotebookResponseEnvelope>(&frame.payload) {
+                    Ok(envelope) => {
+                        let entry = envelope
+                            .id
+                            .as_deref()
+                            .and_then(|id| self.state.pending_requests.remove(id));
+                        if let Some(entry) = entry {
+                            let _ = entry.reply.send(Ok(envelope.response));
+                        } else {
+                            warn!(
+                                "[notebook-sync] Unknown Response id for {}: {:?}",
+                                self.io.notebook_id, envelope.id
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        warn!(
+                            "[notebook-sync] Malformed response envelope for {}: {}",
+                            self.io.notebook_id, e
+                        );
+                    }
+                }
+            }
+
+            NotebookFrameType::Broadcast => {
+                match serde_json::from_slice::<NotebookBroadcast>(&frame.payload) {
+                    Ok(bc) => {
+                        for entry in self.state.pending_requests.values() {
+                            if let Some(tx) = &entry.broadcast_tx {
+                                let _ = tx.send(bc.clone());
+                            }
+                        }
+                        let _ = self.io.broadcast_tx.send(bc);
+                    }
+                    Err(e) => {
+                        warn!(
+                            "[notebook-sync] Failed to parse broadcast for {}: {}",
+                            self.io.notebook_id, e
+                        );
+                    }
+                }
+            }
+
+            _ => self.handle_incoming_frame(frame, writer).await,
+        }
+    }
+
+    fn target_heads_confirmed(&self, target_heads: &[ChangeHash]) -> bool {
+        if target_heads.is_empty() {
+            return true;
+        }
+        let state = self.io.doc.lock().unwrap_or_else(|e| e.into_inner());
+        heads_confirmed_by_peer(target_heads, &state.peer_state.shared_heads)
+    }
+
+    fn resolve_confirm_waiters(&mut self) {
+        if self.state.confirm_waiters.is_empty() {
+            return;
+        }
+
+        let shared_heads = {
+            let state = self.io.doc.lock().unwrap_or_else(|e| e.into_inner());
+            state.peer_state.shared_heads.clone()
+        };
+        let now = Instant::now();
+        let acked_sync_generation = self.state.acked_sync_generation;
+        let mut pending = Vec::with_capacity(self.state.confirm_waiters.len());
+
+        for waiter in self.state.confirm_waiters.drain(..) {
+            if heads_confirmed_by_peer(&waiter.target_heads, &shared_heads)
+                || waiter
+                    .sent_generation
+                    .map(|generation| generation <= acked_sync_generation)
+                    .unwrap_or(false)
+            {
+                let _ = waiter.reply.send(Ok(()));
+            } else if now >= waiter.deadline {
+                debug!(
+                    "[notebook-sync] confirm_sync timed out before heads fully confirmed for {}",
+                    self.io.notebook_id
+                );
+                let _ = waiter.reply.send(Ok(()));
+            } else {
+                pending.push(waiter);
+            }
+        }
+
+        self.state.confirm_waiters = pending;
+    }
+
+    async fn drive_confirm_sync_round<W: AsyncWrite + Unpin>(
+        &mut self,
+        writer: &mut W,
+    ) -> Result<(), SyncError> {
+        if self.state.confirm_waiters.is_empty() {
+            return Ok(());
+        }
+
+        if let Some(generation) = self.send_doc_sync_round(writer).await? {
+            mark_unsent_confirm_waiters(&mut self.state.confirm_waiters, generation);
+        }
+        self.state.next_confirm_sync_attempt = Instant::now() + CONFIRM_SYNC_RETRY;
+        self.resolve_confirm_waiters();
+        Ok(())
+    }
+
+    fn note_frame_activity(&mut self) {
+        if self.state.state_sync_waiters.is_empty() {
+            return;
+        }
+        let now = Instant::now();
+        for waiter in &mut self.state.state_sync_waiters {
+            waiter.quiet_deadline = (now + STATE_SYNC_QUIET_TIMEOUT).min(waiter.deadline);
+        }
+    }
+
+    fn resolve_state_sync_waiters(&mut self) {
+        if self.state.state_sync_waiters.is_empty() {
+            return;
+        }
+        let now = Instant::now();
+        let mut pending = Vec::with_capacity(self.state.state_sync_waiters.len());
+
+        for waiter in self.state.state_sync_waiters.drain(..) {
+            if now >= waiter.quiet_deadline || now >= waiter.deadline {
+                let _ = waiter.reply.send(Ok(()));
+            } else {
+                pending.push(waiter);
+            }
+        }
+
+        self.state.state_sync_waiters = pending;
+    }
+
+    fn expire_pending_requests(&mut self) {
+        if self.state.pending_requests.is_empty() {
+            return;
+        }
+        let now = Instant::now();
+        let expired_ids: Vec<String> = self
+            .state
+            .pending_requests
+            .iter()
+            .filter(|(_, entry)| now >= entry.deadline)
+            .map(|(id, _)| id.clone())
+            .collect();
+
+        for id in expired_ids {
+            if let Some(entry) = self.state.pending_requests.remove(&id) {
+                warn!(
+                    "[notebook-sync] Request {} timed out for {}",
+                    id, self.io.notebook_id
+                );
+                let _ = entry.reply.send(Err(SyncError::Timeout));
+            }
+        }
+    }
+
+    fn disconnect_pending(&mut self) {
+        for (_, entry) in self.state.pending_requests.drain() {
+            let _ = entry.reply.send(Err(SyncError::Disconnected));
+        }
+        for waiter in self.state.confirm_waiters.drain(..) {
+            let _ = waiter.reply.send(Err(SyncError::Disconnected));
+        }
+        for waiter in self.state.state_sync_waiters.drain(..) {
+            let _ = waiter.reply.send(Err(SyncError::Disconnected));
         }
     }
 }
@@ -752,19 +992,6 @@ async fn send_doc_sync_message<W: AsyncWrite + Unpin>(
     }
 
     Ok(false)
-}
-
-async fn send_doc_sync_round<W: AsyncWrite + Unpin>(
-    doc: &Arc<Mutex<SharedDocState>>,
-    writer: &mut W,
-    sync_generation: &mut u64,
-) -> Result<Option<u64>, SyncError> {
-    if send_doc_sync_message(doc, writer).await? {
-        *sync_generation += 1;
-        Ok(Some(*sync_generation))
-    } else {
-        Ok(None)
-    }
 }
 
 fn mark_unsent_confirm_waiters(waiters: &mut [ConfirmWaiter], generation: u64) {
@@ -793,254 +1020,8 @@ async fn send_state_sync_message<W: AsyncWrite + Unpin>(
     Ok(())
 }
 
-async fn register_request<W: AsyncWrite + Unpin>(
-    pending: &mut HashMap<String, PendingRequest>,
-    writer: &mut W,
-    request: NotebookRequest,
-    reply: oneshot::Sender<Result<NotebookResponse, SyncError>>,
-    broadcast_tx: Option<broadcast::Sender<NotebookBroadcast>>,
-) {
-    let id = uuid::Uuid::new_v4().to_string();
-    let deadline = Instant::now() + crate::relay_task::request_timeout(&request);
-    let envelope = NotebookRequestEnvelope {
-        id: Some(id.clone()),
-        request,
-    };
-
-    let payload = match serde_json::to_vec(&envelope) {
-        Ok(payload) => payload,
-        Err(e) => {
-            let _ = reply.send(Err(SyncError::Serialization(e.to_string())));
-            return;
-        }
-    };
-
-    // Register before sending so a fast daemon response cannot beat the
-    // pending entry. The main frame loop owns all response routing.
-    pending.insert(
-        id.clone(),
-        PendingRequest {
-            reply,
-            broadcast_tx,
-            deadline,
-        },
-    );
-
-    if let Err(e) = connection::send_typed_frame(writer, NotebookFrameType::Request, &payload).await
-    {
-        if let Some(entry) = pending.remove(&id) {
-            let _ = entry.reply.send(Err(SyncError::Io(e)));
-        }
-    }
-}
-
-async fn handle_task_frame<W: AsyncWrite + Unpin>(
-    frame: &connection::TypedNotebookFrame,
-    pending: &mut HashMap<String, PendingRequest>,
-    ctx: &mut SyncFrameContext<'_>,
-    writer: &mut W,
-) {
-    match frame.frame_type {
-        NotebookFrameType::Response => {
-            match serde_json::from_slice::<NotebookResponseEnvelope>(&frame.payload) {
-                Ok(envelope) => {
-                    let entry = envelope.id.as_deref().and_then(|id| pending.remove(id));
-                    if let Some(entry) = entry {
-                        let _ = entry.reply.send(Ok(envelope.response));
-                    } else {
-                        warn!(
-                            "[notebook-sync] Unknown Response id for {}: {:?}",
-                            ctx.notebook_id, envelope.id
-                        );
-                    }
-                }
-                Err(e) => {
-                    warn!(
-                        "[notebook-sync] Malformed response envelope for {}: {}",
-                        ctx.notebook_id, e
-                    );
-                }
-            }
-        }
-
-        NotebookFrameType::Broadcast => {
-            match serde_json::from_slice::<NotebookBroadcast>(&frame.payload) {
-                Ok(bc) => {
-                    for entry in pending.values() {
-                        if let Some(tx) = &entry.broadcast_tx {
-                            let _ = tx.send(bc.clone());
-                        }
-                    }
-                    let _ = ctx.broadcast_tx.send(bc);
-                }
-                Err(e) => {
-                    warn!(
-                        "[notebook-sync] Failed to parse broadcast for {}: {}",
-                        ctx.notebook_id, e
-                    );
-                }
-            }
-        }
-
-        _ => ctx.handle_incoming_frame(frame, writer).await,
-    }
-}
-
-fn heads_confirmed_by_peer(
-    target_heads: &[ChangeHash],
-    shared_heads: &[ChangeHash],
-    their_heads: Option<&[ChangeHash]>,
-) -> bool {
-    if target_heads.is_empty() || target_heads.iter().all(|head| shared_heads.contains(head)) {
-        return true;
-    }
-
-    their_heads
-        .map(|heads| target_heads.iter().all(|head| heads.contains(head)))
-        .unwrap_or(false)
-}
-
-fn target_heads_confirmed(doc: &Arc<Mutex<SharedDocState>>, target_heads: &[ChangeHash]) -> bool {
-    if target_heads.is_empty() {
-        return true;
-    }
-    let state = doc.lock().unwrap_or_else(|e| e.into_inner());
-    heads_confirmed_by_peer(
-        target_heads,
-        &state.peer_state.shared_heads,
-        state.peer_state.their_heads.as_deref(),
-    )
-}
-
-fn resolve_confirm_waiters(
-    doc: &Arc<Mutex<SharedDocState>>,
-    waiters: &mut Vec<ConfirmWaiter>,
-    notebook_id: &str,
-    acked_sync_generation: u64,
-) {
-    if waiters.is_empty() {
-        return;
-    }
-
-    let (shared_heads, their_heads) = {
-        let state = doc.lock().unwrap_or_else(|e| e.into_inner());
-        (
-            state.peer_state.shared_heads.clone(),
-            state.peer_state.their_heads.clone(),
-        )
-    };
-    let now = Instant::now();
-    let mut pending = Vec::with_capacity(waiters.len());
-
-    for waiter in waiters.drain(..) {
-        if heads_confirmed_by_peer(&waiter.target_heads, &shared_heads, their_heads.as_deref())
-            || waiter
-                .sent_generation
-                .map(|generation| generation <= acked_sync_generation)
-                .unwrap_or(false)
-        {
-            let _ = waiter.reply.send(Ok(()));
-        } else if now >= waiter.deadline {
-            debug!(
-                "[notebook-sync] confirm_sync timed out before heads fully confirmed for {}",
-                notebook_id
-            );
-            let _ = waiter.reply.send(Ok(()));
-        } else {
-            pending.push(waiter);
-        }
-    }
-
-    *waiters = pending;
-}
-
-async fn drive_confirm_sync_round<W: AsyncWrite + Unpin>(
-    doc: &Arc<Mutex<SharedDocState>>,
-    writer: &mut W,
-    waiters: &mut Vec<ConfirmWaiter>,
-    notebook_id: &str,
-    next_attempt: &mut Instant,
-    sync_generation: &mut u64,
-    acked_sync_generation: u64,
-) -> Result<(), SyncError> {
-    if waiters.is_empty() {
-        return Ok(());
-    }
-
-    if let Some(generation) = send_doc_sync_round(doc, writer, sync_generation).await? {
-        mark_unsent_confirm_waiters(waiters, generation);
-    }
-    *next_attempt = Instant::now() + CONFIRM_SYNC_RETRY;
-    resolve_confirm_waiters(doc, waiters, notebook_id, acked_sync_generation);
-    Ok(())
-}
-
-fn note_frame_activity(waiters: &mut [StateSyncWaiter]) {
-    if waiters.is_empty() {
-        return;
-    }
-    let now = Instant::now();
-    for waiter in waiters {
-        waiter.quiet_deadline = (now + STATE_SYNC_QUIET_TIMEOUT).min(waiter.deadline);
-    }
-}
-
-fn resolve_state_sync_waiters(waiters: &mut Vec<StateSyncWaiter>) {
-    if waiters.is_empty() {
-        return;
-    }
-    let now = Instant::now();
-    let mut pending = Vec::with_capacity(waiters.len());
-
-    for waiter in waiters.drain(..) {
-        if now >= waiter.quiet_deadline || now >= waiter.deadline {
-            let _ = waiter.reply.send(Ok(()));
-        } else {
-            pending.push(waiter);
-        }
-    }
-
-    *waiters = pending;
-}
-
-fn expire_pending_requests(pending: &mut HashMap<String, PendingRequest>, notebook_id: &str) {
-    if pending.is_empty() {
-        return;
-    }
-    let now = Instant::now();
-    pending.retain(|id, entry| {
-        if now >= entry.deadline {
-            warn!(
-                "[notebook-sync] Request {} timed out for {}",
-                id, notebook_id
-            );
-            let (reply, _broadcast_tx, _deadline) = (
-                std::mem::replace(&mut entry.reply, oneshot::channel().0),
-                entry.broadcast_tx.take(),
-                entry.deadline,
-            );
-            let _ = reply.send(Err(SyncError::Timeout));
-            false
-        } else {
-            true
-        }
-    });
-}
-
-fn disconnect_pending(
-    requests: &mut HashMap<String, PendingRequest>,
-    confirm_waiters: &mut Vec<ConfirmWaiter>,
-    state_sync_waiters: &mut Vec<StateSyncWaiter>,
-) {
-    for (_, entry) in requests.drain() {
-        let _ = entry.reply.send(Err(SyncError::Disconnected));
-    }
-    for waiter in confirm_waiters.drain(..) {
-        let _ = waiter.reply.send(Err(SyncError::Disconnected));
-    }
-    for waiter in state_sync_waiters.drain(..) {
-        let _ = waiter.reply.send(Err(SyncError::Disconnected));
-    }
+fn heads_confirmed_by_peer(target_heads: &[ChangeHash], shared_heads: &[ChangeHash]) -> bool {
+    target_heads.is_empty() || target_heads.iter().all(|head| shared_heads.contains(head))
 }
 
 /// Publish a snapshot from the current document state.
@@ -1176,12 +1157,131 @@ mod tests {
         (handle, config)
     }
 
+    fn test_reactor() -> SyncReactor {
+        let (_handle, config) = test_handle_and_config();
+        let SyncTaskConfig {
+            doc,
+            changed_rx: _,
+            cmd_rx: _,
+            snapshot_tx,
+            status_tx,
+            broadcast_tx,
+        } = config;
+
+        SyncReactor::new(doc, snapshot_tx, status_tx, broadcast_tx)
+    }
+
     fn interactive_status() -> SessionControlMessage {
         SessionControlMessage::SyncStatus(SessionSyncStatusWire {
             notebook_doc: NotebookDocPhaseWire::Interactive,
             runtime_state: RuntimeStatePhaseWire::Ready,
             initial_load: InitialLoadPhaseWire::NotNeeded,
         })
+    }
+
+    #[test]
+    fn select_loop_preserves_biased_frame_priority_shape() {
+        let source = include_str!("sync_task.rs");
+        let select = &source[source
+            .find("let select_result = tokio::select!")
+            .expect("select loop exists")..];
+        let biased = select.find("biased;").expect("select loop stays biased");
+        let frame = select
+            .find("frame = framed_reader.recv()")
+            .expect("frame arm exists");
+        let changed = select
+            .find("result = changed_rx.recv()")
+            .expect("changed arm exists");
+        let command = select
+            .find("cmd = cmd_rx.recv()")
+            .expect("command arm exists");
+        let maintenance = select
+            .find("_ = maintenance.tick()")
+            .expect("maintenance arm exists");
+
+        assert!(biased < frame, "biased select must precede all arms");
+        assert!(
+            frame < changed && changed < command && command < maintenance,
+            "select arm priority must remain Frame > Changed > Command > Maintenance"
+        );
+    }
+
+    #[test]
+    fn request_expiry_times_out_only_expired_pending_requests() {
+        let mut reactor = test_reactor();
+        let now = Instant::now();
+        let (expired_tx, mut expired_rx) = oneshot::channel();
+        let (live_tx, mut live_rx) = oneshot::channel();
+
+        reactor.state.pending_requests.insert(
+            "expired".into(),
+            PendingRequest {
+                reply: expired_tx,
+                broadcast_tx: None,
+                deadline: now - Duration::from_secs(1),
+            },
+        );
+        reactor.state.pending_requests.insert(
+            "live".into(),
+            PendingRequest {
+                reply: live_tx,
+                broadcast_tx: None,
+                deadline: now + Duration::from_secs(30),
+            },
+        );
+
+        reactor.expire_pending_requests();
+
+        assert!(!reactor.state.pending_requests.contains_key("expired"));
+        assert!(reactor.state.pending_requests.contains_key("live"));
+        assert!(matches!(expired_rx.try_recv(), Ok(Err(SyncError::Timeout))));
+        assert!(matches!(
+            live_rx.try_recv(),
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+        ));
+    }
+
+    #[test]
+    fn confirm_waiter_timeout_preserves_best_effort_ok() {
+        let mut reactor = test_reactor();
+        let (reply, mut rx) = oneshot::channel();
+
+        reactor.state.confirm_waiters.push(ConfirmWaiter {
+            target_heads: vec![ChangeHash([1; 32])],
+            sent_generation: None,
+            reply,
+            deadline: Instant::now() - Duration::from_secs(1),
+        });
+
+        reactor.resolve_confirm_waiters();
+
+        assert!(reactor.state.confirm_waiters.is_empty());
+        assert!(matches!(rx.try_recv(), Ok(Ok(()))));
+    }
+
+    #[test]
+    fn one_confirm_resolution_event_resolves_all_waiters() {
+        let mut reactor = test_reactor();
+        let mut receivers = Vec::new();
+
+        reactor.state.acked_sync_generation = 7;
+        for index in 0..10 {
+            let (reply, rx) = oneshot::channel();
+            reactor.state.confirm_waiters.push(ConfirmWaiter {
+                target_heads: vec![ChangeHash([index + 1; 32])],
+                sent_generation: Some(7),
+                reply,
+                deadline: Instant::now() + Duration::from_secs(30),
+            });
+            receivers.push(rx);
+        }
+
+        reactor.resolve_confirm_waiters();
+
+        assert!(reactor.state.confirm_waiters.is_empty());
+        for mut rx in receivers {
+            assert!(matches!(rx.try_recv(), Ok(Ok(()))));
+        }
     }
 
     #[tokio::test]
