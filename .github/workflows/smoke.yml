@@ -28,6 +28,13 @@ jobs:
     name: Windows (build + install + smoke)
     runs-on: windows-latest
     timeout-minutes: 75
+    # Push-to-main + manual dispatch only. The Windows leg currently runs
+    # ~32 minutes (cargo build + NSIS bundling + smoke). Gating PRs on it
+    # would tax every diff, including frontend-only changes that have no
+    # Windows surface. We run it post-merge and surface failures via
+    # Discord (#windows) so the team can react fast without blocking
+    # unrelated PRs.
+    if: github.event_name != 'pull_request'
     steps:
       - uses: actions/checkout@v6
 
@@ -281,6 +288,33 @@ jobs:
           path: target/release/bundle/nsis/*.exe
           if-no-files-found: warn
           retention-days: 14
+
+      # Post-merge canary: ping #windows when this leg fails so the team
+      # can react without us having to gate every PR on the 32-minute
+      # Windows build. No-ops cleanly when the webhook secret is unset
+      # (e.g. fork PRs).
+      - name: Notify #windows on failure
+        if: failure()
+        shell: bash
+        env:
+          DISCORD_WEBHOOK_WINDOWS: ${{ secrets.DISCORD_WEBHOOK_WINDOWS }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          SHA: ${{ github.sha }}
+          REF: ${{ github.ref_name }}
+        run: |
+          if [ -z "$DISCORD_WEBHOOK_WINDOWS" ]; then
+            echo "DISCORD_WEBHOOK_WINDOWS not set, skipping notification"
+            exit 0
+          fi
+          SHORT_SHA=$(echo "$SHA" | cut -c1-7)
+          curl --fail-with-body -sS -H "Content-Type: application/json" -d "{
+            \"embeds\": [{
+              \"title\": \"Windows smoke failed on $REF\",
+              \"description\": \"Commit \`$SHORT_SHA\` broke the Windows smoke gate. [View run]($RUN_URL).\",
+              \"url\": \"$RUN_URL\",
+              \"color\": 15158332
+            }]
+          }" "$DISCORD_WEBHOOK_WINDOWS"
 
   linux-smoke:
     name: Linux (build + smoke)
