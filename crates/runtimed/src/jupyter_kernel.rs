@@ -742,11 +742,42 @@ impl KernelConnection for JupyterKernel {
                     ports
                 );
 
-                // Small delay to let the kernel start
-                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                // Wait for kernel startup. ipykernel spends 1-3s on Windows
+                // (and macOS cold path) importing pyzmq/ipykernel and binding
+                // ZMQ sockets. Polling try_wait every 100ms inside the
+                // window catches an early exit (the EADDRINUSE case we're
+                // retrying for) without paying the full ceiling on success.
+                const STARTUP_CEILING: std::time::Duration = std::time::Duration::from_millis(3000);
+                let startup_deadline = std::time::Instant::now() + STARTUP_CEILING;
+                let mut early_exit: Option<std::process::ExitStatus> = None;
+                let mut wait_err: Option<std::io::Error> = None;
+                loop {
+                    match process.try_wait() {
+                        Ok(Some(status)) => {
+                            early_exit = Some(status);
+                            break;
+                        }
+                        Ok(None) => {
+                            if std::time::Instant::now() >= startup_deadline {
+                                break;
+                            }
+                            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                        }
+                        Err(e) => {
+                            wait_err = Some(e);
+                            break;
+                        }
+                    }
+                }
 
-                // Early crash detection: check if process exited during startup
-                match process.try_wait() {
+                let outcome = match (early_exit, wait_err) {
+                    (Some(s), _) => Ok(Some(s)),
+                    (None, Some(e)) => Err(e),
+                    (None, None) => Ok(None),
+                };
+
+                // Early crash detection: did the process exit during startup?
+                match outcome {
                     Ok(Some(exit_status)) => {
                         // Wait for stderr EOF (the child is gone, the reader
                         // task should finish promptly) so we read a complete
