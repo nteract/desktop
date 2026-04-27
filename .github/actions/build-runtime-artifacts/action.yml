@@ -55,14 +55,15 @@ runs:
 
     # Apple's system clang can't target wasm32-unknown-unknown.
     # Prepend Homebrew LLVM to PATH so cc-rs finds a wasm-capable clang.
+    # Pin llvm@18 to match what macos-latest runners have pre-cached.
     - name: Ensure wasm-capable clang (macOS)
       if: inputs.skip-wasm != 'true' && runner.os == 'macOS'
       shell: bash
       run: |
-        LLVM_BIN="$(brew --prefix llvm)/bin"
+        LLVM_BIN="$(brew --prefix llvm@18)/bin"
         if [ ! -d "$LLVM_BIN" ]; then
-          brew install llvm
-          LLVM_BIN="$(brew --prefix llvm)/bin"
+          brew install llvm@18
+          LLVM_BIN="$(brew --prefix llvm@18)/bin"
         fi
         echo "$LLVM_BIN" >> "$GITHUB_PATH"
 
