@@ -1910,7 +1910,6 @@ impl Daemon {
         async fn send_error_response<W: AsyncWrite + Unpin>(
             writer: &mut W,
             error: String,
-            _client_protocol_version: u8,
         ) -> anyhow::Result<()> {
             let (proto_str, proto_ver) = (PROTOCOL_V4, PROTOCOL_VERSION);
             let response = NotebookConnectionInfo {
@@ -1937,7 +1936,6 @@ impl Daemon {
                      Untitled notebooks must reconnect via notebook_id, not OpenNotebook path.",
                     path
                 ),
-                client_protocol_version,
             )
             .await?;
             return Ok(());
@@ -1968,7 +1966,6 @@ impl Daemon {
                         send_error_response(
                             &mut writer,
                             format!("Directory '{}' is not writable: {}", path, e),
-                            client_protocol_version,
                         )
                         .await?;
                         return Ok(());
@@ -2014,7 +2011,6 @@ impl Daemon {
                 send_error_response(
                     &mut writer,
                     format!("Cannot access notebook '{}': {}", path, e),
-                    client_protocol_version,
                 )
                 .await?;
                 return Ok(());
@@ -2033,7 +2029,6 @@ impl Daemon {
                     send_error_response(
                         &mut writer,
                         format!("Cannot resolve notebook path '{}': {}", path, e),
-                        client_protocol_version,
                     )
                     .await?;
                     return Ok(());
@@ -2120,7 +2115,6 @@ impl Daemon {
                 send_error_response(
                     &mut writer,
                     format!("Failed to create notebook '{}': {}", path, e),
-                    client_protocol_version,
                 )
                 .await?;
                 return Ok(());

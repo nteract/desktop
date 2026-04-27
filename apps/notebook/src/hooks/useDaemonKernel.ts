@@ -11,10 +11,10 @@ import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   type DaemonQueueState,
+  type DependencyGuard,
   deriveEnvSyncState,
   deriveKernelInfo,
   deriveQueueState,
-  type GuardedDependencyProvenance,
   type GuardedNotebookProvenance,
   type KernelStatus,
   type NotebookClient,
@@ -293,8 +293,7 @@ export function useDaemonKernel({
   );
 
   const syncEnvironment = useCallback(
-    (provenance?: GuardedDependencyProvenance) =>
-      client.syncEnvironment(provenance) as Promise<NotebookResponse>,
+    (guard?: DependencyGuard) => client.syncEnvironment(guard) as Promise<NotebookResponse>,
     [client],
   );
 
