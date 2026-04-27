@@ -707,27 +707,30 @@ impl KernelConnection for JupyterKernel {
 
                 let stderr_buffer: Arc<StdMutex<VecDeque<String>>> =
                     Arc::new(StdMutex::new(VecDeque::with_capacity(STDERR_BUFFER_LINES)));
-                if let Some(stderr) = process.stderr.take() {
-                    let kid = kernel_id.clone();
-                    let buffer = stderr_buffer.clone();
-                    spawn_best_effort("kernel-stderr", async move {
-                        use tokio::io::{AsyncBufReadExt, BufReader};
-                        let mut lines = BufReader::new(stderr).lines();
-                        while let Ok(Some(line)) = lines.next_line().await {
-                            let lower = line.to_ascii_lowercase();
-                            if lower.contains("error") || lower.contains("traceback") {
-                                warn!("[kernel-stderr:{}] {}", kid, line);
-                            } else {
-                                debug!("[kernel-stderr:{}] {}", kid, line);
+                let stderr_drain: Option<JoinHandle<()>> =
+                    if let Some(stderr) = process.stderr.take() {
+                        let kid = kernel_id.clone();
+                        let buffer = stderr_buffer.clone();
+                        Some(spawn_best_effort("kernel-stderr", async move {
+                            use tokio::io::{AsyncBufReadExt, BufReader};
+                            let mut lines = BufReader::new(stderr).lines();
+                            while let Ok(Some(line)) = lines.next_line().await {
+                                let lower = line.to_ascii_lowercase();
+                                if lower.contains("error") || lower.contains("traceback") {
+                                    warn!("[kernel-stderr:{}] {}", kid, line);
+                                } else {
+                                    debug!("[kernel-stderr:{}] {}", kid, line);
+                                }
+                                let mut queue = buffer.lock().unwrap();
+                                if queue.len() == STDERR_BUFFER_LINES {
+                                    queue.pop_front();
+                                }
+                                queue.push_back(line);
                             }
-                            let mut queue = buffer.lock().unwrap();
-                            if queue.len() == STDERR_BUFFER_LINES {
-                                queue.pop_front();
-                            }
-                            queue.push_back(line);
-                        }
-                    });
-                }
+                        }))
+                    } else {
+                        None
+                    };
 
                 info!(
                     "[jupyter-kernel] Spawned kernel process (pid={:?}, kernel_id={}, attempt={}/{}, ports={:?})",
@@ -744,9 +747,14 @@ impl KernelConnection for JupyterKernel {
                 // Early crash detection: check if process exited during startup
                 match process.try_wait() {
                     Ok(Some(exit_status)) => {
-                        // Give the stderr drain task a brief window to flush
-                        // pipe buffers before we read what was captured.
-                        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+                        // Wait for stderr EOF (the child is gone, the reader
+                        // task should finish promptly) so we read a complete
+                        // tail. Bound it so a stuck pipe can't hang launch.
+                        if let Some(handle) = stderr_drain {
+                            let _ =
+                                tokio::time::timeout(std::time::Duration::from_millis(500), handle)
+                                    .await;
+                        }
                         let captured = {
                             let queue = stderr_buffer.lock().unwrap();
                             queue.iter().cloned().collect::<Vec<_>>().join("\n")
