@@ -2,8 +2,7 @@ name: Build runtime artifacts
 description: >-
   Build the wasm + renderer-plugin assets that `cargo build -p runtimed`
   embeds via include_bytes!. These outputs are gitignored; CI rebuilds
-  them on every workflow run (used to be committed via Git LFS, dropped
-  due to bandwidth-budget pressure and rebase-conflict friction).
+  them on every workflow run.
 
   Idempotent: pnpm install / wasm-pack install / cargo xtask wasm tolerate
   a re-run. Caller is responsible for setting up Rust toolchain + rust-cache
