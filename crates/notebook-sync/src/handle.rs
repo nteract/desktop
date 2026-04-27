@@ -575,16 +575,33 @@ impl DocHandle {
 
     /// Confirm that the daemon has merged all our local changes.
     ///
-    /// Performs up to 5 sync round-trips, checking that the daemon's
-    /// shared_heads include our local heads. Call this before executing
-    /// a cell to ensure the daemon has the cell's source.
+    /// Registers a non-blocking waiter in the sync task. The waiter resolves
+    /// when incoming sync frames advance `shared_heads` past our current doc
+    /// heads. This is typically a single round-trip (milliseconds).
+    ///
+    /// Times out after 5s — if the daemon hasn't acked by then, returns Ok
+    /// anyway (best-effort, matching the old behavior of continuing after
+    /// 5 rounds of 2s each).
     pub async fn confirm_sync(&self) -> Result<(), SyncError> {
         let (reply_tx, reply_rx) = oneshot::channel();
         self.cmd_tx
             .send(SyncCommand::ConfirmSync { reply: reply_tx })
             .await
             .map_err(|_| SyncError::Disconnected)?;
-        reply_rx.await.map_err(|_| SyncError::Disconnected)?
+        match tokio::time::timeout(std::time::Duration::from_secs(5), reply_rx).await {
+            Ok(Ok(result)) => result,
+            Ok(Err(_)) => Err(SyncError::Disconnected),
+            Err(_) => {
+                // Timeout — best-effort, likely synced. The waiter will be
+                // pruned from the sync task's list on the next check (its
+                // receiver is dropped).
+                debug!(
+                    "[doc-handle] confirm_sync timed out for {} (best-effort OK)",
+                    self.notebook_id
+                );
+                Ok(())
+            }
+        }
     }
 
     /// Flush pending RuntimeStateDoc sync frames from the daemon.

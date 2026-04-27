@@ -142,10 +142,11 @@ pub async fn create_cell(
         (handle, cell_id)
     };
 
-    // Sync so the daemon (and peers) know about the new cell before we send presence
-    let _ = handle.confirm_sync().await;
-
-    // Cursor at end of source (shows "finished typing")
+    // Cursor at end of source (shows "finished typing").
+    // No confirm_sync needed — the sync task sends the mutation to the daemon
+    // asynchronously, and if `and_run` is set, `execute_and_wait` calls
+    // confirm_sync before submitting the execution request (the one place
+    // where the daemon actually needs the cell source).
     let peer_label = server.get_peer_label().await;
     let (end_line, end_col) = crate::presence::offset_to_line_col(source, source.len());
     crate::presence::emit_cursor(&handle, &cell_id, end_line, end_col, &peer_label).await;
@@ -198,10 +199,9 @@ pub async fn set_cell(
             .update_source(cell_id, src)
             .map_err(|e| McpError::internal_error(format!("Failed to update source: {e}"), None))?;
 
-        // Sync so peers see the edit before the cursor
-        let _ = handle.confirm_sync().await;
-
-        // Cursor at end of new source
+        // Cursor at end of new source. No confirm_sync — the mutation
+        // propagates asynchronously. If `and_run` follows, execute_and_wait
+        // calls confirm_sync before the execution request.
         let peer_label = server.get_peer_label().await;
         let (end_line, end_col) = crate::presence::offset_to_line_col(src, src.len());
         crate::presence::emit_cursor(&handle, cell_id, end_line, end_col, &peer_label).await;

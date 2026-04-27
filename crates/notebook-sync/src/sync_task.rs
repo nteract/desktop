@@ -92,8 +92,9 @@ pub enum SyncCommand {
 
     /// Confirm that the daemon has merged all our local changes.
     ///
-    /// Performs up to 5 sync round-trips, checking that the daemon's
-    /// shared_heads include our local heads.
+    /// Non-blocking: registers a waiter that resolves when the daemon's
+    /// `shared_heads` include our current heads. Resolved by the Frame arm
+    /// after processing AutomergeSync frames.
     ConfirmSync {
         reply: oneshot::Sender<Result<(), SyncError>>,
     },
@@ -112,6 +113,56 @@ pub enum SyncCommand {
         data: Vec<u8>,
         reply: oneshot::Sender<Result<(), SyncError>>,
     },
+}
+
+/// A pending `ConfirmSync` waiter.
+///
+/// Instead of blocking the select loop for up to 10s (5 rounds × 2s),
+/// each `ConfirmSync` registers a waiter with the doc's current heads.
+/// The waiter resolves when incoming `AutomergeSync` frames advance
+/// `shared_heads` past the target — typically within one round-trip.
+///
+/// N concurrent `ConfirmSync` calls produce N waiters, all resolved by
+/// the same O(1) incoming sync frames. This eliminates the serialized
+/// head-of-line blocking that caused daemon backpressure and connection
+/// drops under parallel MCP tool calls.
+struct SyncWaiter {
+    /// The heads that must appear in the peer's `shared_heads`.
+    target_heads: Vec<automerge::ChangeHash>,
+    /// Reply channel for the caller.
+    reply: oneshot::Sender<Result<(), SyncError>>,
+}
+
+/// Check and resolve any sync waiters whose target heads are now confirmed.
+///
+/// Also prunes waiters whose callers have timed out (receiver dropped).
+fn resolve_sync_waiters(waiters: &mut Vec<SyncWaiter>, doc: &Arc<Mutex<SharedDocState>>) {
+    if waiters.is_empty() {
+        return;
+    }
+    let shared_heads = {
+        let state = doc.lock().unwrap_or_else(|e| e.into_inner());
+        state.peer_state.shared_heads.clone()
+    };
+    let mut i = 0;
+    while i < waiters.len() {
+        // Prune canceled waiters (caller timed out / dropped the receiver)
+        if waiters[i].reply.is_closed() {
+            waiters.swap_remove(i);
+            continue;
+        }
+        if waiters[i].target_heads.is_empty()
+            || waiters[i]
+                .target_heads
+                .iter()
+                .all(|h| shared_heads.contains(h))
+        {
+            let waiter = waiters.swap_remove(i);
+            let _ = waiter.reply.send(Ok(()));
+            continue;
+        }
+        i += 1;
+    }
 }
 
 /// Configuration for the sync task.
@@ -174,6 +225,12 @@ where
     let mut loop_count: u64 = 0;
     let mut saw_session_status = false;
 
+    // Non-blocking confirm_sync waiters: each ConfirmSync command registers
+    // a waiter here. Waiters are resolved when incoming AutomergeSync frames
+    // advance shared_heads past the waiter's target. This replaces the old
+    // blocking confirm_sync_impl that monopolized the select loop.
+    let mut sync_waiters: Vec<SyncWaiter> = Vec::new();
+
     // Track last metadata for change detection (used for SyncUpdate-like behavior)
     let mut _last_metadata: Option<notebook_doc::metadata::NotebookMetadataSnapshot> = {
         let state = config.doc.lock().unwrap_or_else(|e| e.into_inner());
@@ -183,8 +240,12 @@ where
     loop {
         loop_count += 1;
 
-        // Use select! with biased mode so we prioritize local changes and commands
-        // over incoming frames (prevents starvation when the daemon is chatty).
+        // Biased select: prioritize *incoming frames* over commands and local
+        // changes. This is the critical change that prevents session drops —
+        // the daemon's outbound frames must be consumed quickly so its write
+        // buffer never fills. Under the old priority order (Changed > Command
+        // > Frame), bursts of local mutations and confirm_sync commands starved
+        // inbound frame processing, causing daemon write failures.
         enum SelectResult {
             Changed,
             Command(Option<SyncCommand>),
@@ -193,6 +254,12 @@ where
 
         let select_result = tokio::select! {
             biased;
+
+            // Incoming frame from daemon — highest priority to keep the socket drained
+            frame = framed_reader.recv() => SelectResult::Frame(frame),
+
+            // Protocol command (request/response, confirm_sync, etc.)
+            cmd = config.cmd_rx.recv() => SelectResult::Command(cmd),
 
             // Local document was mutated by a handle
             result = config.changed_rx.recv() => {
@@ -203,12 +270,6 @@ where
                 }
                 SelectResult::Changed
             }
-
-            // Protocol command (request/response, confirm_sync, etc.)
-            cmd = config.cmd_rx.recv() => SelectResult::Command(cmd),
-
-            // Incoming frame from daemon (cancel-safe: actor owns read_exact)
-            frame = framed_reader.recv() => SelectResult::Frame(frame),
         };
 
         match select_result {
@@ -239,32 +300,11 @@ where
                     }
                 }
 
-                // Wait briefly for an ack from the daemon (like sync_to_daemon)
-                match tokio::time::timeout(Duration::from_millis(500), framed_reader.recv()).await {
-                    Ok(Some(Ok(frame))) => {
-                        SyncFrameContext {
-                            doc: &config.doc,
-                            snapshot_tx: &config.snapshot_tx,
-                            status_tx: &config.status_tx,
-                            broadcast_tx: &config.broadcast_tx,
-                            notebook_id: &notebook_id,
-                            saw_session_status: &mut saw_session_status,
-                        }
-                        .handle_incoming_frame(&frame, &mut writer)
-                        .await;
-                    }
-                    Ok(None) => {
-                        info!("[notebook-sync] Connection closed for {}", notebook_id);
-                        break;
-                    }
-                    Ok(Some(Err(e))) => {
-                        warn!("[notebook-sync] Socket error for {}: {}", notebook_id, e);
-                        break;
-                    }
-                    Err(_) => {
-                        // Timeout — daemon hasn't responded yet, that's fine
-                    }
-                }
+                // No ack wait — the daemon's reply will arrive in the Frame arm
+                // and resolve any pending ConfirmSync waiters there. The previous
+                // 500ms blocking wait was the secondary bottleneck (after the
+                // blocking confirm_sync_impl): it prevented the select loop from
+                // processing incoming frames during local-change bursts.
             }
 
             // ─── Protocol commands ─────────────────────────────────────────
@@ -297,26 +337,52 @@ where
                                 notebook_id: &notebook_id,
                                 saw_session_status: &mut saw_session_status,
                             },
+                            &mut sync_waiters,
                         )
                         .await;
                         let _ = reply.send(result);
                     }
 
                     SyncCommand::ConfirmSync { reply } => {
-                        let result = confirm_sync_impl(
-                            &mut framed_reader,
-                            &mut writer,
-                            &mut SyncFrameContext {
-                                doc: &config.doc,
-                                snapshot_tx: &config.snapshot_tx,
-                                status_tx: &config.status_tx,
-                                broadcast_tx: &config.broadcast_tx,
-                                notebook_id: &notebook_id,
-                                saw_session_status: &mut saw_session_status,
-                            },
-                        )
-                        .await;
-                        let _ = reply.send(result);
+                        // Non-blocking: register a waiter with the current doc
+                        // heads. The waiter resolves when incoming AutomergeSync
+                        // frames advance shared_heads past these targets.
+                        let (our_heads, already_confirmed) = {
+                            let mut state = config.doc.lock().unwrap_or_else(|e| e.into_inner());
+                            let heads = state.doc.get_heads();
+                            let shared = &state.peer_state.shared_heads;
+                            let confirmed =
+                                heads.is_empty() || heads.iter().all(|h| shared.contains(h));
+                            (heads, confirmed)
+                        };
+
+                        if already_confirmed {
+                            let _ = reply.send(Ok(()));
+                        } else {
+                            // Also generate and send a sync message if needed
+                            // so the daemon has something to ack.
+                            let msg_bytes = {
+                                let mut state =
+                                    config.doc.lock().unwrap_or_else(|e| e.into_inner());
+                                state.generate_sync_message().map(|m| m.encode())
+                            };
+                            if let Some(bytes) = msg_bytes {
+                                if let Err(e) = connection::send_typed_frame(
+                                    &mut writer,
+                                    NotebookFrameType::AutomergeSync,
+                                    &bytes,
+                                )
+                                .await
+                                {
+                                    let _ = reply.send(Err(SyncError::Io(e)));
+                                    continue;
+                                }
+                            }
+                            sync_waiters.push(SyncWaiter {
+                                target_heads: our_heads,
+                                reply,
+                            });
+                        }
                     }
 
                     SyncCommand::ConfirmStateSync { reply } => {
@@ -352,6 +418,7 @@ where
             // ─── Incoming frame from daemon ────────────────────────────────
             SelectResult::Frame(frame_result) => match frame_result {
                 Some(Ok(frame)) => {
+                    let is_sync_frame = frame.frame_type == NotebookFrameType::AutomergeSync;
                     SyncFrameContext {
                         doc: &config.doc,
                         snapshot_tx: &config.snapshot_tx,
@@ -362,6 +429,13 @@ where
                     }
                     .handle_incoming_frame(&frame, &mut writer)
                     .await;
+
+                    // After processing an AutomergeSync frame, the daemon may
+                    // have acknowledged our changes (advancing shared_heads).
+                    // Resolve any ConfirmSync waiters whose targets are now met.
+                    if is_sync_frame {
+                        resolve_sync_waiters(&mut sync_waiters, &config.doc);
+                    }
                 }
                 None => {
                     info!(
@@ -379,6 +453,12 @@ where
                 }
             },
         }
+    }
+
+    // Resolve remaining ConfirmSync waiters with Disconnected errors
+    // so callers don't hang on a channel that will never deliver.
+    for waiter in sync_waiters.drain(..) {
+        let _ = waiter.reply.send(Err(SyncError::Disconnected));
     }
 
     mark_disconnected(&config.status_tx);
@@ -662,13 +742,16 @@ impl SyncFrameContext<'_> {
 /// Send a request to the daemon and wait for a response.
 ///
 /// While waiting, also processes AutomergeSync and Broadcast frames that arrive
-/// interleaved with the response.
+/// interleaved with the response. Resolves pending ConfirmSync waiters when
+/// AutomergeSync frames are processed — this prevents long requests (like
+/// `LaunchKernel`) from starving sync confirmation.
 async fn send_request_impl<W: AsyncWrite + Unpin>(
     framed: &mut connection::FramedReader,
     writer: &mut W,
     req_broadcast_tx: Option<&broadcast::Sender<NotebookBroadcast>>,
     request: &NotebookRequest,
     ctx: &mut SyncFrameContext<'_>,
+    sync_waiters: &mut Vec<SyncWaiter>,
 ) -> Result<NotebookResponse, SyncError> {
     // Serialize and send the request
     let payload =
@@ -687,7 +770,7 @@ async fn send_request_impl<W: AsyncWrite + Unpin>(
     // Wait for a Response frame, processing other frames that arrive meanwhile
     let result = tokio::time::timeout(
         Duration::from_secs(timeout_secs),
-        wait_for_response(framed, writer, req_broadcast_tx, ctx),
+        wait_for_response(framed, writer, req_broadcast_tx, ctx, sync_waiters),
     )
     .await;
 
@@ -704,6 +787,7 @@ async fn wait_for_response<W: AsyncWrite + Unpin>(
     writer: &mut W,
     req_broadcast_tx: Option<&broadcast::Sender<NotebookBroadcast>>,
     ctx: &mut SyncFrameContext<'_>,
+    sync_waiters: &mut Vec<SyncWaiter>,
 ) -> Result<NotebookResponse, SyncError> {
     loop {
         let frame = framed
@@ -780,6 +864,11 @@ async fn wait_for_response<W: AsyncWrite + Unpin>(
                         .await
                         .map_err(SyncError::Io)?;
                 }
+
+                // Resolve ConfirmSync waiters while inside wait_for_response —
+                // long requests (LaunchKernel, 5min) would otherwise starve
+                // sync confirmation for the entire duration.
+                resolve_sync_waiters(sync_waiters, ctx.doc);
             }
 
             NotebookFrameType::Broadcast => {
@@ -807,71 +896,17 @@ async fn wait_for_response<W: AsyncWrite + Unpin>(
     }
 }
 
-/// Confirm that the daemon has merged all our local changes.
-///
-/// Performs sync rounds until our local heads are in the peer's shared_heads,
-/// or until we've done 5 rounds (best-effort).
-async fn confirm_sync_impl<W: AsyncWrite + Unpin>(
-    framed: &mut connection::FramedReader,
-    writer: &mut W,
-    ctx: &mut SyncFrameContext<'_>,
-) -> Result<(), SyncError> {
-    for round in 0..5 {
-        // Generate and send sync message
-        let (msg_bytes, our_heads, shared_heads) = {
-            let mut state = ctx.doc.lock().unwrap_or_else(|e| e.into_inner());
-            let our_heads = state.doc.get_heads();
-            let shared = state.peer_state.shared_heads.clone();
-            let msg = state.generate_sync_message().map(|m| m.encode());
-            (msg, our_heads, shared)
-        };
-
-        // Check if already confirmed
-        if our_heads.is_empty() || our_heads.iter().all(|h| shared_heads.contains(h)) {
-            debug!(
-                "[notebook-sync] Sync confirmed for {} after {} rounds",
-                ctx.notebook_id, round
-            );
-            return Ok(());
-        }
-
-        // Send sync message if there is one
-        if let Some(bytes) = msg_bytes {
-            connection::send_typed_frame(writer, NotebookFrameType::AutomergeSync, &bytes)
-                .await
-                .map_err(SyncError::Io)?;
-        }
-
-        // Wait for response
-        match tokio::time::timeout(Duration::from_millis(2000), framed.recv()).await {
-            Ok(Some(Ok(frame))) => {
-                ctx.handle_incoming_frame(&frame, writer).await;
-            }
-            Ok(None) => {
-                return Err(SyncError::Protocol(
-                    "Connection closed during confirm_sync".into(),
-                ));
-            }
-            Ok(Some(Err(e))) => {
-                return Err(SyncError::Io(e));
-            }
-            Err(_) => {
-                // Timeout — try next round
-                debug!(
-                    "[notebook-sync] confirm_sync round {} timed out for {}",
-                    round, ctx.notebook_id
-                );
-            }
-        }
-    }
-
-    // Best-effort: likely confirmed even if heads don't fully match
-    debug!(
-        "[notebook-sync] confirm_sync: heads not fully confirmed after 5 rounds for {}",
-        ctx.notebook_id
-    );
-    Ok(())
-}
+// confirm_sync_impl has been removed: see `SyncWaiter` and `resolve_sync_waiters`.
+//
+// The old implementation ran up to 5 rounds × 2s timeout inside the
+// select loop, monopolizing both the frame reader and the writer.
+// Under 8+ concurrent MCP tool calls, this caused daemon write-buffer
+// back-pressure and deterministic session drops.
+//
+// The new approach registers passive waiters that are resolved by the
+// Frame arm after processing AutomergeSync frames. The select loop
+// never blocks on ConfirmSync, so all incoming frames are processed
+// promptly.
 
 /// Flush pending RuntimeStateDoc sync frames.
 ///
