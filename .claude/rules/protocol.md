@@ -12,7 +12,7 @@ paths:
 
 Two independent version numbers, separate from the artifact version:
 
-- **Protocol version** (`PROTOCOL_VERSION` in `connection.rs`, currently `3`) -- governs wire compatibility. Validated by the 5-byte magic preamble at connection start. Bump when framing, handshake shape, or serialization format changes. v3 adds `SessionControl`; v2 clients are still accepted but are served without `SessionControl` frames.
+- **Protocol version** (`PROTOCOL_VERSION` in `connection.rs`, currently `4`) -- governs wire compatibility. Validated by the 5-byte magic preamble at connection start. Bump when framing, handshake shape, or serialization format changes. v4 removes legacy environment-sync request/response variants and requires current clients.
 - **Schema version** (`SCHEMA_VERSION` in `notebook-doc/src/lib.rs`, currently `4`) -- governs Automerge document compatibility. Bump when document structure changes.
 
 These are just incrementing integers that evolve independently from each other and from the artifact version.
@@ -24,7 +24,7 @@ Every connection starts with 5 bytes before the JSON handshake:
 | Bytes | Content |
 |-------|---------|
 | 0-3 | Magic: `0xC0 0xDE 0x01 0xAC` |
-| 4 | Protocol version (currently `3`) |
+| 4 | Protocol version (currently `4`) |
 
 The daemon validates both before reading the handshake. Non-runtimed connections get "invalid magic bytes". Protocol mismatches are rejected before JSON parsing.
 
@@ -32,7 +32,7 @@ The daemon validates both before reading the handshake. Non-runtimed connections
 
 1. **Opening** -- Frontend invokes Tauri command; relay connects to daemon Unix socket and sends handshake.
 2. **Handshake** -- JSON with `channel`, `notebook_id`, `protocol`. Daemon responds with `NotebookConnectionInfo` (protocol, notebook_id, cell_count, needs_trust_approval). The `Handshake` enum uses `#[serde(tag = "channel")]` -- flat wire format with `"channel"` discriminator.
-3. **Initial sync** -- Both sides exchange Automerge sync messages until convergence. Frontend starts empty; all state comes from daemon. v3 clients also receive `SessionControl::SyncStatus` frames for notebook-doc, runtime-state, and initial-load readiness.
+3. **Initial sync** -- Both sides exchange Automerge sync messages until convergence. Frontend starts empty; all state comes from daemon. v4 clients receive `SessionControl::SyncStatus` frames for notebook-doc, runtime-state, and initial-load readiness.
 4. **Steady state** -- Concurrent Automerge sync, request/response, RuntimeStateDoc sync, PoolDoc sync, presence, broadcasts, and session-control frames. The frame consumer must stay hot: request and confirmation waits belong in pending maps/waiter lists, not blocking `recv()` loops.
 5. **Disconnection** -- Relay emits `daemon:disconnected`. Generation counter prevents stale callbacks.
 
@@ -104,8 +104,7 @@ readiness snapshot with:
 - `runtime_state`: `pending | syncing | ready`
 - `initial_load`: `not_needed | streaming | ready | failed`
 
-The daemon emits the full current state on transitions. v2 clients do not
-receive these frames.
+The daemon emits the full current state on transitions.
 
 ## Tauri Event Bridge
 

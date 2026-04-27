@@ -97,7 +97,7 @@ Builds macOS + Linux wheels and publishes to PyPI.
 ## Protocol Version Change Procedure
 
 1. Bump `PROTOCOL_VERSION` in `crates/notebook-protocol/src/connection.rs`
-2. Update `PROTOCOL_V2` string constant if the version string changes
+2. Update the `PROTOCOL_V*` string constant if the version string changes
 3. Update `contributing/protocol.md`
 4. Decide version bump type based on user impact
 

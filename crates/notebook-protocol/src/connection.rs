@@ -449,12 +449,11 @@ pub enum Handshake {
     /// Automerge notebook sync (per-notebook room).
     ///
     /// The optional `protocol` field is accepted for version negotiation.
-    /// v3 clients receive SessionControl frames; v2 clients are accepted for
-    /// compatibility without those frames. After handshake, the server sends a
-    /// `ProtocolCapabilities` response before starting sync.
+    /// v4 clients receive SessionControl frames. After handshake, the server
+    /// sends a `ProtocolCapabilities` response before starting sync.
     NotebookSync {
         notebook_id: String,
-        /// Protocol version requested by client (`v3` preferred, `v2` compatible).
+        /// Protocol version requested by client (`v4`).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         protocol: Option<String>,
         /// Working directory for untitled notebooks (used for project file detection).
@@ -524,20 +523,17 @@ pub enum Handshake {
     },
 }
 
-/// Protocol version constants (strings for handshake compatibility).
-pub const PROTOCOL_V2: &str = "v2";
-pub const PROTOCOL_V3: &str = "v3";
+pub const PROTOCOL_V4: &str = "v4";
 
 /// Numeric protocol version for version negotiation.
 /// Increment this when making breaking protocol changes.
 ///
-/// Protocol v3 adds explicit session-control status frames for notebook
-/// bootstrap/readiness and is not wire-compatible with v2 clients.
-pub const PROTOCOL_VERSION: u32 = 3;
+/// Protocol v4 removes legacy environment-sync request/response variants and
+/// is not wire-compatible with v3 clients.
+pub const PROTOCOL_VERSION: u32 = 4;
 
-/// Minimum protocol version accepted by v3 daemons for backward compatibility.
-/// v2 clients are served without SESSION_CONTROL frames.
-pub const MIN_PROTOCOL_VERSION: u32 = 2;
+/// Minimum protocol version accepted by v4 daemons.
+pub const MIN_PROTOCOL_VERSION: u32 = 4;
 
 /// Magic bytes identifying the runtimed protocol.
 /// Sent as the first 4 bytes of every connection, before the handshake frame.
@@ -616,7 +612,7 @@ pub async fn recv_preamble<R: AsyncRead + Unpin>(reader: &mut R) -> std::io::Res
 /// Used by the `NotebookSync` handshake variant.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProtocolCapabilities {
-    /// Protocol version string (currently always "v3").
+    /// Protocol version string (currently always "v4").
     pub protocol: String,
     /// Numeric protocol version for explicit version checking.
     /// Clients can compare this against their expected version.
@@ -634,7 +630,7 @@ pub struct ProtocolCapabilities {
 /// Contains notebook_id derived by the daemon (from path or generated env_id).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NotebookConnectionInfo {
-    /// Protocol version string (currently always "v3").
+    /// Protocol version string (currently always "v4").
     pub protocol: String,
     /// Numeric protocol version for explicit version checking.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1167,30 +1163,30 @@ mod tests {
         .unwrap();
         assert_eq!(json, r#"{"channel":"notebook_sync","notebook_id":"abc"}"#);
 
-        // NotebookSync with v2 protocol
+        // NotebookSync with v4 protocol
         let json = serde_json::to_string(&Handshake::NotebookSync {
             notebook_id: "abc".into(),
-            protocol: Some("v2".into()),
+            protocol: Some(PROTOCOL_V4.into()),
             working_dir: None,
             initial_metadata: None,
         })
         .unwrap();
         assert_eq!(
             json,
-            r#"{"channel":"notebook_sync","notebook_id":"abc","protocol":"v2"}"#
+            r#"{"channel":"notebook_sync","notebook_id":"abc","protocol":"v4"}"#
         );
 
         // NotebookSync with working_dir for untitled notebook
         let json = serde_json::to_string(&Handshake::NotebookSync {
             notebook_id: "550e8400-e29b-41d4-a716-446655440000".into(),
-            protocol: Some("v2".into()),
+            protocol: Some(PROTOCOL_V4.into()),
             working_dir: Some("/home/user/project".into()),
             initial_metadata: None,
         })
         .unwrap();
         assert_eq!(
             json,
-            r#"{"channel":"notebook_sync","notebook_id":"550e8400-e29b-41d4-a716-446655440000","protocol":"v2","working_dir":"/home/user/project"}"#
+            r#"{"channel":"notebook_sync","notebook_id":"550e8400-e29b-41d4-a716-446655440000","protocol":"v4","working_dir":"/home/user/project"}"#
         );
 
         // Blob
@@ -1254,7 +1250,7 @@ mod tests {
     fn test_notebook_connection_info_serialization() {
         // Success case (minimal - no optional fields)
         let info = NotebookConnectionInfo {
-            protocol: "v2".into(),
+            protocol: PROTOCOL_V4.into(),
             protocol_version: None,
             daemon_version: None,
             notebook_id: "/home/user/notebook.ipynb".into(),
@@ -1267,12 +1263,12 @@ mod tests {
         let json = serde_json::to_string(&info).unwrap();
         assert_eq!(
             json,
-            r#"{"protocol":"v2","notebook_id":"/home/user/notebook.ipynb","cell_count":5,"needs_trust_approval":false,"ephemeral":false}"#
+            r#"{"protocol":"v4","notebook_id":"/home/user/notebook.ipynb","cell_count":5,"needs_trust_approval":false,"ephemeral":false}"#
         );
 
         // With version info
         let info = NotebookConnectionInfo {
-            protocol: PROTOCOL_V3.into(),
+            protocol: PROTOCOL_V4.into(),
             protocol_version: Some(PROTOCOL_VERSION),
             daemon_version: Some("0.1.0+abc123".into()),
             notebook_id: "/home/user/notebook.ipynb".into(),
@@ -1288,7 +1284,7 @@ mod tests {
 
         // With trust approval needed
         let info = NotebookConnectionInfo {
-            protocol: "v2".into(),
+            protocol: PROTOCOL_V4.into(),
             protocol_version: None,
             daemon_version: None,
             notebook_id: "550e8400-e29b-41d4-a716-446655440000".into(),
@@ -1303,7 +1299,7 @@ mod tests {
 
         // Error case
         let info = NotebookConnectionInfo {
-            protocol: "v2".into(),
+            protocol: PROTOCOL_V4.into(),
             protocol_version: None,
             daemon_version: None,
             notebook_id: String::new(),
@@ -1318,7 +1314,7 @@ mod tests {
 
         // With notebook_path
         let info = NotebookConnectionInfo {
-            protocol: "v2".into(),
+            protocol: PROTOCOL_V4.into(),
             protocol_version: None,
             daemon_version: None,
             notebook_id: "550e8400-e29b-41d4-a716-446655440000".into(),

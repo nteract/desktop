@@ -198,7 +198,6 @@ export type DaemonNotebookResponse =
     }
   | { result: "ok" }
   | { result: "error"; error: string }
-  | { result: "sync_environment_started"; packages: string[] }
   | { result: "sync_environment_complete"; synced_packages: string[] }
   | {
       result: "sync_environment_failed";

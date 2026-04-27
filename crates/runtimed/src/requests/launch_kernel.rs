@@ -24,6 +24,7 @@ use crate::notebook_sync_server::{
     unified_env_on_disk, CapturedEnvRuntime, NotebookRoom, ResetOutcome,
 };
 use crate::protocol::NotebookResponse;
+use crate::requests::guarded;
 
 pub(crate) async fn handle(
     room: &Arc<NotebookRoom>,
@@ -32,6 +33,10 @@ pub(crate) async fn handle(
     env_source: String,
     notebook_path: Option<String>,
 ) -> NotebookResponse {
+    if let Err(rejection) = guarded::ensure_trusted(room).await {
+        return rejection.into_response();
+    }
+
     // Fall back to the room's on-disk path when the caller doesn't
     // supply one. The frontend typically launches with
     // `notebook_path: None` and relies on the room knowing its own

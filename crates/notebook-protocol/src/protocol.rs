@@ -135,9 +135,9 @@ pub struct GuardedNotebookProvenance {
     pub observed_heads: Vec<String>,
 }
 
-/// Frontend-observed dependency state used to guard trust-approved sync.
+/// Dependency state used to guard trust-approved sync.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct GuardedDependencyProvenance {
+pub struct DependencyGuard {
     pub observed_heads: Vec<String>,
     pub dependency_fingerprint: String,
 }
@@ -425,14 +425,13 @@ pub enum NotebookRequest {
     },
 
     /// Sync environment with current metadata (hot-install new packages).
-    /// Only supported for UV inline deps. Falls back to restart for removals/conda.
-    SyncEnvironment {},
-
-    /// Sync environment only if dependency metadata still matches the state
-    /// the user approved in the trust dialog.
-    SyncEnvironmentGuarded {
-        observed_heads: Vec<String>,
-        dependency_fingerprint: String,
+    ///
+    /// The daemon always enforces trust before installing. `guard` is supplied
+    /// when the request follows a trust dialog and must still match the
+    /// dependency metadata the user approved.
+    SyncEnvironment {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        guard: Option<DependencyGuard>,
     },
 
     /// Approve the current dependency metadata for this notebook.
@@ -549,12 +548,6 @@ pub enum NotebookResponse {
         items: Vec<CompletionItem>,
         cursor_start: usize,
         cursor_end: usize,
-    },
-
-    /// Environment sync started (installing new packages).
-    SyncEnvironmentStarted {
-        /// Packages being installed
-        packages: Vec<String>,
     },
 
     /// Environment sync completed successfully.
@@ -917,9 +910,11 @@ mod tests {
             NotebookRequest::RunAllCellsGuarded {
                 observed_heads: observed_heads.clone(),
             },
-            NotebookRequest::SyncEnvironmentGuarded {
-                observed_heads,
-                dependency_fingerprint,
+            NotebookRequest::SyncEnvironment {
+                guard: Some(DependencyGuard {
+                    observed_heads,
+                    dependency_fingerprint,
+                }),
             },
             NotebookRequest::ApproveTrust {
                 dependency_fingerprint: Some("{\"uv\":{\"dependencies\":[\"numpy\"]}}".into()),
@@ -1007,11 +1002,13 @@ mod tests {
                 serde_json::json!({ "action": "sync_environment" }),
             ),
             (
-                "sync_environment_guarded",
+                "sync_environment_with_guard",
                 serde_json::json!({
-                    "action": "sync_environment_guarded",
-                    "observed_heads": ["abc"],
-                    "dependency_fingerprint": "{}",
+                    "action": "sync_environment",
+                    "guard": {
+                        "observed_heads": ["abc"],
+                        "dependency_fingerprint": "{}",
+                    },
                 }),
             ),
             (

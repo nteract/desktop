@@ -524,18 +524,22 @@ pub(crate) async fn start_kernel(
     env_source: &str,
     notebook_path: Option<&str>,
 ) -> PyResult<()> {
-    let mut st = state.lock().await;
+    // Resolve notebook path: explicit arg > stored state > None, then release
+    // the session lock before the sync confirmation and launch request.
+    let (handle, resolved_path) = {
+        let st = state.lock().await;
+        let handle = st
+            .handle
+            .as_ref()
+            .ok_or_else(|| to_py_err("Not connected"))?
+            .clone();
+        let resolved_path = notebook_path
+            .map(|p| p.to_string())
+            .or_else(|| st.notebook_path.clone());
+        (handle, resolved_path)
+    };
 
-    let handle = st
-        .handle
-        .as_ref()
-        .ok_or_else(|| to_py_err("Not connected"))?;
-
-    // Resolve notebook path: explicit arg > stored state > None
-    let resolved_path = notebook_path
-        .map(|p| p.to_string())
-        .or_else(|| st.notebook_path.clone());
-
+    handle.confirm_sync().await.map_err(to_py_err)?;
     let response = handle
         .send_request(NotebookRequest::LaunchKernel {
             kernel_type: kernel_type.to_string(),
@@ -545,6 +549,7 @@ pub(crate) async fn start_kernel(
         .await
         .map_err(to_py_err)?;
 
+    let mut st = state.lock().await;
     match response {
         NotebookResponse::KernelLaunched {
             kernel_type: actual_type,
@@ -578,6 +583,7 @@ pub(crate) async fn start_kernel(
             }
             Ok(())
         }
+        NotebookResponse::GuardRejected { reason } => Err(to_py_err(reason)),
         NotebookResponse::Error { error } => Err(to_py_err(error)),
         other => Err(to_py_err(format!("Unexpected response: {:?}", other))),
     }
@@ -675,6 +681,7 @@ pub(crate) async fn restart_kernel(
     let mut progress_messages: Vec<String> = Vec::new();
     let launch_timeout = std::time::Duration::from_secs(120);
 
+    handle.confirm_sync().await.map_err(to_py_err)?;
     let launch_fut = handle.send_request(NotebookRequest::LaunchKernel {
         kernel_type: restart_kernel_type,
         env_source: restart_env_source,
@@ -733,6 +740,7 @@ pub(crate) async fn restart_kernel(
                 st.kernel_type = Some(actual_type);
                 st.env_source = Some(actual_env);
             }
+            NotebookResponse::GuardRejected { reason } => return Err(to_py_err(reason)),
             NotebookResponse::Error { error } => return Err(to_py_err(error)),
             other => return Err(to_py_err(format!("Unexpected response: {:?}", other))),
         }
@@ -2164,18 +2172,19 @@ pub(crate) async fn set_notebook_metadata(
 pub(crate) async fn sync_environment_impl(
     state: &Arc<Mutex<SessionState>>,
 ) -> PyResult<SyncEnvironmentResult> {
-    let response = {
+    let handle = {
         let st = state.lock().await;
-        let handle = st
-            .handle
+        st.handle
             .as_ref()
-            .ok_or_else(|| to_py_err("Not connected"))?;
-
-        handle
-            .send_request(NotebookRequest::SyncEnvironment {})
-            .await
-            .map_err(to_py_err)?
+            .ok_or_else(|| to_py_err("Not connected"))?
+            .clone()
     };
+
+    handle.confirm_sync().await.map_err(to_py_err)?;
+    let response = handle
+        .send_request(NotebookRequest::SyncEnvironment { guard: None })
+        .await
+        .map_err(to_py_err)?;
 
     match response {
         NotebookResponse::SyncEnvironmentComplete { synced_packages } => {
@@ -2206,6 +2215,12 @@ pub(crate) async fn sync_environment_impl(
             synced_packages: vec![],
             error: Some(error),
             needs_restart: true,
+        }),
+        NotebookResponse::GuardRejected { reason } => Ok(SyncEnvironmentResult {
+            success: false,
+            synced_packages: vec![],
+            error: Some(reason),
+            needs_restart: false,
         }),
         other => Err(to_py_err(format!("Unexpected response: {:?}", other))),
     }

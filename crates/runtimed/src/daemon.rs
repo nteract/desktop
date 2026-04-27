@@ -1608,7 +1608,7 @@ impl Daemon {
         // 0x00 = old protocol (4-byte big-endian length prefix for any
         // reasonable handshake size). This allows the daemon upgrade to succeed
         // even when the old app is still verifying daemon health.
-        let (handshake_bytes, client_protocol_version) =
+        let (handshake_bytes, client_protocol_version, has_preamble) =
             tokio::time::timeout(std::time::Duration::from_secs(10), async {
                 // Peek at first byte to detect protocol version
                 let mut first_byte = [0u8; 1];
@@ -1648,22 +1648,17 @@ impl Daemon {
                             connection::PROTOCOL_VERSION
                         );
                     }
-                    if version < connection::PROTOCOL_VERSION as u8 {
-                        tracing::info!(
-                        "[runtimed] v{} client connected, serving without session-control frames",
-                        version
-                    );
-                    }
-
                     // Read the JSON handshake frame
                     let bytes = connection::recv_control_frame(&mut stream)
                         .await
                         .context("handshake read error")?
                         .ok_or_else(|| anyhow::anyhow!("connection closed before handshake"))?;
-                    Ok((bytes, version))
+                    Ok((bytes, version, true))
                 } else {
                     // Legacy protocol (pre-2.0.0): first byte is part of a 4-byte
-                    // big-endian length prefix. Read remaining 3 length bytes.
+                    // big-endian length prefix. Keep this only for the pool health
+                    // check used by installed-client upgrade probes; notebook sync
+                    // channels are rejected below unless they use the v4 preamble.
                     tracing::debug!("[runtimed] Legacy client detected (no magic preamble)");
                     let mut len_rest = [0u8; 3];
                     tokio::io::AsyncReadExt::read_exact(&mut stream, &mut len_rest)
@@ -1682,12 +1677,23 @@ impl Daemon {
                         .await
                         .map_err(|e| anyhow::anyhow!("legacy handshake read: {}", e))?;
 
-                    Ok((buf, connection::MIN_PROTOCOL_VERSION as u8))
+                    Ok((buf, connection::PROTOCOL_VERSION as u8, false))
                 }
             })
             .await
             .map_err(|_| anyhow::anyhow!("handshake timeout (10s)"))??;
         let handshake: Handshake = serde_json::from_slice(&handshake_bytes)?;
+
+        if !has_preamble {
+            return match handshake {
+                Handshake::Pool => self.handle_pool_connection(stream).await,
+                _ => anyhow::bail!(
+                    "legacy notebook protocol without preamble is no longer supported; \
+                     expected protocol v{}",
+                    connection::PROTOCOL_VERSION
+                ),
+            };
+        }
 
         match handshake {
             Handshake::Pool => self.handle_pool_connection(stream).await,
@@ -1715,11 +1721,11 @@ impl Daemon {
                 info!(
                     "[runtimed] NotebookSync requested for {} (protocol: {}, working_dir: {:?})",
                     notebook_id,
-                    protocol.as_deref().unwrap_or("v2"),
+                    protocol.as_deref().unwrap_or("v4"),
                     working_dir
                 );
                 let docs_dir = self.config.notebook_docs_dir.clone();
-                // For the legacy NotebookSync handshake:
+                // For the NotebookSync handshake:
                 // - UUID notebook_id → untitled room (path=None)
                 // - Path notebook_id → file-backed room (path=Some)
                 //
@@ -1875,7 +1881,7 @@ impl Daemon {
         S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     {
         use crate::connection::{
-            send_json_frame, NotebookConnectionInfo, PROTOCOL_V3, PROTOCOL_VERSION,
+            send_json_frame, NotebookConnectionInfo, PROTOCOL_V4, PROTOCOL_VERSION,
         };
 
         info!("[runtimed] OpenNotebook requested for {}", path);
@@ -1904,13 +1910,9 @@ impl Daemon {
         async fn send_error_response<W: AsyncWrite + Unpin>(
             writer: &mut W,
             error: String,
-            client_protocol_version: u8,
+            _client_protocol_version: u8,
         ) -> anyhow::Result<()> {
-            let (proto_str, proto_ver) = if client_protocol_version >= 3 {
-                (PROTOCOL_V3, PROTOCOL_VERSION)
-            } else {
-                (connection::PROTOCOL_V2, 2)
-            };
+            let (proto_str, proto_ver) = (PROTOCOL_V4, PROTOCOL_VERSION);
             let response = NotebookConnectionInfo {
                 protocol: proto_str.to_string(),
                 protocol_version: Some(proto_ver),
@@ -2165,11 +2167,7 @@ impl Daemon {
         // `notebook_id` variable in this handler is the canonical path string
         // used for logging and file-watcher wiring below.
         let (reader, mut writer) = tokio::io::split(stream);
-        let (proto_str, proto_ver) = if client_protocol_version >= 3 {
-            (PROTOCOL_V3, PROTOCOL_VERSION)
-        } else {
-            (connection::PROTOCOL_V2, 2)
-        };
+        let (proto_str, proto_ver) = (PROTOCOL_V4, PROTOCOL_VERSION);
         let response = NotebookConnectionInfo {
             protocol: proto_str.to_string(),
             protocol_version: Some(proto_ver),
@@ -2228,7 +2226,7 @@ impl Daemon {
         S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     {
         use crate::connection::{
-            send_json_frame, NotebookConnectionInfo, PROTOCOL_V3, PROTOCOL_VERSION,
+            send_json_frame, NotebookConnectionInfo, PROTOCOL_V4, PROTOCOL_VERSION,
         };
 
         info!(
@@ -2304,11 +2302,7 @@ impl Daemon {
                 );
             }
             let (mut reader, mut writer) = tokio::io::split(stream);
-            let (proto_str, proto_ver) = if client_protocol_version >= 3 {
-                (PROTOCOL_V3, PROTOCOL_VERSION)
-            } else {
-                (connection::PROTOCOL_V2, 2)
-            };
+            let (proto_str, proto_ver) = (PROTOCOL_V4, PROTOCOL_VERSION);
             let response = NotebookConnectionInfo {
                 protocol: proto_str.to_string(),
                 protocol_version: Some(proto_ver),
@@ -2330,11 +2324,7 @@ impl Daemon {
         // Always send the room's UUID on the wire, even when the caller
         // provided a notebook_id_hint — room.id is the canonical source.
         let (reader, mut writer) = tokio::io::split(stream);
-        let (proto_str, proto_ver) = if client_protocol_version >= 3 {
-            (PROTOCOL_V3, PROTOCOL_VERSION)
-        } else {
-            (connection::PROTOCOL_V2, 2)
-        };
+        let (proto_str, proto_ver) = (PROTOCOL_V4, PROTOCOL_VERSION);
         let notebook_path = room
             .identity
             .path

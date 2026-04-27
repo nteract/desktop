@@ -25,7 +25,7 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::{mpsc, watch};
 
 use notebook_protocol::connection::{
-    self, Handshake, NotebookConnectionInfo, ProtocolCapabilities, PROTOCOL_V3,
+    self, Handshake, NotebookConnectionInfo, ProtocolCapabilities, PROTOCOL_V4,
 };
 use notebook_protocol::protocol::NotebookBroadcast;
 
@@ -180,7 +180,7 @@ pub async fn connect_with_options(
     // Send handshake
     let handshake = Handshake::NotebookSync {
         notebook_id: notebook_id.clone(),
-        protocol: Some(PROTOCOL_V3.to_string()),
+        protocol: Some(PROTOCOL_V4.to_string()),
         working_dir: working_dir.map(|p| p.to_string_lossy().to_string()),
         initial_metadata: initial_metadata.clone(),
     };
@@ -559,7 +559,7 @@ pub async fn connect_relay(
     // Send notebook sync handshake
     let handshake = Handshake::NotebookSync {
         notebook_id: notebook_id.clone(),
-        protocol: Some(PROTOCOL_V3.to_string()),
+        protocol: Some(PROTOCOL_V4.to_string()),
         initial_metadata: None,
         working_dir: None,
     };
@@ -567,7 +567,7 @@ pub async fn connect_relay(
         .await
         .map_err(|e| SyncError::Protocol(format!("Send handshake: {}", e)))?;
 
-    // Receive protocol capabilities (v3 handshake)
+    // Receive protocol capabilities (v4 handshake)
     let caps_data = connection::recv_frame(&mut reader)
         .await?
         .ok_or_else(|| SyncError::Protocol("Connection closed during handshake".into()))?;

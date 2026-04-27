@@ -113,6 +113,7 @@ export { NotebookClient, type NotebookClientOptions, SaveNotebookError } from ".
 export type {
   CommRequestMessage,
   CompletionItem,
+  DependencyGuard,
   GuardedDependencyProvenance,
   GuardedNotebookProvenance,
   HistoryEntry,
