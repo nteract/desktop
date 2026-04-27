@@ -2,11 +2,9 @@
  * Vite Plugin: Isolated Renderer
  *
  * Loads pre-built renderer plugin artifacts from disk and exposes them as
- * virtual modules. The artifacts are checked into the repo (via git LFS)
- * at `apps/notebook/src/renderer-plugins/`, following the same pattern as
- * the WASM bindings in `apps/notebook/src/wasm/`.
- *
- * To rebuild the artifacts: `cargo xtask renderer-plugins`
+ * virtual modules. The artifacts live under `apps/notebook/src/renderer-plugins/`
+ * (gitignored) and are produced by `cargo xtask wasm`, which chains into
+ * the renderer-plugin builder after rebuilding sift-wasm.
  *
  * In dev mode (Vite dev server), changes to isolated renderer source files
  * trigger a live rebuild + HMR reload so you don't need to re-run the
@@ -34,7 +32,7 @@ const RESOLVED_VIRTUAL_MODULE_ID = `\0${VIRTUAL_MODULE_ID}`;
 const VIRTUAL_PLUGIN_PREFIX = "virtual:renderer-plugin/";
 const RESOLVED_PLUGIN_PREFIX = "\0virtual:renderer-plugin/";
 
-/** Directory containing pre-built renderer plugin artifacts (checked in via git LFS). */
+/** Directory containing pre-built renderer plugin artifacts (gitignored, built by `cargo xtask wasm`). */
 const PREBUILT_DIR = path.resolve(__dirname, "../notebook/src/renderer-plugins");
 
 /** Plugin names that have pre-built artifacts. */

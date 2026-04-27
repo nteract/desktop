@@ -18,8 +18,9 @@
 # for roughly seven days, so heavy installs (apt, cargo install) only pay
 # their cost when the snapshot is rebuilt.
 #
-# Repo-aware warming (pnpm install, cargo fetch, LFS regen) lives in
-# scripts/cloud-bootstrap.sh, which runs after the per-session repo clone.
+# Repo-aware warming (pnpm install, cargo fetch, build wasm + plugin assets)
+# lives in scripts/cloud-bootstrap.sh, which runs after the per-session
+# repo clone.
 #
 # Out of scope: deno, pixi, maturin, Tauri system deps. Add those when a
 # concrete cloud workflow needs them.
@@ -27,10 +28,6 @@
 set -euo pipefail
 
 [ "${CLAUDE_CODE_REMOTE:-}" = "true" ] || exit 0
-
-apt-get update -qq
-apt-get install -y -qq git-lfs
-git lfs install --system --skip-smudge --skip-repo
 
 corepack enable
 

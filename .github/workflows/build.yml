@@ -79,12 +79,6 @@ jobs:
       - name: Check (format + lint)
         run: vp check
 
-      # The drift-vs-committed check that lived here is gone with the LFS
-      # removal: plugins are gitignored now and rebuilt on every job that
-      # compiles runtimed. Coherence between wasm and plugin bundles is
-      # still enforced by `cargo xtask verify-plugins` in the wasm-deno
-      # job (which builds both fresh).
-
       - name: Lint GitHub Actions workflows
         # Install the binary directly rather than via raven-actions/actionlint@v2,
         # which falls back to `npm install` in the repo root on cache miss and

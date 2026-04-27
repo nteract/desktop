@@ -419,6 +419,11 @@ fn cmd_notebook(notebook: Option<&str>, attach: bool) {
     require_pnpm();
     require_tauri();
 
+    // Vite's isolated-renderer plugin reads the gitignored renderer-plugin
+    // outputs as virtual modules; missing files become empty strings and
+    // every plugin renders blank. Build them once on fresh clones.
+    ensure_build_artifacts();
+
     // Always use dev mode to prevent the Tauri app from auto-installing
     // the dev binary as the system daemon sidecar — that would clobber
     // any running nightly/release daemon and disconnect all open notebooks.
@@ -753,6 +758,13 @@ fn cmd_build(rust_only: bool) {
     if !rust_only {
         require_pnpm();
     }
+
+    // Phase 0: Ensure the gitignored wasm + renderer-plugin outputs exist.
+    // `runtimed`'s build.rs `include_bytes!`-embeds them; the frontend
+    // virtual modules need them too. On a fresh clone this triggers a one-
+    // time `cargo xtask wasm`; on warm trees it's a free file-existence
+    // check.
+    ensure_build_artifacts();
 
     // Phase 0a: Install workspace pnpm deps up front. This was previously
     // kicked off as a background thread alongside cargo build (which made
@@ -1601,6 +1613,10 @@ fn build_with_bundle(bundle: &str) {
     require_pnpm();
     require_tauri();
 
+    // Same artifact-existence check as cmd_build, so packaging a release
+    // works on a fresh clone (CI) without an explicit `cargo xtask wasm`.
+    ensure_build_artifacts();
+
     // Ensure pnpm workspace deps are installed before anything else touches
     // pnpm — `run_frontend_build` below and any tauri `beforeBuildCommand`
     // assume node_modules is populated. Fresh clones would otherwise fail
@@ -1904,6 +1920,12 @@ fn cmd_mcp_inspector() {
 }
 
 fn cmd_dev_daemon(release: bool) {
+    // runtimed's build.rs panics if the gitignored renderer-plugin
+    // outputs are missing. Ensure they exist before kicking off the
+    // cargo build so a fresh clone can run `cargo xtask dev-daemon`
+    // directly.
+    ensure_build_artifacts();
+
     if release {
         println!("Building runtimed (release)...");
         run_cmd("cargo", &["build", "--release", "-p", "runtimed"]);
@@ -2422,38 +2444,51 @@ fn run_cmd(cmd: &str, args: &[&str]) {
     }
 }
 
-/// Check that the WASM binary is a real WebAssembly file, not an unresolved
-/// Git LFS pointer. A pointer file starts with "version https://git-lfs"
-/// and is ~130 bytes; the real WASM starts with the magic bytes `\0asm`.
-fn ensure_wasm_resolved() {
-    let wasm = Path::new("apps/notebook/src/wasm/runtimed-wasm/runtimed_wasm_bg.wasm");
-    let bytes = match fs::read(wasm) {
-        Ok(bytes) => bytes,
-        Err(e) => {
-            eprintln!("Error: failed to read {}: {e}", wasm.display());
-            eprintln!("       The frontend build requires this WASM file.");
-            eprintln!();
-            eprintln!("  If you just cloned:  git lfs install && git lfs pull");
-            eprintln!("  To rebuild from source:  wasm-pack build crates/runtimed-wasm --target web --out-dir ../../apps/notebook/src/wasm/runtimed-wasm");
-            exit(1);
+/// Probe the gitignored wasm + renderer-plugin outputs and run `cargo xtask
+/// wasm` once if anything is missing. One canonical file per output dir is
+/// enough — `cmd_wasm` rebuilds the whole set in one shot, so we never have
+/// to chase a partial state.
+///
+/// Called from the top of every entry point that compiles `runtimed`,
+/// `notebook`, or runs the dev daemon, so a fresh clone can go straight to
+/// `cargo xtask build` / `dev` / `dev-daemon` / `notebook` without an
+/// explicit `cargo xtask wasm` step. `runtimed`'s `build.rs` panics with a
+/// "run `cargo xtask wasm`" message if you bypass xtask and invoke `cargo
+/// build` directly.
+fn ensure_build_artifacts() {
+    let probes = [
+        "apps/notebook/src/wasm/runtimed-wasm/runtimed_wasm_bg.wasm",
+        "crates/sift-wasm/pkg/sift_wasm_bg.wasm",
+        "apps/notebook/src/renderer-plugins/sift.js",
+        "crates/runt-mcp/assets/plugins/sift_wasm.wasm",
+    ];
+    let missing: Vec<&str> = probes
+        .iter()
+        .copied()
+        .filter(|p| !Path::new(p).exists())
+        .collect();
+    if missing.is_empty() {
+        // Sanity check: the runtimed-wasm binary should still start with the
+        // WebAssembly magic. Catches the rare case of a truncated or stomped
+        // output without forcing a full rebuild on every call.
+        let wasm = Path::new("apps/notebook/src/wasm/runtimed-wasm/runtimed_wasm_bg.wasm");
+        if let Ok(bytes) = fs::read(wasm) {
+            if !bytes.starts_with(b"\0asm") {
+                eprintln!(
+                    "Warning: {} is not a valid WebAssembly binary; rebuilding via cargo xtask wasm",
+                    wasm.display()
+                );
+                cmd_wasm(None, false);
+            }
         }
-    };
-    if bytes.starts_with(b"\0asm") {
-        return; // real WebAssembly binary
+        return;
     }
-    if bytes.starts_with(b"version https://git-lfs") {
-        eprintln!("Error: runtimed_wasm_bg.wasm is a Git LFS pointer, not the actual binary.");
-    } else {
-        eprintln!("Error: runtimed_wasm_bg.wasm is not a valid WebAssembly binary.");
+
+    println!("Build artifacts missing; running cargo xtask wasm first:");
+    for p in &missing {
+        println!("  - {p}");
     }
-    eprintln!("       The frontend build will fail without the real file.");
-    eprintln!();
-    eprintln!("  Fix:  git lfs install && git lfs pull");
-    eprintln!();
-    eprintln!("  If you don't have git-lfs:");
-    eprintln!("    macOS:  brew install git-lfs");
-    eprintln!("    Linux:  sudo apt install git-lfs  (or see https://git-lfs.com)");
-    exit(1);
+    cmd_wasm(None, false);
 }
 
 /// Build the MCP Apps widget (apps/mcp-app) and copy it into the Python
@@ -2543,7 +2578,7 @@ fn build_mcp_widget() {
 }
 
 fn run_frontend_build(debug_bundle: bool) {
-    ensure_wasm_resolved();
+    ensure_build_artifacts();
     let mut command = Command::new("pnpm");
     command.arg("build");
     if debug_bundle {

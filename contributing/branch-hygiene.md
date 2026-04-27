@@ -2,11 +2,9 @@
 
 Guidance for agents asked to clean up local branches, worktrees, or the `.git` directory in a clone of this repo.
 
-## Two things to know before you start
+## One thing to know before you start
 
-1. **The repo ships WASM and renderer-plugin bundles via Git LFS.** `.git/lfs/` is a content-addressed cache that shadows the object store. A clone can have a 15M object DB and a 450M LFS cache at the same time. Size the repo with both in mind — see § Disk reclamation.
-
-2. **The repo moves fast.** Branches that look dormant may be somebody else's in-flight work (cloud agents, other developers, other local worktrees). Merged branches get squash-merged, so `git branch --merged main` misses almost everything. Check PR state on GitHub before deleting anything with commits not in `main`.
+**The repo moves fast.** Branches that look dormant may be somebody else's in-flight work (cloud agents, other developers, other local worktrees). Merged branches get squash-merged, so `git branch --merged main` misses almost everything. Check PR state on GitHub before deleting anything with commits not in `main`.
 
 ## Before you run anything destructive
 
@@ -108,18 +106,15 @@ Git refuses to delete the currently-checked-out branch, which protects `main`.
 
 ## Disk reclamation
 
-After deleting refs, unreferenced objects still live in `.git/objects` until you GC. And LFS has its own cache that GC doesn't touch.
+After deleting refs, unreferenced objects still live in `.git/objects` until you GC.
 
 ```bash
 git reflog expire --expire=now --all
 git gc --prune=now --aggressive
-du -sh .git .git/lfs .git/objects      # where is the weight?
-
-git lfs prune --dry-run --verify-remote  # preview
-git lfs prune --verify-remote            # drop local LFS blobs not referenced by HEAD
+du -sh .git .git/objects               # where is the weight?
 ```
 
-Expect `.git/objects` to shrink to ~15M after aggressive GC on a fully-pruned clone. `.git/lfs` is typically 400-500M and is the larger line item. `git lfs prune` reclaims LFS blobs that aren't needed by recent history (it keeps the last few commits' blobs by default so a checkout doesn't have to re-download).
+Expect `.git/objects` to shrink to ~15M after aggressive GC on a fully-pruned clone. The bigger weight on disk is usually `target/` (cargo build cache) and `node_modules/`, which are gitignored — neither is touched by git GC.
 
 ### Long-lived refs that keep objects alive
 
@@ -139,8 +134,7 @@ awk '/^[0-9a-f]/{print $2}' .git/packed-refs | sed 's|/[^/]*$||' | sort | uniq -
 
 - **Don't force-push to `main`.** It's protected anyway.
 - **Don't delete tags.** Releases depend on them.
-- **Don't run `git clean -fdx`** — that nukes the `.venv`, `target/`, `node_modules`, and anything else gitignored. None of it is under version control but losing it means a full rebuild.
-- **Don't `rm -rf .git/lfs`**. `git lfs prune` is the supported path. Manual removal can leave LFS's index inconsistent.
+- **Don't run `git clean -fdx`** — that nukes the `.venv`, `target/`, `node_modules`, the gitignored wasm + renderer-plugin outputs, and anything else not under version control. None of it is committed but losing it means a full rebuild (including `cargo xtask wasm`).
 - **Don't delete branches authored by someone else without asking** — even bot branches (Claude/Cursor/Quill) may be scheduled work.
 
 ## Quick inventory cheatsheet
@@ -156,6 +150,6 @@ gh api repos/nteract/desktop/branches --paginate --jq '.[].name' | wc -l
 gh pr list --state open --limit 500 --json number,headRefName
 
 # Disk
-du -sh .git .git/lfs .git/objects
+du -sh .git .git/objects
 wc -l .git/packed-refs
 ```

@@ -9,7 +9,9 @@ For commands and dev workflows, see `CLAUDE.md` → "Build System" and run `carg
 
 ## How `cargo xtask build` works
 
-Three phases:
+Four phases:
+
+0. **Build artifact check** — verify the gitignored wasm + renderer-plugin outputs exist. If any of the four output dirs is empty, run `cargo xtask wasm` first so `runtimed`'s `include_bytes!` and the frontend's virtual modules can resolve.
 
 1. **Single Rust compilation** — `cargo build -p runtimed -p runt -p mcp-supervisor -p notebook` in one invocation (workspace feature unification happens once, so the final tauri step doesn't recompile). Sidecars (`runtimed`, `runt`, `nteract-mcp`) are copied to `crates/notebook/binaries/` for Tauri bundling.
 
@@ -25,7 +27,7 @@ Python bindings (`maturin develop`) are no longer part of `cargo xtask build`. R
 
 - All Rust targets must build in **one** `cargo build` call to avoid feature-unification recompilation.
 - `runtimed` + `runt` must exist in `crates/notebook/binaries/` before the tauri step (`bundle.externalBin`).
-- WASM artifacts are committed and validated (not rebuilt) — `ensure_wasm_resolved()` checks for git-lfs pointers.
+- WASM and renderer-plugin outputs are gitignored. `cargo xtask build` auto-runs `cargo xtask wasm` when any of the four output dirs is empty; `runtimed`'s `build.rs` panics with a "run `cargo xtask wasm`" message if you skip xtask and call `cargo build` directly.
 
 ## Crate dependency graph
 
@@ -46,9 +48,12 @@ App binaries:
 
 ## WASM rebuild
 
-Only needed when changing `crates/runtimed-wasm/` or `crates/notebook-doc/`:
+The wasm + renderer-plugin outputs are gitignored. Run after changing `crates/runtimed-wasm/`, `crates/sift-wasm/`, `crates/notebook-doc/`, or `scripts/build-renderer-plugins.ts`:
 
 ```bash
-wasm-pack build crates/runtimed-wasm --target web --out-dir ../../apps/notebook/src/wasm/runtimed-wasm
-# Commit the output
+cargo xtask wasm             # rebuild runtimed-wasm + sift-wasm + chained renderer plugins
+cargo xtask wasm runtimed    # only runtimed-wasm
+cargo xtask wasm sift        # only sift-wasm (chains plugins)
 ```
+
+`cargo xtask build` calls this automatically when any of the four output directories is missing on disk, so a fresh clone can go straight to `cargo xtask build`.
