@@ -192,9 +192,9 @@ enum Commands {
     /// [DEPRECATED] Standalone Jupyter kernel utilities.
     ///
     /// These verbs spawn or manage a kernel from a system-installed Jupyter
-    /// kernelspec, independent of the runtimed daemon. Removed in v2.5. Use
-    /// the daemon path instead: launch the notebook app, or drive `runt mcp`
-    /// from any MCP client.
+    /// kernelspec, independent of the runtimed daemon. Will be removed in
+    /// v2.5. Use the daemon path instead: launch the notebook app, or drive
+    /// `runt mcp` from any MCP client.
     #[command(hide = true)]
     Jupyter {
         #[command(subcommand)]
