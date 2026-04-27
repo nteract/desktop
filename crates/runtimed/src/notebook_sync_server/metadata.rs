@@ -3457,7 +3457,10 @@ pub(crate) async fn handle_notebook_request(
     request: NotebookRequest,
     daemon: std::sync::Arc<crate::daemon::Daemon>,
 ) -> NotebookResponse {
-    debug!("[notebook-sync] Handling request: {:?}", request);
+    debug!(
+        "[notebook-sync] Handling request: {}",
+        request_label(&request)
+    );
 
     match request {
         NotebookRequest::LaunchKernel {
