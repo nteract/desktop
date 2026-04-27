@@ -186,6 +186,18 @@ jobs:
             apps/notebook/dist/
           retention-days: 1
 
+      - name: Upload WASM artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: wasm-artifacts
+          retention-days: 1
+          path: |
+            apps/notebook/src/wasm/runtimed-wasm/
+            crates/sift-wasm/pkg/
+            packages/sift/public/wasm/
+            crates/runt-mcp/assets/plugins/
+            apps/notebook/src/renderer-plugins/
+
   js-tests:
     name: JS Tests & Benchmarks
     needs: [changes]
@@ -227,6 +239,11 @@ jobs:
           name: ui-build-dist
           path: apps/notebook/dist
 
+      - name: Download WASM artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: wasm-artifacts
+
       - name: Install system dependencies
         run: |
           sudo apt-get update
@@ -242,8 +259,9 @@ jobs:
         with:
           shared-key: ubuntu-release
 
-      # Build wasm + renderer plugins (gitignored; runtimed embeds them)
       - uses: ./.github/actions/build-runtime-artifacts
+        with:
+          skip-wasm: true
 
       # Build MCP output widget HTML (needed by runt-mcp's include_str!)
       - run: pnpm --filter nteract-mcp-app install && vp run nteract-mcp-app#build
@@ -407,9 +425,16 @@ jobs:
         with:
           shared-key: ${{ matrix.platform.runner }}
 
-      # Build wasm + renderer plugins (gitignored; runtimed embeds them)
+      - name: Download WASM artifacts
+        if: needs.changes.outputs.source_changed == 'true' && (github.event_name != 'pull_request' || matrix.platform.run_on_pr)
+        uses: actions/download-artifact@v4
+        with:
+          name: wasm-artifacts
+
       - uses: ./.github/actions/build-runtime-artifacts
         if: needs.changes.outputs.source_changed == 'true' && (github.event_name != 'pull_request' || matrix.platform.run_on_pr)
+        with:
+          skip-wasm: true
 
       # Build MCP output widget HTML (needed by runt-mcp's include_str!)
       - run: pnpm --filter nteract-mcp-app install && vp run nteract-mcp-app#build

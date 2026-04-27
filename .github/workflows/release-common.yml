@@ -74,10 +74,38 @@ jobs:
           echo "VERSION=${VERSION}" >> "$GITHUB_OUTPUT"
           echo "TIMESTAMP=${TIMESTAMP}" >> "$GITHUB_OUTPUT"
 
+  build-wasm:
+    name: Build WASM artifacts
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Rust
+        uses: dsherret/rust-toolchain-file@v1
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "wasm-build"
+
+      - uses: ./.github/actions/build-runtime-artifacts
+
+      - name: Upload WASM artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: wasm-artifacts
+          retention-days: 1
+          path: |
+            apps/notebook/src/wasm/runtimed-wasm/
+            crates/sift-wasm/pkg/
+            packages/sift/public/wasm/
+            crates/runt-mcp/assets/plugins/
+            apps/notebook/src/renderer-plugins/
+
   build-linux:
     name: Build Linux Executables
     runs-on: blacksmith-4vcpu-ubuntu-2204
-    needs: compute-version
+    needs: [compute-version, build-wasm]
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -97,9 +125,14 @@ jobs:
         with:
           shared-key: "linux-release"
 
-      # Build wasm + renderer plugins (gitignored; runtimed embeds them).
-      # Also handles node + pnpm + vp + pnpm install setup.
+      - name: Download WASM artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: wasm-artifacts
+
       - uses: ./.github/actions/build-runtime-artifacts
+        with:
+          skip-wasm: true
 
       - name: Build UI
         run: pnpm build
@@ -133,7 +166,7 @@ jobs:
   build-macos:
     name: Build macOS Executables
     runs-on: macos-latest
-    needs: compute-version
+    needs: [compute-version, build-wasm]
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -150,9 +183,14 @@ jobs:
         with:
           shared-key: "macos-release"
 
-      # Build wasm + renderer plugins (gitignored; runtimed embeds them).
-      # Also handles node + pnpm + vp + pnpm install setup.
+      - name: Download WASM artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: wasm-artifacts
+
       - uses: ./.github/actions/build-runtime-artifacts
+        with:
+          skip-wasm: true
 
       - name: Build UI
         run: pnpm build
@@ -192,7 +230,7 @@ jobs:
   build-notebook-macos-arm64:
     name: Build macOS ARM64 Notebook
     runs-on: macos-latest
-    needs: compute-version
+    needs: [compute-version, build-wasm]
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -206,9 +244,14 @@ jobs:
         with:
           shared-key: "macos-notebook-arm64"
 
-      # Build wasm + renderer plugins (gitignored; runtimed embeds them).
-      # Also handles node + pnpm + vp + pnpm install setup.
+      - name: Download WASM artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: wasm-artifacts
+
       - uses: ./.github/actions/build-runtime-artifacts
+        with:
+          skip-wasm: true
 
       - name: Build frontend
         run: pnpm build
@@ -355,7 +398,7 @@ jobs:
   build-notebook-macos-x64:
     name: Build macOS x64 Notebook
     runs-on: macos-latest
-    needs: compute-version
+    needs: [compute-version, build-wasm]
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -372,9 +415,14 @@ jobs:
         with:
           shared-key: "macos-notebook-x64"
 
-      # Build wasm + renderer plugins (gitignored; runtimed embeds them).
-      # Also handles node + pnpm + vp + pnpm install setup.
+      - name: Download WASM artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: wasm-artifacts
+
       - uses: ./.github/actions/build-runtime-artifacts
+        with:
+          skip-wasm: true
 
       - name: Build frontend
         run: pnpm build
@@ -521,7 +569,7 @@ jobs:
   build-notebook-windows-x64:
     name: Build Windows x64 Notebook
     runs-on: blacksmith-4vcpu-windows-2025
-    needs: compute-version
+    needs: [compute-version, build-wasm]
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -535,9 +583,14 @@ jobs:
         with:
           shared-key: "windows-notebook-x64"
 
-      # Build wasm + renderer plugins (gitignored; runtimed embeds them).
-      # Also handles node + pnpm + vp + pnpm install setup.
+      - name: Download WASM artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: wasm-artifacts
+
       - uses: ./.github/actions/build-runtime-artifacts
+        with:
+          skip-wasm: true
 
       - name: Build frontend
         run: pnpm build
@@ -651,7 +704,7 @@ jobs:
   build-notebook-linux-x64:
     name: Build Linux x64 Notebook
     runs-on: blacksmith-4vcpu-ubuntu-2204
-    needs: compute-version
+    needs: [compute-version, build-wasm]
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -671,9 +724,14 @@ jobs:
         with:
           shared-key: "linux-notebook-x64"
 
-      # Build wasm + renderer plugins (gitignored; runtimed embeds them).
-      # Also handles node + pnpm + vp + pnpm install setup.
+      - name: Download WASM artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: wasm-artifacts
+
       - uses: ./.github/actions/build-runtime-artifacts
+        with:
+          skip-wasm: true
 
       - name: Build frontend
         run: pnpm build
@@ -840,7 +898,7 @@ jobs:
   build-python-wheels:
     name: Build Python Wheels (${{ matrix.platform.target }})
     runs-on: ${{ matrix.platform.runner }}
-    needs: compute-version
+    needs: [compute-version, build-wasm]
     strategy:
       matrix:
         platform:
@@ -865,8 +923,14 @@ jobs:
         with:
           shared-key: "python-${{ matrix.platform.target }}"
 
-      # Build wasm + renderer plugins (gitignored; runtimed embeds them)
+      - name: Download WASM artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: wasm-artifacts
+
       - uses: ./.github/actions/build-runtime-artifacts
+        with:
+          skip-wasm: true
 
       - name: Build runtimed binary (Unix)
         if: runner.os != 'Windows'
