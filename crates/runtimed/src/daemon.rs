@@ -1600,19 +1600,18 @@ impl Daemon {
         S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     {
         // Read preamble + handshake with a timeout so that idle/stalled
-        // connections don't hold resources.
+        // connections don't hold resources. All clients must send the 5-byte
+        // magic preamble (0xC0DE01AC + version byte) before the JSON handshake.
         //
-        // Backward compatibility: old clients (pre-2.0.0) send a length-prefixed
-        // JSON handshake without the magic bytes preamble. We detect this by
-        // peeking at the first byte: 0xC0 = new protocol (magic preamble),
-        // 0x00 = old protocol (4-byte big-endian length prefix for any
-        // reasonable handshake size). This allows the daemon upgrade to succeed
-        // even when the old app is still verifying daemon health.
-        let (handshake_bytes, client_protocol_version, has_preamble) =
+        // The preamble version is validated in two tiers:
+        //   - Pool channel: any version with valid magic is accepted. Older
+        //     stable apps ping the daemon during upgrade; rejecting them would
+        //     break the version-check → upgrade_daemon_via_sidecar flow.
+        //   - All other channels: MIN_PROTOCOL_VERSION..=PROTOCOL_VERSION.
+        let (handshake_bytes, client_protocol_version) =
             tokio::time::timeout(std::time::Duration::from_secs(10), async {
-                // Peek at first byte to detect protocol version
-                let mut first_byte = [0u8; 1];
-                tokio::io::AsyncReadExt::read_exact(&mut stream, &mut first_byte)
+                let mut preamble = [0u8; connection::PREAMBLE_LEN];
+                tokio::io::AsyncReadExt::read_exact(&mut stream, &mut preamble)
                     .await
                     .map_err(|e| {
                         if e.kind() == std::io::ErrorKind::UnexpectedEof {
@@ -1622,77 +1621,37 @@ impl Daemon {
                         }
                     })?;
 
-                if first_byte[0] == connection::MAGIC[0] {
-                    // New protocol: read remaining 4 bytes of preamble (3 more magic + 1 version)
-                    let mut rest = [0u8; 4];
-                    tokio::io::AsyncReadExt::read_exact(&mut stream, &mut rest)
-                        .await
-                        .map_err(|e| anyhow::anyhow!("preamble: {}", e))?;
-
-                    if rest[..3] != connection::MAGIC[1..] {
-                        anyhow::bail!(
-                            "invalid magic bytes: expected {:02X?}, got {:02X?}",
-                            connection::MAGIC,
-                            [&first_byte[..], &rest[..3]].concat()
-                        );
-                    }
-
-                    let version = rest[3];
-                    if version < connection::MIN_PROTOCOL_VERSION as u8
-                        || version > connection::PROTOCOL_VERSION as u8
-                    {
-                        anyhow::bail!(
-                            "unsupported protocol version: got {}, supported range [{}, {}]",
-                            version,
-                            connection::MIN_PROTOCOL_VERSION,
-                            connection::PROTOCOL_VERSION
-                        );
-                    }
-                    // Read the JSON handshake frame
-                    let bytes = connection::recv_control_frame(&mut stream)
-                        .await
-                        .context("handshake read error")?
-                        .ok_or_else(|| anyhow::anyhow!("connection closed before handshake"))?;
-                    Ok((bytes, version, true))
-                } else {
-                    // Legacy protocol (pre-2.0.0): first byte is part of a 4-byte
-                    // big-endian length prefix. Keep this only for the pool health
-                    // check used by installed-client upgrade probes; notebook sync
-                    // channels are rejected below unless they use the v4 preamble.
-                    tracing::debug!("[runtimed] Legacy client detected (no magic preamble)");
-                    let mut len_rest = [0u8; 3];
-                    tokio::io::AsyncReadExt::read_exact(&mut stream, &mut len_rest)
-                        .await
-                        .map_err(|e| anyhow::anyhow!("legacy length read: {}", e))?;
-
-                    let len_bytes = [first_byte[0], len_rest[0], len_rest[1], len_rest[2]];
-                    let len = u32::from_be_bytes(len_bytes) as usize;
-
-                    if len > 64 * 1024 {
-                        anyhow::bail!("legacy handshake frame too large: {} bytes", len);
-                    }
-
-                    let mut buf = vec![0u8; len];
-                    tokio::io::AsyncReadExt::read_exact(&mut stream, &mut buf)
-                        .await
-                        .map_err(|e| anyhow::anyhow!("legacy handshake read: {}", e))?;
-
-                    Ok((buf, connection::PROTOCOL_VERSION as u8, false))
+                if preamble[..4] != connection::MAGIC {
+                    anyhow::bail!(
+                        "invalid magic bytes: expected {:02X?}, got {:02X?}",
+                        connection::MAGIC,
+                        &preamble[..4]
+                    );
                 }
+
+                let version = preamble[4];
+                let bytes = connection::recv_control_frame(&mut stream)
+                    .await
+                    .context("handshake read error")?
+                    .ok_or_else(|| anyhow::anyhow!("connection closed before handshake"))?;
+                Ok((bytes, version))
             })
             .await
             .map_err(|_| anyhow::anyhow!("handshake timeout (10s)"))??;
         let handshake: Handshake = serde_json::from_slice(&handshake_bytes)?;
 
-        if !has_preamble {
-            return match handshake {
-                Handshake::Pool => self.handle_pool_connection(stream).await,
-                _ => anyhow::bail!(
-                    "legacy notebook protocol without preamble is no longer supported; \
-                     expected protocol v{}",
-                    connection::PROTOCOL_VERSION
-                ),
-            };
+        // Pool connections accept any preamble version (upgrade compat).
+        // Everything else must be within the supported range.
+        if !matches!(handshake, Handshake::Pool)
+            && (client_protocol_version < connection::MIN_PROTOCOL_VERSION as u8
+                || client_protocol_version > connection::PROTOCOL_VERSION as u8)
+        {
+            anyhow::bail!(
+                "unsupported protocol version: got {}, supported range [{}, {}]",
+                client_protocol_version,
+                connection::MIN_PROTOCOL_VERSION,
+                connection::PROTOCOL_VERSION
+            );
         }
 
         match handshake {

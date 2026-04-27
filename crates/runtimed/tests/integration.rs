@@ -181,22 +181,18 @@ async fn wait_for_cell_count(
 }
 
 #[cfg(unix)]
-type LegacyPoolStream = tokio::net::UnixStream;
+type RawStream = tokio::net::UnixStream;
 
 #[cfg(windows)]
-type LegacyPoolStream = tokio::net::windows::named_pipe::NamedPipeClient;
+type RawStream = tokio::net::windows::named_pipe::NamedPipeClient;
 
 #[cfg(unix)]
-async fn connect_legacy_pool_stream(
-    socket_path: &std::path::Path,
-) -> Result<LegacyPoolStream, std::io::Error> {
+async fn connect_raw_stream(socket_path: &std::path::Path) -> Result<RawStream, std::io::Error> {
     tokio::net::UnixStream::connect(socket_path).await
 }
 
 #[cfg(windows)]
-async fn connect_legacy_pool_stream(
-    socket_path: &std::path::Path,
-) -> Result<LegacyPoolStream, std::io::Error> {
+async fn connect_raw_stream(socket_path: &std::path::Path) -> Result<RawStream, std::io::Error> {
     const ERROR_PIPE_BUSY: i32 = 231;
     let pipe_name = socket_path.to_string_lossy().to_string();
     let mut attempts = 0;
@@ -1665,12 +1661,11 @@ async fn test_streaming_load_second_client_joins() {
     let _ = tokio::time::timeout(Duration::from_secs(2), daemon_handle).await;
 }
 
-/// Test that a legacy client (pre-2.0.0, no magic bytes preamble) can still
-/// connect to the daemon. This is critical for the upgrade path: the old app
-/// installs the new daemon binary, then pings it to verify it's running.
-/// Without backward compat, the upgrade fails with "daemon did not become ready."
+/// An older stable app (e.g. protocol v2) pings the daemon during upgrade to
+/// check if it's running and query its version. The pool channel must accept
+/// any preamble version so the upgrade flow doesn't break.
 #[tokio::test]
-async fn test_legacy_client_no_preamble() {
+async fn test_pool_ping_accepts_older_preamble_version() {
     let temp_dir = TempDir::new().unwrap();
     let config = test_config(&temp_dir);
     let socket_path = config.socket_path.clone();
@@ -1680,22 +1675,26 @@ async fn test_legacy_client_no_preamble() {
         daemon.run().await.ok();
     });
 
-    // Wait for daemon with a modern client first
     let client = PoolClient::new(socket_path.clone());
     assert!(wait_for_daemon(&client).await);
 
-    // Now connect as a legacy client: send a raw length-prefixed JSON
-    // handshake WITHOUT the magic bytes preamble.
-    let mut stream = connect_legacy_pool_stream(&socket_path)
+    // Connect a raw stream and send a preamble with an older protocol version
+    // (simulating a v2.2.0 stable app that ships protocol v2).
+    let mut stream = connect_raw_stream(&socket_path)
         .await
-        .expect("legacy client should connect");
+        .expect("should connect");
 
-    // Send Pool handshake as length-prefixed JSON (old protocol)
+    // Send preamble with protocol version 2 (old stable)
+    let mut preamble = [0u8; 5];
+    preamble[..4].copy_from_slice(&[0xC0, 0xDE, 0x01, 0xAC]);
+    preamble[4] = 2; // old protocol version
+    stream.write_all(&preamble).await.unwrap();
+
+    // Send Pool handshake as a length-prefixed JSON frame
     let handshake = br#"{"channel":"pool"}"#;
     let len = (handshake.len() as u32).to_be_bytes();
     stream.write_all(&len).await.unwrap();
     stream.write_all(handshake).await.unwrap();
-    stream.flush().await.unwrap();
 
     // Send a Ping request
     let ping = br#"{"type":"ping"}"#;
@@ -1704,7 +1703,7 @@ async fn test_legacy_client_no_preamble() {
     stream.write_all(ping).await.unwrap();
     stream.flush().await.unwrap();
 
-    // Read the response — should be a Pong
+    // Should get a Pong back despite the version mismatch
     let mut resp_len = [0u8; 4];
     stream.read_exact(&mut resp_len).await.unwrap();
     let resp_size = u32::from_be_bytes(resp_len) as usize;
@@ -1714,14 +1713,9 @@ async fn test_legacy_client_no_preamble() {
     let resp: serde_json::Value = serde_json::from_slice(&resp_buf).unwrap();
     assert_eq!(
         resp["type"], "pong",
-        "legacy client should get a Pong response"
+        "pool ping from older client should get a Pong"
     );
 
-    // Also verify a modern client still works alongside
-    let result = client.ping().await;
-    assert!(result.is_ok(), "modern client should still work");
-
-    // Shutdown
     client.shutdown().await.ok();
     let _ = tokio::time::timeout(Duration::from_secs(2), daemon_handle).await;
 }
