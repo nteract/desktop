@@ -78,14 +78,18 @@ jobs:
           cp target/release/nteract-mcp.exe "crates/notebook/binaries/nteract-mcp-$TARGET.exe"
 
       - name: Build NSIS installer
-        # No signing key. tauri-action skips the updater signature step when
-        # TAURI_SIGNING_PRIVATE_KEY is unset, which is what we want here.
+        # No signing key for the smoke. tauri.conf.json has an updater pubkey
+        # for production builds, and Tauri refuses to build without the
+        # matching TAURI_SIGNING_PRIVATE_KEY — secret we don't ship to PR
+        # forks. Override the updater pubkey to empty via --config so the
+        # build proceeds. The resulting installer cannot self-update; that's
+        # fine for an install-and-test smoke.
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           projectPath: crates/notebook
-          args: --bundles nsis --config '{"build":{"beforeBuildCommand":""}}'
+          args: --bundles nsis --config '{"build":{"beforeBuildCommand":""},"plugins":{"updater":{"pubkey":""}}}'
           includeUpdaterJson: false
 
       - name: Locate installer
@@ -194,6 +198,34 @@ jobs:
         shell: pwsh
         timeout-minutes: 10
         run: python scripts/windows-smoke-mcp.py "$env:RUNT"
+
+      - name: Dump daemon stdout/stderr to CI console
+        if: always()
+        shell: pwsh
+        run: |
+          Write-Host "=== runtimed.stdout.log ==="
+          if (Test-Path "$env:RUNNER_TEMP\runtimed.stdout.log") {
+            Get-Content "$env:RUNNER_TEMP\runtimed.stdout.log"
+          } else {
+            Write-Host "(not present)"
+          }
+          Write-Host ""
+          Write-Host "=== runtimed.stderr.log ==="
+          if (Test-Path "$env:RUNNER_TEMP\runtimed.stderr.log") {
+            Get-Content "$env:RUNNER_TEMP\runtimed.stderr.log"
+          } else {
+            Write-Host "(not present)"
+          }
+          Write-Host ""
+          Write-Host "=== runtimed.log (daemon log via dirs::cache_dir) ==="
+          $logPath = "$env:LOCALAPPDATA\runt\runtimed.log"
+          if (Test-Path $logPath) {
+            Get-Content $logPath
+          } else {
+            Write-Host "(not present at $logPath)"
+            Write-Host "Searching for runtimed.log under LOCALAPPDATA..."
+            Get-ChildItem -Path $env:LOCALAPPDATA -Filter runtimed.log -Recurse -ErrorAction SilentlyContinue | Select-Object FullName | Format-Table -AutoSize
+          }
 
       - name: Re-run diagnostics post-smoke
         if: always()
