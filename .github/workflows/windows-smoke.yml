@@ -146,23 +146,46 @@ jobs:
           }
           & $env:RUNT --version
 
-      - name: Start daemon in background
-        # Service install would write to the registry / Startup folder. For a
-        # one-shot CI smoke, just spawn the daemon directly and let the OS
-        # reap it when the job ends.
-        #
-        # Pool sizes: 1 UV env to back our smoke notebook, no conda or pixi.
-        # Default would warm 3+3+2 = 8 envs on a cold runner. We need exactly
-        # one for the smoke; the rest is wasted bandwidth.
+      - name: Set up Python for MCP smoke
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install MCP client SDK
         shell: pwsh
+        run: pip install "mcp>=1.0"
+
+      - name: Run daemon and smoke (single step)
+        # Variant 1: keep the daemon and the smoke script inside one step,
+        # so the daemon's parent pwsh process lives for the whole duration.
+        # Run #24972607401 spawned the daemon in one step and tried to use
+        # it in the next; the runner's job object reaped the daemon when
+        # the spawning step ended (visible as runtimed.log holding only
+        # the early-startup line, then `runt ps` failing with "file not
+        # found"). Collapsing into one step avoids that lifecycle issue.
+        #
+        # Pool sizes: 1 UV env, no conda or pixi. Pass args as a single
+        # string (PowerShell -ArgumentList array form re-tokenizes
+        # inconsistently and silently dropped --uv-pool-size 1 in the prior
+        # run, defaulting to a 3-env warm).
+        shell: pwsh
+        timeout-minutes: 15
         run: |
-          Start-Process -FilePath $env:RUNTIMED -ArgumentList "run", "--uv-pool-size", "1", "--conda-pool-size", "0", "--pixi-pool-size", "0" -WindowStyle Hidden -RedirectStandardOutput "$env:RUNNER_TEMP\runtimed.stdout.log" -RedirectStandardError "$env:RUNNER_TEMP\runtimed.stderr.log"
-          # Wait for the named pipe to come up. `runt daemon status --json`
-          # always exits 0 (the report itself describes whether the daemon is
-          # up), so check the JSON's `running` field, not the exit code.
+          $logOut = "$env:RUNNER_TEMP\runtimed.stdout.log"
+          $logErr = "$env:RUNNER_TEMP\runtimed.stderr.log"
+          $daemon = Start-Process -FilePath $env:RUNTIMED `
+            -ArgumentList @('run', '--uv-pool-size', '1', '--conda-pool-size', '0', '--pixi-pool-size', '0') `
+            -WindowStyle Hidden -PassThru `
+            -RedirectStandardOutput $logOut -RedirectStandardError $logErr
+          Write-Host "Daemon pid: $($daemon.Id)"
+
           $ready = $false
           for ($i = 0; $i -lt 30; $i++) {
             Start-Sleep -Seconds 1
+            if ($daemon.HasExited) {
+              Write-Error "Daemon exited prematurely (code $($daemon.ExitCode)) after ${i}s"
+              break
+            }
             $result = & $env:RUNT daemon status --json 2>$null
             if ($LASTEXITCODE -eq 0) {
               try {
@@ -173,60 +196,40 @@ jobs:
                   $ready = $true
                   break
                 }
-              } catch {
-                # Not yet valid JSON; keep polling.
-              }
+              } catch {}
             }
           }
-          if ($ready) { exit 0 }
-          Write-Error "Daemon did not become ready within 30s"
-          Write-Host "--- stdout ---"
-          if (Test-Path "$env:RUNNER_TEMP\runtimed.stdout.log") { Get-Content "$env:RUNNER_TEMP\runtimed.stdout.log" }
-          Write-Host "--- stderr ---"
-          if (Test-Path "$env:RUNNER_TEMP\runtimed.stderr.log") { Get-Content "$env:RUNNER_TEMP\runtimed.stderr.log" }
-          exit 1
+          if (-not $ready) {
+            Write-Host "--- runtimed.stdout ---"
+            if (Test-Path $logOut) { Get-Content $logOut }
+            Write-Host "--- runtimed.stderr ---"
+            if (Test-Path $logErr) { Get-Content $logErr }
+            exit 1
+          }
 
-      - name: runt ps (no notebooks expected)
-        shell: pwsh
-        run: |
+          Write-Host "=== runt ps ==="
           & $env:RUNT ps
+          if ($LASTEXITCODE -ne 0) { Write-Error "runt ps failed"; exit 1 }
 
-      - name: Run runt diagnostics
-        shell: pwsh
-        run: |
+          Write-Host "=== runt diagnostics ==="
           New-Item -ItemType Directory -Force -Path "$env:RUNNER_TEMP\diag" | Out-Null
           Push-Location "$env:RUNNER_TEMP\diag"
           & $env:RUNT diagnostics
-          $exit = $LASTEXITCODE
+          $diagExit = $LASTEXITCODE
           Pop-Location
-          if ($exit -ne 0) {
-            Write-Error "runt diagnostics exited with $exit"
-            exit $exit
-          }
+          if ($diagExit -ne 0) { Write-Error "runt diagnostics failed: $diagExit"; exit $diagExit }
           Get-ChildItem "$env:RUNNER_TEMP\diag"
 
-      - name: Set up Python for MCP smoke
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
+          Write-Host "=== MCP smoke ==="
+          python scripts/windows-smoke-mcp.py "$env:RUNT"
+          $smokeExit = $LASTEXITCODE
 
-      - name: Install MCP client SDK
-        shell: pwsh
-        run: pip install "mcp>=1.0"
+          Write-Host "=== Tearing down daemon ==="
+          if (-not $daemon.HasExited) {
+            Stop-Process -Id $daemon.Id -Force -ErrorAction SilentlyContinue
+          }
 
-      - name: Drive daemon over MCP
-        # Spawns `runt.exe mcp` over stdio and exercises the real daemon path:
-        # create_notebook -> create_cell -> execute_cell -> get_results.
-        # This is the same surface the desktop app uses, with no GUI and no
-        # dependence on legacy Jupyter kernelspecs. If kernel launch is broken
-        # on Windows (the bug from #2274), this is what catches it.
-        #
-        # 15-minute budget covers a cold-runner first kernel launch: uv has to
-        # download a Python toolchain (~30s) and install ipykernel (~5s)
-        # before the kernel can spawn. Subsequent runs reuse the cached env.
-        shell: pwsh
-        timeout-minutes: 15
-        run: python scripts/windows-smoke-mcp.py "$env:RUNT"
+          if ($smokeExit -ne 0) { exit $smokeExit }
 
       - name: Dump daemon stdout/stderr to CI console
         if: always()
