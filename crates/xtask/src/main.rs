@@ -346,7 +346,23 @@ const TAURI_INSTALL: &str = "cargo install tauri-cli";
 const WASM_PACK_INSTALL: &str = "cargo install wasm-pack";
 
 fn require_pnpm() {
-    require_tool("pnpm", PNPM_INSTALL);
+    require_tool(pnpm_bin(), PNPM_INSTALL);
+}
+
+/// Name to invoke pnpm under for `Command::new`.
+///
+/// On Windows, `pnpm/action-setup@v4` (and corepack) install pnpm as a
+/// `pnpm.cmd` shim wrapping node. There is no `pnpm.exe`. Rust's
+/// `Command::new("pnpm")` calls `CreateProcess` directly, which does not
+/// apply `PATHEXT` resolution, so it fails with "not found in PATH" even
+/// when `pnpm.cmd` is on `PATH` and `pnpm install` works fine from the
+/// surrounding bash/pwsh shell. Always invoke `pnpm.cmd` on Windows.
+fn pnpm_bin() -> &'static str {
+    if cfg!(windows) {
+        "pnpm.cmd"
+    } else {
+        "pnpm"
+    }
 }
 
 fn require_tauri() {
