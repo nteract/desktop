@@ -161,29 +161,25 @@ export class NotebookClient {
   }
 
   /** Hot-sync environment — install new packages without restart (UV only). */
-  async syncEnvironment(): Promise<NotebookResponse> {
+  async syncEnvironment(provenance?: GuardedDependencyProvenance): Promise<NotebookResponse> {
     try {
-      const response = await this.sendRequest({ type: "sync_environment" });
+      const response = await this.sendRequest({
+        type: "sync_environment",
+        ...(provenance
+          ? {
+              guard: {
+                observed_heads: provenance.observed_heads,
+                dependency_fingerprint: provenance.dependency_fingerprint,
+              },
+            }
+          : {}),
+      });
       if ((response as { result: string }).result === "error") {
         this.log.error("[notebook-client] Sync env failed:", (response as { error: string }).error);
       }
       return response;
     } catch (e) {
       this.log.error("[notebook-client] Sync environment failed:", e);
-      throw e;
-    }
-  }
-
-  /** Hot-sync environment only if dependencies still match the observed trust-dialog state. */
-  async syncEnvironmentGuarded(provenance: GuardedDependencyProvenance): Promise<NotebookResponse> {
-    try {
-      return await this.sendRequest({
-        type: "sync_environment_guarded",
-        observed_heads: provenance.observed_heads,
-        dependency_fingerprint: provenance.dependency_fingerprint,
-      });
-    } catch (e) {
-      this.log.error("[notebook-client] Guarded sync environment failed:", e);
       throw e;
     }
   }

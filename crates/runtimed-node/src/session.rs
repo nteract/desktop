@@ -188,12 +188,13 @@ impl Session {
         };
         handle.confirm_sync().await.map_err(to_napi_err)?;
         let response = handle
-            .send_request(NotebookRequest::SyncEnvironment {})
+            .send_request(NotebookRequest::SyncEnvironment { guard: None })
             .await
             .map_err(to_napi_err)?;
         match response {
             NotebookResponse::SyncEnvironmentComplete { .. } => Ok(()),
             NotebookResponse::SyncEnvironmentFailed { error, .. } => Err(Error::from_reason(error)),
+            NotebookResponse::GuardRejected { reason } => Err(Error::from_reason(reason)),
             NotebookResponse::Error { error } => Err(Error::from_reason(error)),
             other => Err(Error::from_reason(format!(
                 "Unexpected response: {other:?}"
@@ -423,6 +424,7 @@ async fn ensure_kernel_started(state: &Arc<Mutex<SessionState>>) -> Result<()> {
             .ok_or_else(|| Error::from_reason("Not connected"))?
             .clone()
     };
+    handle.confirm_sync().await.map_err(to_napi_err)?;
     let response = handle
         .send_request(NotebookRequest::LaunchKernel {
             kernel_type: runtime.clone(),
@@ -438,6 +440,7 @@ async fn ensure_kernel_started(state: &Arc<Mutex<SessionState>>) -> Result<()> {
             st.kernel_started = true;
             Ok(())
         }
+        NotebookResponse::GuardRejected { reason } => Err(Error::from_reason(reason)),
         NotebookResponse::Error { error } => Err(Error::from_reason(error)),
         other => Err(Error::from_reason(format!(
             "Unexpected response: {other:?}"

@@ -372,7 +372,6 @@ function AppContent() {
     interruptKernel,
     shutdownKernel,
     syncEnvironment,
-    syncEnvironmentGuarded,
     runAllCells: daemonRunAllCells,
     runAllCellsGuarded,
     sendCommMessage,
@@ -736,6 +735,10 @@ function AppContent() {
           logger.error("[App] tryStartKernel: daemon error", response.error);
           return false;
         }
+        if (response.result === "guard_rejected") {
+          setTrustActionNotice(response.reason);
+          return false;
+        }
         return true;
       }
       // Untrusted - show dialog and mark pending start
@@ -744,7 +747,7 @@ function AppContent() {
       setTrustDialogOpen(true);
       return false;
     },
-    [sessionReady, checkTrust, launchKernel, setBlockedTrustAction],
+    [sessionReady, checkTrust, launchKernel, setBlockedTrustAction, setTrustActionNotice],
   );
 
   const performTrustedSyncDeps = useCallback(
@@ -757,7 +760,7 @@ function AppContent() {
 
       if ((isUvInline || isCondaInline) && hasOnlyAdditions) {
         logger.debug("[App] Trying hot-sync for additions");
-        const response = guard ? await syncEnvironmentGuarded(guard) : await syncEnvironment();
+        const response = await syncEnvironment(guard);
 
         if (response.result === "sync_environment_complete") {
           logger.debug("[App] Hot-sync succeeded:", response.synced_packages);
@@ -796,15 +799,7 @@ function AppContent() {
       }
       return started;
     },
-    [
-      envSource,
-      envSyncState,
-      envProgress,
-      syncEnvironment,
-      syncEnvironmentGuarded,
-      shutdownKernel,
-      tryStartKernel,
-    ],
+    [envSource, envSyncState, envProgress, syncEnvironment, shutdownKernel, tryStartKernel],
   );
 
   // Handler to sync deps - tries hot-sync for UV additions, falls back to restart
@@ -949,6 +944,11 @@ function AppContent() {
           setTrustActionNotice(response.error);
           return;
         }
+        if (response.result === "guard_rejected") {
+          setTrustApprovalHandoffPending(false);
+          setTrustActionNotice(response.reason);
+          return;
+        }
         await runTrustApprovedAction(action);
       } catch (e) {
         logger.error("[App] kernel launch after trust approval failed:", e);
@@ -956,7 +956,7 @@ function AppContent() {
         setTrustActionNotice(e instanceof Error ? e.message : String(e));
       }
     },
-    [sessionReady, launchKernel, runTrustApprovedAction],
+    [sessionReady, launchKernel, runTrustApprovedAction, setTrustActionNotice],
   );
 
   // Handle trust approval from dialog
@@ -1035,8 +1035,10 @@ function AppContent() {
     const response = await launchKernel("python", "uv:pyproject");
     if (response.result === "error") {
       logger.error("[App] handleStartKernelWithPyproject: daemon error", response.error);
+    } else if (response.result === "guard_rejected") {
+      setTrustActionNotice(response.reason);
     }
-  }, [sessionReady, launchKernel]);
+  }, [sessionReady, launchKernel, setTrustActionNotice]);
 
   const handleExecuteCell = useCallback(
     async (cellId: string) => {

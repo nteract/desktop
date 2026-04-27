@@ -234,7 +234,7 @@ pub async fn add_dependency(
         "sync" => {
             // Attempt hot-install (UV only; conda/pixi will report needs_restart)
             match handle
-                .send_request(NotebookRequest::SyncEnvironment {})
+                .send_request(NotebookRequest::SyncEnvironment { guard: None })
                 .await
             {
                 Ok(NotebookResponse::SyncEnvironmentComplete {
@@ -245,10 +245,11 @@ pub async fn add_dependency(
                         "synced_packages": synced_packages,
                     });
                 }
-                Ok(NotebookResponse::SyncEnvironmentStarted { packages }) => {
+                Ok(NotebookResponse::GuardRejected { reason }) => {
                     result["sync"] = serde_json::json!({
-                        "success": true,
-                        "synced_packages": packages,
+                        "success": false,
+                        "error": reason,
+                        "needs_restart": false,
                     });
                 }
                 Ok(NotebookResponse::SyncEnvironmentFailed {
@@ -327,6 +328,12 @@ pub async fn add_dependency(
                     result["restart"] = serde_json::json!({
                         "success": false,
                         "error": error,
+                    });
+                }
+                Ok(NotebookResponse::GuardRejected { reason }) => {
+                    result["restart"] = serde_json::json!({
+                        "success": false,
+                        "error": reason,
                     });
                 }
                 Err(e) => {
@@ -430,7 +437,7 @@ pub async fn sync_environment(
     }
 
     match handle
-        .send_request(NotebookRequest::SyncEnvironment {})
+        .send_request(NotebookRequest::SyncEnvironment { guard: None })
         .await
     {
         Ok(NotebookResponse::SyncEnvironmentComplete {
@@ -442,14 +449,6 @@ pub async fn sync_environment(
             });
             tool_success(&serde_json::to_string_pretty(&result).unwrap_or_default())
         }
-        Ok(NotebookResponse::SyncEnvironmentStarted { packages }) => {
-            // Sync started but hasn't completed yet — return started status
-            let result = serde_json::json!({
-                "success": true,
-                "synced_packages": packages,
-            });
-            tool_success(&serde_json::to_string_pretty(&result).unwrap_or_default())
-        }
         Ok(NotebookResponse::SyncEnvironmentFailed {
             error,
             needs_restart,
@@ -458,6 +457,14 @@ pub async fn sync_environment(
                 "success": false,
                 "error": error,
                 "needs_restart": needs_restart,
+            });
+            tool_success(&serde_json::to_string_pretty(&result).unwrap_or_default())
+        }
+        Ok(NotebookResponse::GuardRejected { reason }) => {
+            let result = serde_json::json!({
+                "success": false,
+                "error": reason,
+                "needs_restart": false,
             });
             tool_success(&serde_json::to_string_pretty(&result).unwrap_or_default())
         }

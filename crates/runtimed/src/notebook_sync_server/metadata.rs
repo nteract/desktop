@@ -3442,7 +3442,6 @@ pub(crate) fn request_label(req: &NotebookRequest) -> &'static str {
         NotebookRequest::SaveNotebook { .. } => "SaveNotebook",
         NotebookRequest::CloneAsEphemeral { .. } => "CloneAsEphemeral",
         NotebookRequest::SyncEnvironment { .. } => "SyncEnvironment",
-        NotebookRequest::SyncEnvironmentGuarded { .. } => "SyncEnvironmentGuarded",
         NotebookRequest::ApproveTrust { .. } => "ApproveTrust",
         NotebookRequest::GetDocBytes { .. } => "GetDocBytes",
         NotebookRequest::CheckToolAvailable { .. } => "CheckToolAvailable",
@@ -3525,20 +3524,8 @@ pub(crate) async fn handle_notebook_request(
             crate::requests::clone_notebook::handle(&daemon, source_notebook_id).await
         }
 
-        NotebookRequest::SyncEnvironment {} => {
-            crate::requests::sync_environment::handle(room).await
-        }
-
-        NotebookRequest::SyncEnvironmentGuarded {
-            observed_heads,
-            dependency_fingerprint,
-        } => {
-            crate::requests::sync_environment::handle_guarded(
-                room,
-                observed_heads,
-                dependency_fingerprint,
-            )
-            .await
+        NotebookRequest::SyncEnvironment { guard } => {
+            crate::requests::sync_environment::handle(room, guard).await
         }
 
         NotebookRequest::ApproveTrust {

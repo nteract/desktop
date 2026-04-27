@@ -386,8 +386,8 @@ pub async fn handle_notebook_sync_connection<R, W>(
     // True if this is a newly-created notebook at a non-existent path.
     // Used to enable auto-launch for notebooks created via `runt notebook newfile.ipynb`.
     created_new_at_path: bool,
-    // Protocol version from the client preamble. v2 clients don't understand
-    // SessionControl frames, so we skip them when this is < 3.
+    // Protocol version from the client preamble. v4 is required at connection
+    // setup, so SessionControl frames are always supported.
     client_protocol_version: u8,
 ) -> anyhow::Result<()>
 where
@@ -570,13 +570,8 @@ where
     }
 
     // Send capabilities response unless already sent via NotebookConnectionInfo.
-    // v2 clients expect PROTOCOL_V2 and don't understand session-control frames.
     if !skip_capabilities {
-        let (proto_str, proto_ver) = if client_protocol_version >= 3 {
-            (connection::PROTOCOL_V3, connection::PROTOCOL_VERSION)
-        } else {
-            (connection::PROTOCOL_V2, 2)
-        };
+        let (proto_str, proto_ver) = (connection::PROTOCOL_V4, connection::PROTOCOL_VERSION);
         let caps = connection::ProtocolCapabilities {
             protocol: proto_str.to_string(),
             protocol_version: Some(proto_ver),

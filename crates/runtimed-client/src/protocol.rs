@@ -15,9 +15,9 @@ use crate::{EnvType, PoolState, PooledEnv};
 
 // Re-export all notebook protocol types from the shared crate.
 pub use notebook_protocol::protocol::{
-    CompletionItem, DenoLaunchedConfig, EnvSyncDiff, GuardedDependencyProvenance,
-    GuardedNotebookProvenance, HistoryEntry, LaunchedEnvConfig, NotebookBroadcast, NotebookRequest,
-    NotebookResponse, QueueEntry,
+    CompletionItem, DenoLaunchedConfig, DependencyGuard, EnvSyncDiff, GuardedNotebookProvenance,
+    HistoryEntry, LaunchedEnvConfig, NotebookBroadcast, NotebookRequest, NotebookResponse,
+    QueueEntry,
 };
 
 /// Requests that clients can send to the daemon.

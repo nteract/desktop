@@ -142,6 +142,11 @@ pub async fn restart_kernel(
                 Some(s) => {
                     let fresh_handle = s.handle.clone();
                     drop(guard);
+                    if let Err(e) = fresh_handle.confirm_sync().await {
+                        tracing::warn!(
+                            "confirm_sync failed before restart_kernel retry launch: {e}"
+                        );
+                    }
                     fresh_handle
                         .send_request(NotebookRequest::LaunchKernel {
                             kernel_type: kernel_type.clone(),
@@ -198,6 +203,9 @@ pub async fn restart_kernel(
         Ok(NotebookResponse::Error { error }) => {
             tool_error(&format!("Failed to restart kernel: {error}"))
         }
+        Ok(NotebookResponse::GuardRejected { reason }) => tool_error(&format!(
+            "Kernel restart blocked by notebook trust: {reason}"
+        )),
         Ok(_) => tool_success(&serde_json::json!({ "restarted": true }).to_string()),
         Err(e) => tool_error(&format!("Failed to restart kernel: {e}")),
     }

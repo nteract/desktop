@@ -293,13 +293,8 @@ export function useDaemonKernel({
   );
 
   const syncEnvironment = useCallback(
-    () => client.syncEnvironment() as Promise<NotebookResponse>,
-    [client],
-  );
-
-  const syncEnvironmentGuarded = useCallback(
-    (provenance: GuardedDependencyProvenance) =>
-      client.syncEnvironmentGuarded(provenance) as Promise<NotebookResponse>,
+    (provenance?: GuardedDependencyProvenance) =>
+      client.syncEnvironment(provenance) as Promise<NotebookResponse>,
     [client],
   );
 
@@ -342,7 +337,6 @@ export function useDaemonKernel({
     interruptKernel,
     shutdownKernel,
     syncEnvironment,
-    syncEnvironmentGuarded,
     runAllCells,
     runAllCellsGuarded,
     sendCommMessage,

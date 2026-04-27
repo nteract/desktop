@@ -8,10 +8,11 @@
 use std::time::Duration;
 
 use notebook_sync::connect;
+use runtime_doc::RuntimeLifecycle;
 use runtimed::client::PoolClient;
 use runtimed::daemon::{Daemon, DaemonConfig};
 use runtimed::notebook_doc::frame_types;
-use runtimed::protocol::{NotebookRequest, NotebookResponse};
+use runtimed::protocol::{DependencyGuard, NotebookRequest, NotebookResponse};
 use runtimed::EnvType;
 use tempfile::TempDir;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -699,6 +700,181 @@ async fn test_parallel_cell_mutations_same_session_no_disconnect() {
     for index in 0..10 {
         assert!(ids.contains(&format!("parallel-{index}")));
     }
+
+    pool_client.shutdown().await.ok();
+    let _ = tokio::time::timeout(Duration::from_secs(2), daemon_handle).await;
+}
+
+#[tokio::test]
+async fn test_untrusted_launch_and_sync_environment_are_daemon_rejected() {
+    let temp_dir = TempDir::new().unwrap();
+    let config = test_config(&temp_dir);
+    let socket_path = config.socket_path.clone();
+
+    let daemon = Daemon::new(config).unwrap();
+    let daemon_handle = tokio::spawn(async move {
+        daemon.run().await.ok();
+    });
+
+    let pool_client = PoolClient::new(socket_path.clone());
+    assert!(wait_for_daemon(&pool_client).await);
+
+    let result = connect::connect_create(
+        socket_path.clone(),
+        "python",
+        None,
+        "test",
+        false,
+        None,
+        vec![],
+    )
+    .await
+    .unwrap();
+    let handle = result.handle;
+
+    assert!(
+        wait_for_session_ready(&handle, SESSION_READY_TIMEOUT).await,
+        "client should reach session-ready state"
+    );
+
+    handle.add_uv_dependency("requests").unwrap();
+    handle.confirm_sync().await.unwrap();
+
+    let launch = handle
+        .send_request(NotebookRequest::LaunchKernel {
+            kernel_type: "python".to_string(),
+            env_source: "auto".to_string(),
+            notebook_path: None,
+        })
+        .await
+        .unwrap();
+    assert!(
+        matches!(launch, NotebookResponse::GuardRejected { .. }),
+        "untrusted LaunchKernel should be rejected by the daemon, got {launch:?}"
+    );
+    assert_eq!(
+        handle.get_runtime_state().unwrap().kernel.lifecycle,
+        RuntimeLifecycle::NotStarted,
+        "rejected LaunchKernel must not claim or mutate runtime lifecycle"
+    );
+
+    let sync = handle
+        .send_request(NotebookRequest::SyncEnvironment { guard: None })
+        .await
+        .unwrap();
+    assert!(
+        matches!(sync, NotebookResponse::GuardRejected { .. }),
+        "untrusted SyncEnvironment should be rejected before NoKernel, got {sync:?}"
+    );
+
+    pool_client.shutdown().await.ok();
+    let _ = tokio::time::timeout(Duration::from_secs(2), daemon_handle).await;
+}
+
+#[tokio::test]
+async fn test_sync_environment_guard_rejects_stale_dependency_fingerprint() {
+    let temp_dir = TempDir::new().unwrap();
+    let config = test_config(&temp_dir);
+    let socket_path = config.socket_path.clone();
+
+    let daemon = Daemon::new(config).unwrap();
+    let daemon_handle = tokio::spawn(async move {
+        daemon.run().await.ok();
+    });
+
+    let pool_client = PoolClient::new(socket_path.clone());
+    assert!(wait_for_daemon(&pool_client).await);
+
+    let result = connect::connect_create(
+        socket_path.clone(),
+        "python",
+        None,
+        "test",
+        false,
+        Some(notebook_protocol::connection::PackageManager::Uv),
+        vec!["pandas".to_string()],
+    )
+    .await
+    .unwrap();
+    let handle = result.handle;
+
+    assert!(
+        wait_for_session_ready(&handle, SESSION_READY_TIMEOUT).await,
+        "client should reach session-ready state"
+    );
+
+    let observed_heads: Vec<String> = handle
+        .with_doc(|doc| {
+            doc.get_heads()
+                .iter()
+                .map(|head| head.to_string())
+                .collect()
+        })
+        .unwrap();
+    let response = handle
+        .send_request(NotebookRequest::SyncEnvironment {
+            guard: Some(DependencyGuard {
+                observed_heads,
+                dependency_fingerprint: "{}".to_string(),
+            }),
+        })
+        .await
+        .unwrap();
+    assert!(
+        matches!(response, NotebookResponse::GuardRejected { .. }),
+        "stale dependency guard should reject before sync-env logic, got {response:?}"
+    );
+
+    pool_client.shutdown().await.ok();
+    let _ = tokio::time::timeout(Duration::from_secs(2), daemon_handle).await;
+}
+
+#[tokio::test]
+async fn test_sync_environment_no_deps_reaches_existing_no_kernel_path() {
+    let temp_dir = TempDir::new().unwrap();
+    let config = test_config(&temp_dir);
+    let socket_path = config.socket_path.clone();
+
+    let daemon = Daemon::new(config).unwrap();
+    let daemon_handle = tokio::spawn(async move {
+        daemon.run().await.ok();
+    });
+
+    let pool_client = PoolClient::new(socket_path.clone());
+    assert!(wait_for_daemon(&pool_client).await);
+
+    let result = connect::connect_create(
+        socket_path.clone(),
+        "python",
+        None,
+        "test",
+        false,
+        None,
+        vec![],
+    )
+    .await
+    .unwrap();
+    let handle = result.handle;
+
+    assert!(
+        wait_for_session_ready(&handle, SESSION_READY_TIMEOUT).await,
+        "client should reach session-ready state"
+    );
+
+    let response = handle
+        .send_request(NotebookRequest::SyncEnvironment { guard: None })
+        .await
+        .unwrap();
+    assert!(
+        matches!(
+            response,
+            NotebookResponse::SyncEnvironmentFailed {
+                ref error,
+                needs_restart: false,
+            } if error == "No kernel running"
+        ),
+        "trusted/no-deps SyncEnvironment should reach existing NoKernel path, got {response:?}"
+    );
 
     pool_client.shutdown().await.ok();
     let _ = tokio::time::timeout(Duration::from_secs(2), daemon_handle).await;

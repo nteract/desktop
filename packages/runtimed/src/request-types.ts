@@ -17,6 +17,11 @@ export interface GuardedDependencyProvenance {
   dependency_fingerprint: string;
 }
 
+export interface DependencyGuard {
+  observed_heads: string[];
+  dependency_fingerprint: string;
+}
+
 export type NotebookRequest =
   | {
       type: "launch_kernel";
@@ -29,8 +34,7 @@ export type NotebookRequest =
   | { type: "clear_outputs"; cell_id: string }
   | { type: "interrupt_execution" }
   | { type: "shutdown_kernel" }
-  | { type: "sync_environment" }
-  | { type: "sync_environment_guarded"; observed_heads: string[]; dependency_fingerprint: string }
+  | { type: "sync_environment"; guard?: DependencyGuard }
   | { type: "approve_trust"; dependency_fingerprint?: string }
   | { type: "run_all_cells" }
   | { type: "run_all_cells_guarded"; observed_heads: string[] }
@@ -108,7 +112,6 @@ export type NotebookResponse =
     }
   | { result: "ok" }
   | { result: "error"; error: string }
-  | { result: "sync_environment_started"; packages: string[] }
   | { result: "sync_environment_complete"; synced_packages: string[] }
   | {
       result: "sync_environment_failed";

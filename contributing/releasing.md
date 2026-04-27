@@ -115,7 +115,7 @@ This builds macOS and Linux Python artifacts for both `runtimed` and `nteract`, 
 When making a breaking wire protocol change:
 
 1. Bump `PROTOCOL_VERSION` in `crates/notebook-protocol/src/connection.rs`
-2. Update `PROTOCOL_V2` string constant if the version string changes
+2. Update the `PROTOCOL_V*` string constant if the version string changes
 3. Update `contributing/protocol.md`
 4. Decide whether this warrants a major, minor, or patch version bump based on user impact
 
