@@ -134,6 +134,43 @@ jobs:
           "INSTALL_DIR=$installDir" | Out-File -Append -FilePath $env:GITHUB_ENV
           "RUNT=$installDir\runt.exe" | Out-File -Append -FilePath $env:GITHUB_ENV
           "RUNTIMED=$installDir\runtimed.exe" | Out-File -Append -FilePath $env:GITHUB_ENV
+          "MCP=$installDir\nteract-mcp.exe" | Out-File -Append -FilePath $env:GITHUB_ENV
+
+          $bootstrapLog = Join-Path $env:LOCALAPPDATA "nteract\install-bootstrap.log"
+          if (Test-Path $bootstrapLog) {
+            Write-Host "=== installer bootstrap log ==="
+            Get-Content $bootstrapLog
+          } else {
+            Write-Warning "Installer bootstrap log not found at $bootstrapLog"
+          }
+
+          $cliName = if ($env:RUNT_BUILD_CHANNEL -eq "nightly") { "runt-nightly" } else { "runt" }
+          $cmd = Get-Command $cliName -ErrorAction SilentlyContinue
+          if (-not $cmd) {
+            $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
+            foreach ($entry in $userPath -split ';') {
+              if ($entry -and (Test-Path (Join-Path $entry "$cliName.cmd"))) {
+                $env:PATH = "$entry;$env:PATH"
+                $entry | Out-File -Append -FilePath $env:GITHUB_PATH -Encoding utf8
+                break
+              }
+            }
+            $cmd = Get-Command $cliName -ErrorAction SilentlyContinue
+          }
+          if (-not $cmd) {
+            Write-Error "$cliName was not discoverable after silent install"
+            exit 1
+          }
+          Write-Host "$cliName resolved to $($cmd.Source)"
+          "RUNT_CMD=$($cmd.Source)" | Out-File -Append -FilePath $env:GITHUB_ENV
+
+          $nbName = if ($env:RUNT_BUILD_CHANNEL -eq "nightly") { "nb-nightly" } else { "nb" }
+          $nbPath = Join-Path (Split-Path -Parent $cmd.Source) "$nbName.cmd"
+          if (-not (Test-Path $nbPath)) {
+            Write-Error "$nbName shim was not installed next to $cliName ($nbPath)"
+            exit 1
+          }
+          Write-Host "$nbName resolved to $nbPath"
 
       - name: runt --version
         shell: pwsh
@@ -143,6 +180,44 @@ jobs:
             exit 1
           }
           & $env:RUNT --version
+          & $env:RUNT_CMD --version
+
+      - name: Verify installer bootstrap
+        shell: pwsh
+        run: |
+          Write-Host "=== daemon status after installer ==="
+          $statusJson = & $env:RUNT_CMD daemon status --json
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "Installed CLI could not read daemon status"
+            exit 1
+          }
+          Write-Host $statusJson
+          $status = $statusJson | ConvertFrom-Json
+          if ($status.installed -ne $true -or $status.running -ne $true) {
+            Write-Error "Installer did not leave the daemon installed and running"
+            exit 1
+          }
+          if (-not (Test-Path $env:MCP)) {
+            Write-Error "nteract-mcp.exe not found at $env:MCP"
+            exit 1
+          }
+          Write-Host "=== nteract-mcp startup probe ==="
+          $mcpOut = "$env:RUNNER_TEMP\nteract-mcp.stdout.log"
+          $mcpErr = "$env:RUNNER_TEMP\nteract-mcp.stderr.log"
+          $mcp = Start-Process -FilePath $env:MCP -WindowStyle Hidden -PassThru `
+            -RedirectStandardOutput $mcpOut -RedirectStandardError $mcpErr
+          Start-Sleep -Seconds 3
+          if ($mcp.HasExited -and $mcp.ExitCode -ne 0) {
+            Write-Host "--- nteract-mcp stdout ---"
+            if (Test-Path $mcpOut) { Get-Content $mcpOut }
+            Write-Host "--- nteract-mcp stderr ---"
+            if (Test-Path $mcpErr) { Get-Content $mcpErr }
+            Write-Error "nteract-mcp exited during startup probe"
+            exit $mcp.ExitCode
+          }
+          if (-not $mcp.HasExited) {
+            Stop-Process -Id $mcp.Id -Force -ErrorAction SilentlyContinue
+          }
 
       - name: Set up Python for MCP smoke
         uses: actions/setup-python@v5
@@ -169,6 +244,12 @@ jobs:
         shell: pwsh
         timeout-minutes: 15
         run: |
+          Write-Host "=== Stopping installer-started daemon before controlled smoke daemon ==="
+          & $env:RUNT_CMD daemon stop
+          if ($LASTEXITCODE -ne 0) {
+            Write-Warning "daemon stop returned $LASTEXITCODE; continuing with controlled smoke start"
+          }
+
           $logOut = "$env:RUNNER_TEMP\runtimed.stdout.log"
           $logErr = "$env:RUNNER_TEMP\runtimed.stderr.log"
           $daemon = Start-Process -FilePath $env:RUNTIMED `
@@ -277,6 +358,8 @@ jobs:
             ${{ runner.temp }}\diag-post\*.tar.gz
             ${{ runner.temp }}\runtimed.stdout.log
             ${{ runner.temp }}\runtimed.stderr.log
+            ${{ runner.temp }}\nteract-mcp.stdout.log
+            ${{ runner.temp }}\nteract-mcp.stderr.log
           if-no-files-found: warn
           retention-days: 14
 

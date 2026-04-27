@@ -1245,7 +1245,7 @@ async fn run_upgrade(
     }
 
     // Step 5: Re-install CLI if it was previously installed (ensures Windows
-    // copies and Unix symlinks point at the new app bundle).
+    // shims and Unix symlinks point at the new app bundle).
     // Local installs: symlinks updated, legacy installs migrated to ~/.local/bin.
     if cli_install::is_cli_installed_local() || cli_install::is_cli_installed_legacy() {
         match cli_install::install_cli(&app) {
@@ -3794,7 +3794,7 @@ pub fn run(
                         }
                     };
 
-                // Check if CLI symlinks are current and silently update if stale.
+                // Check if CLI entrypoints are current and silently update if stale.
                 // This handles app reinstalls, bundle path changes, and channel switches.
                 cli_install::ensure_cli_current(&app_for_daemon);
 
