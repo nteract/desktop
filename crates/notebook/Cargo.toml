@@ -61,9 +61,12 @@ tauri-plugin-webdriver = { version = "0.2", optional = true }
 cocoa = "0.26"
 
 # Windows CLI shim install writes HKCU\Environment\Path and broadcasts
-# WM_SETTINGCHANGE so new shells see the installed commands.
+# WM_SETTINGCHANGE so new shells see the installed commands. The Reg* APIs we
+# call (RegCreateKeyExW, RegSetValueExW, ...) take a SECURITY_ATTRIBUTES
+# pointer, so the windows-sys symbols are gated on the `Win32_Security` feature
+# in addition to `Win32_System_Registry` itself.
 [target.'cfg(target_os = "windows")'.dependencies]
-windows-sys = { version = "0.52", features = ["Win32_Foundation", "Win32_System_Registry", "Win32_UI_WindowsAndMessaging"] }
+windows-sys = { version = "0.52", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Registry", "Win32_UI_WindowsAndMessaging"] }
 
 # Unix process group support for kernel cleanup
 [target.'cfg(unix)'.dependencies]
