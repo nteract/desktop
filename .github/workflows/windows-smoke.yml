@@ -77,19 +77,32 @@ jobs:
           cp target/release/runt.exe "crates/notebook/binaries/runt-$TARGET.exe"
           cp target/release/nteract-mcp.exe "crates/notebook/binaries/nteract-mcp-$TARGET.exe"
 
+      - name: Generate throwaway updater keypair
+        # tauri.conf.json declares an updater pubkey for production releases,
+        # so Tauri's config validator requires a matching private key at
+        # build time. --config overrides can't skip this (an empty pubkey
+        # still counts as "set"). Generate a single-use keypair on the
+        # runner. The signature it produces is meaningless once the runner
+        # tears down, which matches the install-and-throw-away smoke shape.
+        shell: pwsh
+        run: |
+          $keyPath = "$env:RUNNER_TEMP\tauri-smoke.key"
+          npx -y @tauri-apps/cli signer generate -w $keyPath --ci
+          $keyContent = Get-Content $keyPath -Raw
+          "TAURI_SIGNING_PRIVATE_KEY<<EOF" | Out-File -Append -FilePath $env:GITHUB_ENV -Encoding utf8
+          "$keyContent" | Out-File -Append -FilePath $env:GITHUB_ENV -Encoding utf8
+          "EOF" | Out-File -Append -FilePath $env:GITHUB_ENV -Encoding utf8
+          "TAURI_SIGNING_PRIVATE_KEY_PASSWORD=" | Out-File -Append -FilePath $env:GITHUB_ENV -Encoding utf8
+
       - name: Build NSIS installer
-        # No signing key for the smoke. tauri.conf.json has an updater pubkey
-        # for production builds, and Tauri refuses to build without the
-        # matching TAURI_SIGNING_PRIVATE_KEY — secret we don't ship to PR
-        # forks. Override the updater pubkey to empty via --config so the
-        # build proceeds. The resulting installer cannot self-update; that's
-        # fine for an install-and-test smoke.
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ env.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ env.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           projectPath: crates/notebook
-          args: --bundles nsis --config '{"build":{"beforeBuildCommand":""},"plugins":{"updater":{"pubkey":""}}}'
+          args: --bundles nsis --config '{"build":{"beforeBuildCommand":""}}'
           includeUpdaterJson: false
 
       - name: Locate installer
@@ -144,16 +157,28 @@ jobs:
         shell: pwsh
         run: |
           Start-Process -FilePath $env:RUNTIMED -ArgumentList "run", "--uv-pool-size", "1", "--conda-pool-size", "0", "--pixi-pool-size", "0" -WindowStyle Hidden -RedirectStandardOutput "$env:RUNNER_TEMP\runtimed.stdout.log" -RedirectStandardError "$env:RUNNER_TEMP\runtimed.stderr.log"
-          # Give the named pipe a moment to come up.
+          # Wait for the named pipe to come up. `runt daemon status --json`
+          # always exits 0 (the report itself describes whether the daemon is
+          # up), so check the JSON's `running` field, not the exit code.
+          $ready = $false
           for ($i = 0; $i -lt 30; $i++) {
             Start-Sleep -Seconds 1
             $result = & $env:RUNT daemon status --json 2>$null
             if ($LASTEXITCODE -eq 0) {
-              Write-Host "Daemon ready after ${i}s"
-              Write-Host $result
-              exit 0
+              try {
+                $parsed = $result | ConvertFrom-Json
+                if ($parsed.running -eq $true) {
+                  Write-Host "Daemon ready after ${i}s"
+                  Write-Host $result
+                  $ready = $true
+                  break
+                }
+              } catch {
+                # Not yet valid JSON; keep polling.
+              }
             }
           }
+          if ($ready) { exit 0 }
           Write-Error "Daemon did not become ready within 30s"
           Write-Host "--- stdout ---"
           if (Test-Path "$env:RUNNER_TEMP\runtimed.stdout.log") { Get-Content "$env:RUNNER_TEMP\runtimed.stdout.log" }
@@ -195,8 +220,12 @@ jobs:
         # This is the same surface the desktop app uses, with no GUI and no
         # dependence on legacy Jupyter kernelspecs. If kernel launch is broken
         # on Windows (the bug from #2274), this is what catches it.
+        #
+        # 15-minute budget covers a cold-runner first kernel launch: uv has to
+        # download a Python toolchain (~30s) and install ipykernel (~5s)
+        # before the kernel can spawn. Subsequent runs reuse the cached env.
         shell: pwsh
-        timeout-minutes: 10
+        timeout-minutes: 15
         run: python scripts/windows-smoke-mcp.py "$env:RUNT"
 
       - name: Dump daemon stdout/stderr to CI console
