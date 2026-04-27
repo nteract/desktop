@@ -14,6 +14,18 @@ When changing the wire handshake or typed frame semantics, also inspect:
 - `crates/notebook-protocol/src/protocol.rs`
 - `contributing/protocol.md`
 
+## Connection compatibility invariants
+
+- Every daemon connection sends the 5-byte magic preamble before the JSON
+  handshake. There is no no-preamble fallback.
+- The Pool channel is the only version-tolerant channel. It accepts older
+  preamble versions so stable apps from previous releases can ping the daemon
+  during upgrade and read `protocol_version` / `daemon_version` from `Pong`.
+- Notebook, runtime, settings, blob, and open/create channels reject versions
+  outside `MIN_PROTOCOL_VERSION..=PROTOCOL_VERSION`.
+- When bumping `PROTOCOL_VERSION`, keep the old-stable Pool ping test aligned
+  with the launcher semantics instead of downloading an old daemon binary.
+
 ## Frame pump invariants
 
 Frame readers are only half the fix. A dedicated reader prevents cancel-unsafe
