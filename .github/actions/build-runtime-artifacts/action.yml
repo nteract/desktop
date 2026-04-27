@@ -1,0 +1,48 @@
+name: Build runtime artifacts
+description: >-
+  Build the wasm + renderer-plugin assets that `cargo build -p runtimed`
+  embeds via include_bytes!. These outputs are gitignored; CI rebuilds
+  them on every workflow run (used to be committed via Git LFS, dropped
+  due to bandwidth-budget pressure and rebase-conflict friction).
+
+  Idempotent: pnpm install / wasm-pack install / cargo xtask wasm tolerate
+  a re-run. Caller is responsible for setting up Rust toolchain + rust-cache
+  before invoking; this action only adds Node, pnpm, wasm-pack, and runs the
+  build.
+
+inputs:
+  wasm-pack-version:
+    description: wasm-pack version to install (must support --profile)
+    required: false
+    default: "0.14.0"
+  node-version:
+    description: Node.js version
+    required: false
+    default: "22"
+
+runs:
+  using: composite
+  steps:
+    - uses: voidzero-dev/setup-vp@v1
+      with:
+        run-install: false
+
+    - uses: pnpm/action-setup@v4
+
+    - uses: actions/setup-node@v6
+      with:
+        node-version: ${{ inputs.node-version }}
+        cache: pnpm
+
+    - name: pnpm install
+      shell: bash
+      run: pnpm install
+
+    - name: Install wasm-pack
+      uses: taiki-e/install-action@v2
+      with:
+        tool: wasm-pack@${{ inputs.wasm-pack-version }}
+
+    - name: Build wasm + renderer plugins
+      shell: bash
+      run: cargo xtask wasm

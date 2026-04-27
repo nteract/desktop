@@ -1,9 +1,15 @@
 //! Embedded renderer plugin assets for the MCP App.
 //!
-//! Heavy visualization renderers (plotly, vega, leaflet, sift) are committed
-//! to the repo via Git LFS and embedded in the daemon binary via
+//! Heavy visualization renderers (plotly, vega, leaflet, sift) are built
+//! from source by `cargo xtask wasm` (which chains into
+//! `cargo xtask renderer-plugins`) and embedded in the daemon binary via
 //! `include_bytes!`. The blob server serves them directly from memory at
 //! `GET /plugins/{name}`.
+//!
+//! The build artifacts under `crates/runt-mcp/assets/plugins/` are
+//! gitignored — `cargo build -p runtimed` requires them to exist on disk
+//! at compile time. CI builds them as a prerequisite step; local dev
+//! runs `cargo xtask wasm` once after a fresh clone.
 //!
 //! ## Adding or removing a plugin asset
 //!
@@ -11,8 +17,8 @@
 //!    `crates/runt-mcp/assets/plugins/`).
 //! 2. Update `EMBEDDED_PLUGINS` below — the `plugin!` macro's `include_bytes!`
 //!    fails the build if the file is missing.
-//! 3. Commit both the asset and the manifest entry. `embedded_plugins_match_assets_dir`
-//!    fails CI if the on-disk directory and `EMBEDDED_PLUGINS` drift apart.
+//! 3. `embedded_plugins_match_assets_dir` (in tests below) fails CI if the
+//!    on-disk directory and `EMBEDDED_PLUGINS` drift apart.
 
 pub struct EmbeddedPlugin {
     pub name: &'static str,
@@ -43,15 +49,15 @@ pub const EMBEDDED_PLUGINS: &[EmbeddedPlugin] = &[
     plugin!("sift_wasm.wasm"),
 ];
 
-// Compile-time guard: if LFS pointers weren't resolved, the plugin files
-// are ~130 bytes (pointer stubs) instead of their real sizes. This catches
-// builds where `git lfs pull` wasn't run.
+// Compile-time guard: every embedded plugin should be at least a few KB.
+// Files smaller than 1KB usually mean someone forgot to build them
+// (`cargo xtask wasm`) or a build step copied a placeholder.
 const _: () = {
     let mut i = 0;
     while i < EMBEDDED_PLUGINS.len() {
         assert!(
             EMBEDDED_PLUGINS[i].bytes.len() > 1024,
-            "embedded plugin appears to be a Git LFS pointer — run `git lfs pull`",
+            "embedded plugin is too small — run `cargo xtask wasm`",
         );
         i += 1;
     }

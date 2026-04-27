@@ -210,8 +210,14 @@ cargo xtask wasm             # rebuild both runtimed-wasm and sift-wasm;
                              # plugin JS bundles re-embed fresh sift-wasm glue.
 cargo xtask wasm runtimed    # only runtimed-wasm (no plugin chain)
 cargo xtask wasm sift        # only sift-wasm (chains plugins)
-# Commit the output — WASM + plugin artifacts are checked into the repo via LFS.
 ```
+
+The output directories under `apps/notebook/src/renderer-plugins/`,
+`apps/notebook/src/wasm/runtimed-wasm/`, `crates/runt-mcp/assets/plugins/`,
+and `crates/sift-wasm/pkg/` are gitignored. CI rebuilds them on every run.
+Locally, run `cargo xtask wasm` once after a fresh clone, and again whenever
+you edit anything under `crates/runtimed-wasm/`, `crates/sift-wasm/`, or
+`scripts/build-renderer-plugins.ts`.
 
 ### Subsystem guides
 

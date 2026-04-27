@@ -1,10 +1,15 @@
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 fn main() {
-    // Rebuild when plugin assets change (committed via Git LFS)
-    for file in [
+    // The renderer plugin bundles + sift wasm are gitignored build
+    // artifacts produced by `cargo xtask wasm`. Check they exist before
+    // letting `include_bytes!` blow up with a generic
+    // "file not found in module path" error that doesn't tell anyone
+    // what went wrong.
+    let plugin_dir = Path::new("../runt-mcp/assets/plugins");
+    let plugins = [
         "markdown.js",
         "markdown.css",
         "plotly.js",
@@ -14,8 +19,18 @@ fn main() {
         "sift.js",
         "sift.css",
         "sift_wasm.wasm",
-    ] {
-        println!("cargo:rerun-if-changed=../runt-mcp/assets/plugins/{file}");
+    ];
+    for file in plugins {
+        let path = plugin_dir.join(file);
+        println!("cargo:rerun-if-changed={}", path.display());
+        if !path.exists() {
+            panic!(
+                "Missing renderer plugin asset: {}\n\n\
+                 These artifacts are gitignored. Run `cargo xtask wasm` \
+                 from the workspace root to (re)build them.",
+                path.display(),
+            );
+        }
     }
 
     // Also rerun when this build script changes (since we emit
