@@ -2314,11 +2314,28 @@ async fn daemon_command(command: DaemonCommands) -> Result<()> {
                     std::env::current_exe().expect("Failed to get current executable path");
                 let exe_dir = current_exe.parent().unwrap();
                 let daemon_binary = runt_workspace::daemon_binary_basename();
-                exe_dir.join(if cfg!(windows) {
+                let channel_suffixed = exe_dir.join(if cfg!(windows) {
                     format!("{daemon_binary}.exe")
                 } else {
                     daemon_binary.to_string()
-                })
+                });
+
+                #[cfg(windows)]
+                {
+                    // Windows app bundles carry unsuffixed sidecars. The normal
+                    // installer path is `daemon doctor --fix`, which copies that
+                    // sidecar into the channel-suffixed service location. This
+                    // fallback keeps manual `runt daemon install` usable when the
+                    // user runs it before doctor has repaired the install.
+                    if !channel_suffixed.exists() {
+                        let unsuffixed = exe_dir.join("runtimed.exe");
+                        if unsuffixed.exists() {
+                            return unsuffixed;
+                        }
+                    }
+                }
+
+                channel_suffixed
             });
 
             if !source.exists() {

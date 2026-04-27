@@ -1,0 +1,195 @@
+#!/usr/bin/env bash
+# Install a published nteract nightly runtime stack on headless Linux.
+#
+# This is the release-artifact counterpart to scripts/install-nightly. It does
+# not build from source; it downloads or consumes already-built Linux binaries,
+# installs them under ~/.local/share/runt-nightly/bin, links the commands into
+# ~/.local/bin, writes the user systemd unit, and starts the daemon.
+
+set -euo pipefail
+
+usage() {
+  cat <<'USAGE'
+Usage:
+  scripts/install-nightly-release --tag v2.3.4-nightly.YYYYMMDDHHMM
+  scripts/install-nightly-release --from-dir /path/to/artifacts
+
+Options:
+  --tag <tag>          Download artifacts from a GitHub release tag.
+  --from-dir <dir>     Install artifacts from a local directory.
+  --repo <owner/repo>  GitHub repository for --tag (default: nteract/desktop).
+  --channel <name>     stable or nightly (default: nightly).
+  -h, --help           Show this help.
+
+Expected artifact names for nightly:
+  runt-nightly-linux-x64
+  runtimed-nightly-linux-x64
+  nteract-mcp-nightly-linux-x64
+USAGE
+}
+
+if [[ "$(uname -s)" != "Linux" ]]; then
+  echo "install-nightly-release is Linux-only." >&2
+  exit 1
+fi
+
+REPO="nteract/desktop"
+CHANNEL="nightly"
+TAG=""
+FROM_DIR=""
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --tag)
+      TAG="${2:-}"
+      shift 2
+      ;;
+    --from-dir)
+      FROM_DIR="${2:-}"
+      shift 2
+      ;;
+    --repo)
+      REPO="${2:-}"
+      shift 2
+      ;;
+    --channel)
+      CHANNEL="${2:-}"
+      shift 2
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "Unknown argument: $1" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+done
+
+if [[ -n "$TAG" && -n "$FROM_DIR" ]]; then
+  echo "Use either --tag or --from-dir, not both." >&2
+  exit 2
+fi
+if [[ -z "$TAG" && -z "$FROM_DIR" ]]; then
+  echo "Missing --tag or --from-dir." >&2
+  usage >&2
+  exit 2
+fi
+if [[ "$CHANNEL" != "nightly" && "$CHANNEL" != "stable" ]]; then
+  echo "--channel must be stable or nightly." >&2
+  exit 2
+fi
+
+if [[ "$CHANNEL" == "nightly" ]]; then
+  CLI_NAME="runt-nightly"
+  DAEMON_NAME="runtimed-nightly"
+  MCP_NAME="nteract-mcp-nightly"
+else
+  CLI_NAME="runt"
+  DAEMON_NAME="runtimed"
+  MCP_NAME="nteract-mcp"
+fi
+
+INSTALL_DIR="$HOME/.local/share/$CLI_NAME/bin"
+LINK_DIR="$HOME/.local/bin"
+SERVICE_DIR="$HOME/.config/systemd/user"
+SERVICE_UNIT="$DAEMON_NAME.service"
+DAEMON_JSON="$HOME/.cache/$CLI_NAME/daemon.json"
+
+TMP_DIR="$(mktemp -d)"
+cleanup() {
+  rm -rf "$TMP_DIR"
+}
+trap cleanup EXIT
+
+fetch_asset() {
+  local asset="$1"
+  local dest="$2"
+  if [[ -n "$FROM_DIR" ]]; then
+    local src="$FROM_DIR/$asset"
+    if [[ ! -f "$src" ]]; then
+      echo "Missing artifact: $src" >&2
+      exit 1
+    fi
+    cp "$src" "$dest"
+  else
+    local url="https://github.com/$REPO/releases/download/$TAG/$asset"
+    echo "Downloading $url"
+    curl --fail --location --show-error --silent "$url" --output "$dest"
+  fi
+  chmod 0755 "$dest"
+}
+
+atomic_install() {
+  local src="$1"
+  local dest="$2"
+  local tmp="$dest.new"
+  cp "$src" "$tmp"
+  chmod 0755 "$tmp"
+  mv -f "$tmp" "$dest"
+  echo "Installed $dest"
+}
+
+asset_for() {
+  printf '%s-linux-x64' "$1"
+}
+
+mkdir -p "$INSTALL_DIR" "$LINK_DIR" "$SERVICE_DIR"
+
+fetch_asset "$(asset_for "$CLI_NAME")" "$TMP_DIR/$CLI_NAME"
+fetch_asset "$(asset_for "$DAEMON_NAME")" "$TMP_DIR/$DAEMON_NAME"
+fetch_asset "$(asset_for "$MCP_NAME")" "$TMP_DIR/$MCP_NAME"
+
+atomic_install "$TMP_DIR/$CLI_NAME" "$INSTALL_DIR/$CLI_NAME"
+atomic_install "$TMP_DIR/$DAEMON_NAME" "$INSTALL_DIR/$DAEMON_NAME"
+atomic_install "$TMP_DIR/$MCP_NAME" "$INSTALL_DIR/$MCP_NAME"
+
+ln -sfn "$INSTALL_DIR/$CLI_NAME" "$LINK_DIR/$CLI_NAME"
+ln -sfn "$INSTALL_DIR/$MCP_NAME" "$LINK_DIR/$MCP_NAME"
+echo "Linked $LINK_DIR/$CLI_NAME -> $INSTALL_DIR/$CLI_NAME"
+echo "Linked $LINK_DIR/$MCP_NAME -> $INSTALL_DIR/$MCP_NAME"
+
+if ! PATH="$LINK_DIR:$PATH" command -v "$CLI_NAME" >/dev/null 2>&1; then
+  echo "Installed $CLI_NAME but could not resolve it on PATH." >&2
+  exit 1
+fi
+if [[ ":$PATH:" != *":$LINK_DIR:"* ]]; then
+  echo "Note: $LINK_DIR is not on this shell's PATH; new MCP hosts should include it." >&2
+fi
+
+cat > "$SERVICE_DIR/$SERVICE_UNIT" <<UNIT
+[Unit]
+Description=$DAEMON_NAME - Jupyter Runtime Daemon
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=$INSTALL_DIR/$DAEMON_NAME
+Restart=on-failure
+RestartSec=5
+Environment=HOME=$HOME
+Environment=PATH=$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin
+
+[Install]
+WantedBy=default.target
+UNIT
+echo "Wrote $SERVICE_DIR/$SERVICE_UNIT"
+
+systemctl --user daemon-reload
+systemctl --user enable "$SERVICE_UNIT" >/dev/null 2>&1
+systemctl --user restart "$SERVICE_UNIT"
+
+for _ in $(seq 1 20); do
+  sleep 0.5
+  if [[ -f "$DAEMON_JSON" ]] && jq -e .version "$DAEMON_JSON" >/dev/null 2>&1; then
+    version="$(jq -r .version "$DAEMON_JSON")"
+    echo "$CHANNEL release install complete - daemon running: version $version"
+    exit 0
+  fi
+done
+
+echo "Binaries installed and systemctl returned success, but $DAEMON_JSON" >&2
+echo "did not appear within 10s. Check: systemctl --user status $SERVICE_UNIT" >&2
+exit 1

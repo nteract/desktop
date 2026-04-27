@@ -149,12 +149,16 @@ jobs:
         run: pnpm --filter nteract-mcp-app install && vp run nteract-mcp-app#build
 
       - name: Build for Linux x64
-        run: cargo build --release --target x86_64-unknown-linux-gnu -p runt
+        run: cargo build --release --target x86_64-unknown-linux-gnu -p runt -p runtimed -p nteract-mcp
 
       - name: Rename binaries
         run: |
           cp target/x86_64-unknown-linux-gnu/release/runt runt-linux-x64
+          cp target/x86_64-unknown-linux-gnu/release/runtimed runtimed-linux-x64
+          cp target/x86_64-unknown-linux-gnu/release/nteract-mcp nteract-mcp-linux-x64
           chmod +x runt-linux-x64
+          chmod +x runtimed-linux-x64
+          chmod +x nteract-mcp-linux-x64
 
       - name: Upload Linux executables
         uses: actions/upload-artifact@v4
@@ -162,6 +166,8 @@ jobs:
           name: runt-linux-executables
           path: |
             runt-linux-x64
+            runtimed-linux-x64
+            nteract-mcp-linux-x64
 
   build-macos:
     name: Build macOS Executables
@@ -1194,12 +1200,18 @@ jobs:
         run: |
           CHANNEL="${RUNT_BUILD_CHANNEL:-stable}"
           CLI_NAME="runt"
+          DAEMON_NAME="runtimed"
+          MCP_NAME="nteract-mcp"
           if [ "$CHANNEL" = "nightly" ]; then
             CLI_NAME="runt-nightly"
+            DAEMON_NAME="runtimed-nightly"
+            MCP_NAME="nteract-mcp-nightly"
           fi
           mkdir -p release-assets
           # CLI binaries
           cp executables/runt-linux-x64 "release-assets/${CLI_NAME}-linux-x64"
+          cp executables/runtimed-linux-x64 "release-assets/${DAEMON_NAME}-linux-x64"
+          cp executables/nteract-mcp-linux-x64 "release-assets/${MCP_NAME}-linux-x64"
           cp executables/runt-darwin-arm64 "release-assets/${CLI_NAME}-darwin-arm64"
           cp executables/runt-darwin-x64 "release-assets/${CLI_NAME}-darwin-x64"
           # Notebook installers
@@ -1335,8 +1347,12 @@ jobs:
           RELEASE_INTRO: ${{ inputs.release_intro }}
         run: |
           CLI_NAME="runt"
+          DAEMON_NAME="runtimed"
+          MCP_NAME="nteract-mcp"
           if [ "$VERSION_SUFFIX" = "nightly" ]; then
             CLI_NAME="runt-nightly"
+            DAEMON_NAME="runtimed-nightly"
+            MCP_NAME="nteract-mcp-nightly"
           fi
           {
             echo "$RELEASE_INTRO"
@@ -1384,6 +1400,8 @@ jobs:
             echo '| Platform | Architecture | Download |'
             echo '|----------|--------------|----------|'
             echo "| Linux | x64 | \`${CLI_NAME}-linux-x64\` |"
+            echo "| Linux | x64 | \`${DAEMON_NAME}-linux-x64\` |"
+            echo "| Linux | x64 | \`${MCP_NAME}-linux-x64\` |"
             echo "| macOS | ARM64 | \`${CLI_NAME}-darwin-arm64\` |"
             echo "| macOS | x64 (Intel) | \`${CLI_NAME}-darwin-x64\` |"
             echo ''
@@ -1412,6 +1430,7 @@ jobs:
           prerelease: ${{ inputs.github_release_prerelease }}
           files: |
             ./release-assets/runt*-linux-x64
+            ./release-assets/nteract-mcp*-linux-x64
             ./release-assets/runt*-darwin-arm64
             ./release-assets/runt*-darwin-x64
             ./release-assets/nteract-${{ inputs.version_suffix }}-linux-x64.AppImage

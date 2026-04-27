@@ -87,6 +87,24 @@ jobs:
           bash <(curl https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash)
           ./actionlint -color
 
+  nsis-bootstrap:
+    name: NSIS Bootstrap Syntax
+    needs: [changes]
+    if: needs.changes.outputs.source_changed == 'true'
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install NSIS
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y nsis
+
+      - name: Compile bootstrap hook fixture
+        run: |
+          cd crates/notebook/nsis
+          makensis -V4 validate-bootstrap.nsi
+
   windows-clippy:
     name: Windows (clippy)
     needs: [changes]

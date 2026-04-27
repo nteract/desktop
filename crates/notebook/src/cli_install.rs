@@ -1,10 +1,10 @@
-//! CLI installation module for symlinking the bundled runt binary to PATH
-//! and creating the channel-specific notebook shorthand wrapper script.
+//! CLI installation module for putting the bundled runt binary on PATH and
+//! creating the channel-specific notebook shorthand wrapper.
 //!
 //! On Unix systems, we install to `~/.local/bin` (no admin privileges required)
 //! and create a symlink so the CLI automatically stays in sync when the app
-//! is updated. On Windows, we copy the binary since symlinks require admin
-//! and have compatibility issues.
+//! is updated. On Windows, we write small owned `.cmd` shims because symlinks
+//! require admin/Developer Mode and copied binaries drift across app upgrades.
 
 use runt_workspace::{cli_command_name, cli_notebook_alias_name};
 use std::fs;
@@ -13,8 +13,18 @@ use std::io::Write;
 use std::os::unix::fs::symlink;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
+#[cfg(target_os = "windows")]
+use std::os::windows::ffi::OsStrExt;
+#[cfg(any(target_os = "windows", test))]
+use std::path::Path;
 use std::path::PathBuf;
 use tauri::Manager;
+
+#[cfg(any(target_os = "windows", test))]
+const WINDOWS_CMD_SHIM_MARKER: &str = "nteract-managed-cli-shim v1";
+
+#[cfg(target_os = "windows")]
+const WINDOWS_REGISTRY_INSTALL_STATE_BASE: &str = "Software\\nteract";
 
 /// Legacy install directory — checked for backward compatibility detection only.
 #[cfg(unix)]
@@ -33,8 +43,47 @@ fn install_dir() -> PathBuf {
 
 #[cfg(target_os = "windows")]
 fn install_dir() -> PathBuf {
-    // Windows uses a different mechanism (App Paths registry or user PATH)
-    PathBuf::new()
+    windows_install_dir_for_install().unwrap_or_else(|e| {
+        log::warn!(
+            "[cli_install] Failed to choose Windows CLI install dir ({}), using fallback",
+            e
+        );
+        windows_fallback_cli_dir()
+    })
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn windows_cmd_name(command_name: &str) -> String {
+    format!("{command_name}.cmd")
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn cmd_escape_path(path: &Path) -> String {
+    // Batch files expand percent-delimited environment variables even inside
+    // quotes, so double literal percent signs from user/profile paths.
+    path.to_string_lossy().replace('%', "%%")
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn windows_runt_cmd_shim_contents(runt_path: &Path) -> String {
+    format!(
+        "@echo off\r\nrem {WINDOWS_CMD_SHIM_MARKER}\r\n\"{}\" %*\r\n",
+        cmd_escape_path(runt_path)
+    )
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn windows_nb_cmd_shim_contents(runt_path: &Path) -> String {
+    format!(
+        "@echo off\r\nrem {WINDOWS_CMD_SHIM_MARKER}\r\n\"{}\" notebook %*\r\n",
+        cmd_escape_path(runt_path)
+    )
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn is_owned_windows_cmd_shim(contents: &str) -> bool {
+    contents.starts_with(&format!("@echo off\r\nrem {WINDOWS_CMD_SHIM_MARKER}\r\n"))
+        || contents.starts_with(&format!("@echo off\nrem {WINDOWS_CMD_SHIM_MARKER}\n"))
 }
 
 /// Get the path to the bundled runt binary.
@@ -269,6 +318,402 @@ fn check_nb_script(script_path: &std::path::Path, expected_cli_name: &str) -> Sy
     }
 }
 
+#[cfg(target_os = "windows")]
+fn windows_apps_cli_dir() -> PathBuf {
+    dirs::data_local_dir()
+        .unwrap_or_else(windows_fallback_cli_dir)
+        .join("Microsoft")
+        .join("WindowsApps")
+}
+
+#[cfg(target_os = "windows")]
+fn windows_fallback_cli_dir() -> PathBuf {
+    dirs::home_dir()
+        .unwrap_or_else(std::env::temp_dir)
+        .join(".local")
+        .join("bin")
+}
+
+#[cfg(target_os = "windows")]
+fn windows_candidate_cli_dirs() -> [PathBuf; 2] {
+    [windows_apps_cli_dir(), windows_fallback_cli_dir()]
+}
+
+#[cfg(target_os = "windows")]
+fn windows_install_dir_for_install() -> Result<PathBuf, String> {
+    let windows_apps = windows_apps_cli_dir();
+    if windows_apps.is_dir()
+        && effective_path_contains_dir(&windows_apps)
+        && directory_is_writable(&windows_apps)
+    {
+        return Ok(windows_apps);
+    }
+
+    let fallback = windows_fallback_cli_dir();
+    fs::create_dir_all(&fallback)
+        .map_err(|e| format!("Failed to create {}: {}", fallback.display(), e))?;
+    ensure_windows_user_path(&fallback)?;
+    Ok(fallback)
+}
+
+#[cfg(target_os = "windows")]
+fn effective_path_contains_dir(dir: &Path) -> bool {
+    std::env::var_os("PATH")
+        .map(|path| path_list_contains_dir(&path.to_string_lossy(), dir))
+        .unwrap_or(false)
+}
+
+#[cfg(target_os = "windows")]
+fn directory_is_writable(dir: &Path) -> bool {
+    let probe = dir.join(format!(".nteract-write-test-{}.tmp", std::process::id()));
+    match fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&probe)
+    {
+        Ok(_) => {
+            let _ = fs::remove_file(&probe);
+            true
+        }
+        Err(e) => {
+            log::debug!(
+                "[cli_install] Windows CLI dir {} is not writable: {}",
+                dir.display(),
+                e
+            );
+            false
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn normalize_windows_path_for_compare(path: &str) -> String {
+    let trimmed = path.trim().trim_matches('"').trim_end_matches(['\\', '/']);
+    trimmed.replace('/', "\\").to_ascii_lowercase()
+}
+
+#[cfg(target_os = "windows")]
+fn path_list_contains_dir(path_list: &str, dir: &Path) -> bool {
+    let expected = normalize_windows_path_for_compare(&dir.to_string_lossy());
+    path_list
+        .split(';')
+        .map(normalize_windows_path_for_compare)
+        .any(|entry| entry == expected)
+}
+
+#[cfg(target_os = "windows")]
+fn command_path(dir: &Path, command_name: &str) -> PathBuf {
+    dir.join(windows_cmd_name(command_name))
+}
+
+#[cfg(target_os = "windows")]
+fn check_windows_cmd_shim(path: &Path, expected_contents: &str) -> SymlinkStatus {
+    if !path.exists() {
+        return SymlinkStatus::NotInstalled;
+    }
+
+    match fs::read_to_string(path) {
+        Ok(contents) => {
+            if !is_owned_windows_cmd_shim(&contents) {
+                log::debug!(
+                    "[cli_install] Windows shim {} is not managed by nteract, skipping",
+                    path.display()
+                );
+                return SymlinkStatus::NotInstalled;
+            }
+            if contents == expected_contents {
+                SymlinkStatus::Current
+            } else {
+                SymlinkStatus::Stale
+            }
+        }
+        Err(e) => {
+            log::warn!(
+                "[cli_install] Failed to read Windows shim {}: {}",
+                path.display(),
+                e
+            );
+            SymlinkStatus::NotInstalled
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn write_owned_windows_cmd_shim(path: &Path, contents: &str) -> Result<(), String> {
+    if path.exists() {
+        let existing = fs::read_to_string(path)
+            .map_err(|e| format!("Failed to read existing {}: {}", path.display(), e))?;
+        if !is_owned_windows_cmd_shim(&existing) {
+            return Err(format!(
+                "{} already exists and is not managed by nteract",
+                path.display()
+            ));
+        }
+    }
+
+    fs::write(path, contents)
+        .map_err(|e| format!("Failed to write Windows shim {}: {}", path.display(), e))
+}
+
+#[cfg(target_os = "windows")]
+fn try_install_windows_cmd_shims(
+    bundled_runt: &Path,
+    runt_dest: &Path,
+    nb_dest: &Path,
+) -> Result<(), String> {
+    if let Some(parent) = runt_dest.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|e| format!("Failed to create {}: {}", parent.display(), e))?;
+    }
+    write_owned_windows_cmd_shim(runt_dest, &windows_runt_cmd_shim_contents(bundled_runt))?;
+    write_owned_windows_cmd_shim(nb_dest, &windows_nb_cmd_shim_contents(bundled_runt))?;
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn windows_cli_currency_for_dir(
+    app: &tauri::AppHandle,
+    dir: &Path,
+) -> Option<(SymlinkStatus, SymlinkStatus)> {
+    let bundled = get_bundled_runt_path(app)?;
+    let runt_status = check_windows_cmd_shim(
+        &command_path(dir, cli_command_name()),
+        &windows_runt_cmd_shim_contents(&bundled),
+    );
+    let nb_status = check_windows_cmd_shim(
+        &command_path(dir, cli_notebook_alias_name()),
+        &windows_nb_cmd_shim_contents(&bundled),
+    );
+    Some((runt_status, nb_status))
+}
+
+#[cfg(target_os = "windows")]
+fn to_wide_null(value: &str) -> Vec<u16> {
+    std::ffi::OsStr::new(value)
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect()
+}
+
+#[cfg(target_os = "windows")]
+fn read_user_path_registry_value() -> Result<String, String> {
+    use windows_sys::Win32::Foundation::{ERROR_FILE_NOT_FOUND, ERROR_SUCCESS};
+    use windows_sys::Win32::System::Registry::{
+        RegCloseKey, RegOpenKeyExW, RegQueryValueExW, HKEY_CURRENT_USER, KEY_READ,
+    };
+
+    let subkey = to_wide_null("Environment");
+    let value_name = to_wide_null("Path");
+    let mut key = 0;
+    let status =
+        unsafe { RegOpenKeyExW(HKEY_CURRENT_USER, subkey.as_ptr(), 0, KEY_READ, &mut key) };
+    if status == ERROR_FILE_NOT_FOUND {
+        return Ok(String::new());
+    }
+    if status != ERROR_SUCCESS {
+        return Err(format!("RegOpenKeyExW(HKCU\\Environment) failed: {status}"));
+    }
+
+    let mut byte_len = 0u32;
+    let status = unsafe {
+        RegQueryValueExW(
+            key,
+            value_name.as_ptr(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            &mut byte_len,
+        )
+    };
+    if status == ERROR_FILE_NOT_FOUND {
+        unsafe {
+            RegCloseKey(key);
+        }
+        return Ok(String::new());
+    }
+    if status != ERROR_SUCCESS {
+        unsafe {
+            RegCloseKey(key);
+        }
+        return Err(format!(
+            "RegQueryValueExW(HKCU\\Environment\\Path) failed: {status}"
+        ));
+    }
+
+    let mut buffer = vec![0u16; (byte_len as usize + 1) / 2];
+    let status = unsafe {
+        RegQueryValueExW(
+            key,
+            value_name.as_ptr(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            buffer.as_mut_ptr().cast::<u8>(),
+            &mut byte_len,
+        )
+    };
+    unsafe {
+        RegCloseKey(key);
+    }
+    if status != ERROR_SUCCESS {
+        return Err(format!(
+            "RegQueryValueExW(HKCU\\Environment\\Path) failed: {status}"
+        ));
+    }
+
+    while buffer.last() == Some(&0) {
+        buffer.pop();
+    }
+    Ok(String::from_utf16_lossy(&buffer))
+}
+
+#[cfg(target_os = "windows")]
+fn write_user_path_registry_value(value: &str) -> Result<(), String> {
+    use windows_sys::Win32::Foundation::ERROR_SUCCESS;
+    use windows_sys::Win32::System::Registry::{
+        RegCloseKey, RegCreateKeyExW, RegSetValueExW, HKEY_CURRENT_USER, KEY_SET_VALUE,
+        REG_EXPAND_SZ,
+    };
+
+    let subkey = to_wide_null("Environment");
+    let value_name = to_wide_null("Path");
+    let mut key = 0;
+    let status = unsafe {
+        RegCreateKeyExW(
+            HKEY_CURRENT_USER,
+            subkey.as_ptr(),
+            0,
+            std::ptr::null_mut(),
+            0,
+            KEY_SET_VALUE,
+            std::ptr::null(),
+            &mut key,
+            std::ptr::null_mut(),
+        )
+    };
+    if status != ERROR_SUCCESS {
+        return Err(format!(
+            "RegCreateKeyExW(HKCU\\Environment) failed: {status}"
+        ));
+    }
+
+    let data = to_wide_null(value);
+    let status = unsafe {
+        RegSetValueExW(
+            key,
+            value_name.as_ptr(),
+            0,
+            REG_EXPAND_SZ,
+            data.as_ptr().cast::<u8>(),
+            (data.len() * std::mem::size_of::<u16>()) as u32,
+        )
+    };
+    unsafe {
+        RegCloseKey(key);
+    }
+    if status != ERROR_SUCCESS {
+        return Err(format!(
+            "RegSetValueExW(HKCU\\Environment\\Path) failed: {status}"
+        ));
+    }
+
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn broadcast_environment_change() {
+    use windows_sys::Win32::Foundation::{LPARAM, WPARAM};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        SendMessageTimeoutW, HWND_BROADCAST, SMTO_ABORTIFHUNG, WM_SETTINGCHANGE,
+    };
+
+    let environment = to_wide_null("Environment");
+    let mut result = 0usize;
+    unsafe {
+        SendMessageTimeoutW(
+            HWND_BROADCAST,
+            WM_SETTINGCHANGE,
+            0 as WPARAM,
+            environment.as_ptr() as LPARAM,
+            SMTO_ABORTIFHUNG,
+            5000,
+            &mut result,
+        );
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn ensure_windows_user_path(bin_dir: &Path) -> Result<(), String> {
+    let current = read_user_path_registry_value()?;
+    if path_list_contains_dir(&current, bin_dir) {
+        return Ok(());
+    }
+
+    let bin_dir = bin_dir.to_string_lossy();
+    let updated = if current.trim().is_empty() {
+        bin_dir.to_string()
+    } else {
+        format!("{};{}", current.trim_end_matches(';'), bin_dir)
+    };
+    write_user_path_registry_value(&updated)?;
+    broadcast_environment_change();
+    log::info!("[cli_install] Added {} to HKCU Environment Path", bin_dir);
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn windows_install_state_key() -> String {
+    format!(
+        "{}\\{}\\InstallState",
+        WINDOWS_REGISTRY_INSTALL_STATE_BASE,
+        runt_workspace::channel_display_name()
+    )
+}
+
+#[cfg(target_os = "windows")]
+pub fn clear_windows_update_flag() {
+    use windows_sys::Win32::Foundation::{ERROR_FILE_NOT_FOUND, ERROR_SUCCESS};
+    use windows_sys::Win32::System::Registry::{
+        RegCloseKey, RegDeleteValueW, RegOpenKeyExW, HKEY_CURRENT_USER, KEY_SET_VALUE,
+    };
+
+    let key_path = to_wide_null(&windows_install_state_key());
+    let value_name = to_wide_null("Updating");
+    let mut key = 0;
+    let status = unsafe {
+        RegOpenKeyExW(
+            HKEY_CURRENT_USER,
+            key_path.as_ptr(),
+            0,
+            KEY_SET_VALUE,
+            &mut key,
+        )
+    };
+    if status == ERROR_FILE_NOT_FOUND {
+        return;
+    }
+    if status != ERROR_SUCCESS {
+        log::debug!(
+            "[cli_install] Failed to open Windows install state key for cleanup: {}",
+            status
+        );
+        return;
+    }
+
+    let status = unsafe { RegDeleteValueW(key, value_name.as_ptr()) };
+    unsafe {
+        RegCloseKey(key);
+    }
+    if status != ERROR_SUCCESS && status != ERROR_FILE_NOT_FOUND {
+        log::debug!(
+            "[cli_install] Failed to clear Windows update flag: {}",
+            status
+        );
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn clear_windows_update_flag() {}
+
 /// Returns true if the app appears to be running from a temporary or
 /// ephemeral path. We must not rewrite CLI symlinks in this case because
 /// the path will disappear, leaving the symlinks broken.
@@ -305,20 +750,88 @@ fn is_ephemeral_path(app: &tauri::AppHandle) -> bool {
     ephemeral
 }
 
-/// Silently update the CLI installation if the symlinks are stale.
+/// Silently update the CLI installation if the installed command entrypoints
+/// are stale.
 ///
-/// Called on app launch. If the user has previously installed the CLI (symlink
-/// exists), this checks whether it still points to the current app bundle and
-/// re-runs `install_cli()` if not. Does nothing if the CLI was never installed.
+/// Called on app launch. On Unix, if the user has previously installed the CLI
+/// (symlink exists), this checks whether it still points to the current app
+/// bundle and re-runs `install_cli()` if not. On Windows, the installer should
+/// have created owned `.cmd` shims already; app launch repairs stale/missing
+/// shims so older installs and failed installer hooks still recover for UI use.
 ///
 /// Skips the check in dev mode (source builds) and on macOS if the app is
 /// running from a translocated path (e.g., directly from a DMG).
 pub fn ensure_cli_current(app: &tauri::AppHandle) {
-    #[cfg(not(unix))]
+    #[cfg(target_os = "windows")]
     {
-        let _ = app;
-        // On Windows, CLI install copies the binary — no symlink to check.
-        // A future enhancement could compare binary hashes.
+        if runt_workspace::is_dev_mode() {
+            log::debug!("[cli_install] Dev mode — skipping Windows CLI currency check");
+            clear_windows_update_flag();
+            return;
+        }
+
+        let Some(bundled_runt) = get_bundled_runt_path(app) else {
+            log::debug!("[cli_install] Cannot determine bundled runt path for Windows CLI check");
+            clear_windows_update_flag();
+            return;
+        };
+
+        let mut saw_blocking_conflict = false;
+        for dir in windows_candidate_cli_dirs() {
+            let Some((runt_status, nb_status)) = windows_cli_currency_for_dir(app, &dir) else {
+                continue;
+            };
+
+            let runt_path = command_path(&dir, cli_command_name());
+            let nb_path = command_path(&dir, cli_notebook_alias_name());
+            let runt_exists = fs::symlink_metadata(&runt_path).is_ok();
+            let nb_exists = fs::symlink_metadata(&nb_path).is_ok();
+            let runt_owned = runt_status != SymlinkStatus::NotInstalled || !runt_exists;
+            let nb_owned = nb_status != SymlinkStatus::NotInstalled || !nb_exists;
+
+            if runt_status == SymlinkStatus::Current && nb_status == SymlinkStatus::Current {
+                log::debug!(
+                    "[cli_install] Windows CLI shims current in {}",
+                    dir.display()
+                );
+                clear_windows_update_flag();
+                return;
+            }
+
+            if !runt_owned || !nb_owned {
+                log::info!(
+                    "[cli_install] Windows CLI shim path in {} is occupied by an unrelated command; skipping auto-repair",
+                    dir.display()
+                );
+                saw_blocking_conflict = true;
+                continue;
+            }
+
+            if runt_exists || nb_exists {
+                log::info!(
+                    "[cli_install] Windows CLI shims need update in {} (runt={:?}, nb={:?})",
+                    dir.display(),
+                    runt_status,
+                    nb_status
+                );
+                if let Err(e) = try_install_windows_cmd_shims(&bundled_runt, &runt_path, &nb_path) {
+                    log::warn!("[cli_install] Failed to repair Windows CLI shims: {}", e);
+                }
+                clear_windows_update_flag();
+                return;
+            }
+        }
+
+        if saw_blocking_conflict {
+            clear_windows_update_flag();
+            return;
+        }
+
+        log::info!("[cli_install] Windows CLI shims are missing; installing them for this app");
+        if let Err(e) = install_cli(app) {
+            log::warn!("[cli_install] Failed to install Windows CLI shims: {}", e);
+        }
+        clear_windows_update_flag();
     }
 
     #[cfg(unix)]
@@ -409,8 +922,19 @@ pub fn is_cli_installed() -> bool {
 pub fn is_cli_installed_local() -> bool {
     let cli_name = cli_command_name();
     let nb_name = cli_notebook_alias_name();
-    let dir = install_dir();
-    dir.join(cli_name).exists() && dir.join(nb_name).exists()
+
+    #[cfg(target_os = "windows")]
+    {
+        return windows_candidate_cli_dirs().iter().any(|dir| {
+            command_path(dir, cli_name).exists() && command_path(dir, nb_name).exists()
+        });
+    }
+
+    #[cfg(unix)]
+    {
+        let dir = install_dir();
+        dir.join(cli_name).exists() && dir.join(nb_name).exists()
+    }
 }
 
 /// Check if the CLI has a legacy install in `/usr/local/bin`.
@@ -428,7 +952,7 @@ pub fn is_cli_installed_legacy() -> bool {
     }
 }
 
-/// Install the CLI to `~/.local/bin` (no admin privileges needed).
+/// Install the CLI to the user-local command directory (no admin privileges needed).
 /// Returns Ok(()) on success, Err with message on failure.
 pub fn install_cli(app: &tauri::AppHandle) -> Result<(), String> {
     let bundled_runt = get_bundled_runt_path(app)
@@ -439,8 +963,17 @@ pub fn install_cli(app: &tauri::AppHandle) -> Result<(), String> {
     // Ensure ~/.local/bin exists
     fs::create_dir_all(&dir).map_err(|e| format!("Failed to create {}: {}", dir.display(), e))?;
 
-    let runt_dest = dir.join(cli_command_name());
-    let nb_dest = dir.join(cli_notebook_alias_name());
+    #[cfg(target_os = "windows")]
+    let (runt_dest, nb_dest) = (
+        command_path(&dir, cli_command_name()),
+        command_path(&dir, cli_notebook_alias_name()),
+    );
+
+    #[cfg(unix)]
+    let (runt_dest, nb_dest) = (
+        dir.join(cli_command_name()),
+        dir.join(cli_notebook_alias_name()),
+    );
 
     try_install_direct(&bundled_runt, &runt_dest, &nb_dest)?;
 
@@ -454,9 +987,12 @@ pub fn install_cli(app: &tauri::AppHandle) -> Result<(), String> {
     #[cfg(unix)]
     warn_legacy_cli_shadow();
 
-    // Ensure the user's shell RC has ~/.local/bin on PATH
-    if let Err(e) = ensure_shell_path(&dir) {
-        log::warn!("[cli_install] Shell PATH integration skipped: {}", e);
+    #[cfg(unix)]
+    {
+        // Ensure the user's shell RC has ~/.local/bin on PATH.
+        if let Err(e) = ensure_shell_path(&dir) {
+            log::warn!("[cli_install] Shell PATH integration skipped: {}", e);
+        }
     }
 
     Ok(())
@@ -499,31 +1035,31 @@ fn try_install_direct(
     runt_dest: &std::path::Path,
     nb_dest: &std::path::Path,
 ) -> Result<(), String> {
-    // Remove existing file/symlink if present
-    if runt_dest.exists() || runt_dest.is_symlink() {
-        fs::remove_file(runt_dest)
-            .map_err(|e| format!("Failed to remove existing {}: {}", cli_command_name(), e))?;
-    }
-
-    // On Unix, create a symlink so the CLI stays in sync when the app updates.
-    // On Windows, copy the binary since symlinks require admin and have issues.
     #[cfg(unix)]
     {
+        // Remove existing file/symlink if present. Unix install paths are the
+        // existing user-local/manual flow; ownership checks happen before
+        // auto-repair on app launch.
+        if runt_dest.exists() || runt_dest.is_symlink() {
+            fs::remove_file(runt_dest)
+                .map_err(|e| format!("Failed to remove existing {}: {}", cli_command_name(), e))?;
+        }
+
+        // Create a symlink so the CLI stays in sync when the app updates.
         symlink(bundled_runt, runt_dest).map_err(|e| format!("Failed to create symlink: {}", e))?;
+
+        // Create nb wrapper script.
+        create_nb_wrapper(nb_dest, cli_command_name())?;
     }
 
-    #[cfg(windows)]
-    {
-        fs::copy(bundled_runt, runt_dest).map_err(|e| format!("Failed to copy runt: {}", e))?;
-    }
-
-    // Create nb wrapper script
-    create_nb_wrapper(nb_dest, cli_command_name())?;
+    #[cfg(target_os = "windows")]
+    try_install_windows_cmd_shims(bundled_runt, runt_dest, nb_dest)?;
 
     Ok(())
 }
 
 /// Create the nb wrapper script
+#[cfg(unix)]
 fn create_nb_wrapper(nb_dest: &std::path::Path, cli_command: &str) -> Result<(), String> {
     let script = format!(
         r#"#!/bin/bash
@@ -560,6 +1096,7 @@ exec {} notebook "$@"
 /// Appends a PATH export to `~/.zshrc`, `~/.bashrc`, or fish config if
 /// `~/.local/bin` isn't already referenced. Idempotent — checks for the
 /// marker comment or an existing `.local/bin` PATH entry before appending.
+#[cfg(unix)]
 fn ensure_shell_path(bin_dir: &std::path::Path) -> Result<(), String> {
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
     let home = dirs::home_dir().ok_or("could not determine home directory")?;
@@ -846,10 +1383,7 @@ fn escalate_shell_command(shell_cmd: &str) -> Result<(), String> {
     Ok(())
 }
 
-// All tests below exercise Unix-only shell-script symlink paths. On
-// Windows the module would be empty and `use super::*;` resolves to
-// nothing, tripping clippy's `unused-imports` on `-D warnings`.
-#[cfg(all(test, unix))]
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -938,5 +1472,51 @@ mod tests {
         // A regular file (not a symlink) should be NotInstalled, not Stale
         assert!(file_path.exists());
         assert!(!file_path.is_symlink());
+    }
+
+    #[test]
+    fn windows_cmd_shim_invokes_absolute_runt_path() {
+        let runt = PathBuf::from(r"C:\Users\Alice\AppData\Local\nteract Nightly\runt.exe");
+
+        assert_eq!(
+            windows_runt_cmd_shim_contents(&runt),
+            "@echo off\r\nrem nteract-managed-cli-shim v1\r\n\"C:\\Users\\Alice\\AppData\\Local\\nteract Nightly\\runt.exe\" %*\r\n"
+        );
+    }
+
+    #[test]
+    fn windows_cmd_names_are_batch_files() {
+        assert_eq!(windows_cmd_name("runt-nightly"), "runt-nightly.cmd");
+        assert_eq!(windows_cmd_name("nb-nightly"), "nb-nightly.cmd");
+    }
+
+    #[test]
+    fn windows_nb_cmd_shim_invokes_notebook_mode_directly() {
+        let runt = PathBuf::from(r"C:\Users\Alice\AppData\Local\nteract Nightly\runt.exe");
+
+        assert_eq!(
+            windows_nb_cmd_shim_contents(&runt),
+            "@echo off\r\nrem nteract-managed-cli-shim v1\r\n\"C:\\Users\\Alice\\AppData\\Local\\nteract Nightly\\runt.exe\" notebook %*\r\n"
+        );
+    }
+
+    #[test]
+    fn windows_cmd_shim_escapes_percent_signs_in_paths() {
+        let runt = PathBuf::from(r"C:\Users\100% Real\AppData\Local\nteract Nightly\runt.exe");
+
+        assert!(windows_runt_cmd_shim_contents(&runt).contains(r"100%% Real"));
+    }
+
+    #[test]
+    fn windows_cmd_shim_ownership_requires_marker() {
+        assert!(is_owned_windows_cmd_shim(
+            "@echo off\r\nrem nteract-managed-cli-shim v1\r\n\"runt.exe\" %*\r\n"
+        ));
+        assert!(!is_owned_windows_cmd_shim(
+            "@echo off\r\n\"some-other-runt.exe\" %*\r\n"
+        ));
+        assert!(!is_owned_windows_cmd_shim(
+            "@echo off\r\n\"some-other-runt.exe\" %*\r\nrem nteract-managed-cli-shim v1\r\n"
+        ));
     }
 }
