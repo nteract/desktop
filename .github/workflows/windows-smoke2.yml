@@ -1,19 +1,21 @@
-name: Windows smoke
+name: Windows smoke 2
 
-# Builds the NSIS installer, installs it on a windows-latest runner, and
-# exercises the bundled `runt.exe` / `runtimed.exe` CLIs without a GUI.
-# Goal: catch breakage in the install + kernel-launch path that the existing
-# release pipeline never exercises (it builds Windows artifacts but doesn't
-# install or run them).
+# Experimental sibling of `windows-smoke`. Same install + MCP-driven smoke
+# shape; differs only in how the daemon is spawned. The original workflow's
+# `Start-Process -WindowStyle Hidden` inherits the runner's job object, so
+# the daemon dies a few seconds after the spawning step completes (visible
+# as: status check passes inside the spawning step, but `runt ps` in the
+# next step fails with "file not found"). This variant uses
+# `cmd.exe /C start "" /B ...` for a real detached spawn.
 #
-# Triggered manually via workflow_dispatch and on every push to this branch
-# while we iterate. Will tighten triggers once it's stable.
+# Run side-by-side with the primary workflow so we can compare which
+# spawn pattern survives.
 
 on:
   workflow_dispatch:
   push:
     branches:
-      - windows-ci-smoke
+      - windows-ci-smoke2
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -38,7 +40,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: windows-smoke
+          shared-key: windows-smoke2
 
       - uses: voidzero-dev/setup-vp@v1
         with:
@@ -146,17 +148,31 @@ jobs:
           }
           & $env:RUNT --version
 
-      - name: Start daemon in background
-        # Service install would write to the registry / Startup folder. For a
-        # one-shot CI smoke, just spawn the daemon directly and let the OS
-        # reap it when the job ends.
+      - name: Start daemon in background (detached via cmd start)
+        # Variant 2: spawn via `cmd /C start "" /B` so the daemon process
+        # breaks free of the GitHub Actions runner's job object and survives
+        # past the end of this PowerShell step. The original workflow used
+        # `Start-Process -WindowStyle Hidden` which on this runner inherits
+        # the job, so the daemon vanishes when the step completes (visible
+        # as runtimed.log holding only the early-startup line, then `runt
+        # ps` on the next step failing with file-not-found).
         #
-        # Pool sizes: 1 UV env to back our smoke notebook, no conda or pixi.
-        # Default would warm 3+3+2 = 8 envs on a cold runner. We need exactly
-        # one for the smoke; the rest is wasted bandwidth.
+        # Pool sizes: 1 UV env, no conda or pixi. Default would warm 3+3+2 =
+        # 8 envs on a cold runner. We need one for the smoke; the rest is
+        # wasted bandwidth.
+        #
+        # Note: -ArgumentList in PowerShell's Start-Process re-tokenizes
+        # array-form args inconsistently across PS versions, which is how
+        # the previous run silently dropped --uv-pool-size 1 and warmed 3.
+        # Pass a single quoted string to cmd.exe so the args are received
+        # verbatim by runtimed.exe.
         shell: pwsh
         run: |
-          Start-Process -FilePath $env:RUNTIMED -ArgumentList "run", "--uv-pool-size", "1", "--conda-pool-size", "0", "--pixi-pool-size", "0" -WindowStyle Hidden -RedirectStandardOutput "$env:RUNNER_TEMP\runtimed.stdout.log" -RedirectStandardError "$env:RUNNER_TEMP\runtimed.stderr.log"
+          $logOut = "$env:RUNNER_TEMP\runtimed.stdout.log"
+          $logErr = "$env:RUNNER_TEMP\runtimed.stderr.log"
+          $cmdLine = '"' + $env:RUNTIMED + '" run --uv-pool-size 1 --conda-pool-size 0 --pixi-pool-size 0 > "' + $logOut + '" 2> "' + $logErr + '"'
+          Write-Host "Spawning: $cmdLine"
+          cmd /C "start `"runtimed`" /B $cmdLine"
           # Wait for the named pipe to come up. `runt daemon status --json`
           # always exits 0 (the report itself describes whether the daemon is
           # up), so check the JSON's `running` field, not the exit code.
