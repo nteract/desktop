@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { check } from "@tauri-apps/plugin-updater";
 import { AlertTriangle, Check, Circle, Link2, Loader2, Notebook, Trash2 } from "lucide-react";
@@ -517,7 +518,7 @@ export default function App() {
             )}
 
             {hasFailed ? (
-              <Button onClick={() => window.close()} className="w-full" size="lg">
+              <Button onClick={() => getCurrentWindow().close()} className="w-full" size="lg">
                 Close
               </Button>
             ) : (
