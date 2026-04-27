@@ -3753,7 +3753,7 @@ async fn test_check_and_update_trust_state_idempotent() {
 /// user adds a dependency. Before the fix, any dep write — whether from
 /// the UI (WASM → daemon) or an external file edit — would arrive with the
 /// stale signature, flip trust to SignatureInvalid, and kill the running
-/// kernel before the sidecar's `approve_notebook_trust` RPC landed.
+/// kernel before the user could approve the updated dependencies.
 ///
 /// The fix: when the room is already Trusted and new deps would produce a
 /// SignatureInvalid verification, re-sign in place with the daemon's trust

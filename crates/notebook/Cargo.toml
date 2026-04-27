@@ -44,7 +44,6 @@ runtimed-client = { path = "../runtimed-client" }
 notebook-doc = { path = "../notebook-doc" }
 notebook-protocol = { path = "../notebook-protocol" }
 notebook-sync = { path = "../notebook-sync" }
-runt-trust = { path = "../runt-trust" }
 runt-workspace = { path = "../runt-workspace" }
 nbformat = { workspace = true }
 log = "0.4"

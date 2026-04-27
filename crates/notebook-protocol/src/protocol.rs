@@ -435,36 +435,21 @@ pub enum NotebookRequest {
         dependency_fingerprint: String,
     },
 
+    /// Approve the current dependency metadata for this notebook.
+    ///
+    /// The daemon signs the current runt metadata and writes the trust fields
+    /// into the Automerge document. `dependency_fingerprint` is supplied by
+    /// the frontend when approval is tied to an already-open trust dialog; if
+    /// the current dependency metadata no longer matches, the daemon returns
+    /// `GuardRejected` instead of signing stale content.
+    ApproveTrust {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        dependency_fingerprint: Option<String>,
+    },
+
     /// Get the full Automerge document bytes from the daemon's canonical doc.
     /// Used by the frontend to bootstrap its WASM Automerge peer.
     GetDocBytes {},
-
-    /// Get raw metadata JSON from the daemon's Automerge doc.
-    /// Returns the value stored at the given key.
-    GetRawMetadata {
-        /// Metadata key to read.
-        key: String,
-    },
-
-    /// Set raw metadata JSON in the daemon's Automerge doc.
-    /// Writes the JSON string at the given key, then syncs to all peers.
-    SetRawMetadata {
-        /// Metadata key to write.
-        key: String,
-        /// JSON string value to store.
-        value: String,
-    },
-
-    /// Get the typed notebook metadata snapshot from native Automerge keys.
-    /// Returns the serialized NotebookMetadataSnapshot, or None if not available.
-    GetMetadataSnapshot {},
-
-    /// Set the typed notebook metadata snapshot using native Automerge keys.
-    /// Takes a serialized NotebookMetadataSnapshot JSON string.
-    SetMetadataSnapshot {
-        /// JSON string of NotebookMetadataSnapshot.
-        snapshot: String,
-    },
 
     /// Check if a runtime tool is available (e.g., "deno").
     /// The daemon checks without triggering bootstrap — safe for UI hints.
@@ -590,21 +575,6 @@ pub enum NotebookResponse {
     DocBytes {
         /// Raw Automerge document bytes, encoded as a Vec for JSON transport.
         bytes: Vec<u8>,
-    },
-
-    /// Raw metadata JSON value from the daemon's Automerge doc.
-    RawMetadata {
-        /// The metadata JSON string, or None if the key doesn't exist.
-        value: Option<String>,
-    },
-
-    /// Metadata was set successfully.
-    MetadataSet {},
-
-    /// Typed notebook metadata snapshot from native Automerge keys.
-    MetadataSnapshot {
-        /// Serialized NotebookMetadataSnapshot JSON, or None if not available.
-        snapshot: Option<String>,
     },
 
     /// Tool availability result.
@@ -951,6 +921,9 @@ mod tests {
                 observed_heads,
                 dependency_fingerprint,
             },
+            NotebookRequest::ApproveTrust {
+                dependency_fingerprint: Some("{\"uv\":{\"dependencies\":[\"numpy\"]}}".into()),
+            },
         ];
 
         for request in cases {
@@ -1038,6 +1011,13 @@ mod tests {
                 serde_json::json!({
                     "action": "sync_environment_guarded",
                     "observed_heads": ["abc"],
+                    "dependency_fingerprint": "{}",
+                }),
+            ),
+            (
+                "approve_trust",
+                serde_json::json!({
+                    "action": "approve_trust",
                     "dependency_fingerprint": "{}",
                 }),
             ),

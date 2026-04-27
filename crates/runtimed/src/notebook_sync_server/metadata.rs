@@ -735,10 +735,11 @@ pub(crate) async fn check_and_broadcast_sync_state(room: &NotebookRoom) {
 
 /// Re-verify trust from the Automerge doc and update room.trust_state + RuntimeStateDoc.
 ///
-/// Called after every Automerge sync message to detect when the frontend writes
-/// a trust signature (via approve_notebook_trust). Without this, room.trust_state
-/// would remain stale from initial room creation and the trust banner would
-/// reappear on reconnection.
+/// Called after every Automerge sync message to detect trust metadata changes.
+/// Explicit approvals now flow through `NotebookRequest::ApproveTrust`, but
+/// external file reloads and older docs can still update trust fields through
+/// normal CRDT sync. Without this, room.trust_state would remain stale from
+/// initial room creation and the trust banner would reappear on reconnection.
 pub(crate) async fn check_and_update_trust_state(room: &NotebookRoom) {
     let current_metadata = {
         let doc = room.doc.read().await;
@@ -3422,7 +3423,7 @@ pub(crate) async fn update_kernel_presence(
 ///
 /// Returns a static string — no allocation — suitable for structured logging
 /// fields.  Intentionally avoids `Debug` formatting because some variants
-/// carry large payloads (snapshot JSON, doc bytes) that would bloat log lines.
+/// carry large payloads (doc bytes, comm messages) that would bloat log lines.
 pub(crate) fn request_label(req: &NotebookRequest) -> &'static str {
     match req {
         NotebookRequest::LaunchKernel { .. } => "LaunchKernel",
@@ -3442,11 +3443,8 @@ pub(crate) fn request_label(req: &NotebookRequest) -> &'static str {
         NotebookRequest::CloneAsEphemeral { .. } => "CloneAsEphemeral",
         NotebookRequest::SyncEnvironment { .. } => "SyncEnvironment",
         NotebookRequest::SyncEnvironmentGuarded { .. } => "SyncEnvironmentGuarded",
+        NotebookRequest::ApproveTrust { .. } => "ApproveTrust",
         NotebookRequest::GetDocBytes { .. } => "GetDocBytes",
-        NotebookRequest::GetRawMetadata { .. } => "GetRawMetadata",
-        NotebookRequest::SetRawMetadata { .. } => "SetRawMetadata",
-        NotebookRequest::GetMetadataSnapshot { .. } => "GetMetadataSnapshot",
-        NotebookRequest::SetMetadataSnapshot { .. } => "SetMetadataSnapshot",
         NotebookRequest::CheckToolAvailable { .. } => "CheckToolAvailable",
     }
 }
@@ -3543,23 +3541,11 @@ pub(crate) async fn handle_notebook_request(
             .await
         }
 
+        NotebookRequest::ApproveTrust {
+            dependency_fingerprint,
+        } => crate::requests::approve_trust::handle(room, dependency_fingerprint).await,
+
         NotebookRequest::GetDocBytes {} => crate::requests::get_doc_bytes::handle(room).await,
-
-        NotebookRequest::GetRawMetadata { key } => {
-            crate::requests::get_raw_metadata::handle(room, key).await
-        }
-
-        NotebookRequest::SetRawMetadata { key, value } => {
-            crate::requests::set_raw_metadata::handle(room, key, value).await
-        }
-
-        NotebookRequest::GetMetadataSnapshot {} => {
-            crate::requests::get_metadata_snapshot::handle(room).await
-        }
-
-        NotebookRequest::SetMetadataSnapshot { snapshot } => {
-            crate::requests::set_metadata_snapshot::handle(room, snapshot).await
-        }
 
         NotebookRequest::CheckToolAvailable { tool } => {
             crate::requests::check_tool_available::handle(tool).await

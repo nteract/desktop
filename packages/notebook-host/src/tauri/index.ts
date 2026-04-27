@@ -1,11 +1,10 @@
 /**
  * `createTauriHost()` — Tauri desktop app implementation of `NotebookHost`.
  *
- * Zero behavior change compared to the direct `invoke(…)` / `webview.listen(…)`
- * calls the frontend used previously. Every method here is a thin wrapper
- * around an existing Tauri command or plugin call, shaped to match the
- * `NotebookHost` interface so call sites stop importing `@tauri-apps/api`
- * directly.
+ * Most methods are thin wrappers around an existing Tauri command or plugin
+ * call, shaped to match the `NotebookHost` interface so call sites stop
+ * importing `@tauri-apps/api` directly. Notebook-scoped control operations
+ * that must be daemon-owned use the supplied `NotebookTransport`.
  *
  * The transport is passed in rather than constructed here because the
  * `TauriTransport` class currently lives in `apps/notebook/src/lib/` and
@@ -25,7 +24,7 @@ import {
 } from "@tauri-apps/plugin-log";
 import { open as pluginOpenShell } from "@tauri-apps/plugin-shell";
 import { check as pluginCheckUpdate } from "@tauri-apps/plugin-updater";
-import type { NotebookTransport } from "runtimed";
+import type { NotebookResponse, NotebookTransport } from "runtimed";
 import { createCommandRegistry } from "../commands";
 import { wireTauriMenuBridge } from "./menu-bridge";
 import { TauriTransport } from "./transport";
@@ -115,9 +114,23 @@ export function createTauriHost(opts: CreateTauriHostOptions = {}): NotebookHost
 
   const trust: HostTrust = {
     async approve(options) {
-      await invoke("approve_notebook_trust", {
-        dependencyFingerprint: options?.dependencyFingerprint,
-      });
+      const response = (await transport.sendRequest({
+        type: "approve_trust",
+        ...(options?.dependencyFingerprint !== undefined
+          ? { dependency_fingerprint: options.dependencyFingerprint }
+          : {}),
+      })) as NotebookResponse;
+
+      switch (response.result) {
+        case "ok":
+          return;
+        case "guard_rejected":
+          throw new Error(response.reason);
+        case "error":
+          throw new Error(response.error);
+        default:
+          throw new Error(`Unexpected approve_trust response: ${JSON.stringify(response)}`);
+      }
     },
   };
 

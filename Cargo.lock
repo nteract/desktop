@@ -4458,7 +4458,6 @@ dependencies = [
  "notebook-protocol",
  "notebook-sync",
  "rfd 0.17.2",
- "runt-trust",
  "runt-workspace",
  "runtimed-client",
  "serde",

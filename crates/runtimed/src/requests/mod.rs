@@ -12,6 +12,7 @@
 //! This is a behavior-preserving split of the old 2k-line match statement —
 //! lock scoping, log lines, error strings, and response variants are untouched.
 
+pub(crate) mod approve_trust;
 pub(crate) mod check_tool_available;
 pub(crate) mod clear_outputs;
 pub(crate) mod clone_notebook;
@@ -20,16 +21,12 @@ pub(crate) mod execute_cell;
 pub(crate) mod get_doc_bytes;
 pub(crate) mod get_history;
 pub(crate) mod get_kernel_info;
-pub(crate) mod get_metadata_snapshot;
 pub(crate) mod get_queue_state;
-pub(crate) mod get_raw_metadata;
 pub(crate) mod guarded;
 pub(crate) mod interrupt_execution;
 pub(crate) mod launch_kernel;
 pub(crate) mod run_all_cells;
 pub(crate) mod save_notebook;
 pub(crate) mod send_comm;
-pub(crate) mod set_metadata_snapshot;
-pub(crate) mod set_raw_metadata;
 pub(crate) mod shutdown_kernel;
 pub(crate) mod sync_environment;
