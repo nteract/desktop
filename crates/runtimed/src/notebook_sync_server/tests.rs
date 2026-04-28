@@ -5968,6 +5968,26 @@ fn test_missing_conda_env_yml_name_skips_non_envyml() {
     assert_eq!(missing_conda_env_yml_name(&detected), None);
 }
 
+#[test]
+fn test_missing_conda_env_yml_name_skips_unnamed_envyml() {
+    let tmp = tempfile::tempdir().unwrap();
+    let yml_path = tmp.path().join("environment.yml");
+    std::fs::write(
+        &yml_path,
+        "channels:\n  - conda-forge\ndependencies:\n  - python\n  - ipykernel\n",
+    )
+    .unwrap();
+    let detected = crate::project_file::DetectedProjectFile {
+        path: yml_path,
+        kind: crate::project_file::ProjectFileKind::EnvironmentYml,
+    };
+    assert_eq!(
+        missing_conda_env_yml_name(&detected),
+        None,
+        "unnamed environment.yml should not enter the named-env build decision flow",
+    );
+}
+
 /// Codex P2 on #2167: `prefix:` pointing at a non-existent path must
 /// be reported as missing so `auto_launch_kernel` surfaces the typed
 /// error instead of letting the runtime agent die with the generic

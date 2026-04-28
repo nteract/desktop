@@ -28,8 +28,8 @@ describe("isKernelStatus", () => {
 });
 
 describe("KERNEL_STATUS", () => {
-  it("contains exactly seven statuses", () => {
-    expect(Object.keys(KERNEL_STATUS)).toHaveLength(7);
+  it("contains exactly eight statuses", () => {
+    expect(Object.keys(KERNEL_STATUS)).toHaveLength(8);
   });
 
   it("has expected values", () => {
@@ -40,6 +40,7 @@ describe("KERNEL_STATUS", () => {
     expect(KERNEL_STATUS.ERROR).toBe("error");
     expect(KERNEL_STATUS.SHUTDOWN).toBe("shutdown");
     expect(KERNEL_STATUS.AWAITING_TRUST).toBe("awaiting_trust");
+    expect(KERNEL_STATUS.AWAITING_ENV_BUILD).toBe("awaiting_env_build");
   });
 });
 
@@ -48,6 +49,11 @@ describe("getLifecycleLabel", () => {
     const cases: [RuntimeLifecycle, string | null, string][] = [
       [{ lifecycle: "NotStarted" }, null, RUNTIME_STATUS_LABELS[RUNTIME_STATUS.NOT_STARTED]],
       [{ lifecycle: "AwaitingTrust" }, null, RUNTIME_STATUS_LABELS[RUNTIME_STATUS.AWAITING_TRUST]],
+      [
+        { lifecycle: "AwaitingEnvBuild" },
+        null,
+        RUNTIME_STATUS_LABELS[RUNTIME_STATUS.AWAITING_ENV_BUILD],
+      ],
       [{ lifecycle: "Resolving" }, null, RUNTIME_STATUS_LABELS[RUNTIME_STATUS.RESOLVING]],
       [{ lifecycle: "PreparingEnv" }, null, RUNTIME_STATUS_LABELS[RUNTIME_STATUS.PREPARING_ENV]],
       [{ lifecycle: "Launching" }, null, RUNTIME_STATUS_LABELS[RUNTIME_STATUS.LAUNCHING]],

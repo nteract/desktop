@@ -46,6 +46,7 @@ const STATUS_KEY_FOR: Record<KernelStatus, RuntimeStatusKey> = {
   [KERNEL_STATUS.ERROR]: RUNTIME_STATUS.ERROR,
   [KERNEL_STATUS.SHUTDOWN]: RUNTIME_STATUS.SHUTDOWN,
   [KERNEL_STATUS.AWAITING_TRUST]: RUNTIME_STATUS.AWAITING_TRUST,
+  [KERNEL_STATUS.AWAITING_ENV_BUILD]: RUNTIME_STATUS.AWAITING_ENV_BUILD,
 };
 
 function propsForStatus(status: KernelStatus) {
@@ -468,6 +469,69 @@ describe("NotebookToolbar", () => {
       );
       expect(screen.queryByText(/ipykernel missing from/)).not.toBeInTheDocument();
       expect(screen.queryByText(/ipykernel not found/)).not.toBeInTheDocument();
+    });
+  });
+
+  describe("environment.yml missing conda env prompt", () => {
+    const errorLifecycle: RuntimeLifecycle = { lifecycle: "Error" };
+    const details =
+      "environment.yml declares conda env 'analysis', which is not built on this machine. Run: conda env create -f /tmp/project/environment.yml";
+
+    it("shows the conda env missing banner with daemon details", () => {
+      render(
+        <NotebookToolbar
+          {...baseProps}
+          runtime="python"
+          kernelStatus={KERNEL_STATUS.ERROR}
+          statusKey={RUNTIME_STATUS.ERROR}
+          lifecycle={errorLifecycle}
+          errorReason={KERNEL_ERROR_REASON.CONDA_ENV_YML_MISSING}
+          kernelErrorMessage={details}
+        />,
+      );
+
+      expect(screen.getByTestId("conda-env-yml-missing-banner")).toBeInTheDocument();
+      expect(screen.getByText(details)).toBeInTheDocument();
+    });
+
+    it("copies only the conda env create command", async () => {
+      const user = userEvent.setup();
+      const writeText = vi.fn().mockResolvedValue(undefined);
+      Object.defineProperty(navigator, "clipboard", {
+        value: { writeText },
+        configurable: true,
+      });
+
+      render(
+        <NotebookToolbar
+          {...baseProps}
+          runtime="python"
+          kernelStatus={KERNEL_STATUS.ERROR}
+          statusKey={RUNTIME_STATUS.ERROR}
+          lifecycle={errorLifecycle}
+          errorReason={KERNEL_ERROR_REASON.CONDA_ENV_YML_MISSING}
+          kernelErrorMessage={details}
+        />,
+      );
+
+      await user.click(screen.getByTestId("copy-conda-env-command"));
+      expect(writeText).toHaveBeenCalledWith("conda env create -f /tmp/project/environment.yml");
+      expect(screen.getByText("Copied")).toBeInTheDocument();
+    });
+
+    it("does not show the banner outside the typed conda env error", () => {
+      render(
+        <NotebookToolbar
+          {...baseProps}
+          runtime="python"
+          kernelStatus={KERNEL_STATUS.ERROR}
+          statusKey={RUNTIME_STATUS.ERROR}
+          lifecycle={errorLifecycle}
+          errorReason={null}
+          kernelErrorMessage={details}
+        />,
+      );
+      expect(screen.queryByTestId("conda-env-yml-missing-banner")).not.toBeInTheDocument();
     });
   });
 });

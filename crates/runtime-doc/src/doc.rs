@@ -8,7 +8,7 @@
 //! ```text
 //! ROOT/
 //!   kernel/
-//!     lifecycle: Str       ("NotStarted" | "AwaitingTrust" | "Resolving" | "PreparingEnv"
+//!     lifecycle: Str       ("NotStarted" | "AwaitingTrust" | "AwaitingEnvBuild" | "Resolving" | "PreparingEnv"
 //!                           | "Launching" | "Connecting" | "Running" | "Error" | "Shutdown")
 //!     activity: Str        ("" | "Unknown" | "Idle" | "Busy") — only meaningful when lifecycle == "Running"
 //!     error_reason: Str    ("" unless lifecycle == "Error")
@@ -891,9 +891,10 @@ impl RuntimeStateDoc {
     }
 
     /// Like [`set_lifecycle_with_error`] but also writes a free-form
-    /// `error_details` string alongside the typed reason. Use for errors
-    /// where the user-facing banner needs specifics that don't fit in
-    /// [`KernelErrorReason`] — e.g., the name of a missing conda env.
+    /// `error_details` string alongside the typed reason. Use for typed
+    /// failure or user-decision states where the UI needs specifics that
+    /// don't fit in [`KernelErrorReason`] — e.g., the name of a missing
+    /// conda env.
     ///
     /// - `Some(details)` records the explanation (non-empty recommended).
     /// - `None` clears `error_details` to `""`.
@@ -4958,6 +4959,7 @@ mod tests {
         let variants = [
             RuntimeLifecycle::NotStarted,
             RuntimeLifecycle::AwaitingTrust,
+            RuntimeLifecycle::AwaitingEnvBuild,
             RuntimeLifecycle::Resolving,
             RuntimeLifecycle::PreparingEnv,
             RuntimeLifecycle::Launching,
@@ -5035,6 +5037,7 @@ mod tests {
             RuntimeLifecycle::Resolving,
             RuntimeLifecycle::Running(KernelActivity::Busy),
             RuntimeLifecycle::Running(KernelActivity::Unknown),
+            RuntimeLifecycle::AwaitingEnvBuild,
             RuntimeLifecycle::Error,
             RuntimeLifecycle::Shutdown,
         ] {

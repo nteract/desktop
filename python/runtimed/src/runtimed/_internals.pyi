@@ -255,9 +255,10 @@ class KernelState:
 
     @property
     def status(self) -> str:
-        """Flat status bucket: "not_started", "awaiting_trust", "starting",
-        "idle", "busy", "error", "shutdown". Projected from the typed
-        lifecycle for callers that want a simple string."""
+        """Flat status bucket: "not_started", "awaiting_trust",
+        "awaiting_env_build", "starting", "idle", "busy", "error",
+        "shutdown". Projected from the typed lifecycle for callers that want
+        a simple string."""
         ...
     @property
     def starting_phase(self) -> str:
@@ -267,8 +268,9 @@ class KernelState:
     @property
     def lifecycle(self) -> str:
         """Typed lifecycle variant name: "NotStarted", "AwaitingTrust",
-        "Resolving", "PreparingEnv", "Launching", "Connecting", "Running",
-        "Error", "Shutdown". Paired with `activity` when "Running"."""
+        "AwaitingEnvBuild", "Resolving", "PreparingEnv", "Launching",
+        "Connecting", "Running", "Error", "Shutdown". Paired with
+        `activity` when "Running"."""
         ...
     @property
     def activity(self) -> str:
@@ -277,14 +279,15 @@ class KernelState:
         ...
     @property
     def error_reason(self) -> str | None:
-        """Typed error reason when lifecycle == "Error". None when the
-        CRDT key is absent; empty string when scaffolded but unset."""
+        """Typed reason for lifecycle states that carry a specific cause
+        such as "Error" or "AwaitingEnvBuild". None when the CRDT key is
+        absent; empty string when scaffolded but unset."""
         ...
     @property
     def error_details(self) -> str | None:
-        """Free-form error details accompanying error_reason. None when
-        the CRDT key is absent; empty string when scaffolded but unset.
-        Carries specifics that don't fit the typed reason enum — e.g.,
+        """Free-form details accompanying an error or user-decision state.
+        None when the CRDT key is absent; empty string when scaffolded but
+        unset. Carries specifics that don't fit the typed reason enum — e.g.,
         the name of a missing conda env plus a remediation command."""
         ...
     @property

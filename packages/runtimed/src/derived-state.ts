@@ -10,7 +10,7 @@ import type { QueueEntry, RuntimeState } from "./runtime-state";
 // ── Kernel status ───────────────────────────────────────────────────
 
 /**
- * Compressed seven-state status vocabulary for UI-level conditionals.
+ * Compressed status vocabulary for UI-level conditionals.
  *
  * `KERNEL_STATUS` groups the full [`RuntimeLifecycle`] union into buckets
  * that map cleanly onto common UI predicates: a single "starting" bucket
@@ -28,6 +28,7 @@ export const KERNEL_STATUS = {
   ERROR: "error",
   SHUTDOWN: "shutdown",
   AWAITING_TRUST: "awaiting_trust",
+  AWAITING_ENV_BUILD: "awaiting_env_build",
 } as const;
 
 export type KernelStatus = (typeof KERNEL_STATUS)[keyof typeof KERNEL_STATUS];
@@ -198,7 +199,8 @@ export function deriveEnvSyncState(state: RuntimeState): EnvSyncState | null {
     (lc === "NotStarted" && !state.kernel.env_source) ||
     lc === "Shutdown" ||
     lc === "Error" ||
-    lc === "AwaitingTrust"
+    lc === "AwaitingTrust" ||
+    lc === "AwaitingEnvBuild"
   ) {
     return null;
   }
@@ -232,6 +234,8 @@ export function lifecycleToLegacyStatus(lc: RuntimeState["kernel"]["lifecycle"])
       return KERNEL_STATUS.NOT_STARTED;
     case "AwaitingTrust":
       return KERNEL_STATUS.AWAITING_TRUST;
+    case "AwaitingEnvBuild":
+      return KERNEL_STATUS.AWAITING_ENV_BUILD;
     case "Resolving":
     case "PreparingEnv":
     case "Launching":
@@ -260,12 +264,13 @@ export function lifecycleToLegacyStatus(lc: RuntimeState["kernel"]["lifecycle"])
  *
  * Use this for CSS classes, icon tables, label tables, and any other
  * lookup keyed on "what is the runtime doing right now." Use
- * [`KERNEL_STATUS`] when the simpler seven-bucket shape matches your
+ * [`KERNEL_STATUS`] when the simpler bucket shape matches your
  * UI predicate.
  */
 export const RUNTIME_STATUS = {
   NOT_STARTED: "not_started",
   AWAITING_TRUST: "awaiting_trust",
+  AWAITING_ENV_BUILD: "awaiting_env_build",
   RESOLVING: "resolving",
   PREPARING_ENV: "preparing_env",
   LAUNCHING: "launching",
@@ -291,6 +296,8 @@ export function runtimeStatusKey(lc: RuntimeState["kernel"]["lifecycle"]): Runti
       return RUNTIME_STATUS.NOT_STARTED;
     case "AwaitingTrust":
       return RUNTIME_STATUS.AWAITING_TRUST;
+    case "AwaitingEnvBuild":
+      return RUNTIME_STATUS.AWAITING_ENV_BUILD;
     case "Resolving":
       return RUNTIME_STATUS.RESOLVING;
     case "PreparingEnv":
@@ -332,6 +339,8 @@ export function statusKeyToLegacyStatus(key: RuntimeStatusKey): KernelStatus {
       return KERNEL_STATUS.NOT_STARTED;
     case RUNTIME_STATUS.AWAITING_TRUST:
       return KERNEL_STATUS.AWAITING_TRUST;
+    case RUNTIME_STATUS.AWAITING_ENV_BUILD:
+      return KERNEL_STATUS.AWAITING_ENV_BUILD;
     case RUNTIME_STATUS.RESOLVING:
     case RUNTIME_STATUS.PREPARING_ENV:
     case RUNTIME_STATUS.LAUNCHING:

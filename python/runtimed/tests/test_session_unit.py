@@ -182,6 +182,7 @@ class TestKernelStatusConstants:
         """Each constant matches the exact wire string the daemon writes."""
         assert runtimed.KERNEL_STATUS.NOT_STARTED == "not_started"
         assert runtimed.KERNEL_STATUS.AWAITING_TRUST == "awaiting_trust"
+        assert runtimed.KERNEL_STATUS.AWAITING_ENV_BUILD == "awaiting_env_build"
         assert runtimed.KERNEL_STATUS.STARTING == "starting"
         assert runtimed.KERNEL_STATUS.IDLE == "idle"
         assert runtimed.KERNEL_STATUS.BUSY == "busy"
@@ -206,6 +207,10 @@ class TestKernelErrorReasonConstants:
         # The TS mirror lives in packages/runtimed/src/runtime-state.ts;
         # both ends must serialise to the same CRDT value.
         assert runtimed.KERNEL_ERROR_REASON.MISSING_IPYKERNEL == "missing_ipykernel"
+
+    def test_conda_env_yml_missing_value(self):
+        """``CONDA_ENV_YML_MISSING`` matches the Rust enum's wire string."""
+        assert runtimed.KERNEL_ERROR_REASON.CONDA_ENV_YML_MISSING == "conda_env_yml_missing"
 
 
 class TestCreateNotebookValidation:

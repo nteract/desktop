@@ -55,6 +55,7 @@ export const KERNEL_ERROR_REASON = {
 export type RuntimeLifecycle =
   | { lifecycle: "NotStarted" }
   | { lifecycle: "AwaitingTrust" }
+  | { lifecycle: "AwaitingEnvBuild" }
   | { lifecycle: "Resolving" }
   | { lifecycle: "PreparingEnv" }
   | { lifecycle: "Launching" }
@@ -67,14 +68,15 @@ export interface KernelState {
   /** Typed lifecycle. The authoritative view of kernel state. */
   lifecycle: RuntimeLifecycle;
   /**
-   * Human-readable reason populated when `lifecycle.lifecycle === "Error"`.
+   * Typed reason populated for lifecycle states that carry a specific cause
+   * such as `Error` or `AwaitingEnvBuild`.
    * `null` when the kernel map is absent; empty string when scaffolded but
    * unset. Most consumers can treat both as "no reason."
    */
   error_reason: string | null;
   /**
-   * Free-form details accompanying an error, shown to the user via the
-   * banner. Carries specifics that don't fit in the typed
+   * Free-form details accompanying an error or user-decision state, shown
+   * to the user via the banner/dialog. Carries specifics that don't fit in the typed
    * `error_reason` enum — e.g., the name of a conda env declared in
    * environment.yml that isn't built on this machine, with a suggested
    * remediation command. `null`/empty when absent or unset.
