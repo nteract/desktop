@@ -42,7 +42,10 @@ smappservice-rs = "0.1"
 libc = "0.2"
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.52", features = ["Win32_Storage_FileSystem", "Win32_Foundation"] }
+# Win32_System_Threading: CreateProcessW for the daemon spawn path. windows-sys
+# 0.52 gates that symbol on Win32_Security as well (CreateProcessW takes
+# *const SECURITY_ATTRIBUTES for lpProcessAttributes / lpThreadAttributes).
+windows-sys = { version = "0.52", features = ["Win32_Storage_FileSystem", "Win32_Foundation", "Win32_Security", "Win32_System_Threading"] }
 
 [dev-dependencies]
 tempfile = "3"

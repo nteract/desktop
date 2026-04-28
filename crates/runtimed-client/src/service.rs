@@ -767,10 +767,96 @@ Set WshShell = Nothing
 
     #[cfg(target_os = "windows")]
     fn start_windows(&self) -> ServiceResult<()> {
-        // Start the daemon directly
-        std::process::Command::new(&self.config.binary_path)
-            .spawn()
-            .map_err(|e| ServiceError::StartFailed(e.to_string()))?;
+        use std::os::windows::ffi::OsStrExt;
+        use windows_sys::Win32::Foundation::CloseHandle;
+        use windows_sys::Win32::System::Threading::{
+            CreateProcessW, CREATE_NO_WINDOW, DETACHED_PROCESS, PROCESS_INFORMATION, STARTUPINFOW,
+        };
+
+        // The daemon runs forever. The standard `Command::new(...).spawn()`
+        // path on Windows calls `CreateProcessW` with `bInheritHandles=TRUE`
+        // (Rust's default), which duplicates *every* inheritable handle in
+        // this process's table into the child - not just stdio. That bites
+        // when this process was launched by NSIS's `nsExec::ExecToStack` to
+        // run `runt daemon doctor --fix`: NSIS hands the child stdout/stderr
+        // pipes that are marked inheritable so they propagate through stdio.
+        // When `runt` then spawns the daemon with `bInheritHandles=TRUE`,
+        // those pipes get duplicated *again* into the daemon's handle table.
+        // `runt` exits, releasing its copies, but the daemon keeps the
+        // duplicates open forever, so `nsExec::ExecToStack` never sees EOF
+        // on the read pipe and the silent installer hangs at `Install
+        // silently` until the runner times out (see runs 25025820384 and
+        // 25025909072).
+        //
+        // Redirecting stdio to NUL via `Stdio::null()` does not fix this:
+        // the *original* pipe handles in this process are still inheritable
+        // and `bInheritHandles=TRUE` still duplicates them.
+        //
+        // Bypass `std::process::Command` and call `CreateProcessW` directly
+        // with `bInheritHandles=FALSE`. The daemon needs no inherited
+        // handles - logging goes to a file (see runtimed::main), and stdio
+        // is unused.
+        // lpApplicationName: NUL-terminated UTF-16 path to the binary, no
+        // surrounding quotes (Windows does not parse application-name).
+        let app_name: Vec<u16> = self
+            .config
+            .binary_path
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+
+        // lpCommandLine: NUL-terminated UTF-16 with the path quoted as argv[0].
+        // Mutable because CreateProcessW may write into it.
+        let mut cmd_line: Vec<u16> = std::iter::once(b'"' as u16)
+            .chain(self.config.binary_path.as_os_str().encode_wide())
+            .chain(std::iter::once(b'"' as u16))
+            .chain(std::iter::once(0))
+            .collect();
+
+        // SAFETY: STARTUPINFOW and PROCESS_INFORMATION are POD structs whose
+        // all-zero bit pattern is a valid initial state per the Win32 ABI.
+        // STARTUPINFOW.cb must equal size_of::<STARTUPINFOW>() before passing
+        // to CreateProcessW; we set it immediately after zeroing.
+        let mut si: STARTUPINFOW = unsafe { std::mem::zeroed() };
+        si.cb = std::mem::size_of::<STARTUPINFOW>() as u32;
+        let mut pi: PROCESS_INFORMATION = unsafe { std::mem::zeroed() };
+
+        // SAFETY: app_name and cmd_line are NUL-terminated UTF-16 buffers
+        // owned by this stack frame and live through the call. &si and &mut pi
+        // point at correctly-initialized POD structs (see above). All pointer
+        // arguments documented as nullable (security attrs, environment,
+        // current directory) are passed as null. bInheritHandles=FALSE
+        // (passed as 0) is the load-bearing flag - see the comment block
+        // above for why redirecting stdio alone is not sufficient.
+        let ok = unsafe {
+            CreateProcessW(
+                app_name.as_ptr(),
+                cmd_line.as_mut_ptr(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                0,
+                DETACHED_PROCESS | CREATE_NO_WINDOW,
+                std::ptr::null_mut(),
+                std::ptr::null(),
+                &si,
+                &mut pi,
+            )
+        };
+
+        if ok == 0 {
+            let err = std::io::Error::last_os_error();
+            return Err(ServiceError::StartFailed(err.to_string()));
+        }
+
+        // SAFETY: pi.hProcess and pi.hThread are valid handles populated by
+        // a successful CreateProcessW. We don't need to wait on or query the
+        // process from this side, so closing both handles immediately is
+        // correct - the kernel keeps the process alive until it exits.
+        unsafe {
+            CloseHandle(pi.hProcess);
+            CloseHandle(pi.hThread);
+        }
 
         info!("[service] Started daemon process");
         Ok(())
