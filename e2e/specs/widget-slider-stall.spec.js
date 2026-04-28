@@ -26,44 +26,10 @@ import { browser } from "@wdio/globals";
 import {
   getKernelStatus,
   setCellSource,
+  waitForCellOutput,
   waitForKernelReady,
   waitForNotebookSynced,
 } from "../helpers.js";
-
-const SLIDER_SOURCE = `from ipywidgets import interact, FloatSlider
-
-
-@interact(freq=FloatSlider(min=0.5, max=5, step=0.1, value=1, description="Frequency"))
-def show(freq):
-    print(f"freq={freq:.1f}")`;
-
-async function outputText() {
-  return await browser.execute(() =>
-    Array.from(
-      document.querySelectorAll(
-        '[data-slot="ansi-stream-output"], [data-slot="ansi-error-output"], [data-slot="output-item"]',
-      ),
-    )
-      .map((el) => el.textContent ?? "")
-      .join("\n"),
-  );
-}
-
-async function waitForOutputTextContaining(text, timeout = 30000) {
-  await browser.waitUntil(async () => (await outputText()).includes(text), {
-    timeout,
-    interval: 500,
-    timeoutMsg: `Output text did not contain "${text}" within ${timeout / 1000}s`,
-  });
-}
-
-async function waitForSliderModel(timeout = 30000) {
-  await browser.waitUntil(async () => (await getSliderCommId()) !== null, {
-    timeout,
-    interval: 500,
-    timeoutMsg: `Slider model not found in widget store within ${timeout / 1000}s`,
-  });
-}
 
 /**
  * Find the isolated iframe inside a cell's output area.
@@ -139,34 +105,6 @@ function alternatingValues(count, low = 4.9, high = 5.1) {
   return values;
 }
 
-async function executeSliderCellUntilReady(cell, timeout = 60000) {
-  const deadline = Date.now() + timeout;
-  const executeButton = await cell.$('[data-testid="execute-button"]');
-  await executeButton.waitForClickable({ timeout: 5000 });
-
-  while (Date.now() < deadline) {
-    await executeButton.click();
-
-    try {
-      await waitForSliderModel(15000);
-      return;
-    } catch {
-      // The execute handler is intentionally fail-closed until the first
-      // RuntimeStateDoc sync marks the session ready. If the early click lands
-      // in that window, retry instead of treating the missed busy edge as the
-      // widget regression this spec is meant to catch.
-    }
-
-    await browser.waitUntil(async () => (await getKernelStatus()) === "idle", {
-      timeout: 120000,
-      interval: 500,
-      timeoutMsg: "Kernel not idle after slider cell execution attempt",
-    });
-  }
-
-  throw new Error("Slider model not found after retrying execution");
-}
-
 describe("Widget Slider Stall Reproducer", () => {
   let sliderCell;
 
@@ -180,21 +118,15 @@ describe("Widget Slider Stall Reproducer", () => {
     const cells = await $$('[data-cell-type="code"]');
     expect(cells.length).toBeGreaterThanOrEqual(2);
 
-    // Cell 0 carries an old widget-view output in the fixture. Use the empty
-    // second cell so CI exercises a fresh live widget model, not the stale
-    // saved display payload.
-    sliderCell = cells[1];
-    await setCellSource(sliderCell, SLIDER_SOURCE);
-    await executeSliderCellUntilReady(sliderCell);
+    sliderCell = cells[0];
+    const executeButton = await sliderCell.$('[data-testid="execute-button"]');
+    await executeButton.waitForClickable({ timeout: 5000 });
+    await executeButton.click();
 
     // Wait for kernel to finish executing (ipywidgets init can be slow)
     await browser.waitUntil(
       async () => (await getKernelStatus()) === "idle",
-      {
-        timeout: 120000,
-        interval: 500,
-        timeoutMsg: "Kernel not idle after slider cell execution",
-      },
+      { timeout: 120000, interval: 500, timeoutMsg: "Kernel not idle after slider cell execution" },
     );
 
     // Widget renders inside an isolated iframe — wait for it to appear
@@ -213,7 +145,14 @@ describe("Widget Slider Stall Reproducer", () => {
     console.log("[slider-stall] Widget iframe detected in output area");
 
     // Wait for the widget store to have the slider model
-    await waitForSliderModel();
+    await browser.waitUntil(
+      async () => (await getSliderCommId()) !== null,
+      {
+        timeout: 15000,
+        interval: 500,
+        timeoutMsg: "Slider model not found in widget store within 15s",
+      },
+    );
 
     const commId = await getSliderCommId();
     console.log(`[slider-stall] Slider model found: ${commId}`);
@@ -227,9 +166,7 @@ describe("Widget Slider Stall Reproducer", () => {
     }
 
     // Verify the E2E bridge is available
-    const bridgeReady = await browser.execute(
-      () => typeof window.__nteractWidgetUpdate === "function",
-    );
+    const bridgeReady = await browser.execute(() => typeof window.__nteractWidgetUpdate === "function");
     expect(bridgeReady).toBe(true);
 
     // Phase 1: Rapid alternating values (100 changes, no pause)
@@ -260,7 +197,9 @@ describe("Widget Slider Stall Reproducer", () => {
   });
 
   it("should respond to new execution after rapid input (stall detector)", async () => {
-    const verifyCell = sliderCell ?? (await $$('[data-cell-type="code"]'))[1];
+    const cells = await $$('[data-cell-type="code"]');
+    expect(cells.length).toBeGreaterThanOrEqual(2);
+    const verifyCell = cells[1];
 
     await setCellSource(verifyCell, "import random; print(f'alive-{random.random():.6f}')");
 
@@ -271,8 +210,9 @@ describe("Widget Slider Stall Reproducer", () => {
     const execStart = Date.now();
     await executeButton.click();
 
+    let output;
     try {
-      await waitForOutputTextContaining("alive-", 30000);
+      output = await waitForCellOutput(verifyCell, 30000);
     } catch {
       const elapsed = Math.round((Date.now() - execStart) / 1000);
       const status = await getKernelStatus();
@@ -285,15 +225,12 @@ describe("Widget Slider Stall Reproducer", () => {
     }
 
     const elapsed = Math.round((Date.now() - execStart) / 1000);
-    console.log(`[slider-stall] Verification output appeared in ${elapsed}s`);
+    console.log(`[slider-stall] Verification output in ${elapsed}s: ${output}`);
+    expect(output).toContain("alive-");
 
     await browser.waitUntil(
       async () => (await getKernelStatus()) === "idle",
-      {
-        timeout: 30000,
-        interval: 300,
-        timeoutMsg: "Kernel not idle after verification",
-      },
+      { timeout: 30000, interval: 300, timeoutMsg: "Kernel not idle after verification" },
     );
   });
 });
