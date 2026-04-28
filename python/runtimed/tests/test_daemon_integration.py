@@ -195,6 +195,47 @@ async def async_start_kernel_with_retry(session, *, retries=15, delay=1.0, **kwa
     raise last_err
 
 
+async def async_wait_for_conda_env_yml_missing(
+    session,
+    expected_env_name,
+    *,
+    expected_path_fragment=None,
+    timeout=5.0,
+):
+    """Wait until RuntimeState reports a missing named environment.yml env."""
+    from runtimed import KERNEL_ERROR_REASON
+    from runtimed._notebook import Notebook
+
+    notebook = Notebook(session)
+    deadline = asyncio.get_event_loop().time() + timeout
+    kernel_state = None
+    lifecycle_tag = None
+    while asyncio.get_event_loop().time() < deadline:
+        kernel_state = notebook.runtime.kernel
+        lifecycle = kernel_state.lifecycle
+        lifecycle_tag = getattr(lifecycle, "lifecycle", None) or str(lifecycle)
+        if lifecycle_tag == "AwaitingEnvBuild":
+            break
+        await asyncio.sleep(0.1)
+
+    assert kernel_state is not None
+    assert lifecycle_tag == "AwaitingEnvBuild", (
+        f"expected lifecycle=AwaitingEnvBuild after env.yml miss; got {lifecycle_tag!r}"
+    )
+    assert kernel_state.error_reason == KERNEL_ERROR_REASON.CONDA_ENV_YML_MISSING
+    details = kernel_state.error_details or ""
+    assert expected_env_name in details, (
+        f"error_details should name {expected_env_name!r}; got {details!r}"
+    )
+    assert "conda env create -f" in details, (
+        f"error_details should suggest the remediation; got {details!r}"
+    )
+    if expected_path_fragment is not None:
+        assert expected_path_fragment in details, (
+            f"error_details should include {expected_path_fragment!r}; got {details!r}"
+        )
+
+
 async def async_create_cell_and_wait_for_sync(
     session, source, *, cell_type="code", index=None, delay=0.5
 ):
@@ -296,11 +337,33 @@ async def daemon_health_check(daemon_process):
         session = await client.create_notebook(runtime="python")
         print(f"[health] Created notebook: {session.notebook_id}", file=sys.stderr)
 
-        await session.start_kernel(kernel_type="python", env_source="uv:prewarmed")
+        # create_notebook() auto-launches a prewarmed kernel. Prefer waiting for
+        # that path instead of racing it with a manual LaunchKernel request.
+        try:
+            await async_wait_for_sync(
+                session.kernel_started,
+                timeout=15.0,
+                interval=0.25,
+                description="health-check auto-launched kernel",
+            )
+        except AssertionError:
+            await session.start_kernel(kernel_type="python", env_source="uv:prewarmed")
         print("[health] Kernel started: OK", file=sys.stderr)
 
         cell_id = await session.create_cell("print('health-check-ok')")
-        result = await session.execute_cell(cell_id)
+        result = None
+        last_execute_error = None
+        for _ in range(20):
+            try:
+                result = await session.execute_cell(cell_id)
+                break
+            except runtimed.RuntimedError as e:
+                last_execute_error = e
+                if "NoKernel" not in str(e):
+                    raise
+                await asyncio.sleep(0.5)
+        if result is None:
+            raise last_execute_error or RuntimeError("health check execution did not run")
         assert result.success, f"Health check execution failed: {result.stderr}"
         print("[health] Execute: OK", file=sys.stderr)
 
@@ -1547,34 +1610,40 @@ class TestProjectFileDetection:
         assert result.success, f"Kernel failed in pixi env: {result.stderr}"
 
     async def test_environment_yml_auto_detection(self, session, isolated_fixtures):
-        """notebook_path near environment.yml auto-detects conda:env_yml.
+        """notebook_path near environment.yml reports a missing named env.
 
-        The conda:env_yml env_source is detected, and a pooled conda env
-        is used to launch the kernel.
+        The daemon should still detect the environment.yml, but named conda
+        envs are not built implicitly. Until the user creates that env, launch
+        fails closed and RuntimeState explains the remediation.
         """
         notebook_path = str(isolated_fixtures / "conda-env-project" / "7-environment-yml.ipynb")
 
         # Shutdown the auto-launched kernel so we can re-launch with
         # the notebook_path for project file detection.
         await _set_python_kernelspec(session)
+        await session.approve_trust()
+        for _ in range(3):
+            try:
+                await session.shutdown_kernel()
+            except Exception:
+                pass
+            await asyncio.sleep(0.5)
 
-        await async_shutdown_and_start_kernel(
-            session,
-            kernel_type="python",
-            env_source="auto",
-            expected_env_source="conda:env_yml",
-            notebook_path=notebook_path,
-            retries=8,
-            delay=2.0,
-        )
-
-        assert await session.env_source() == "conda:env_yml"
-
-        # Kernel should be functional
-        result = await session.execute_cell(
-            await session.create_cell("import sys; print(sys.prefix)")
-        )
-        assert result.success, f"Kernel failed in env_yml env: {result.stderr}"
+        try:
+            await session.start_kernel(
+                kernel_type="python",
+                env_source="auto",
+                notebook_path=notebook_path,
+            )
+        except runtimed.RuntimedError as e:
+            assert "audit-conda-env" in str(e)
+            await async_wait_for_conda_env_yml_missing(
+                session,
+                "audit-conda-env",
+                expected_path_fragment="environment.yaml",
+            )
+        else:
+            assert await session.env_source() == "conda:env_yml"
 
     async def test_no_project_file_falls_back_to_prewarmed(self, session):
         """When no project file is found, auto falls back to uv:prewarmed."""
@@ -2458,11 +2527,11 @@ class TestCreateNotebook:
         assert await session.is_connected()
 
     async def test_create_notebook_conda_with_environment_yml(self, client, tmp_path):
-        """create_notebook() with working_dir containing environment.yml detects conda.
+        """create_notebook() with working_dir containing environment.yml fails closed.
 
         When working_dir points to a directory with an environment.yml file,
-        the daemon should detect it via project file search and use conda:env_yml
-        as the env_source (not conda:prewarmed or uv:prewarmed).
+        the daemon should detect it via project file search and report the
+        missing named env instead of falling back to a prewarmed env.
 
         Regression test for nteract/desktop#1643.
         """
@@ -2474,19 +2543,11 @@ class TestCreateNotebook:
         session = await client.create_notebook(runtime="python", working_dir=str(tmp_path))
         assert await session.is_connected()
 
-        # Shutdown auto-launched kernel and restart with auto:conda to trigger
-        # project file detection. The daemon should find environment.yml via
-        # room.working_dir and resolve to conda:env_yml.
-        await async_shutdown_and_start_kernel(
+        await async_wait_for_conda_env_yml_missing(
             session,
-            kernel_type="python",
-            env_source="auto:conda",
-            expected_env_source="conda:env_yml",
-            retries=8,
-            delay=2.0,
+            "test-conda",
+            expected_path_fragment="environment.yml",
         )
-
-        assert await session.env_source() == "conda:env_yml"
 
 
 class TestTrustApproval:
