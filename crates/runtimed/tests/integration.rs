@@ -411,6 +411,68 @@ async fn test_settings_sync_via_unified_socket() {
 }
 
 #[tokio::test]
+async fn test_external_settings_json_edit_survives_settings_sync_ack() {
+    use runtimed::settings_doc::{PythonEnvType, SyncedSettings};
+    use runtimed::sync_client::SyncClient;
+
+    let temp_dir = TempDir::new().unwrap();
+    let mut config = test_config(&temp_dir);
+    let socket_path = config.socket_path.clone();
+    let settings_dir = temp_dir.path().canonicalize().unwrap();
+    let settings_doc_path = settings_dir.join("settings.automerge");
+    let settings_json_path = settings_dir.join("settings.json");
+    config.settings_doc_path = Some(settings_doc_path);
+    config.settings_json_path = Some(settings_json_path.clone());
+
+    let initial = serde_json::to_string_pretty(&SyncedSettings::default()).unwrap();
+    std::fs::write(&settings_json_path, initial).unwrap();
+
+    let daemon = Daemon::new(config).unwrap();
+    let daemon_handle = tokio::spawn(async move {
+        daemon.run().await.ok();
+    });
+
+    let pool_client = PoolClient::new(socket_path.clone());
+    assert!(wait_for_daemon(&pool_client).await);
+
+    let mut sync_client = SyncClient::connect_with_timeout(socket_path, Duration::from_secs(2))
+        .await
+        .expect("SyncClient should connect via unified socket");
+    assert_eq!(sync_client.get_all().default_python_env, PythonEnvType::Uv);
+
+    // `watch_settings_json` is spawned before the socket listener accepts
+    // connections, but give the notify watcher time to finish registration
+    // before writing the external edit.
+    sleep(Duration::from_secs(1)).await;
+
+    let mut external = serde_json::to_value(SyncedSettings::default()).unwrap();
+    external["default_python_env"] = serde_json::Value::String("conda".to_string());
+    std::fs::write(
+        &settings_json_path,
+        serde_json::to_string_pretty(&external).unwrap(),
+    )
+    .unwrap();
+
+    let synced = tokio::time::timeout(Duration::from_secs(5), sync_client.recv_changes())
+        .await
+        .expect("settings client should receive the external JSON edit")
+        .expect("settings sync connection should stay open");
+    assert_eq!(synced.default_python_env, PythonEnvType::Conda);
+
+    // `recv_changes` sends any required sync ack before returning. Give the
+    // daemon a short window to process that ack; a regression would persist
+    // the stale client value back to the JSON mirror here.
+    sleep(Duration::from_millis(500)).await;
+
+    let saved_json = std::fs::read_to_string(&settings_json_path).unwrap();
+    let saved: SyncedSettings = serde_json::from_str(&saved_json).unwrap();
+    assert_eq!(saved.default_python_env, PythonEnvType::Conda);
+
+    pool_client.shutdown().await.ok();
+    let _ = tokio::time::timeout(Duration::from_secs(2), daemon_handle).await;
+}
+
+#[tokio::test]
 async fn test_blob_server_health() {
     let temp_dir = TempDir::new().unwrap();
     let config = test_config(&temp_dir);
