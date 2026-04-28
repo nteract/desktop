@@ -171,7 +171,7 @@ jobs:
 
   build-macos:
     name: Build macOS Executables
-    runs-on: macos-latest
+    runs-on: macos-14-xlarge
     needs: [compute-version, build-wasm]
     steps:
       - name: Checkout
@@ -235,7 +235,7 @@ jobs:
 
   build-notebook-macos-arm64:
     name: Build macOS ARM64 Notebook
-    runs-on: macos-latest
+    runs-on: macos-14-xlarge
     needs: [compute-version, build-wasm]
     steps:
       - name: Checkout
@@ -403,7 +403,7 @@ jobs:
 
   build-notebook-macos-x64:
     name: Build macOS x64 Notebook
-    runs-on: macos-latest
+    runs-on: macos-14-xlarge
     needs: [compute-version, build-wasm]
     steps:
       - name: Checkout
@@ -908,9 +908,9 @@ jobs:
     strategy:
       matrix:
         platform:
-          - runner: macos-latest
+          - runner: macos-14-xlarge
             target: aarch64-apple-darwin
-          - runner: macos-latest
+          - runner: macos-14-xlarge
             target: x86_64-apple-darwin
           - runner: blacksmith-4vcpu-ubuntu-2404
             target: x86_64-unknown-linux-gnu
