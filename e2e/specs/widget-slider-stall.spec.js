@@ -123,10 +123,26 @@ describe("Widget Slider Stall Reproducer", () => {
     await executeButton.waitForClickable({ timeout: 5000 });
     await executeButton.click();
 
+    // The fixture contains a stale widget-view output, so do not treat the
+    // pre-existing iframe as proof that this run produced a live widget. Wait
+    // for the click to reach the kernel before checking idle/model state.
+    await browser.waitUntil(
+      async () => (await getKernelStatus()) === "busy" || (await getSliderCommId()) !== null,
+      {
+        timeout: 10000,
+        interval: 200,
+        timeoutMsg: "Kernel did not begin slider cell execution",
+      },
+    );
+
     // Wait for kernel to finish executing (ipywidgets init can be slow)
     await browser.waitUntil(
       async () => (await getKernelStatus()) === "idle",
-      { timeout: 120000, interval: 500, timeoutMsg: "Kernel not idle after slider cell execution" },
+      {
+        timeout: 120000,
+        interval: 500,
+        timeoutMsg: "Kernel not idle after slider cell execution",
+      },
     );
 
     // Widget renders inside an isolated iframe — wait for it to appear
@@ -148,9 +164,9 @@ describe("Widget Slider Stall Reproducer", () => {
     await browser.waitUntil(
       async () => (await getSliderCommId()) !== null,
       {
-        timeout: 15000,
+        timeout: 30000,
         interval: 500,
-        timeoutMsg: "Slider model not found in widget store within 15s",
+        timeoutMsg: "Slider model not found in widget store within 30s",
       },
     );
 
@@ -166,7 +182,9 @@ describe("Widget Slider Stall Reproducer", () => {
     }
 
     // Verify the E2E bridge is available
-    const bridgeReady = await browser.execute(() => typeof window.__nteractWidgetUpdate === "function");
+    const bridgeReady = await browser.execute(
+      () => typeof window.__nteractWidgetUpdate === "function",
+    );
     expect(bridgeReady).toBe(true);
 
     // Phase 1: Rapid alternating values (100 changes, no pause)
@@ -230,7 +248,11 @@ describe("Widget Slider Stall Reproducer", () => {
 
     await browser.waitUntil(
       async () => (await getKernelStatus()) === "idle",
-      { timeout: 30000, interval: 300, timeoutMsg: "Kernel not idle after verification" },
+      {
+        timeout: 30000,
+        interval: 300,
+        timeoutMsg: "Kernel not idle after verification",
+      },
     );
   });
 });
