@@ -193,9 +193,20 @@ jobs:
           }
           Write-Host $statusJson
           $status = $statusJson | ConvertFrom-Json
-          if ($status.installed -ne $true -or $status.running -ne $true) {
-            Write-Error "Installer did not leave the daemon installed and running"
+          # The installer sets up the daemon service and startup script but
+          # does NOT start the daemon process (--no-start in bootstrap hook).
+          # Spawning a long-running daemon from inside the installer's Windows
+          # Job Object would leave it in the Job and block the Install silently
+          # step until the 75-minute runner timeout. The daemon starts at login
+          # via the Startup folder entry, or the smoke test starts it explicitly.
+          if ($status.installed -ne $true) {
+            Write-Error "Installer did not leave the daemon installed"
             exit 1
+          }
+          if ($status.running -eq $true) {
+            Write-Host "Daemon is already running (unexpected but acceptable)"
+          } else {
+            Write-Host "Daemon installed but not yet running (expected with --no-start)"
           }
           if (-not (Test-Path $env:MCP)) {
             Write-Error "nteract-mcp.exe not found at $env:MCP"
@@ -244,11 +255,9 @@ jobs:
         shell: pwsh
         timeout-minutes: 15
         run: |
-          Write-Host "=== Stopping installer-started daemon before controlled smoke daemon ==="
-          & $env:RUNT_CMD daemon stop
-          if ($LASTEXITCODE -ne 0) {
-            Write-Warning "daemon stop returned $LASTEXITCODE; continuing with controlled smoke start"
-          }
+          # Daemon was not started by the installer (--no-start in bootstrap hook).
+          # Stop any daemon that may be running from a previous run or login entry.
+          & $env:RUNT_CMD daemon stop 2>$null | Out-Null
 
           $logOut = "$env:RUNNER_TEMP\runtimed.stdout.log"
           $logErr = "$env:RUNNER_TEMP\runtimed.stderr.log"
