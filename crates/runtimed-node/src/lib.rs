@@ -8,8 +8,11 @@
 //!   - `defaultSocketPath()` / `socketPathForChannel(channel)`
 //!   - `createNotebook({ runtime, workingDir?, socketPath? }) -> Session`
 //!   - `openNotebook(notebookId, { socketPath? }) -> Session`
+//!   - `getExecutionResult(executionId, { socketPath? }) -> CellResult`
 //!   - `Session.notebookId`
 //!   - `Session.runCell(source, { timeoutMs? }) -> CellResult`
+//!   - `Session.queueCell(source) -> QueuedExecution`
+//!   - `Session.waitForExecution(executionId, { cellId?, timeoutMs? }) -> CellResult`
 //!   - `Session.close()`
 //!
 //! Phase 2 (follow-on) will refactor the body of this crate to reuse a
@@ -24,10 +27,11 @@ mod parquet;
 mod session;
 
 pub use error::NodeError;
-pub use parquet::{read_parquet_rows, summarize_parquet};
+pub use parquet::{read_parquet_file, summarize_parquet_file};
 pub use session::{
-    create_notebook, open_notebook, CellResult, CreateNotebookOptions, JsOutput,
-    OpenNotebookOptions, RunCellOptions, Session,
+    create_notebook, get_execution_result, open_notebook, CellResult, CreateNotebookOptions,
+    GetExecutionResultOptions, JsOutput, OpenNotebookOptions, QueueCellOptions, QueuedExecution,
+    RunCellOptions, Session, WaitExecutionOptions,
 };
 
 /// Return the default daemon socket path.

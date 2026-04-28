@@ -23,6 +23,8 @@ use crate::error::to_napi_err;
 /// Valid cell types accepted by `runCell`.
 const VALID_CELL_TYPES: &[&str] = &["code", "markdown", "raw"];
 
+type CommMap = std::collections::HashMap<String, runtime_doc::CommDocEntry>;
+
 // ── Options ────────────────────────────────────────────────────────────
 
 /// Options for `createNotebook()`.
@@ -53,8 +55,41 @@ pub struct OpenNotebookOptions {
 pub struct RunCellOptions {
     /// Max milliseconds to wait for execution. Default 120_000 (2 min).
     pub timeout_ms: Option<u32>,
-    /// Cell source type: `"code"` (default) or `"markdown"`.
+    /// Cell source type: `"code"` (default), `"markdown"`, or `"raw"`.
     pub cell_type: Option<String>,
+}
+
+/// Options for `Session.queueCell()`.
+#[napi(object)]
+#[derive(Default)]
+pub struct QueueCellOptions {
+    /// Cell source type: `"code"` (default), `"markdown"`, or `"raw"`.
+    pub cell_type: Option<String>,
+}
+
+/// Options for `Session.waitForExecution()`.
+#[napi(object)]
+#[derive(Default)]
+pub struct WaitExecutionOptions {
+    /// Cell ID to use when reporting kernel failures before terminal state syncs.
+    pub cell_id: Option<String>,
+    /// Max milliseconds to wait for execution. Default 120_000 (2 min).
+    pub timeout_ms: Option<u32>,
+}
+
+/// Options for top-level `getExecutionResult()`.
+#[napi(object)]
+#[derive(Default)]
+pub struct GetExecutionResultOptions {
+    /// Override daemon socket path (otherwise uses `defaultSocketPath()`).
+    pub socket_path: Option<String>,
+}
+
+/// A queued execution handle.
+#[napi(object)]
+pub struct QueuedExecution {
+    pub cell_id: String,
+    pub execution_id: String,
 }
 
 // ── Outputs (serialized to JS via serde_json) ──────────────────────────
@@ -79,6 +114,7 @@ pub struct JsOutput {
 #[napi(object)]
 pub struct CellResult {
     pub cell_id: String,
+    pub execution_id: String,
     pub execution_count: Option<i64>,
     /// One of: `"done"`, `"error"`, `"timeout"`, `"kernel_error"`.
     pub status: String,
@@ -100,6 +136,21 @@ struct SessionState {
     #[allow(dead_code)]
     socket_path: PathBuf,
     working_dir: Option<String>,
+}
+
+struct OutputResolutionContext<'a> {
+    comms: Option<&'a CommMap>,
+    blob_base_url: &'a Option<String>,
+    blob_store_path: &'a Option<PathBuf>,
+}
+
+struct ExecutionResultParts<'a> {
+    execution_id: &'a str,
+    cell_id: &'a str,
+    status: &'a str,
+    success: bool,
+    execution_count: Option<i64>,
+    output_manifests: &'a [serde_json::Value],
 }
 
 // ── Session ────────────────────────────────────────────────────────────
@@ -236,34 +287,20 @@ impl Session {
         options: Option<RunCellOptions>,
     ) -> Result<CellResult> {
         let opts = options.unwrap_or_default();
-        let cell_type = opts.cell_type.unwrap_or_else(|| "code".to_string());
-        if !VALID_CELL_TYPES.contains(&cell_type.as_str()) {
-            return Err(Error::from_reason(format!(
-                "Invalid cell_type {cell_type:?}. Must be one of: {}",
-                VALID_CELL_TYPES.join(", ")
-            )));
-        }
+        let cell_type = normalize_cell_type(opts.cell_type)?;
         let timeout = Duration::from_millis(opts.timeout_ms.unwrap_or(120_000) as u64);
 
         // 1. Ensure kernel started (lazy).
         ensure_kernel_started(&self.state).await?;
 
         // 2. Add a new cell with source (single atomic mutation).
-        let cell_id = format!("cell-{}", uuid::Uuid::new_v4());
-        {
-            let st = self.state.lock().await;
-            let handle = st
-                .handle
-                .as_ref()
-                .ok_or_else(|| Error::from_reason("Not connected"))?;
-            handle
-                .add_cell_with_source(&cell_id, &cell_type, None, &source)
-                .map_err(to_napi_err)?;
-        }
+        let cell_id = add_source_cell(&self.state, &source, &cell_type).await?;
 
-        // 3. Queue the cell and wait for completion.
+        // 3. Queue the cell. Do this before the timeout wrapper so timeout
+        // results still carry an execution ID that can be recovered later.
+        let execution_id = queue_existing_cell(&self.state, &cell_id).await?;
+
         let result = tokio::time::timeout(timeout, async {
-            let execution_id = queue_cell(&self.state, &cell_id).await?;
             collect_outputs(&self.state, &cell_id, &execution_id).await
         })
         .await;
@@ -273,6 +310,57 @@ impl Session {
             Ok(Err(e)) => Err(e),
             Err(_) => Ok(CellResult {
                 cell_id,
+                execution_id,
+                execution_count: None,
+                status: "timeout".to_string(),
+                success: false,
+                outputs: vec![],
+            }),
+        }
+    }
+
+    /// Queue a source string as a new cell without waiting for execution.
+    #[napi]
+    pub async fn queue_cell(
+        &self,
+        source: String,
+        options: Option<QueueCellOptions>,
+    ) -> Result<QueuedExecution> {
+        let opts = options.unwrap_or_default();
+        let cell_type = normalize_cell_type(opts.cell_type)?;
+
+        ensure_kernel_started(&self.state).await?;
+        let cell_id = add_source_cell(&self.state, &source, &cell_type).await?;
+        let execution_id = queue_existing_cell(&self.state, &cell_id).await?;
+
+        Ok(QueuedExecution {
+            cell_id,
+            execution_id,
+        })
+    }
+
+    /// Wait for an already-queued execution in this live session.
+    #[napi]
+    pub async fn wait_for_execution(
+        &self,
+        execution_id: String,
+        options: Option<WaitExecutionOptions>,
+    ) -> Result<CellResult> {
+        let opts = options.unwrap_or_default();
+        let timeout = Duration::from_millis(opts.timeout_ms.unwrap_or(120_000) as u64);
+        let fallback_cell_id = opts.cell_id.unwrap_or_default();
+
+        let result = tokio::time::timeout(timeout, async {
+            collect_outputs(&self.state, &fallback_cell_id, &execution_id).await
+        })
+        .await;
+
+        match result {
+            Ok(Ok(cell_result)) => Ok(cell_result),
+            Ok(Err(e)) => Err(e),
+            Err(_) => Ok(CellResult {
+                cell_id: fallback_cell_id,
+                execution_id,
                 execution_count: None,
                 status: "timeout".to_string(),
                 success: false,
@@ -397,12 +485,46 @@ pub async fn open_notebook(
     })
 }
 
+/// Read a terminal execution result from the daemon's durable execution store.
+#[napi]
+pub async fn get_execution_result(
+    execution_id: String,
+    options: Option<GetExecutionResultOptions>,
+) -> Result<CellResult> {
+    let opts = options.unwrap_or_default();
+    let socket_path = resolve_socket_path(opts.socket_path);
+    let info = runtimed_client::singleton::query_daemon_info(socket_path.clone()).await;
+    let execution_store_dir = execution_store_dir_for_socket(&socket_path, info.as_ref());
+    let store = runtimed_client::execution_store::ExecutionStore::new(execution_store_dir);
+    let record = store.read_record(&execution_id).await.ok_or_else(|| {
+        Error::from_reason(format!(
+            "Execution not found in durable store: {execution_id}"
+        ))
+    })?;
+
+    cell_result_from_record(&socket_path, record).await
+}
+
 // ── Internals ──────────────────────────────────────────────────────────
 
 fn resolve_socket_path(override_path: Option<String>) -> PathBuf {
     override_path
         .map(PathBuf::from)
         .unwrap_or_else(runt_workspace::default_socket_path)
+}
+
+fn execution_store_dir_for_socket(
+    socket_path: &std::path::Path,
+    daemon_info: Option<&runtimed_client::singleton::DaemonInfo>,
+) -> PathBuf {
+    if let Some(dir) = daemon_info.and_then(|info| info.execution_store_dir.as_ref()) {
+        return PathBuf::from(dir);
+    }
+
+    socket_path
+        .parent()
+        .map(|parent| parent.join("executions"))
+        .unwrap_or_else(runtimed_client::default_execution_store_dir)
 }
 
 async fn resolve_blob_paths(socket_path: &std::path::Path) -> (Option<String>, Option<PathBuf>) {
@@ -428,6 +550,36 @@ async fn resolve_blob_paths(socket_path: &std::path::Path) -> (Option<String>, O
     } else {
         (None, None)
     }
+}
+
+fn normalize_cell_type(cell_type: Option<String>) -> Result<String> {
+    let cell_type = cell_type.unwrap_or_else(|| "code".to_string());
+    if !VALID_CELL_TYPES.contains(&cell_type.as_str()) {
+        return Err(Error::from_reason(format!(
+            "Invalid cell_type {cell_type:?}. Must be one of: {}",
+            VALID_CELL_TYPES.join(", ")
+        )));
+    }
+    Ok(cell_type)
+}
+
+async fn add_source_cell(
+    state: &Arc<Mutex<SessionState>>,
+    source: &str,
+    cell_type: &str,
+) -> Result<String> {
+    let cell_id = format!("cell-{}", uuid::Uuid::new_v4());
+    {
+        let st = state.lock().await;
+        let handle = st
+            .handle
+            .as_ref()
+            .ok_or_else(|| Error::from_reason("Not connected"))?;
+        handle
+            .add_cell_with_source(&cell_id, cell_type, None, source)
+            .map_err(to_napi_err)?;
+    }
+    Ok(cell_id)
 }
 
 fn dependency_fingerprint_for_handle(handle: &DocHandle) -> Option<String> {
@@ -501,7 +653,7 @@ async fn ensure_kernel_started(state: &Arc<Mutex<SessionState>>) -> Result<()> {
     }
 }
 
-async fn queue_cell(state: &Arc<Mutex<SessionState>>, cell_id: &str) -> Result<String> {
+async fn queue_existing_cell(state: &Arc<Mutex<SessionState>>, cell_id: &str) -> Result<String> {
     let handle = {
         let st = state.lock().await;
         st.handle
@@ -549,30 +701,26 @@ async fn collect_outputs(
     match terminal {
         Ok(terminal_state) => {
             let comms = handle.get_runtime_state().ok().map(|rs| rs.comms);
-            let resolved = shared_resolver::resolve_cell_outputs(
-                &terminal_state.output_manifests,
-                &blob_base_url,
-                &blob_store_path,
-                comms.as_ref(),
+            cell_result_from_output_manifests(
+                ExecutionResultParts {
+                    execution_id,
+                    cell_id,
+                    status: &terminal_state.status,
+                    success: terminal_state.success,
+                    execution_count: terminal_state.execution_count,
+                    output_manifests: &terminal_state.output_manifests,
+                },
+                OutputResolutionContext {
+                    comms: comms.as_ref(),
+                    blob_base_url: &blob_base_url,
+                    blob_store_path: &blob_store_path,
+                },
             )
-            .await;
-            let outputs: Vec<JsOutput> = resolved
-                .into_iter()
-                .map(to_js_output)
-                .collect::<napi::Result<Vec<_>>>()?;
-            let success = terminal_state.status == "done"
-                && terminal_state.success
-                && !outputs.iter().any(|o| o.output_type == "error");
-            Ok(CellResult {
-                cell_id: cell_id.to_string(),
-                execution_count: terminal_state.execution_count,
-                status: terminal_state.status,
-                success,
-                outputs,
-            })
+            .await
         }
         Err(notebook_sync::ExecutionTerminalError::KernelFailed { reason }) => Ok(CellResult {
             cell_id: cell_id.to_string(),
+            execution_id: execution_id.to_string(),
             execution_count: None,
             status: "kernel_error".to_string(),
             success: false,
@@ -593,6 +741,94 @@ async fn collect_outputs(
             Err(Error::from_reason("Execution wait aborted"))
         }
     }
+}
+
+async fn cell_result_from_record(
+    socket_path: &std::path::Path,
+    record: runtimed_client::execution_store::ExecutionRecord,
+) -> Result<CellResult> {
+    let (blob_base_url, blob_store_path) =
+        runtimed_client::daemon_paths::get_blob_paths_async(socket_path).await;
+    let execution_id = record.execution_id.clone();
+    let exec = runtime_doc::ExecutionState {
+        cell_id: record.cell_id.unwrap_or_default(),
+        status: record.status,
+        execution_count: record.execution_count,
+        success: record.success,
+        outputs: record.outputs,
+        source: record.source,
+        seq: record.seq,
+    };
+    cell_result_from_execution_state(
+        &execution_id,
+        None,
+        &exec,
+        None,
+        &blob_base_url,
+        &blob_store_path,
+    )
+    .await
+}
+
+async fn cell_result_from_execution_state(
+    execution_id: &str,
+    fallback_cell_id: Option<&str>,
+    state: &runtime_doc::ExecutionState,
+    comms: Option<&CommMap>,
+    blob_base_url: &Option<String>,
+    blob_store_path: &Option<PathBuf>,
+) -> Result<CellResult> {
+    let cell_id = if state.cell_id.is_empty() {
+        fallback_cell_id.unwrap_or_default()
+    } else {
+        state.cell_id.as_str()
+    };
+    let success = state.success.unwrap_or(true);
+    cell_result_from_output_manifests(
+        ExecutionResultParts {
+            execution_id,
+            cell_id,
+            status: &state.status,
+            success,
+            execution_count: state.execution_count,
+            output_manifests: &state.outputs,
+        },
+        OutputResolutionContext {
+            comms,
+            blob_base_url,
+            blob_store_path,
+        },
+    )
+    .await
+}
+
+async fn cell_result_from_output_manifests(
+    parts: ExecutionResultParts<'_>,
+    context: OutputResolutionContext<'_>,
+) -> Result<CellResult> {
+    let resolved = shared_resolver::resolve_cell_outputs(
+        parts.output_manifests,
+        context.blob_base_url,
+        context.blob_store_path,
+        context.comms,
+    )
+    .await;
+    let outputs: Vec<JsOutput> = resolved
+        .into_iter()
+        .map(to_js_output)
+        .collect::<napi::Result<Vec<_>>>()?;
+    let success = parts.status == "done"
+        && parts.success
+        && !outputs.iter().any(|o| o.output_type == "error");
+
+    Ok(CellResult {
+        cell_id: parts.cell_id.to_string(),
+        execution_id: parts.execution_id.to_string(),
+        execution_count: parts.execution_count,
+        status: parts.status.to_string(),
+        success,
+        outputs,
+    })
 }
 
 #[derive(Serialize)]
@@ -659,11 +895,87 @@ mod tests {
     use runtimed_client::resolved_output::{DataValue as SharedDataValue, Output as SharedOutput};
     use serde_json::json;
     use std::collections::HashMap;
+    use std::path::Path;
 
     #[test]
     fn resolve_socket_path_prefers_explicit_override() {
         let path = resolve_socket_path(Some("/tmp/runtimed-node-test.sock".to_string()));
         assert_eq!(path, PathBuf::from("/tmp/runtimed-node-test.sock"));
+    }
+
+    #[test]
+    fn normalize_cell_type_defaults_and_validates() {
+        assert_eq!(normalize_cell_type(None).unwrap(), "code");
+        assert_eq!(
+            normalize_cell_type(Some("markdown".to_string())).unwrap(),
+            "markdown"
+        );
+        assert_eq!(normalize_cell_type(Some("raw".to_string())).unwrap(), "raw");
+
+        let err = normalize_cell_type(Some("sql".to_string())).unwrap_err();
+        assert!(err.reason.contains("Invalid cell_type"));
+        assert!(err.reason.contains("code, markdown, raw"));
+    }
+
+    #[test]
+    fn execution_store_dir_falls_back_to_socket_namespace() {
+        let dir =
+            execution_store_dir_for_socket(Path::new("/tmp/runtimed-test/runtimed.sock"), None);
+
+        assert_eq!(dir, PathBuf::from("/tmp/runtimed-test/executions"));
+    }
+
+    #[tokio::test]
+    async fn execution_state_result_includes_execution_id_and_terminal_fields() {
+        let state = runtime_doc::ExecutionState {
+            cell_id: "cell-1".to_string(),
+            status: "done".to_string(),
+            execution_count: Some(3),
+            success: Some(true),
+            outputs: vec![],
+            source: Some("1 + 1".to_string()),
+            seq: Some(9),
+        };
+
+        let result = cell_result_from_execution_state("exec-1", None, &state, None, &None, &None)
+            .await
+            .unwrap();
+
+        assert_eq!(result.cell_id, "cell-1");
+        assert_eq!(result.execution_id, "exec-1");
+        assert_eq!(result.status, "done");
+        assert_eq!(result.execution_count, Some(3));
+        assert!(result.success);
+        assert!(result.outputs.is_empty());
+    }
+
+    #[tokio::test]
+    async fn execution_record_result_recovers_required_execution_id() {
+        let state = runtime_doc::ExecutionState {
+            cell_id: "cell-from-record".to_string(),
+            status: "done".to_string(),
+            execution_count: Some(5),
+            success: Some(true),
+            outputs: vec![],
+            source: Some("print('ok')".to_string()),
+            seq: Some(11),
+        };
+        let record = runtimed_client::execution_store::ExecutionRecord::from_execution_state(
+            "exec-from-store",
+            "notebook",
+            "nb-1",
+            None,
+            &state,
+        );
+
+        let result = cell_result_from_record(Path::new("/tmp/runtimed-node-test.sock"), record)
+            .await
+            .unwrap();
+
+        assert_eq!(result.cell_id, "cell-from-record");
+        assert_eq!(result.execution_id, "exec-from-store");
+        assert_eq!(result.execution_count, Some(5));
+        assert!(result.success);
     }
 
     #[test]
