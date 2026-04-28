@@ -251,7 +251,7 @@ class TestNotebookTrustMethods:
     async def test_dependency_fingerprint_delegates_to_session(self):
         from runtimed._notebook import Notebook
 
-        notebook = Notebook(_NotebookTrustSession("sha256:reviewed"))
+        notebook = Notebook(_NotebookTrustSession("sha256:reviewed"))  # ty: ignore[invalid-argument-type]
 
         assert await notebook.dependency_fingerprint() == "sha256:reviewed"
 
@@ -259,7 +259,7 @@ class TestNotebookTrustMethods:
     async def test_dependency_fingerprint_allows_missing_metadata(self):
         from runtimed._notebook import Notebook
 
-        notebook = Notebook(_NotebookTrustSession(None))
+        notebook = Notebook(_NotebookTrustSession(None))  # ty: ignore[invalid-argument-type]
 
         assert await notebook.dependency_fingerprint() is None
 
@@ -268,7 +268,7 @@ class TestNotebookTrustMethods:
         from runtimed._notebook import Notebook
 
         session = _NotebookTrustSession()
-        notebook = Notebook(session)
+        notebook = Notebook(session)  # ty: ignore[invalid-argument-type]
 
         await notebook.approve_trust()
         await notebook.approve_trust("sha256:reviewed")
@@ -318,7 +318,7 @@ class TestExecutionHandle:
             {"exec-1": _ExecutionEntry(status="done", success=True, execution_count=12)}
         )
 
-        execution = Execution(session, "cell-1", "exec-1")
+        execution = Execution(session, "cell-1", "exec-1")  # ty: ignore[invalid-argument-type]
 
         assert execution.execution_id == "exec-1"
         assert execution.cell_id == "cell-1"
@@ -331,7 +331,7 @@ class TestExecutionHandle:
     def test_execution_properties_degrade_to_unknown_when_state_is_missing(self):
         from runtimed._execution import Execution
 
-        execution = Execution(_ExecutionSession({}), "cell-1", "missing")
+        execution = Execution(_ExecutionSession({}), "cell-1", "missing")  # ty: ignore[invalid-argument-type]
 
         assert execution.status == "unknown"
         assert execution.success is None
@@ -342,7 +342,7 @@ class TestExecutionHandle:
         from runtimed._execution import Execution
 
         execution = Execution(
-            _ExecutionSession(state_error=RuntimeError("runtime unavailable")),
+            _ExecutionSession(state_error=RuntimeError("runtime unavailable")),  # ty: ignore[invalid-argument-type]
             "cell-1",
             "exec-1",
         )
@@ -356,7 +356,7 @@ class TestExecutionHandle:
         from runtimed._execution import Execution
 
         session = _ExecutionSession({"exec-1": _ExecutionEntry(status="done")})
-        execution = Execution(session, "cell-1", "exec-1")
+        execution = Execution(session, "cell-1", "exec-1")  # ty: ignore[invalid-argument-type]
 
         result = await execution.result(timeout_secs=12.5)
 
@@ -368,7 +368,7 @@ class TestExecutionHandle:
         from runtimed._execution import Execution
 
         session = _ExecutionSession({"exec-1": _ExecutionEntry(status="done")})
-        execution = Execution(session, "cell-1", "exec-1")
+        execution = Execution(session, "cell-1", "exec-1")  # ty: ignore[invalid-argument-type]
 
         assert await execution == "execution-result"
         assert session.wait_calls == [("cell-1", "exec-1", 60.0)]
@@ -378,7 +378,7 @@ class TestExecutionHandle:
         from runtimed._execution import Execution
 
         session = _ExecutionSession({"exec-1": _ExecutionEntry(status="running")})
-        execution = Execution(session, "cell-1", "exec-1")
+        execution = Execution(session, "cell-1", "exec-1")  # ty: ignore[invalid-argument-type]
 
         await execution.cancel()
 
@@ -389,7 +389,7 @@ class TestExecutionHandle:
         from runtimed._execution import Execution
 
         execution = Execution(
-            _ExecutionSession({"exec-1": _ExecutionEntry(status="running")}),
+            _ExecutionSession({"exec-1": _ExecutionEntry(status="running")}),  # ty: ignore[invalid-argument-type]
             "cell-1",
             "exec-1",
         )
