@@ -133,10 +133,7 @@ class Notebook:
         by execution later.
         """
         entries = await self._session.queue_all_cells()
-        return [
-            Execution(self._session, entry.cell_id, entry.execution_id)
-            for entry in entries
-        ]
+        return [Execution(self._session, entry.cell_id, entry.execution_id) for entry in entries]
 
     async def disconnect(self) -> None:
         """Disconnect from the notebook session."""

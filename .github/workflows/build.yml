@@ -388,8 +388,14 @@ jobs:
       - name: Run tests
         run: cargo test --workspace --exclude notebook --exclude runtimed-wasm --exclude sift-wasm --exclude runtimed-py --exclude runtimed-node --verbose
 
-      - name: Run binding crate tests
-        run: cargo test -p runtimed-node -p nteract-mcp --verbose
+      - name: Run nteract-mcp tests
+        run: cargo test -p nteract-mcp --verbose
+
+      - name: Build runtimed-node N-API package
+        run: pnpm --dir packages/runtimed-node build:debug
+
+      - name: Smoke test runtimed-node package
+        run: pnpm --dir packages/runtimed-node smoke
 
   build:
     name: ${{ matrix.platform.name }}

@@ -1,7 +1,8 @@
 //! Parquet summarization and row reading for the TUI table viewer.
 //!
-//! Takes raw parquet bytes (from `application/vnd.apache.parquet` cell output)
-//! and returns structured summaries + row data for TUI rendering.
+//! Takes raw parquet bytes or blob file paths (from
+//! `application/vnd.apache.parquet` cell output) and returns structured
+//! summaries + row data for TUI rendering.
 
 use napi_derive::napi;
 
@@ -36,18 +37,15 @@ pub struct ParquetRowPage {
     pub offset: i64,
 }
 
-/// Summarize a parquet file from its raw bytes (base64-encoded).
+/// Summarize a parquet file from a local blob/file path.
 #[napi]
-pub fn summarize_parquet(base64_data: String) -> napi::Result<ParquetSummaryResult> {
-    use base64::{engine::general_purpose::STANDARD, Engine as _};
-    let bytes = STANDARD
-        .decode(&base64_data)
-        .map_err(|e| napi::Error::from_reason(format!("Invalid base64: {e}")))?;
-
-    summarize_parquet_bytes(&bytes).map_err(napi::Error::from_reason)
+pub fn summarize_parquet_file(file_path: String) -> napi::Result<ParquetSummaryResult> {
+    let bytes = std::fs::read(&file_path)
+        .map_err(|e| napi::Error::from_reason(format!("Failed to read {file_path}: {e}")))?;
+    summarize_parquet_from_bytes(&bytes).map_err(napi::Error::from_reason)
 }
 
-fn summarize_parquet_bytes(bytes: &[u8]) -> Result<ParquetSummaryResult, String> {
+fn summarize_parquet_from_bytes(bytes: &[u8]) -> Result<ParquetSummaryResult, String> {
     let summary =
         parquet_summary::summarize_parquet(bytes).map_err(|e| format!("Parquet error: {e}"))?;
 
@@ -69,23 +67,20 @@ fn summarize_parquet_bytes(bytes: &[u8]) -> Result<ParquetSummaryResult, String>
     })
 }
 
-/// Read a page of rows from parquet bytes (base64-encoded).
+/// Read a page of rows from a local blob/file path.
 /// Returns string representations of each cell for display.
 #[napi]
-pub fn read_parquet_rows(
-    base64_data: String,
+pub fn read_parquet_file(
+    file_path: String,
     offset: i64,
     limit: i64,
 ) -> napi::Result<ParquetRowPage> {
-    use base64::{engine::general_purpose::STANDARD, Engine as _};
-    let bytes = STANDARD
-        .decode(&base64_data)
-        .map_err(|e| napi::Error::from_reason(format!("Invalid base64: {e}")))?;
-
-    read_parquet_rows_bytes(bytes, offset, limit).map_err(napi::Error::from_reason)
+    let bytes = std::fs::read(&file_path)
+        .map_err(|e| napi::Error::from_reason(format!("Failed to read {file_path}: {e}")))?;
+    read_parquet_rows_from_bytes(bytes, offset, limit).map_err(napi::Error::from_reason)
 }
 
-fn read_parquet_rows_bytes(
+fn read_parquet_rows_from_bytes(
     bytes: Vec<u8>,
     offset: i64,
     limit: i64,
@@ -256,7 +251,7 @@ mod tests {
     #[test]
     fn summarize_parquet_reports_rows_bytes_and_columns() {
         let bytes = sample_parquet_bytes();
-        let summary = summarize_parquet_bytes(&bytes).expect("summary");
+        let summary = summarize_parquet_from_bytes(&bytes).expect("summary");
 
         assert_eq!(summary.num_rows, 3);
         assert!(summary.num_bytes > 0);
@@ -275,7 +270,7 @@ mod tests {
 
     #[test]
     fn read_parquet_rows_paginates_and_formats_values_for_js() {
-        let page = read_parquet_rows_bytes(sample_parquet_bytes(), 1, 2).expect("rows");
+        let page = read_parquet_rows_from_bytes(sample_parquet_bytes(), 1, 2).expect("rows");
 
         assert_eq!(page.columns, vec!["id", "label", "score", "flag"]);
         assert_eq!(page.total_rows, 3);
@@ -301,7 +296,7 @@ mod tests {
 
     #[test]
     fn read_parquet_rows_clamps_negative_offset_and_limit() {
-        let page = read_parquet_rows_bytes(sample_parquet_bytes(), -10, -1).expect("rows");
+        let page = read_parquet_rows_from_bytes(sample_parquet_bytes(), -10, -1).expect("rows");
 
         assert_eq!(page.total_rows, 3);
         assert_eq!(page.offset, 0);
@@ -310,9 +305,27 @@ mod tests {
 
     #[test]
     fn invalid_parquet_bytes_report_a_parquet_error() {
-        match summarize_parquet_bytes(b"not parquet") {
+        match summarize_parquet_from_bytes(b"not parquet") {
             Ok(_) => panic!("invalid parquet bytes should fail"),
             Err(err) => assert!(err.contains("Parquet error")),
         }
+    }
+
+    #[test]
+    fn parquet_file_helpers_read_local_blob_paths() {
+        let tmp = std::env::temp_dir().join(format!(
+            "runtimed-node-parquet-{}.parquet",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::write(&tmp, sample_parquet_bytes()).expect("write parquet");
+        let path = tmp.to_string_lossy().to_string();
+
+        let summary = summarize_parquet_file(path.clone()).expect("summary");
+        let page = read_parquet_file(path, 0, 1).expect("rows");
+        let _ = std::fs::remove_file(tmp);
+
+        assert_eq!(summary.num_rows, 3);
+        assert_eq!(page.rows.len(), 1);
+        assert_eq!(page.rows[0][0], "1");
     }
 }

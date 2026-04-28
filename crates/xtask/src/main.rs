@@ -567,10 +567,27 @@ fn pnpm_install_reason() -> Option<&'static str> {
         return Some("missing node_modules metadata");
     }
 
+    for link in [Path::new("packages/sift/node_modules/@chenglou/pretext")] {
+        if !link.exists() {
+            return Some("workspace package links missing");
+        }
+    }
+
     let Some(install_time) = modified_time(install_marker) else {
         return Some("could not read node_modules metadata timestamp");
     };
-    for manifest in [Path::new("package.json"), Path::new("pnpm-lock.yaml")] {
+    for manifest in [
+        Path::new("package.json"),
+        Path::new("pnpm-lock.yaml"),
+        Path::new("pnpm-workspace.yaml"),
+        Path::new("apps/mcp-app/package.json"),
+        Path::new("apps/notebook/package.json"),
+        Path::new("apps/renderer-test/package.json"),
+        Path::new("packages/notebook-host/package.json"),
+        Path::new("packages/runtimed-node/package.json"),
+        Path::new("packages/runtimed/package.json"),
+        Path::new("packages/sift/package.json"),
+    ] {
         let Some(manifest_time) = modified_time(manifest) else {
             return Some("could not read package manifest timestamps");
         };
@@ -1331,6 +1348,7 @@ fn cmd_renderer_plugins() {
     // any subdirectory.
     ensure_workspace_root_cwd();
     require_pnpm();
+    ensure_pnpm_install();
     println!("Building renderer plugins...");
     // Build both the notebook renderer plugins and the runt-mcp plugin
     // assets. Uses the shared renderer-plugin-builder.ts to produce:
