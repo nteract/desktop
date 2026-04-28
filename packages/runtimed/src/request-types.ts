@@ -1,8 +1,7 @@
 /**
- * TypeScript equivalents of NotebookRequest/NotebookResponse from
- * crates/notebook-protocol/src/protocol.rs.
- *
- * Only includes variants currently used by the frontend client.
+ * Frontend client subset of NotebookRequest/NotebookResponse from
+ * crates/notebook-protocol/src/protocol.rs. This intentionally includes only
+ * variants currently used by the frontend client.
  * These are transport-agnostic — callers encode them as needed.
  */
 

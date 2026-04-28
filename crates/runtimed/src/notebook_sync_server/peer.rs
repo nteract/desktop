@@ -2509,18 +2509,14 @@ mod peer_writer_tests {
         worker
             .enqueue(notebook_protocol::protocol::NotebookRequestEnvelope {
                 id: Some("first".to_string()),
-                request: NotebookRequest::CheckToolAvailable {
-                    tool: "deno".to_string(),
-                },
+                request: NotebookRequest::GetDocBytes {},
             })
             .expect("first request should enqueue");
         started_rx.await.expect("worker should start first request");
         worker
             .enqueue(notebook_protocol::protocol::NotebookRequestEnvelope {
                 id: Some("second".to_string()),
-                request: NotebookRequest::CheckToolAvailable {
-                    tool: "deno".to_string(),
-                },
+                request: NotebookRequest::GetDocBytes {},
             })
             .expect("second request should fill the queue");
 
@@ -2528,9 +2524,7 @@ mod peer_writer_tests {
         let err = worker
             .enqueue(notebook_protocol::protocol::NotebookRequestEnvelope {
                 id: Some("third".to_string()),
-                request: NotebookRequest::CheckToolAvailable {
-                    tool: "deno".to_string(),
-                },
+                request: NotebookRequest::GetDocBytes {},
             })
             .expect_err("full queue should reject immediately");
         assert!(

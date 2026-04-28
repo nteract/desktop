@@ -13,15 +13,12 @@
 //! lock scoping, log lines, error strings, and response variants are untouched.
 
 pub(crate) mod approve_trust;
-pub(crate) mod check_tool_available;
 pub(crate) mod clear_outputs;
 pub(crate) mod clone_notebook;
 pub(crate) mod complete;
 pub(crate) mod execute_cell;
 pub(crate) mod get_doc_bytes;
 pub(crate) mod get_history;
-pub(crate) mod get_kernel_info;
-pub(crate) mod get_queue_state;
 pub(crate) mod guarded;
 pub(crate) mod interrupt_execution;
 pub(crate) mod launch_kernel;

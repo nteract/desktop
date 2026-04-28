@@ -338,8 +338,8 @@ impl RuntimeLifecycle {
     }
 
     /// Project a lifecycle back to the `(status, starting_phase)` string
-    /// pair for wire-protocol callers that still surface the compressed
-    /// shape (`runt mcp`, `runt` CLI, `get_kernel_info` RPC).
+    /// pair for callers that still surface the compressed shape (`runt mcp`,
+    /// `runt` CLI, daemon info).
     ///
     /// `Running(KernelActivity::Unknown)` projects to `("idle", "")`
     /// because the legacy shape had no "unknown" status. Callers that

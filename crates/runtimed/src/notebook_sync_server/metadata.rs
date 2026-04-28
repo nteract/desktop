@@ -3753,8 +3753,6 @@ pub(crate) fn request_label(req: &NotebookRequest) -> &'static str {
         NotebookRequest::ClearOutputs { .. } => "ClearOutputs",
         NotebookRequest::InterruptExecution { .. } => "InterruptExecution",
         NotebookRequest::ShutdownKernel { .. } => "ShutdownKernel",
-        NotebookRequest::GetKernelInfo { .. } => "GetKernelInfo",
-        NotebookRequest::GetQueueState { .. } => "GetQueueState",
         NotebookRequest::RunAllCells { .. } => "RunAllCells",
         NotebookRequest::RunAllCellsGuarded { .. } => "RunAllCellsGuarded",
         NotebookRequest::SendComm { .. } => "SendComm",
@@ -3765,7 +3763,6 @@ pub(crate) fn request_label(req: &NotebookRequest) -> &'static str {
         NotebookRequest::SyncEnvironment { .. } => "SyncEnvironment",
         NotebookRequest::ApproveTrust { .. } => "ApproveTrust",
         NotebookRequest::GetDocBytes { .. } => "GetDocBytes",
-        NotebookRequest::CheckToolAvailable { .. } => "CheckToolAvailable",
     }
 }
 
@@ -3815,10 +3812,6 @@ pub(crate) async fn handle_notebook_request(
 
         NotebookRequest::ShutdownKernel {} => crate::requests::shutdown_kernel::handle(room).await,
 
-        NotebookRequest::GetKernelInfo {} => crate::requests::get_kernel_info::handle(room).await,
-
-        NotebookRequest::GetQueueState {} => crate::requests::get_queue_state::handle(room).await,
-
         NotebookRequest::RunAllCells {} => crate::requests::run_all_cells::handle(room).await,
 
         NotebookRequest::RunAllCellsGuarded { observed_heads } => {
@@ -3854,10 +3847,6 @@ pub(crate) async fn handle_notebook_request(
         } => crate::requests::approve_trust::handle(room, dependency_fingerprint).await,
 
         NotebookRequest::GetDocBytes {} => crate::requests::get_doc_bytes::handle(room).await,
-
-        NotebookRequest::CheckToolAvailable { tool } => {
-            crate::requests::check_tool_available::handle(tool).await
-        }
     }
 }
 
