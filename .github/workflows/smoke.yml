@@ -212,23 +212,13 @@ jobs:
             Write-Error "nteract-mcp.exe not found at $env:MCP"
             exit 1
           }
-          Write-Host "=== nteract-mcp startup probe ==="
-          $mcpOut = "$env:RUNNER_TEMP\nteract-mcp.stdout.log"
-          $mcpErr = "$env:RUNNER_TEMP\nteract-mcp.stderr.log"
-          $mcp = Start-Process -FilePath $env:MCP -WindowStyle Hidden -PassThru `
-            -RedirectStandardOutput $mcpOut -RedirectStandardError $mcpErr
-          Start-Sleep -Seconds 3
-          if ($mcp.HasExited -and $mcp.ExitCode -ne 0) {
-            Write-Host "--- nteract-mcp stdout ---"
-            if (Test-Path $mcpOut) { Get-Content $mcpOut }
-            Write-Host "--- nteract-mcp stderr ---"
-            if (Test-Path $mcpErr) { Get-Content $mcpErr }
-            Write-Error "nteract-mcp exited during startup probe"
-            exit $mcp.ExitCode
-          }
-          if (-not $mcp.HasExited) {
-            Stop-Process -Id $mcp.Id -Force -ErrorAction SilentlyContinue
-          }
+          # No standalone startup probe: nteract-mcp is a JSON-RPC stdio
+          # server with no boot phase. It reads stdin for an `initialize`
+          # request and exits with `connection closed` if stdin EOFs first.
+          # `Start-Process -RedirectStandardOutput` doesn't pipe stdin from
+          # the parent, so a bare-launch probe always fails. The "Run daemon
+          # and smoke" step below exercises the same binary end-to-end with
+          # a real MCP client, which is the test we actually want.
 
       - name: Set up Python for MCP smoke
         uses: actions/setup-python@v5
