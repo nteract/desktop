@@ -1,5 +1,18 @@
 name: Publish npm packages
 
+# Manual-only npm publishing for the Pi package and runtimed Node bindings.
+#
+# This is intentionally separate from the existing nightly/stable release
+# cadence. It only runs when explicitly triggered from the GitHub Actions UI.
+# Before using it, configure npm trusted publishing for this workflow on:
+# - @runtimed/node
+# - @runtimed/node-darwin-arm64
+# - @runtimed/node-linux-x64-gnu
+# - @nteract/pi
+#
+# The initial 0.0.1 package names were manually bootstrapped on npm. Future
+# runs should publish via GitHub OIDC/provenance without an npm token.
+
 on:
   workflow_dispatch:
     inputs:
