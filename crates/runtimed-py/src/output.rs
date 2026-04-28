@@ -1148,3 +1148,180 @@ impl From<runtime_doc::RuntimeState> for PyRuntimeState {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
+    use super::*;
+    use runtime_doc::{
+        CommDocEntry, EnvState, ExecutionState, KernelActivity, KernelState, ProjectContext,
+        QueueEntry, QueueState as RuntimeQueueState, RuntimeLifecycle, RuntimeState,
+    };
+    use serde_json::json;
+
+    #[test]
+    fn output_data_preserves_mime_typed_values_before_python_projection() {
+        let output = Output::display_data(HashMap::from([
+            (
+                "text/plain".to_string(),
+                DataValue::Text("hello".to_string()),
+            ),
+            (
+                "image/png".to_string(),
+                DataValue::Binary(vec![0, 1, 2, 255]),
+            ),
+            (
+                "application/json".to_string(),
+                DataValue::Json(json!({"ok": true, "items": [1, 2]})),
+            ),
+        ]));
+
+        let data = output.data.as_ref().expect("data");
+
+        let DataValue::Text(text) = &data["text/plain"] else {
+            panic!("text/plain should stay text");
+        };
+        assert_eq!(text, "hello");
+
+        let DataValue::Binary(image) = &data["image/png"] else {
+            panic!("image/png should stay raw binary");
+        };
+        assert_eq!(image, &[0, 1, 2, 255]);
+
+        let DataValue::Json(json_value) = &data["application/json"] else {
+            panic!("application/json should stay structured JSON");
+        };
+        assert_eq!(json_value["items"], json!([1, 2]));
+    }
+
+    #[test]
+    fn execution_result_helpers_split_stream_display_and_error_outputs() {
+        let result = ExecutionResult {
+            cell_id: "cell-1".to_string(),
+            outputs: vec![
+                Output::stream("stdout", "alpha"),
+                Output::stream("stdout", " beta"),
+                Output::stream("stderr", "warning"),
+                Output::execute_result(
+                    HashMap::from([("text/plain".to_string(), DataValue::Text("42".to_string()))]),
+                    4,
+                ),
+                Output::error("ValueError", "bad value", vec!["trace".to_string()]),
+            ],
+            success: false,
+            execution_count: Some(4),
+        };
+
+        assert_eq!(result.stdout(), "alpha beta");
+        assert_eq!(result.stderr(), "warning");
+        assert_eq!(result.display_data().len(), 1);
+        assert_eq!(result.error().unwrap().ename.as_deref(), Some("ValueError"));
+        assert_eq!(
+            result.__repr__(),
+            "ExecutionResult(cell=cell-1, status=error, outputs=5)"
+        );
+    }
+
+    #[test]
+    fn runtime_state_conversion_preserves_queue_executions_and_widget_state() {
+        let mut executions = HashMap::new();
+        executions.insert(
+            "exec-1".to_string(),
+            ExecutionState {
+                cell_id: "cell-1".to_string(),
+                status: "done".to_string(),
+                execution_count: Some(12),
+                success: Some(true),
+                outputs: vec![json!({"output_type": "stream", "name": "stdout"})],
+                source: Some("print('ok')".to_string()),
+                seq: Some(7),
+            },
+        );
+
+        let mut comms = HashMap::new();
+        comms.insert(
+            "comm-1".to_string(),
+            CommDocEntry {
+                target_name: "jupyter.widget".to_string(),
+                model_module: "@jupyter-widgets/controls".to_string(),
+                model_name: "IntSliderModel".to_string(),
+                state: json!({"value": 42, "description": "answer"}),
+                outputs: vec![json!({"output_type": "display_data"})],
+                seq: 9,
+                capture_msg_id: String::new(),
+            },
+        );
+
+        let runtime = RuntimeState {
+            kernel: KernelState {
+                name: "kernel-a".to_string(),
+                language: "python".to_string(),
+                env_source: "uv:prewarmed".to_string(),
+                lifecycle: RuntimeLifecycle::Running(KernelActivity::Busy),
+                error_reason: Some(String::new()),
+                error_details: Some(String::new()),
+                ..KernelState::default()
+            },
+            queue: RuntimeQueueState {
+                executing: Some(QueueEntry {
+                    cell_id: "cell-1".to_string(),
+                    execution_id: "exec-1".to_string(),
+                }),
+                queued: vec![QueueEntry {
+                    cell_id: "cell-2".to_string(),
+                    execution_id: "exec-2".to_string(),
+                }],
+            },
+            env: EnvState {
+                in_sync: false,
+                added: vec!["pandas".to_string()],
+                removed: vec!["numpy".to_string()],
+                channels_changed: true,
+                deno_changed: true,
+                prewarmed_packages: vec!["ipykernel".to_string()],
+            },
+            last_saved: Some("2026-04-27T12:00:00Z".to_string()),
+            executions,
+            comms,
+            project_context: ProjectContext::NotFound {
+                observed_at: "2026-04-27T12:01:00Z".to_string(),
+            },
+            ..RuntimeState::default()
+        };
+
+        let py_state = PyRuntimeState::from(runtime);
+
+        assert_eq!(py_state.kernel.status, "busy");
+        assert_eq!(py_state.kernel.lifecycle, "Running");
+        assert_eq!(py_state.kernel.activity, "Busy");
+        assert_eq!(py_state.kernel.name, "kernel-a");
+        assert_eq!(py_state.kernel.language, "python");
+        assert_eq!(py_state.kernel.env_source, "uv:prewarmed");
+        assert_eq!(
+            py_state.queue.executing.as_ref().unwrap().execution_id,
+            "exec-1"
+        );
+        assert_eq!(py_state.queue.queued[0].cell_id, "cell-2");
+        assert!(!py_state.env.in_sync);
+        assert_eq!(py_state.env.added, vec!["pandas".to_string()]);
+        assert_eq!(
+            py_state.env.prewarmed_packages,
+            vec!["ipykernel".to_string()]
+        );
+        assert_eq!(
+            py_state.executions["exec-1"].__repr__(),
+            "ExecutionState(cell_id=cell-1, status=done, success=Some(true))"
+        );
+        assert_eq!(py_state.comms["comm-1"].model_name, "IntSliderModel");
+        assert_eq!(
+            py_state.comms["comm-1"].outputs,
+            vec!["{\"output_type\":\"display_data\"}".to_string()]
+        );
+
+        let project_context: serde_json::Value =
+            serde_json::from_str(&py_state.project_context_json).unwrap();
+        assert_eq!(project_context["state"], "NotFound");
+        assert_eq!(project_context["observed_at"], "2026-04-27T12:01:00Z");
+    }
+}

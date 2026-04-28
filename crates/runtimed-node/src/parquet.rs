@@ -44,8 +44,12 @@ pub fn summarize_parquet(base64_data: String) -> napi::Result<ParquetSummaryResu
         .decode(&base64_data)
         .map_err(|e| napi::Error::from_reason(format!("Invalid base64: {e}")))?;
 
-    let summary = parquet_summary::summarize_parquet(&bytes)
-        .map_err(|e| napi::Error::from_reason(format!("Parquet error: {e}")))?;
+    summarize_parquet_bytes(&bytes).map_err(napi::Error::from_reason)
+}
+
+fn summarize_parquet_bytes(bytes: &[u8]) -> Result<ParquetSummaryResult, String> {
+    let summary =
+        parquet_summary::summarize_parquet(bytes).map_err(|e| format!("Parquet error: {e}"))?;
 
     let columns = summary
         .columns
@@ -78,14 +82,22 @@ pub fn read_parquet_rows(
         .decode(&base64_data)
         .map_err(|e| napi::Error::from_reason(format!("Invalid base64: {e}")))?;
 
-    let builder = ParquetRecordBatchReaderBuilder::try_new(bytes::Bytes::from(bytes.clone()))
-        .map_err(|e| napi::Error::from_reason(format!("Parquet error: {e}")))?;
+    read_parquet_rows_bytes(bytes, offset, limit).map_err(napi::Error::from_reason)
+}
+
+fn read_parquet_rows_bytes(
+    bytes: Vec<u8>,
+    offset: i64,
+    limit: i64,
+) -> Result<ParquetRowPage, String> {
+    let builder = ParquetRecordBatchReaderBuilder::try_new(bytes::Bytes::from(bytes))
+        .map_err(|e| format!("Parquet error: {e}"))?;
 
     let schema = builder.schema().clone();
     let columns: Vec<String> = schema.fields().iter().map(|f| f.name().clone()).collect();
     let reader = builder
         .build()
-        .map_err(|e| napi::Error::from_reason(format!("Parquet reader error: {e}")))?;
+        .map_err(|e| format!("Parquet reader error: {e}"))?;
 
     let offset = offset.max(0) as usize;
     let limit = limit.max(0) as usize;
@@ -94,8 +106,7 @@ pub fn read_parquet_rows(
     let mut row_idx: usize = 0;
 
     for batch in reader {
-        let batch =
-            batch.map_err(|e| napi::Error::from_reason(format!("Batch read error: {e}")))?;
+        let batch = batch.map_err(|e| format!("Batch read error: {e}"))?;
         let batch_rows = batch.num_rows();
         total_rows += batch_rows;
 
@@ -198,6 +209,110 @@ fn array_value_to_string(array: &dyn Array, idx: usize) -> String {
             // Fallback: use Arrow's built-in display
             arrow::util::display::array_value_to_string(array, idx)
                 .unwrap_or_else(|_| "?".to_string())
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
+    use super::*;
+    use arrow::array::{BooleanArray, Float64Array, Int32Array, StringArray};
+    use arrow::datatypes::{DataType, Field, Schema};
+    use arrow::record_batch::RecordBatch;
+    use parquet::arrow::ArrowWriter;
+    use std::io::Cursor;
+    use std::sync::Arc;
+
+    fn sample_parquet_bytes() -> Vec<u8> {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("label", DataType::Utf8, true),
+            Field::new("score", DataType::Float64, false),
+            Field::new("flag", DataType::Boolean, false),
+        ]));
+        let batch = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![
+                Arc::new(Int32Array::from(vec![1, 2, 3])),
+                Arc::new(StringArray::from(vec![Some("alpha"), None, Some("gamma")])),
+                Arc::new(Float64Array::from(vec![1.25, 2.5, 3.75])),
+                Arc::new(BooleanArray::from(vec![true, false, true])),
+            ],
+        )
+        .expect("record batch");
+
+        let mut cursor = Cursor::new(Vec::new());
+        {
+            let mut writer =
+                ArrowWriter::try_new(&mut cursor, schema, None).expect("parquet writer");
+            writer.write(&batch).expect("write batch");
+            writer.close().expect("close writer");
+        }
+        cursor.into_inner()
+    }
+
+    #[test]
+    fn summarize_parquet_reports_rows_bytes_and_columns() {
+        let bytes = sample_parquet_bytes();
+        let summary = summarize_parquet_bytes(&bytes).expect("summary");
+
+        assert_eq!(summary.num_rows, 3);
+        assert!(summary.num_bytes > 0);
+        assert_eq!(
+            summary
+                .columns
+                .iter()
+                .map(|c| c.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["id", "label", "score", "flag"]
+        );
+        assert_eq!(summary.columns[1].data_type, "string");
+        assert_eq!(summary.columns[1].null_count, 1);
+        assert!(serde_json::from_str::<serde_json::Value>(&summary.columns[0].stats_json).is_ok());
+    }
+
+    #[test]
+    fn read_parquet_rows_paginates_and_formats_values_for_js() {
+        let page = read_parquet_rows_bytes(sample_parquet_bytes(), 1, 2).expect("rows");
+
+        assert_eq!(page.columns, vec!["id", "label", "score", "flag"]);
+        assert_eq!(page.total_rows, 3);
+        assert_eq!(page.offset, 1);
+        assert_eq!(
+            page.rows,
+            vec![
+                vec![
+                    "2".to_string(),
+                    "null".to_string(),
+                    "2.5000".to_string(),
+                    "false".to_string()
+                ],
+                vec![
+                    "3".to_string(),
+                    "gamma".to_string(),
+                    "3.7500".to_string(),
+                    "true".to_string()
+                ],
+            ]
+        );
+    }
+
+    #[test]
+    fn read_parquet_rows_clamps_negative_offset_and_limit() {
+        let page = read_parquet_rows_bytes(sample_parquet_bytes(), -10, -1).expect("rows");
+
+        assert_eq!(page.total_rows, 3);
+        assert_eq!(page.offset, 0);
+        assert!(page.rows.is_empty());
+    }
+
+    #[test]
+    fn invalid_parquet_bytes_report_a_parquet_error() {
+        match summarize_parquet_bytes(b"not parquet") {
+            Ok(_) => panic!("invalid parquet bytes should fail"),
+            Err(err) => assert!(err.contains("Parquet error")),
         }
     }
 }

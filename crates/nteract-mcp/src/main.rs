@@ -17,13 +17,22 @@ use rmcp::ServiceExt;
 use runt_mcp_proxy::{McpProxy, ProxyConfig};
 use tracing::{error, info, warn};
 
+fn selected_build_channel(channel: &str) -> runt_workspace::BuildChannel {
+    if channel.eq_ignore_ascii_case("nightly") {
+        runt_workspace::BuildChannel::Nightly
+    } else {
+        runt_workspace::BuildChannel::Stable
+    }
+}
+
+fn runt_binary_name_for_channel(channel: &str) -> &'static str {
+    runt_workspace::cli_command_name_for(selected_build_channel(channel))
+}
+
 /// Find the `runt` or `runt-nightly` binary on PATH or in platform-specific locations.
 fn find_runt_binary(channel: &str) -> Option<PathBuf> {
-    let binary_name = if channel == "nightly" {
-        runt_workspace::cli_command_name_for(runt_workspace::BuildChannel::Nightly)
-    } else {
-        runt_workspace::cli_command_name_for(runt_workspace::BuildChannel::Stable)
-    };
+    let build_channel = selected_build_channel(channel);
+    let binary_name = runt_workspace::cli_command_name_for(build_channel);
 
     // 1. Check PATH via `which`
     let which_cmd = if cfg!(target_os = "windows") {
@@ -123,6 +132,36 @@ fn find_runt_binary(channel: &str) -> Option<PathBuf> {
     None
 }
 
+fn child_env_for_channel(channel: &str) -> HashMap<String, String> {
+    HashMap::from([("NTERACT_CHANNEL".to_string(), channel.to_string())])
+}
+
+fn proxy_cache_dir() -> Option<PathBuf> {
+    dirs::cache_dir().map(|d| {
+        let dir = d.join(runt_workspace::cache_namespace()).join("proxy");
+        let _ = std::fs::create_dir_all(&dir);
+        dir
+    })
+}
+
+fn proxy_config_for_channel(channel: String) -> ProxyConfig {
+    let child_env = child_env_for_channel(&channel);
+    let binary_name = runt_binary_name_for_channel(&channel);
+    let channel_for_resolve = channel.clone();
+    ProxyConfig {
+        resolve_child_command: Box::new(move || {
+            find_runt_binary(&channel_for_resolve).ok_or_else(|| {
+                format!("{binary_name} no longer found on PATH or in known install locations")
+            })
+        }),
+        child_args: vec!["mcp".to_string()],
+        child_env,
+        server_name: runt_workspace::desktop_product_name().to_string(),
+        cache_dir: proxy_cache_dir(),
+        monitor_poll_interval_ms: 500,
+    }
+}
+
 #[tokio::main]
 async fn main() -> ExitCode {
     // Log to stderr (MCP uses stdout for transport)
@@ -141,7 +180,7 @@ async fn main() -> ExitCode {
     let channel = std::env::var("NTERACT_CHANNEL")
         .unwrap_or_else(|_| runt_workspace::channel_display_name().to_string());
     let app_name = runt_workspace::desktop_display_name();
-    let binary_name = runt_workspace::cli_command_name();
+    let binary_name = runt_binary_name_for_channel(&channel);
 
     info!(
         "nteract-mcp starting (channel={channel}, compiled={})",
@@ -163,10 +202,6 @@ async fn main() -> ExitCode {
     }
     info!("Validated {binary_name} is available");
 
-    // Build child environment
-    let mut child_env = HashMap::new();
-    child_env.insert("NTERACT_CHANNEL".to_string(), channel.clone());
-
     // Pass resolution as a closure so the proxy re-discovers the binary
     // on every child restart. This is the core upgrade mechanism: the user
     // upgrades the nteract app (new runt binary), and the proxy picks it up
@@ -176,23 +211,7 @@ async fn main() -> ExitCode {
     // (`runt mcp` stamps the daemon version into `ServerInfo.title`), so the
     // proxy no longer opens its own daemon socket — that used to drag the
     // full runtimed-client compile graph into every MCP process.
-    let channel_for_resolve = channel.clone();
-    let config = ProxyConfig {
-        resolve_child_command: Box::new(move || {
-            find_runt_binary(&channel_for_resolve).ok_or_else(|| {
-                format!("{binary_name} no longer found on PATH or in known install locations")
-            })
-        }),
-        child_args: vec!["mcp".to_string()],
-        child_env,
-        server_name: runt_workspace::desktop_product_name().to_string(),
-        cache_dir: dirs::cache_dir().map(|d| {
-            let dir = d.join(runt_workspace::cache_namespace()).join("proxy");
-            let _ = std::fs::create_dir_all(&dir);
-            dir
-        }),
-        monitor_poll_interval_ms: 500,
-    };
+    let config = proxy_config_for_channel(channel.clone());
 
     let proxy = McpProxy::new(config, None);
 
@@ -250,4 +269,50 @@ async fn main() -> ExitCode {
     }
 
     ExitCode::SUCCESS
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn channel_name_selects_the_expected_child_binary() {
+        assert_eq!(runt_binary_name_for_channel("stable"), "runt");
+        assert_eq!(runt_binary_name_for_channel("nightly"), "runt-nightly");
+        assert_eq!(runt_binary_name_for_channel("NIGHTLY"), "runt-nightly");
+        assert_eq!(runt_binary_name_for_channel("future"), "runt");
+    }
+
+    #[test]
+    fn child_env_is_limited_to_the_channel_contract() {
+        let env = child_env_for_channel("stable");
+        assert_eq!(env.len(), 1);
+        assert_eq!(env.get("NTERACT_CHANNEL"), Some(&"stable".to_string()));
+        assert!(!env.contains_key("RUNTIMED_DEV"));
+        assert!(!env.contains_key("RUNTIMED_WORKSPACE_PATH"));
+        assert!(!env.contains_key("RUNTIMED_SOCKET_PATH"));
+    }
+
+    #[test]
+    fn proxy_config_uses_the_resilient_runt_mcp_child_contract() {
+        let config = proxy_config_for_channel("nightly".to_string());
+
+        assert_eq!(config.child_args, vec!["mcp".to_string()]);
+        assert_eq!(
+            config.child_env.get("NTERACT_CHANNEL"),
+            Some(&"nightly".to_string())
+        );
+        assert_eq!(config.server_name, runt_workspace::desktop_product_name());
+        assert_eq!(config.monitor_poll_interval_ms, 500);
+    }
+
+    #[test]
+    fn proxy_cache_dir_is_under_the_channel_cache_namespace() {
+        let Some(dir) = proxy_cache_dir() else {
+            return;
+        };
+
+        let suffix = PathBuf::from(runt_workspace::cache_namespace()).join("proxy");
+        assert!(dir.ends_with(suffix));
+    }
 }

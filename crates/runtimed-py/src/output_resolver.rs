@@ -50,3 +50,76 @@ pub async fn resolve_cell_outputs(
         .map(convert_output)
         .collect()
 }
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+
+    use super::*;
+    use runtimed_client::resolved_output as shared_output;
+    use serde_json::json;
+
+    #[test]
+    fn convert_output_preserves_typed_data_and_blob_metadata() {
+        let output = shared_output::Output {
+            output_type: "execute_result".to_string(),
+            name: None,
+            text: None,
+            data: Some(HashMap::from([
+                (
+                    "text/plain".to_string(),
+                    shared_output::DataValue::Text("hello".to_string()),
+                ),
+                (
+                    "image/png".to_string(),
+                    shared_output::DataValue::Binary(vec![0, 1, 2, 255]),
+                ),
+                (
+                    "application/json".to_string(),
+                    shared_output::DataValue::Json(json!({"ok": true})),
+                ),
+            ])),
+            ename: None,
+            evalue: None,
+            traceback: None,
+            execution_count: Some(7),
+            blob_urls: Some(HashMap::from([(
+                "image/png".to_string(),
+                "http://127.0.0.1/blob/image".to_string(),
+            )])),
+            blob_paths: Some(HashMap::from([(
+                "image/png".to_string(),
+                "/tmp/runt/blob-image".to_string(),
+            )])),
+        };
+
+        let converted = convert_output(output);
+
+        assert_eq!(converted.output_type, "execute_result");
+        assert_eq!(converted.execution_count, Some(7));
+        assert_eq!(
+            converted.blob_urls.unwrap()["image/png"],
+            "http://127.0.0.1/blob/image"
+        );
+        assert_eq!(
+            converted.blob_paths.unwrap()["image/png"],
+            "/tmp/runt/blob-image"
+        );
+
+        let data = converted.data.unwrap();
+        let DataValue::Text(text) = &data["text/plain"] else {
+            panic!("text/plain should convert to text");
+        };
+        assert_eq!(text, "hello");
+
+        let DataValue::Binary(bytes) = &data["image/png"] else {
+            panic!("image/png should convert to binary");
+        };
+        assert_eq!(bytes, &[0, 1, 2, 255]);
+
+        let DataValue::Json(value) = &data["application/json"] else {
+            panic!("application/json should convert to JSON");
+        };
+        assert_eq!(value["ok"], true);
+    }
+}

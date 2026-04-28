@@ -388,6 +388,9 @@ jobs:
       - name: Run tests
         run: cargo test --workspace --exclude notebook --exclude runtimed-wasm --exclude sift-wasm --exclude runtimed-py --exclude runtimed-node --verbose
 
+      - name: Run binding crate tests
+        run: cargo test -p runtimed-node -p nteract-mcp --verbose
+
   build:
     name: ${{ matrix.platform.name }}
     needs: [changes, build-ui]
@@ -742,6 +745,19 @@ jobs:
           cd crates/runtimed-py && \
             VIRTUAL_ENV="${GITHUB_WORKSPACE}/.venv" \
             uv run --directory ../../python/runtimed maturin develop
+
+      - name: Run runtimed-py Rust unit tests
+        run: |
+          PYTHON="${GITHUB_WORKSPACE}/.venv/bin/python"
+          PYTHON_LIB_DIR="$("${PYTHON}" - <<'PY'
+          import sysconfig
+          print(sysconfig.get_config_var("LIBDIR") or "")
+          PY
+          )"
+          export PYO3_PYTHON="${PYTHON}"
+          export LD_LIBRARY_PATH="${PYTHON_LIB_DIR}:${LD_LIBRARY_PATH:-}"
+          export DYLD_LIBRARY_PATH="${PYTHON_LIB_DIR}:${DYLD_LIBRARY_PATH:-}"
+          cargo test -p runtimed-py --lib --no-default-features --verbose
 
       - name: Run integration tests
         timeout-minutes: 30

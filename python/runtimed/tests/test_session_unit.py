@@ -230,5 +230,131 @@ class TestCreateNotebookValidation:
             client.create_notebook(working_dir=str(test_file))
 
 
+class _ExecutionEntry:
+    def __init__(self, status="queued", success=None, execution_count=None):
+        self.status = status
+        self.success = success
+        self.execution_count = execution_count
+
+
+class _RuntimeState:
+    def __init__(self, executions):
+        self.executions = executions
+
+
+class _ExecutionSession:
+    def __init__(self, executions=None, state_error=None):
+        self._executions = executions or {}
+        self._state_error = state_error
+        self.wait_calls = []
+        self.interrupted = False
+
+    def get_runtime_state_sync(self):
+        if self._state_error is not None:
+            raise self._state_error
+        return _RuntimeState(self._executions)
+
+    async def wait_for_execution(self, cell_id, execution_id, timeout_secs):
+        self.wait_calls.append((cell_id, execution_id, timeout_secs))
+        return "execution-result"
+
+    async def interrupt(self):
+        self.interrupted = True
+
+
+class TestExecutionHandle:
+    """Execution handle state reads without a live daemon."""
+
+    def test_execution_properties_read_runtime_state_entry(self):
+        from runtimed._execution import Execution
+
+        session = _ExecutionSession(
+            {
+                "exec-1": _ExecutionEntry(
+                    status="done", success=True, execution_count=12
+                )
+            }
+        )
+
+        execution = Execution(session, "cell-1", "exec-1")
+
+        assert execution.execution_id == "exec-1"
+        assert execution.cell_id == "cell-1"
+        assert execution.status == "done"
+        assert execution.success is True
+        assert execution.execution_count == 12
+        assert execution.done is True
+        assert "status=done" in repr(execution)
+
+    def test_execution_properties_degrade_to_unknown_when_state_is_missing(self):
+        from runtimed._execution import Execution
+
+        execution = Execution(_ExecutionSession({}), "cell-1", "missing")
+
+        assert execution.status == "unknown"
+        assert execution.success is None
+        assert execution.execution_count is None
+        assert execution.done is False
+
+    def test_execution_properties_degrade_to_unknown_when_state_read_fails(self):
+        from runtimed._execution import Execution
+
+        execution = Execution(
+            _ExecutionSession(state_error=RuntimeError("runtime unavailable")),
+            "cell-1",
+            "exec-1",
+        )
+
+        assert execution.status == "unknown"
+        assert execution.success is None
+        assert execution.execution_count is None
+
+    @pytest.mark.asyncio
+    async def test_result_delegates_to_session_without_requeueing(self):
+        from runtimed._execution import Execution
+
+        session = _ExecutionSession({"exec-1": _ExecutionEntry(status="done")})
+        execution = Execution(session, "cell-1", "exec-1")
+
+        result = await execution.result(timeout_secs=12.5)
+
+        assert result == "execution-result"
+        assert session.wait_calls == [("cell-1", "exec-1", 12.5)]
+
+    @pytest.mark.asyncio
+    async def test_await_execution_is_result_shorthand(self):
+        from runtimed._execution import Execution
+
+        session = _ExecutionSession({"exec-1": _ExecutionEntry(status="done")})
+        execution = Execution(session, "cell-1", "exec-1")
+
+        assert await execution == "execution-result"
+        assert session.wait_calls == [("cell-1", "exec-1", 60.0)]
+
+    @pytest.mark.asyncio
+    async def test_cancel_interrupts_the_session(self):
+        from runtimed._execution import Execution
+
+        session = _ExecutionSession({"exec-1": _ExecutionEntry(status="running")})
+        execution = Execution(session, "cell-1", "exec-1")
+
+        await execution.cancel()
+
+        assert session.interrupted is True
+
+    @pytest.mark.asyncio
+    async def test_wait_times_out_with_current_status(self):
+        from runtimed._execution import Execution
+
+        execution = Execution(
+            _ExecutionSession({"exec-1": _ExecutionEntry(status="running")}),
+            "cell-1",
+            "exec-1",
+        )
+
+        with pytest.raises(TimeoutError, match="status=running"):
+            await execution.wait(timeout_secs=0.0)
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

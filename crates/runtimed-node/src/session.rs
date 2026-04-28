@@ -552,6 +552,13 @@ enum DataValueJson {
 }
 
 fn to_js_output(o: runtimed_client::resolved_output::Output) -> napi::Result<JsOutput> {
+    js_output_from_resolved_output(o)
+        .map_err(|e| napi::Error::from_reason(format!("Failed to serialize output data: {e}")))
+}
+
+fn js_output_from_resolved_output(
+    o: runtimed_client::resolved_output::Output,
+) -> serde_json::Result<JsOutput> {
     let data_json = match o.data {
         Some(d) => {
             let map: std::collections::HashMap<String, DataValueJson> = d
@@ -568,22 +575,15 @@ fn to_js_output(o: runtimed_client::resolved_output::Output) -> napi::Result<JsO
                     (k, dv)
                 })
                 .collect();
-            Some(serde_json::to_string(&map).map_err(|e| {
-                napi::Error::from_reason(format!("Failed to serialize output data: {e}"))
-            })?)
+            Some(serde_json::to_string(&map)?)
         }
         None => None,
     };
-    let blob_urls_json = o
-        .blob_urls
-        .map(|m| serde_json::to_string(&m))
-        .transpose()
-        .map_err(|e| napi::Error::from_reason(format!("Failed to serialize blob_urls: {e}")))?;
+    let blob_urls_json = o.blob_urls.map(|m| serde_json::to_string(&m)).transpose()?;
     let blob_paths_json = o
         .blob_paths
         .map(|m| serde_json::to_string(&m))
-        .transpose()
-        .map_err(|e| napi::Error::from_reason(format!("Failed to serialize blob_paths: {e}")))?;
+        .transpose()?;
     Ok(JsOutput {
         output_type: o.output_type,
         name: o.name,
@@ -596,4 +596,106 @@ fn to_js_output(o: runtimed_client::resolved_output::Output) -> napi::Result<JsO
         blob_urls_json,
         blob_paths_json,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
+    use super::*;
+    use runtimed_client::resolved_output::{DataValue as SharedDataValue, Output as SharedOutput};
+    use serde_json::json;
+    use std::collections::HashMap;
+
+    #[test]
+    fn resolve_socket_path_prefers_explicit_override() {
+        let path = resolve_socket_path(Some("/tmp/runtimed-node-test.sock".to_string()));
+        assert_eq!(path, PathBuf::from("/tmp/runtimed-node-test.sock"));
+    }
+
+    #[test]
+    fn to_js_output_preserves_output_fields_and_typed_data_contract() {
+        let data = HashMap::from([
+            (
+                "text/plain".to_string(),
+                SharedDataValue::Text("hello".to_string()),
+            ),
+            (
+                "image/png".to_string(),
+                SharedDataValue::Binary(vec![0, 1, 2, 255]),
+            ),
+            (
+                "application/json".to_string(),
+                SharedDataValue::Json(json!({"ok": true, "n": 3})),
+            ),
+        ]);
+        let mut output = SharedOutput::execute_result(data, 7);
+        output.blob_urls = Some(HashMap::from([(
+            "image/png".to_string(),
+            "http://localhost:9999/blob/abc".to_string(),
+        )]));
+        output.blob_paths = Some(HashMap::from([(
+            "image/png".to_string(),
+            "/tmp/blobs/ab/abc".to_string(),
+        )]));
+
+        let js_output = js_output_from_resolved_output(output).expect("output serializes");
+
+        assert_eq!(js_output.output_type, "execute_result");
+        assert_eq!(js_output.execution_count, Some(7));
+
+        let data_json: serde_json::Value =
+            serde_json::from_str(js_output.data_json.as_deref().unwrap()).unwrap();
+        assert_eq!(
+            data_json["text/plain"],
+            json!({"type": "text", "value": "hello"})
+        );
+        assert_eq!(
+            data_json["image/png"],
+            json!({"type": "binary", "value": "AAEC/w=="})
+        );
+        assert_eq!(
+            data_json["application/json"],
+            json!({"type": "json", "value": {"ok": true, "n": 3}})
+        );
+
+        let blob_urls: serde_json::Value =
+            serde_json::from_str(js_output.blob_urls_json.as_deref().unwrap()).unwrap();
+        assert_eq!(
+            blob_urls,
+            json!({"image/png": "http://localhost:9999/blob/abc"})
+        );
+
+        let blob_paths: serde_json::Value =
+            serde_json::from_str(js_output.blob_paths_json.as_deref().unwrap()).unwrap();
+        assert_eq!(blob_paths, json!({"image/png": "/tmp/blobs/ab/abc"}));
+    }
+
+    #[test]
+    fn to_js_output_keeps_kernel_error_shape_stable() {
+        let output = SharedOutput::error(
+            "ValueError",
+            "bad value",
+            vec![
+                "Traceback line 1".to_string(),
+                "Traceback line 2".to_string(),
+            ],
+        );
+
+        let js_output = js_output_from_resolved_output(output).expect("error output serializes");
+
+        assert_eq!(js_output.output_type, "error");
+        assert_eq!(js_output.ename.as_deref(), Some("ValueError"));
+        assert_eq!(js_output.evalue.as_deref(), Some("bad value"));
+        assert_eq!(
+            js_output.traceback,
+            Some(vec![
+                "Traceback line 1".to_string(),
+                "Traceback line 2".to_string()
+            ])
+        );
+        assert!(js_output.data_json.is_none());
+        assert!(js_output.blob_urls_json.is_none());
+        assert!(js_output.blob_paths_json.is_none());
+    }
 }
