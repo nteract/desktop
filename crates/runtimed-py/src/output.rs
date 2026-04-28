@@ -766,6 +766,10 @@ pub struct ExecutionResult {
     #[pyo3(get)]
     pub cell_id: String,
 
+    /// Execution ID for this run.
+    #[pyo3(get)]
+    pub execution_id: String,
+
     /// All outputs from execution
     #[pyo3(get)]
     pub outputs: Vec<Output>,
@@ -825,8 +829,9 @@ impl ExecutionResult {
     fn __repr__(&self) -> String {
         let status = if self.success { "ok" } else { "error" };
         format!(
-            "ExecutionResult(cell={}, status={}, outputs={})",
+            "ExecutionResult(cell={}, execution={}, status={}, outputs={})",
             self.cell_id,
+            self.execution_id,
             status,
             self.outputs.len()
         )
@@ -1202,6 +1207,7 @@ mod tests {
     fn execution_result_helpers_split_stream_display_and_error_outputs() {
         let result = ExecutionResult {
             cell_id: "cell-1".to_string(),
+            execution_id: "exec-1".to_string(),
             outputs: vec![
                 Output::stream("stdout", "alpha"),
                 Output::stream("stdout", " beta"),
@@ -1222,7 +1228,7 @@ mod tests {
         assert_eq!(result.error().unwrap().ename.as_deref(), Some("ValueError"));
         assert_eq!(
             result.__repr__(),
-            "ExecutionResult(cell=cell-1, status=error, outputs=5)"
+            "ExecutionResult(cell=cell-1, execution=exec-1, status=error, outputs=5)"
         );
     }
 

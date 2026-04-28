@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from runtimed._cell import CellCollection, _HintList
+from runtimed._execution import Execution
 from runtimed._presence import Presence
 
 if TYPE_CHECKING:
@@ -124,6 +125,19 @@ class Notebook:
         """Queue every code cell for execution. Returns the number queued."""
         return await self._session.run_all_cells()
 
+    async def queue_all(self) -> list[Execution]:
+        """Queue every code cell and return execution handles.
+
+        Unlike :meth:`run_all`, this preserves each queued execution ID so
+        callers can poll status, wait for results, or recover durable results
+        by execution later.
+        """
+        entries = await self._session.queue_all_cells()
+        return [
+            Execution(self._session, entry.cell_id, entry.execution_id)
+            for entry in entries
+        ]
+
     async def disconnect(self) -> None:
         """Disconnect from the notebook session."""
         await self._session.close()
@@ -228,7 +242,7 @@ class Notebook:
             "|-|-|\n"
             "| `cells` `peers` | `save()` `save_as()` |\n"
             "| `presence` `runtime` | `start()` `stop_runtime()` `restart()` |\n"
-            "| `notebook_id` `is_connected` | `interrupt()` `run_all()` |\n"
+            "| `notebook_id` `is_connected` | `interrupt()` `run_all()` `queue_all()` |\n"
             "| | `add_dependency()` `remove_dependency()` |\n"
             "| | `get_dependencies()` `sync_environment()` |\n"
             "| | `disconnect()` |\n"

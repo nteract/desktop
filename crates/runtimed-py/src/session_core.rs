@@ -1270,14 +1270,7 @@ pub(crate) async fn wait_for_execution(
             (st.blob_base_url.clone(), st.blob_store_path.clone())
         };
 
-        collect_outputs(
-            state,
-            cell_id,
-            Some(execution_id),
-            blob_base_url,
-            blob_store_path,
-        )
-        .await
+        collect_outputs(state, cell_id, execution_id, blob_base_url, blob_store_path).await
     })
     .await;
 
@@ -1317,7 +1310,7 @@ pub(crate) async fn execute_cell(
         collect_outputs(
             state,
             cell_id,
-            Some(&execution_id),
+            &execution_id,
             blob_base_url,
             blob_store_path,
         )
@@ -1382,280 +1375,76 @@ pub(crate) async fn queue_cell(
 
 /// Wait for execution to complete, then read outputs from the Automerge doc.
 ///
-/// When an `execution_id` is provided, defers to
-/// [`notebook_sync::await_execution_terminal`] and reads outputs directly
-/// from the `RuntimeStateDoc` — the same path `runt-mcp` uses. This avoids
-/// the stream-output race where the `ExecutionDone` broadcast arrives
+/// Defers to [`notebook_sync::await_execution_terminal`] and reads outputs
+/// directly from the `RuntimeStateDoc` — the same path `runt-mcp` uses. This
+/// avoids the stream-output race where the `ExecutionDone` broadcast arrives
 /// before the final stream manifests have synced into our replica.
-///
-/// When `execution_id` is `None` (legacy callers), falls back to the older
-/// queue-presence polling + `NotebookDoc` cell snapshot read.
 pub(crate) async fn collect_outputs(
     state: &Arc<Mutex<SessionState>>,
     cell_id: &str,
-    execution_id: Option<&str>,
+    execution_id: &str,
     blob_base_url: Option<String>,
     blob_store_path: Option<PathBuf>,
 ) -> PyResult<ExecutionResult> {
-    // ── Fast path: execution_id known — use the shared helper ─────────
-    if let Some(eid) = execution_id {
-        let handle = {
-            let st = state.lock().await;
-            st.handle
-                .as_ref()
-                .ok_or_else(|| to_py_err("Not connected"))?
-                .clone()
-        };
-
-        // No outer timeout here: the caller's tokio::time::timeout at
-        // execute_cell()/wait_for_execution() bounds the total wait. Pass
-        // a very long timeout so the helper only returns on terminal state
-        // or kernel failure.
-        let helper_timeout = std::time::Duration::from_secs(60 * 60 * 24);
-        let terminal =
-            notebook_sync::await_execution_terminal(&handle, eid, helper_timeout, None).await;
-
-        match terminal {
-            Ok(state) => {
-                let comms = handle.get_runtime_state().ok().map(|rs| rs.comms);
-                let outputs = output_resolver::resolve_cell_outputs(
-                    &state.output_manifests,
-                    &blob_base_url,
-                    &blob_store_path,
-                    comms.as_ref(),
-                )
-                .await;
-                let success = state.status == "done"
-                    && state.success
-                    && !outputs.iter().any(|o| o.output_type == "error");
-                return Ok(ExecutionResult {
-                    cell_id: cell_id.to_string(),
-                    outputs,
-                    success,
-                    execution_count: state.execution_count,
-                });
-            }
-            Err(notebook_sync::ExecutionTerminalError::KernelFailed { reason }) => {
-                return Ok(ExecutionResult {
-                    cell_id: cell_id.to_string(),
-                    outputs: vec![Output::error("KernelError", &reason, vec![])],
-                    success: false,
-                    execution_count: None,
-                });
-            }
-            Err(notebook_sync::ExecutionTerminalError::Timeout) => {
-                // Helper timeout is a day; reaching this means something
-                // drove us there intentionally (cancellation, outer abort).
-                return Err(to_py_err("Execution wait aborted"));
-            }
-        }
-    }
-
-    // ── Legacy path: no execution_id ─────────────────────────────────
-    // Falls through to queue-presence polling + NotebookDoc cell read.
-    let mut kernel_error: Option<String> = None;
-
-    // Phase 1: Wait for the cell to leave the execution queue.
-    //
-    // Poll the RuntimeStateDoc queue — when the cell is no longer in
-    // `executing` or `queued`, execution is done. Also check for kernel
-    // error/shutdown status.
-    //
-    // IMPORTANT: The RuntimeStateDoc replica may not have synced yet when
-    // we first poll (the daemon writes queue state, then Automerge sync
-    // propagates it). We must see the cell IN the queue at least once
-    // before treating its absence as completion. Otherwise we'd return
-    // immediately with empty outputs.
-    let mut seen_in_queue = false;
-
-    loop {
-        // Check RuntimeStateDoc queue state
-        let cell_done_via_doc = {
-            let st = state.lock().await;
-            if let Some(handle) = st.handle.as_ref() {
-                if let Ok(rs) = handle.get_runtime_state() {
-                    // Fast path: if we have an execution_id and the executions
-                    // map shows it's already done/error, we're finished. This
-                    // handles the late-consumer case where Execution.result()
-                    // is called after the execution has already completed.
-                    let mut done = false;
-                    if let Some(eid) = execution_id {
-                        if let Some(exec_state) = rs.executions.get(eid) {
-                            if exec_state.status == "done" || exec_state.status == "error" {
-                                log::debug!(
-                                    "[session_core] Late consumer: execution {} already {}",
-                                    eid,
-                                    exec_state.status
-                                );
-                                done = true;
-                            } else {
-                                seen_in_queue = true;
-                            }
-                        }
-                        // else: execution entry not synced yet — fall through
-                    }
-
-                    // Fallback: kernel error or shutdown → stop waiting.
-                    // These must run even when we have an execution_id,
-                    // otherwise a kernel crash leaves us spinning until
-                    // the outer timeout fires.
-                    if !done {
-                        match rs.kernel.lifecycle {
-                            RuntimeLifecycle::Error => {
-                                kernel_error = Some("Kernel error".to_string());
-                                done = true;
-                            }
-                            RuntimeLifecycle::Shutdown => {
-                                kernel_error = Some("Kernel shut down".to_string());
-                                done = true;
-                            }
-                            _ => {}
-                        }
-                    }
-
-                    // Fallback: queue-presence tracking. If the cell was
-                    // seen in the queue and has since left, execution is
-                    // done regardless of whether the executions map or
-                    // broadcasts caught up.
-                    if !done {
-                        let in_executing = rs.queue.executing.as_ref().is_some_and(|e| {
-                            e.cell_id == cell_id
-                                && execution_id.is_none_or(|eid| e.execution_id == eid)
-                        });
-                        let in_queued = rs.queue.queued.iter().any(|e| {
-                            e.cell_id == cell_id
-                                && execution_id.is_none_or(|eid| e.execution_id == eid)
-                        });
-                        let in_queue = in_executing || in_queued;
-
-                        if in_queue {
-                            seen_in_queue = true;
-                        } else if seen_in_queue {
-                            // Was in queue, now gone → done
-                            done = true;
-                        }
-                        // else: never seen in queue — doc hasn't synced yet
-                    }
-
-                    done
-                } else {
-                    false
-                }
-            } else {
-                false
-            }
-        };
-
-        if cell_done_via_doc {
-            log::debug!(
-                "[session_core] Cell {} left queue (RuntimeStateDoc)",
-                cell_id
-            );
-            break;
-        }
-
-        // Yield briefly so we don't spin-poll the doc.
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-    }
-
-    // KernelError: return immediately without touching the doc
-    if let Some(error) = kernel_error {
-        return Ok(ExecutionResult {
-            cell_id: cell_id.to_string(),
-            outputs: vec![Output::error("KernelError", &error, vec![])],
-            success: false,
-            execution_count: None,
-        });
-    }
-
-    // Phase 2: Read canonical cell state from the Automerge doc.
-    //
-    // The cell has left the execution queue, but the daemon's output writes
-    // may not have synced back to our local replica yet.  confirm_sync only
-    // ensures the daemon has *our* changes — not that we have *theirs*.
-    //
-    // Poll with confirm_sync until outputs appear (or a timeout).  Every
-    // execution produces at least one output or an execution_count change,
-    // so an empty snapshot after queue departure means sync is still lagging.
-    //
-    // TODO(#1048): Replace this sleep-and-retry with the execution handle
-    // abstraction.  Once execution lifecycle (status, outputs) lives in the
-    // RuntimeStateDoc keyed by execution_id, we can wait on the authoritative
-    // "done"/"error" status instead of polling the notebook doc for outputs.
-    //
-    // NOTE(#1066): The cell snapshot below is read by cell_id, not execution_id.
-    // In a multi-client scenario, another peer re-executing the same cell can
-    // overwrite the doc snapshot between our ExecutionDone and this read,
-    // returning outputs from the wrong execution. This is fixed once cells
-    // carry an execution_id pointer and outputs are keyed by execution_id
-    // in the RuntimeStateDoc.
-    let mut snapshot = None;
-    let mut raw_outputs_out: Vec<serde_json::Value> = Vec::new();
-    let mut blob_base_url_out = None;
-    let mut blob_store_path_out = None;
-    let mut comms_out = None;
-
-    for attempt in 0..5 {
+    let handle = {
         let st = state.lock().await;
-        let handle = st
-            .handle
+        st.handle
             .as_ref()
-            .ok_or_else(|| to_py_err("Not connected"))?;
+            .ok_or_else(|| to_py_err("Not connected"))?
+            .clone()
+    };
 
-        handle.confirm_sync().await.map_err(to_py_err)?;
-        handle.confirm_state_sync().await.map_err(to_py_err)?;
+    // No outer timeout here: the caller's tokio::time::timeout at
+    // execute_cell()/wait_for_execution() bounds the total wait. Pass
+    // a very long timeout so the helper only returns on terminal state
+    // or kernel failure.
+    let helper_timeout = std::time::Duration::from_secs(60 * 60 * 24);
+    let terminal =
+        notebook_sync::await_execution_terminal(&handle, execution_id, helper_timeout, None).await;
 
-        let snap = handle.get_cell(cell_id).ok_or_else(|| {
-            to_py_err(format!(
-                "Cell not found in doc after execution: {}",
-                cell_id
-            ))
-        })?;
-        let raw_outputs = handle.get_cell_outputs(cell_id).unwrap_or_default();
-
-        let has_outputs = !raw_outputs.is_empty();
-        let has_ec = snap.execution_count != "null" && !snap.execution_count.is_empty();
-
-        if has_outputs || has_ec || attempt >= 4 {
-            blob_base_url_out = blob_base_url.clone();
-            blob_store_path_out = blob_store_path.clone();
-            comms_out = handle.get_runtime_state().ok().map(|rs| rs.comms);
-            snapshot = Some(snap);
-            raw_outputs_out = raw_outputs;
-            break;
+    match terminal {
+        Ok(state) => {
+            let comms = handle.get_runtime_state().ok().map(|rs| rs.comms);
+            let outputs = output_resolver::resolve_cell_outputs(
+                &state.output_manifests,
+                &blob_base_url,
+                &blob_store_path,
+                comms.as_ref(),
+            )
+            .await;
+            let success = state.status == "done"
+                && state.success
+                && !outputs.iter().any(|o| o.output_type == "error");
+            Ok(ExecutionResult {
+                cell_id: cell_id.to_string(),
+                execution_id: execution_id.to_string(),
+                outputs,
+                success,
+                execution_count: state.execution_count,
+            })
         }
-
-        drop(st);
-        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+        Err(notebook_sync::ExecutionTerminalError::KernelFailed { reason }) => {
+            Ok(ExecutionResult {
+                cell_id: cell_id.to_string(),
+                execution_id: execution_id.to_string(),
+                outputs: vec![Output::error("KernelError", &reason, vec![])],
+                success: false,
+                execution_count: None,
+            })
+        }
+        Err(notebook_sync::ExecutionTerminalError::Timeout) => {
+            // Helper timeout is a day; reaching this means something
+            // drove us there intentionally (cancellation, outer abort).
+            Err(to_py_err("Execution wait aborted"))
+        }
     }
-
-    let snapshot = snapshot.ok_or_else(|| to_py_err("Failed to read cell after execution"))?;
-
-    let execution_count = snapshot.execution_count.parse::<i64>().ok();
-
-    let outputs = output_resolver::resolve_cell_outputs(
-        &raw_outputs_out,
-        &blob_base_url_out,
-        &blob_store_path_out,
-        comms_out.as_ref(),
-    )
-    .await;
-
-    let success = !outputs.iter().any(|o| o.output_type == "error");
-
-    Ok(ExecutionResult {
-        cell_id: cell_id.to_string(),
-        outputs,
-        success,
-        execution_count,
-    })
 }
 
-/// Execute all code cells in order, returns the number of cells queued.
-pub(crate) async fn run_all_cells(
+/// Queue all code cells in order and return their execution handles.
+pub(crate) async fn queue_all_cells(
     state: &Arc<Mutex<SessionState>>,
     notebook_id: &str,
-) -> PyResult<usize> {
+) -> PyResult<Vec<PyQueueEntry>> {
     // Auto-start kernel
     {
         let st = state.lock().await;
@@ -1665,28 +1454,27 @@ pub(crate) async fn run_all_cells(
         }
     }
 
-    let response = {
+    let handle = {
         let st = state.lock().await;
-        let handle = st
-            .handle
+        st.handle
             .as_ref()
-            .ok_or_else(|| to_py_err("Not connected"))?;
-
-        handle.confirm_sync().await.map_err(to_py_err)?;
-
-        handle
-            .send_request(NotebookRequest::RunAllCells {})
-            .await
-            .map_err(to_py_err)?
+            .ok_or_else(|| to_py_err("Not connected"))?
+            .clone()
     };
+
+    handle.confirm_sync().await.map_err(to_py_err)?;
+
+    let response = handle
+        .send_request(NotebookRequest::RunAllCells {})
+        .await
+        .map_err(to_py_err)?;
 
     match response {
         NotebookResponse::AllCellsQueued { queued } => {
-            let count = queued.len();
             // Focus on the last code cell — gives a visual anchor for where execution ends.
             // RunAllCells only queues code cells, so focusing the last code cell (not the
             // last cell overall, which might be markdown/raw) is more accurate.
-            if count > 0 {
+            if !queued.is_empty() {
                 let last_code_cell_id = {
                     let st = state.lock().await;
                     st.handle.as_ref().and_then(|h| {
@@ -1701,12 +1489,26 @@ pub(crate) async fn run_all_cells(
                 // Don't emit focus — it would overwrite any existing cursor presence.
                 let _ = last_code_cell_id;
             }
-            Ok(count)
+            Ok(queued
+                .into_iter()
+                .map(|entry| PyQueueEntry {
+                    cell_id: entry.cell_id,
+                    execution_id: entry.execution_id,
+                })
+                .collect())
         }
         NotebookResponse::NoKernel {} => Err(to_py_err("No kernel running")),
         NotebookResponse::Error { error } => Err(to_py_err(error)),
         other => Err(to_py_err(format!("Unexpected response: {:?}", other))),
     }
+}
+
+/// Execute all code cells in order, returns the number of cells queued.
+pub(crate) async fn run_all_cells(
+    state: &Arc<Mutex<SessionState>>,
+    notebook_id: &str,
+) -> PyResult<usize> {
+    Ok(queue_all_cells(state, notebook_id).await?.len())
 }
 
 // =========================================================================

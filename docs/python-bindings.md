@@ -79,6 +79,7 @@ stats = await client.status()
 # {'uv_available': 2, 'conda_available': 0, ...}
 
 # Operations
+result = await client.get_execution_result("execution-uuid")
 await client.flush_pool()  # Clear and rebuild environment pool
 await client.shutdown()    # Stop the daemon
 ```
@@ -166,8 +167,10 @@ await cell.clear_outputs()
 await cell.delete()
 
 # Execution
-result = await cell.run(timeout_secs=60.0)  # returns ExecutionResult
-await cell.queue()  # fire-and-forget
+execution = await cell.execute()            # returns Execution handle
+result = await execution.result(timeout_secs=60.0)
+result = await cell.run(timeout_secs=60.0)  # sugar for execute().result()
+execution = await cell.queue()              # fire-and-forget handle
 ```
 
 ## Result Types
@@ -180,6 +183,7 @@ Returned by `cell.run()`:
 result = await cell.run()
 
 result.cell_id          # Cell that was executed
+result.execution_id     # Execution UUID
 result.success          # True if no error
 result.execution_count  # Execution counter value
 result.outputs          # List of Output objects
@@ -187,6 +191,22 @@ result.stdout           # Combined stdout text
 result.stderr           # Combined stderr text
 result.display_data     # List of display_data/execute_result outputs
 result.error            # First error output, or None
+```
+
+### Execution
+
+Returned by `cell.execute()`, `cell.queue()`, or `notebook.queue_all()`:
+
+```python
+execution = await cell.execute()
+
+execution.execution_id  # Durable execution UUID
+execution.cell_id       # Cell being executed
+execution.status        # "queued", "running", "done", "error", or "unknown"
+execution.done          # True once terminal
+
+result = await execution.result()
+assert result.execution_id == execution.execution_id
 ```
 
 ### Output
