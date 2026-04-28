@@ -125,16 +125,8 @@
       "name": "restart_kernel"
     },
     {
-      "description": "Add a package. Use after='sync' or 'restart' to apply.",
-      "name": "add_dependency"
-    },
-    {
-      "description": "Remove a package. Requires kernel restart to take effect.",
-      "name": "remove_dependency"
-    },
-    {
-      "description": "Get the notebook's declared dependencies.",
-      "name": "get_dependencies"
+      "description": "Review or update notebook dependencies. With no parameters, returns current dependencies, dependency fingerprint, and trust state. Use add/remove arrays for edits; set trust=true to approve the resulting dependency metadata; set apply='sync' or 'restart' to apply.",
+      "name": "manage_dependencies"
     },
     {
       "description": "Replace literal text in a cell. Use context_before/context_after to disambiguate repeated matches.",
