@@ -3195,7 +3195,12 @@ async fn doctor_command(
                     ..runtimed::service::ServiceConfig::default()
                 };
                 let mut migrated_manager = runtimed::service::ServiceManager::new(migrated_config);
-                match migrated_manager.upgrade(&bundled_path) {
+                let result = if no_start {
+                    migrated_manager.upgrade_no_start(&bundled_path)
+                } else {
+                    migrated_manager.upgrade(&bundled_path)
+                };
+                match result {
                     Ok(()) => {
                         actions_taken.push(format!(
                             "Migrated plist to in-bundle binary at {}",
@@ -3224,7 +3229,12 @@ async fn doctor_command(
                 let _ = manager.stop();
             }
             // Regenerate plist with HOME by calling upgrade with the existing binary
-            match manager.upgrade(&binary_path) {
+            let result = if no_start {
+                manager.upgrade_no_start(&binary_path)
+            } else {
+                manager.upgrade(&binary_path)
+            };
+            match result {
                 Ok(()) => {
                     actions_taken.push("Regenerated plist with HOME env var".to_string());
                 }
@@ -3291,7 +3301,12 @@ async fn doctor_command(
                 (&installed_ver, &bundled_ver, &bundled)
             {
                 if !runtimed_client::versions_match_ignoring_dirty(inst, bund) {
-                    match manager.upgrade(bundled_path) {
+                    let result = if no_start {
+                        manager.upgrade_no_start(bundled_path)
+                    } else {
+                        manager.upgrade(bundled_path)
+                    };
+                    match result {
                         Ok(()) => {
                             actions_taken.push(format!(
                                 "Upgraded daemon: {} -> {} (from {})",
@@ -3313,7 +3328,12 @@ async fn doctor_command(
             if let Some(bundled_path) = &bundled {
                 if !binary_exists && config_exists {
                     // Service config exists but binary missing - use upgrade to replace binary
-                    match manager.upgrade(bundled_path) {
+                    let result = if no_start {
+                        manager.upgrade_no_start(bundled_path)
+                    } else {
+                        manager.upgrade(bundled_path)
+                    };
+                    match result {
                         Ok(()) => {
                             actions_taken.push(format!(
                                 "Reinstalled daemon binary from {}",

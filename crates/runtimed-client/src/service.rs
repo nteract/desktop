@@ -333,6 +333,21 @@ impl ServiceManager {
     /// the running daemon and the bundled version. On macOS 13+ with in-bundle
     /// binaries, re-registers via SMAppService then kickstarts.
     pub fn upgrade(&mut self, source_binary: &PathBuf) -> ServiceResult<()> {
+        self.upgrade_inner(source_binary, true)
+    }
+
+    /// Upgrade the daemon binary without starting it after.
+    ///
+    /// Used by `runt daemon doctor --no-start`, which the NSIS post-install
+    /// hook calls. Spawning the daemon during a Windows installer step trapped
+    /// the long-running process in the installer's Job Object and hung CI.
+    /// The Startup folder script (or launchd plist) installed by
+    /// `create_service_config` brings the daemon up at next login.
+    pub fn upgrade_no_start(&mut self, source_binary: &PathBuf) -> ServiceResult<()> {
+        self.upgrade_inner(source_binary, false)
+    }
+
+    fn upgrade_inner(&mut self, source_binary: &PathBuf, start_after: bool) -> ServiceResult<()> {
         if !source_binary.exists() {
             return Err(ServiceError::BinaryNotFound(source_binary.clone()));
         }
@@ -363,16 +378,18 @@ impl ServiceManager {
             }
         }
 
-        // Bootstrap only. The stop() call above is best-effort and may have
-        // already performed the launchd bootout, but upgrade intentionally does
-        // not issue another bootout here. Using launchd_start() would add a
-        // second bootout attempt and can put launchd into a transient error-5
-        // state.
-        #[cfg(target_os = "macos")]
-        runt_workspace::launchd_bootstrap_only().map_err(ServiceError::StartFailed)?;
+        if start_after {
+            // Bootstrap only. The stop() call above is best-effort and may have
+            // already performed the launchd bootout, but upgrade intentionally
+            // does not issue another bootout here. Using launchd_start() would
+            // add a second bootout attempt and can put launchd into a
+            // transient error-5 state.
+            #[cfg(target_os = "macos")]
+            runt_workspace::launchd_bootstrap_only().map_err(ServiceError::StartFailed)?;
 
-        #[cfg(not(target_os = "macos"))]
-        self.start()?;
+            #[cfg(not(target_os = "macos"))]
+            self.start()?;
+        }
 
         info!("[service] Upgrade completed successfully");
         Ok(())
@@ -767,133 +784,21 @@ Set WshShell = Nothing
 
     #[cfg(target_os = "windows")]
     fn start_windows(&self) -> ServiceResult<()> {
-        use std::os::windows::ffi::OsStrExt;
-        use windows_sys::Win32::Foundation::CloseHandle;
-        use windows_sys::Win32::System::Threading::{
-            CreateProcessW, CREATE_BREAKAWAY_FROM_JOB, CREATE_NO_WINDOW, DETACHED_PROCESS,
-            PROCESS_INFORMATION, STARTUPINFOW,
-        };
+        use std::process::Stdio;
 
-        // The daemon runs forever. Two things go wrong with the default
-        // `Command::new(...).spawn()` path on Windows:
-        //
-        // 1. CreateProcessW defaults to `bInheritHandles=TRUE`, which
-        //    duplicates every inheritable handle from the parent into the
-        //    child - not just stdio. We don't want any of that to leak.
-        //
-        // 2. The new process is implicitly added to the parent's Job
-        //    Object. PowerShell's `Start-Process -Wait` (and CI runners
-        //    that wrap each step in a Job to track step descendants) wait
-        //    for *every* process in the Job to exit. With the daemon in
-        //    the Job, `Start-Process -Wait` blocks forever - this is the
-        //    actual mechanism behind the silent-install hangs in
-        //    runs 25025820384, 25025909072, and 25031947609. (Verified
-        //    locally with `IsProcessInJob` on the running daemon.)
-        //
-        // Bypass `std::process::Command` and call `CreateProcessW` directly:
-        //   - bInheritHandles=FALSE   (no handle leakage)
-        //   - DETACHED_PROCESS        (no inherited console)
-        //   - CREATE_NO_WINDOW        (no new visible window)
-        //   - CREATE_BREAKAWAY_FROM_JOB (escape the parent's Job Object)
-        //
-        // CREATE_BREAKAWAY_FROM_JOB requires the parent Job to have set
-        // JOB_OBJECT_LIMIT_BREAKAWAY_OK. PowerShell's Start-Process and
-        // GitHub Actions' step Jobs both set it, but if a future caller
-        // creates a stricter Job and the spawn fails with ACCESS_DENIED
-        // we retry without the flag - the daemon still starts, the
-        // -Wait caller still hangs, but at least we don't fail the
-        // common cases that don't use a strict Job at all.
-        // lpApplicationName: NUL-terminated UTF-16 path to the binary, no
-        // surrounding quotes (Windows does not parse application-name).
-        let app_name: Vec<u16> = self
-            .config
-            .binary_path
-            .as_os_str()
-            .encode_wide()
-            .chain(std::iter::once(0))
-            .collect();
-
-        // lpCommandLine: NUL-terminated UTF-16 with the path quoted as argv[0].
-        // Mutable because CreateProcessW may write into it.
-        let mut cmd_line: Vec<u16> = std::iter::once(b'"' as u16)
-            .chain(self.config.binary_path.as_os_str().encode_wide())
-            .chain(std::iter::once(b'"' as u16))
-            .chain(std::iter::once(0))
-            .collect();
-
-        // SAFETY: STARTUPINFOW and PROCESS_INFORMATION are POD structs whose
-        // all-zero bit pattern is a valid initial state per the Win32 ABI.
-        // STARTUPINFOW.cb must equal size_of::<STARTUPINFOW>() before passing
-        // to CreateProcessW; we set it immediately after zeroing.
-        let mut si: STARTUPINFOW = unsafe { std::mem::zeroed() };
-        si.cb = std::mem::size_of::<STARTUPINFOW>() as u32;
-        let mut pi: PROCESS_INFORMATION = unsafe { std::mem::zeroed() };
-
-        // SAFETY: app_name and cmd_line are NUL-terminated UTF-16 buffers
-        // owned by this stack frame and live through the call. &si and &mut pi
-        // point at correctly-initialized POD structs (see above). All pointer
-        // arguments documented as nullable (security attrs, environment,
-        // current directory) are passed as null. The creation flags carry
-        // the load-bearing fix - see the comment block above for why each
-        // one matters. bInheritHandles=FALSE is passed as 0.
-        let flags = DETACHED_PROCESS | CREATE_NO_WINDOW | CREATE_BREAKAWAY_FROM_JOB;
-        let mut ok = unsafe {
-            CreateProcessW(
-                app_name.as_ptr(),
-                cmd_line.as_mut_ptr(),
-                std::ptr::null_mut(),
-                std::ptr::null_mut(),
-                0,
-                flags,
-                std::ptr::null_mut(),
-                std::ptr::null(),
-                &si,
-                &mut pi,
-            )
-        };
-
-        // ACCESS_DENIED here means the caller is in a Job Object that
-        // does not permit breakaway. Retry without the breakaway flag so
-        // the daemon at least starts in those edge cases - a -Wait caller
-        // would still hang, but no caller in the current code base sets
-        // such a strict Job, so this is a defensive fallback.
-        if ok == 0 {
-            let err = std::io::Error::last_os_error();
-            const ERROR_ACCESS_DENIED: i32 = 5;
-            if err.raw_os_error() == Some(ERROR_ACCESS_DENIED) {
-                info!(
-                    "[service] CreateProcessW with CREATE_BREAKAWAY_FROM_JOB returned ACCESS_DENIED, retrying without breakaway"
-                );
-                ok = unsafe {
-                    CreateProcessW(
-                        app_name.as_ptr(),
-                        cmd_line.as_mut_ptr(),
-                        std::ptr::null_mut(),
-                        std::ptr::null_mut(),
-                        0,
-                        DETACHED_PROCESS | CREATE_NO_WINDOW,
-                        std::ptr::null_mut(),
-                        std::ptr::null(),
-                        &si,
-                        &mut pi,
-                    )
-                };
-            }
-        }
-
-        if ok == 0 {
-            let err = std::io::Error::last_os_error();
-            return Err(ServiceError::StartFailed(err.to_string()));
-        }
-
-        // SAFETY: pi.hProcess and pi.hThread are valid handles populated by
-        // a successful CreateProcessW. We don't need to wait on or query the
-        // process from this side, so closing both handles immediately is
-        // correct - the kernel keeps the process alive until it exits.
-        unsafe {
-            CloseHandle(pi.hProcess);
-            CloseHandle(pi.hThread);
-        }
+        // Daemon is a long-running background process. Redirect stdio to NUL
+        // so the daemon never holds a parent pipe open - prevents an
+        // interactive `$out = runt daemon start` from hanging on stdout
+        // EOF after runt.exe itself exits. The NSIS post-install hook does
+        // NOT start the daemon (see `runt daemon doctor --no-start`); that
+        // path was the source of the GHA Job Object hang and removing it
+        // is the actual fix.
+        std::process::Command::new(&self.config.binary_path)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|e| ServiceError::StartFailed(e.to_string()))?;
 
         info!("[service] Started daemon process");
         Ok(())

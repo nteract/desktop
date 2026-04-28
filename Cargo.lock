@@ -7068,7 +7068,6 @@ dependencies = [
  "tokio",
  "ts-rs",
  "uuid",
- "windows-sys 0.52.0",
 ]
 
 [[package]]
