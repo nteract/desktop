@@ -767,8 +767,26 @@ Set WshShell = Nothing
 
     #[cfg(target_os = "windows")]
     fn start_windows(&self) -> ServiceResult<()> {
-        // Start the daemon directly
+        use std::os::windows::process::CommandExt;
+        use std::process::Stdio;
+
+        // The daemon runs forever. If we let it inherit the spawning process's
+        // stdio, any caller that captures our output via a pipe (NSIS
+        // `nsExec::ExecToStack` during installer post-install, parent shells
+        // running `runt daemon doctor --fix`, CI runners with stdout
+        // redirected) will hang waiting for EOF on a pipe the daemon is still
+        // holding open. Detach: redirect stdio to NUL and use
+        // DETACHED_PROCESS|CREATE_NO_WINDOW so the child never gets a console
+        // either. Daemon logs already go to a file (see runtimed::main),
+        // so killing stderr here doesn't lose anything.
+        const DETACHED_PROCESS: u32 = 0x0000_0008;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
         std::process::Command::new(&self.config.binary_path)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .creation_flags(DETACHED_PROCESS | CREATE_NO_WINDOW)
             .spawn()
             .map_err(|e| ServiceError::StartFailed(e.to_string()))?;
 
