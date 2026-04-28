@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use rmcp::model::Implementation;
-use rmcp::transport::{ConfigureCommandExt, TokioChildProcess};
+use rmcp::transport::async_rw::AsyncRwTransport;
 use rmcp::{ClientHandler, ServiceExt};
 use tokio::process::Command;
 use tracing::info;
@@ -37,6 +37,14 @@ pub type RunningChild = rmcp::service::RunningService<RoleChild, ChildClientHand
 /// The upstream client's `name` and `title` are forwarded through the MCP
 /// initialize handshake so the child's peer label sniffing picks up the
 /// real client identity.
+///
+/// We spawn the process ourselves (not via rmcp's `TokioChildProcess`) so
+/// we own the `Child` handle directly.  A background task calls
+/// `child.wait()` to reap the process when it exits — this prevents zombie
+/// accumulation that would otherwise occur because rmcp's
+/// `ChildWithCleanup::drop` calls `start_kill()` on an already-exited
+/// child (which fails with ESRCH), then skips the `wait()` that would
+/// reap it.
 pub async fn spawn_child(
     command: &Path,
     args: &[String],
@@ -54,19 +62,33 @@ pub async fn spawn_child(
         args.join(" ")
     );
 
-    let cmd_path = command.to_path_buf();
-    let args_owned: Vec<String> = args.to_vec();
-    let env_owned: HashMap<String, String> = env.clone();
+    let mut child = Command::new(command)
+        .args(args)
+        .envs(env)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::inherit())
+        .spawn()
+        .map_err(|e| format!("Failed to spawn child process: {e}"))?;
 
-    let transport = TokioChildProcess::new(Command::new(&cmd_path).configure(move |cmd| {
-        for arg in &args_owned {
-            cmd.arg(arg);
+    let child_stdin = child.stdin.take().ok_or("Child stdin was not piped")?;
+    let child_stdout = child.stdout.take().ok_or("Child stdout was not piped")?;
+
+    // Background reaper: waits for the child to exit so the kernel releases
+    // the process table entry.  Without this, exited children become zombies
+    // because nobody calls waitpid() on them.
+    tokio::spawn(async move {
+        match child.wait().await {
+            Ok(status) => {
+                tracing::debug!("Child process exited: {status}");
+            }
+            Err(e) => {
+                tracing::warn!("Error waiting for child process: {e}");
+            }
         }
-        for (key, val) in &env_owned {
-            cmd.env(key, val);
-        }
-    }))
-    .map_err(|e| format!("Failed to spawn child process: {e}"))?;
+    });
+
+    let transport = AsyncRwTransport::new_client(child_stdout, child_stdin);
 
     let handler = ChildClientHandler {
         upstream_name: upstream_name.to_string(),
