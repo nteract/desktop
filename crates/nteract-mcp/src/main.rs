@@ -164,6 +164,16 @@ fn proxy_config_for_channel(channel: String) -> ProxyConfig {
 
 #[tokio::main]
 async fn main() -> ExitCode {
+    // Auto-reap child processes. The proxy spawns `runt mcp` children via
+    // rmcp's TokioChildProcess; when a child exits (e.g. daemon upgrade
+    // exit code 75), the tokio Child handle is dropped without waitpid(),
+    // leaving a zombie. SIG_IGN tells the kernel to auto-reap so zombies
+    // never accumulate across long MCP sessions.
+    #[cfg(unix)]
+    unsafe {
+        libc::signal(libc::SIGCHLD, libc::SIG_IGN);
+    }
+
     // Log to stderr (MCP uses stdout for transport)
     tracing_subscriber::fmt()
         .with_env_filter(
