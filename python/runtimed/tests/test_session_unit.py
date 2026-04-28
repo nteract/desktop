@@ -175,6 +175,38 @@ class TestSyncGuards:
         assert hasattr(runtimed.EnvState, "__await__")
 
 
+class _CommEntry:
+    def __init__(self, target_name):
+        self.target_name = target_name
+
+
+class _WidgetRuntimeState:
+    comms = {
+        "widget": _CommEntry("jupyter.widget"),
+        "other": _CommEntry("custom.target"),
+    }
+
+
+class _RuntimeStateSession:
+    notebook_id = "runtime-state-notebook"
+
+    def get_runtime_state_sync(self):
+        return _WidgetRuntimeState()
+
+
+class TestPrivateWidgetSnapshot:
+    """Private widget snapshot reads the CRDT runtime-state comm map."""
+
+    def test_widgets_are_private_and_filtered_from_runtime_comms(self):
+        from runtimed._notebook import Notebook
+
+        notebook = Notebook(_RuntimeStateSession())  # ty: ignore[invalid-argument-type]
+
+        assert set(notebook._widgets) == {"widget"}
+        assert notebook._widgets["widget"].target_name == "jupyter.widget"
+        assert not hasattr(notebook, "widgets")
+
+
 class TestKernelStatusConstants:
     """Typed kernel-status constants mirror the Rust daemon strings."""
 

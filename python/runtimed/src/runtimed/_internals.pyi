@@ -354,6 +354,34 @@ class ExecutionState:
         """Whether the execution succeeded (None if still running)."""
         ...
 
+class CommDocEntry:
+    """A single comm entry from RuntimeStateDoc."""
+
+    @property
+    def target_name(self) -> str:
+        """Widget protocol target, e.g. "jupyter.widget"."""
+        ...
+    @property
+    def model_module(self) -> str:
+        """Widget model module, e.g. "@jupyter-widgets/controls"."""
+        ...
+    @property
+    def model_name(self) -> str:
+        """Widget model name, e.g. "IntSliderModel"."""
+        ...
+    @property
+    def state(self) -> dict[str, Any]:
+        """Current comm state as a JSON-compatible dictionary."""
+        ...
+    @property
+    def outputs(self) -> list[dict[str, Any]]:
+        """Output manifests for OutputModel widgets."""
+        ...
+    @property
+    def seq(self) -> int:
+        """Insertion order for dependency-correct replay."""
+        ...
+
 class RuntimeState:
     """Full runtime state snapshot from the daemon's RuntimeStateDoc."""
 
@@ -376,6 +404,10 @@ class RuntimeState:
     @property
     def executions(self) -> dict[str, ExecutionState]:
         """Execution lifecycle entries keyed by execution_id."""
+        ...
+    @property
+    def comms(self) -> dict[str, CommDocEntry]:
+        """Runtime comm entries keyed by comm_id."""
         ...
 
 class HistoryEntry:
