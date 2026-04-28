@@ -34,6 +34,10 @@ export function useTrust() {
   const [typosquatWarnings, setTyposquatWarnings] = useState<TyposquatWarning[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Approval errors are shown inside TrustDialog. Keep them separate from
+  // generic trust-hook errors so typosquat-check failures do not appear as
+  // trust approval failures.
+  const [approvalError, setApprovalError] = useState<string | null>(null);
 
   // Compose TrustInfo from RuntimeStateDoc + dep hooks. Daemon is the sole
   // writer of `trust.status`; deps are synced via the notebook CRDT. No
@@ -107,6 +111,7 @@ export function useTrust() {
     async (options?: ApproveTrustOptions) => {
       setLoading(true);
       setError(null);
+      setApprovalError(null);
       try {
         await host.trust.approve({
           dependencyFingerprint: options?.dependencyFingerprint,
@@ -115,6 +120,7 @@ export function useTrust() {
       } catch (e) {
         const message = e instanceof Error ? e.message : String(e);
         setError(message);
+        setApprovalError(message);
         logger.error("Failed to approve trust:", e);
         return false;
       } finally {
@@ -149,6 +155,7 @@ export function useTrust() {
     typosquatWarnings,
     loading,
     error,
+    approvalError,
     isTrusted,
     needsApproval,
     hasDependencies,

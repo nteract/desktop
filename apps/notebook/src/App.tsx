@@ -251,6 +251,7 @@ function AppContent() {
     trustInfo,
     typosquatWarnings,
     loading: trustLoading,
+    approvalError,
     needsApproval,
     checkTrust,
     approveTrust,
@@ -1708,6 +1709,7 @@ function AppContent() {
           approveLabel={trustApproveLabel}
           approveOnlyLabel={trustApproveOnlyLabel}
           description={trustDialogDescription}
+          approvalError={approvalError}
         />
         <CrdtBridgeProvider
           getHandle={getHandle}
