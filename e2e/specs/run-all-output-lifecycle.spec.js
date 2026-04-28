@@ -18,22 +18,30 @@
 import { browser } from "@wdio/globals";
 import { waitForAppReady, waitForKernelReady, waitForNotebookSynced } from "../helpers.js";
 
-async function pageText() {
-  return await browser.execute(() => document.body.textContent ?? "");
+async function outputText() {
+  return await browser.execute(() =>
+    Array.from(
+      document.querySelectorAll(
+        '[data-slot="ansi-stream-output"], [data-slot="ansi-error-output"], [data-slot="output-item"]',
+      ),
+    )
+      .map((el) => el.textContent ?? "")
+      .join("\n"),
+  );
 }
 
-async function waitForPageTextContaining(text, timeout = 30000) {
-  await browser.waitUntil(async () => (await pageText()).includes(text), {
+async function waitForOutputTextContaining(text, timeout = 30000) {
+  await browser.waitUntil(async () => (await outputText()).includes(text), {
     timeout,
     interval: 500,
-    timeoutMsg: `Page text did not contain "${text}" within ${timeout / 1000}s`,
+    timeoutMsg: `Output text did not contain "${text}" within ${timeout / 1000}s`,
   });
 }
 
-async function waitForPageTextExcluding(texts, timeout = 5000) {
+async function waitForOutputTextExcluding(texts, timeout = 5000) {
   await browser.waitUntil(
     async () => {
-      const text = await pageText();
+      const text = await outputText();
       return texts.every((needle) => !text.includes(needle));
     },
     {
@@ -58,8 +66,8 @@ describe("Run All Output Lifecycle", () => {
     // Verify stale outputs are visible from the fixture. The renderer now
     // stores outputs out-of-band, so assert on rendered page text instead of
     // relying on a stale WebDriver cell element.
-    await waitForPageTextContaining("stale-output-1", 10000);
-    await waitForPageTextContaining("stale-output-2", 10000);
+    await waitForOutputTextContaining("stale-output-1", 10000);
+    await waitForOutputTextContaining("stale-output-2", 10000);
 
     // Click "Run All"
     const runAllButton = await $('[data-testid="run-all-button"]');
@@ -67,10 +75,10 @@ describe("Run All Output Lifecycle", () => {
     await runAllButton.click();
 
     // Stale outputs should disappear before new execution results arrive.
-    await waitForPageTextExcluding(["stale-output-1", "stale-output-2"]);
+    await waitForOutputTextExcluding(["stale-output-1", "stale-output-2"]);
 
     // Wait for both cells to complete.
-    await waitForPageTextContaining("cell-1-done", 30000);
-    await waitForPageTextContaining("cell-2-done", 30000);
+    await waitForOutputTextContaining("cell-1-done", 30000);
+    await waitForOutputTextContaining("cell-2-done", 30000);
   });
 });

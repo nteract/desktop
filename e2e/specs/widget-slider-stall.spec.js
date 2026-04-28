@@ -37,15 +37,23 @@ const SLIDER_SOURCE = `from ipywidgets import interact, FloatSlider
 def show(freq):
     print(f"freq={freq:.1f}")`;
 
-async function pageText() {
-  return await browser.execute(() => document.body.textContent ?? "");
+async function outputText() {
+  return await browser.execute(() =>
+    Array.from(
+      document.querySelectorAll(
+        '[data-slot="ansi-stream-output"], [data-slot="ansi-error-output"], [data-slot="output-item"]',
+      ),
+    )
+      .map((el) => el.textContent ?? "")
+      .join("\n"),
+  );
 }
 
-async function waitForPageTextContaining(text, timeout = 30000) {
-  await browser.waitUntil(async () => (await pageText()).includes(text), {
+async function waitForOutputTextContaining(text, timeout = 30000) {
+  await browser.waitUntil(async () => (await outputText()).includes(text), {
     timeout,
     interval: 500,
-    timeoutMsg: `Page text did not contain "${text}" within ${timeout / 1000}s`,
+    timeoutMsg: `Output text did not contain "${text}" within ${timeout / 1000}s`,
   });
 }
 
@@ -248,7 +256,7 @@ describe("Widget Slider Stall Reproducer", () => {
     await executeButton.click();
 
     try {
-      await waitForPageTextContaining("alive-", 30000);
+      await waitForOutputTextContaining("alive-", 30000);
     } catch {
       const elapsed = Math.round((Date.now() - execStart) / 1000);
       const status = await getKernelStatus();
