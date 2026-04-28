@@ -8,7 +8,7 @@ license.workspace = true
 publish = false
 
 [dependencies]
-rmcp = { version = "1.4", features = ["server", "client", "transport-child-process", "transport-io"] }
+rmcp = { version = "1.4", features = ["server", "client", "transport-async-rw", "transport-io"] }
 tokio = { workspace = true }
 serde_json = { workspace = true }
 tracing = "0.1"
