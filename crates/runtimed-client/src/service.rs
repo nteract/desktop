@@ -770,32 +770,39 @@ Set WshShell = Nothing
         use std::os::windows::ffi::OsStrExt;
         use windows_sys::Win32::Foundation::CloseHandle;
         use windows_sys::Win32::System::Threading::{
-            CreateProcessW, CREATE_NO_WINDOW, DETACHED_PROCESS, PROCESS_INFORMATION, STARTUPINFOW,
+            CreateProcessW, CREATE_BREAKAWAY_FROM_JOB, CREATE_NO_WINDOW, DETACHED_PROCESS,
+            PROCESS_INFORMATION, STARTUPINFOW,
         };
 
-        // The daemon runs forever. The standard `Command::new(...).spawn()`
-        // path on Windows calls `CreateProcessW` with `bInheritHandles=TRUE`
-        // (Rust's default), which duplicates *every* inheritable handle in
-        // this process's table into the child - not just stdio. That bites
-        // when this process was launched by NSIS's `nsExec::ExecToStack` to
-        // run `runt daemon doctor --fix`: NSIS hands the child stdout/stderr
-        // pipes that are marked inheritable so they propagate through stdio.
-        // When `runt` then spawns the daemon with `bInheritHandles=TRUE`,
-        // those pipes get duplicated *again* into the daemon's handle table.
-        // `runt` exits, releasing its copies, but the daemon keeps the
-        // duplicates open forever, so `nsExec::ExecToStack` never sees EOF
-        // on the read pipe and the silent installer hangs at `Install
-        // silently` until the runner times out (see runs 25025820384 and
-        // 25025909072).
+        // The daemon runs forever. Two things go wrong with the default
+        // `Command::new(...).spawn()` path on Windows:
         //
-        // Redirecting stdio to NUL via `Stdio::null()` does not fix this:
-        // the *original* pipe handles in this process are still inheritable
-        // and `bInheritHandles=TRUE` still duplicates them.
+        // 1. CreateProcessW defaults to `bInheritHandles=TRUE`, which
+        //    duplicates every inheritable handle from the parent into the
+        //    child - not just stdio. We don't want any of that to leak.
         //
-        // Bypass `std::process::Command` and call `CreateProcessW` directly
-        // with `bInheritHandles=FALSE`. The daemon needs no inherited
-        // handles - logging goes to a file (see runtimed::main), and stdio
-        // is unused.
+        // 2. The new process is implicitly added to the parent's Job
+        //    Object. PowerShell's `Start-Process -Wait` (and CI runners
+        //    that wrap each step in a Job to track step descendants) wait
+        //    for *every* process in the Job to exit. With the daemon in
+        //    the Job, `Start-Process -Wait` blocks forever - this is the
+        //    actual mechanism behind the silent-install hangs in
+        //    runs 25025820384, 25025909072, and 25031947609. (Verified
+        //    locally with `IsProcessInJob` on the running daemon.)
+        //
+        // Bypass `std::process::Command` and call `CreateProcessW` directly:
+        //   - bInheritHandles=FALSE   (no handle leakage)
+        //   - DETACHED_PROCESS        (no inherited console)
+        //   - CREATE_NO_WINDOW        (no new visible window)
+        //   - CREATE_BREAKAWAY_FROM_JOB (escape the parent's Job Object)
+        //
+        // CREATE_BREAKAWAY_FROM_JOB requires the parent Job to have set
+        // JOB_OBJECT_LIMIT_BREAKAWAY_OK. PowerShell's Start-Process and
+        // GitHub Actions' step Jobs both set it, but if a future caller
+        // creates a stricter Job and the spawn fails with ACCESS_DENIED
+        // we retry without the flag - the daemon still starts, the
+        // -Wait caller still hangs, but at least we don't fail the
+        // common cases that don't use a strict Job at all.
         // lpApplicationName: NUL-terminated UTF-16 path to the binary, no
         // surrounding quotes (Windows does not parse application-name).
         let app_name: Vec<u16> = self
@@ -826,23 +833,53 @@ Set WshShell = Nothing
         // owned by this stack frame and live through the call. &si and &mut pi
         // point at correctly-initialized POD structs (see above). All pointer
         // arguments documented as nullable (security attrs, environment,
-        // current directory) are passed as null. bInheritHandles=FALSE
-        // (passed as 0) is the load-bearing flag - see the comment block
-        // above for why redirecting stdio alone is not sufficient.
-        let ok = unsafe {
+        // current directory) are passed as null. The creation flags carry
+        // the load-bearing fix - see the comment block above for why each
+        // one matters. bInheritHandles=FALSE is passed as 0.
+        let flags = DETACHED_PROCESS | CREATE_NO_WINDOW | CREATE_BREAKAWAY_FROM_JOB;
+        let mut ok = unsafe {
             CreateProcessW(
                 app_name.as_ptr(),
                 cmd_line.as_mut_ptr(),
                 std::ptr::null_mut(),
                 std::ptr::null_mut(),
                 0,
-                DETACHED_PROCESS | CREATE_NO_WINDOW,
+                flags,
                 std::ptr::null_mut(),
                 std::ptr::null(),
                 &si,
                 &mut pi,
             )
         };
+
+        // ACCESS_DENIED here means the caller is in a Job Object that
+        // does not permit breakaway. Retry without the breakaway flag so
+        // the daemon at least starts in those edge cases - a -Wait caller
+        // would still hang, but no caller in the current code base sets
+        // such a strict Job, so this is a defensive fallback.
+        if ok == 0 {
+            let err = std::io::Error::last_os_error();
+            const ERROR_ACCESS_DENIED: i32 = 5;
+            if err.raw_os_error() == Some(ERROR_ACCESS_DENIED) {
+                info!(
+                    "[service] CreateProcessW with CREATE_BREAKAWAY_FROM_JOB returned ACCESS_DENIED, retrying without breakaway"
+                );
+                ok = unsafe {
+                    CreateProcessW(
+                        app_name.as_ptr(),
+                        cmd_line.as_mut_ptr(),
+                        std::ptr::null_mut(),
+                        std::ptr::null_mut(),
+                        0,
+                        DETACHED_PROCESS | CREATE_NO_WINDOW,
+                        std::ptr::null_mut(),
+                        std::ptr::null(),
+                        &si,
+                        &mut pi,
+                    )
+                };
+            }
+        }
 
         if ok == 0 {
             let err = std::io::Error::last_os_error();
