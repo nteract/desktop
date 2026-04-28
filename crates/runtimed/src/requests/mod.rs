@@ -12,6 +12,7 @@
 //! This is a behavior-preserving split of the old 2k-line match statement —
 //! lock scoping, log lines, error strings, and response variants are untouched.
 
+pub(crate) mod approve_project_environment;
 pub(crate) mod approve_trust;
 pub(crate) mod clear_outputs;
 pub(crate) mod clone_notebook;

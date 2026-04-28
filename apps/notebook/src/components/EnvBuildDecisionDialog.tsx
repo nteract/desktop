@@ -7,12 +7,13 @@ interface EnvBuildDecisionDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   errorDetails: string | null;
-  onRetry: () => void;
+  onCreate: () => void;
+  creating?: boolean;
 }
 
 export function extractCondaEnvCreateCommand(details: string | null): string | null {
   if (!details) return null;
-  const match = details.match(/conda env create -f .+$/m);
+  const match = details.match(/conda env create .+$/m);
   return match?.[0].trim() ?? null;
 }
 
@@ -20,7 +21,8 @@ export function EnvBuildDecisionDialog({
   open,
   onOpenChange,
   errorDetails,
-  onRetry,
+  onCreate,
+  creating = false,
 }: EnvBuildDecisionDialogProps) {
   const [copied, setCopied] = useState(false);
   const command = useMemo(() => extractCondaEnvCreateCommand(errorDetails), [errorDetails]);
@@ -31,10 +33,10 @@ export function EnvBuildDecisionDialog({
     setCopied(true);
   }, [command]);
 
-  const retry = useCallback(() => {
+  const create = useCallback(() => {
     setCopied(false);
-    onRetry();
-  }, [onRetry]);
+    onCreate();
+  }, [onCreate]);
 
   return (
     <RuntimeDecisionDialog
@@ -62,16 +64,17 @@ export function EnvBuildDecisionDialog({
             <Copy className="mr-2 size-4" />
             {copied ? "Copied" : "Copy command"}
           </Button>
-          <Button onClick={retry} data-testid="env-build-retry-button">
+          <Button onClick={create} disabled={creating} data-testid="env-build-create-button">
             <RotateCw className="mr-2 size-4" />
-            Retry
+            {creating ? "Creating..." : "Create environment"}
           </Button>
         </>
       }
     >
       <div className="space-y-3">
         <p className="text-sm text-muted-foreground">
-          Build the declared environment in a terminal, then retry kernel launch.
+          Create the declared environment to continue kernel launch. Future opens can launch
+          automatically while the declared packages are approved.
         </p>
         {errorDetails && (
           <pre className="max-h-40 overflow-y-auto whitespace-pre-wrap break-words rounded-md border bg-muted/50 p-3 font-mono text-xs leading-relaxed">

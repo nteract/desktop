@@ -104,7 +104,7 @@ export function useCondaDependencies() {
   const runtimeState = useRuntimeState();
 
   // Reactive read from the WASM Automerge doc via useSyncExternalStore.
-  // Re-renders automatically when the doc changes (bootstrap, sync, writes).
+  // Re-renders automatically when notebook metadata changes.
   const condaDeps = useCondaDeps();
   const dependencies = condaDeps
     ? {

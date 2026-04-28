@@ -3369,6 +3369,108 @@ fn test_build_launched_config_conda_prewarmed_stores_paths() {
     );
 }
 
+#[test]
+fn test_build_launched_config_pyproject_records_context_without_notebook_deps() {
+    let tmp = tempfile::tempdir().unwrap();
+    let notebook_path = tmp.path().join("notebook.ipynb");
+    std::fs::write(&notebook_path, "{}").unwrap();
+    write_pyproject_with_deps(tmp.path(), &["pandas", "numpy"]);
+
+    let config = build_launched_config(
+        "python",
+        "uv:pyproject",
+        None,
+        Some(&NotebookMetadataSnapshot::default()),
+        Some(PathBuf::from("/tmp/project/.venv")),
+        Some(PathBuf::from("/tmp/project/.venv/bin/python")),
+        None,
+        Some(&notebook_path),
+        notebook_protocol::protocol::FeatureFlags::default(),
+        None,
+    );
+
+    assert_eq!(
+        config.pyproject_path.as_deref(),
+        Some(tmp.path().join("pyproject.toml").as_path())
+    );
+    assert!(
+        config.uv_deps.is_none(),
+        "project-file deps are launch context, not notebook metadata deps"
+    );
+}
+
+#[test]
+fn test_build_launched_config_pixi_records_context_without_notebook_deps() {
+    let tmp = tempfile::tempdir().unwrap();
+    let notebook_path = tmp.path().join("notebook.ipynb");
+    std::fs::write(&notebook_path, "{}").unwrap();
+    std::fs::write(
+        tmp.path().join("pixi.toml"),
+        "[project]\nname = \"test\"\nchannels = [\"conda-forge\"]\nplatforms = [\"osx-arm64\"]\n[dependencies]\npandas = \">=2\"\n",
+    )
+    .unwrap();
+
+    let config = build_launched_config(
+        "python",
+        "pixi:toml",
+        None,
+        Some(&NotebookMetadataSnapshot::default()),
+        Some(PathBuf::from("/tmp/pixi-env")),
+        Some(PathBuf::from("/tmp/pixi-env/bin/python")),
+        None,
+        Some(&notebook_path),
+        notebook_protocol::protocol::FeatureFlags::default(),
+        None,
+    );
+
+    assert_eq!(
+        config.pixi_toml_path.as_deref(),
+        Some(tmp.path().join("pixi.toml").as_path())
+    );
+    assert_eq!(
+        config.pixi_toml_deps,
+        Some(vec!["pandas = \">=2\"".to_string()])
+    );
+    assert!(
+        config.pixi_deps.is_none(),
+        "pixi.toml deps must not become notebook metadata deps"
+    );
+}
+
+#[test]
+fn test_build_launched_config_env_yml_records_context_without_notebook_deps() {
+    let tmp = tempfile::tempdir().unwrap();
+    let notebook_path = tmp.path().join("notebook.ipynb");
+    std::fs::write(&notebook_path, "{}").unwrap();
+    write_env_yml(tmp.path(), &["conda-forge"], &["pandas", "numpy"]);
+
+    let config = build_launched_config(
+        "python",
+        "conda:env_yml",
+        None,
+        Some(&NotebookMetadataSnapshot::default()),
+        Some(PathBuf::from("/tmp/conda-env")),
+        Some(PathBuf::from("/tmp/conda-env/bin/python")),
+        None,
+        Some(&notebook_path),
+        notebook_protocol::protocol::FeatureFlags::default(),
+        None,
+    );
+
+    assert_eq!(
+        config.environment_yml_path.as_deref(),
+        Some(tmp.path().join("environment.yml").as_path())
+    );
+    assert_eq!(
+        config.environment_yml_deps,
+        Some(vec!["numpy".to_string(), "pandas".to_string()])
+    );
+    assert!(
+        config.conda_deps.is_none(),
+        "environment.yml deps must not become notebook metadata deps"
+    );
+}
+
 // ── check_and_broadcast_sync_state tests ──────────────────────────────
 
 #[tokio::test]
@@ -4084,14 +4186,11 @@ async fn test_check_and_update_trust_state_no_autoresign_when_not_previously_tru
     std::env::remove_var("RUNT_TRUST_KEY_PATH");
 }
 
-// ── auto_sign_in_place: regression coverage for project-file bootstrap ──
+// ── auto_sign_in_place: notebook dependency trust coverage ──
 //
-// The daemon's auto-launch path writes project-file deps (pyproject.toml,
-// pixi.toml, environment.yml) into `metadata.runt.{uv,conda,pixi}`. Before
-// this helper existed, those self-writes landed without a signature and
-// flipped the notebook to Untrusted — causing the trust dialog to fire
-// (and flicker on brand-new notebooks opened inside a project dir) for
-// deps the user already had on disk in a file they own.
+// Notebook dependency trust signs only deps copied into notebook metadata.
+// Project-file deps are runtime context and are intentionally not signed unless
+// the user explicitly copies them into metadata.
 
 #[tokio::test]
 #[serial]
@@ -4156,94 +4255,6 @@ async fn test_auto_sign_in_place_pixi_writes_signature() {
         verify_trust_from_snapshot(&snap).status,
         runt_trust::TrustStatus::Trusted,
     );
-
-    std::env::remove_var("RUNT_TRUST_KEY_PATH");
-}
-
-/// Regression for Codex P2: a notebook saved by the pre-fix build has
-/// pyproject deps already written into the CRDT but no trust signature.
-/// On reopen with the fix, the bootstrap must detect the untrusted state
-/// and sign even when deps match.
-#[tokio::test]
-#[serial]
-async fn test_bootstrap_re_signs_matching_but_unsigned_snapshot() {
-    let temp_dir = tempfile::tempdir().unwrap();
-    let key_path = temp_dir.path().join("trust-key");
-    std::env::set_var("RUNT_TRUST_KEY_PATH", key_path.to_str().unwrap());
-
-    // Pre-fix state: matching pyproject deps, no signature.
-    let mut snap = snapshot_with_uv(vec!["pandas".to_string(), "numpy".to_string()]);
-    assert!(snap.runt.trust_signature.is_none());
-    assert_eq!(
-        verify_trust_from_snapshot(&snap).status,
-        runt_trust::TrustStatus::Untrusted,
-        "precondition: matching unsigned deps verify as Untrusted"
-    );
-
-    // Apply the bootstrap's new gate: when deps match but the snapshot
-    // doesn't verify as Trusted/NoDependencies, sign it.
-    let pyproject_deps = vec!["pandas".to_string(), "numpy".to_string()];
-    let current_deps = snap.runt.uv.as_ref().map(|u| u.dependencies.clone());
-    let deps_match = current_deps.as_ref().is_some_and(|d| d == &pyproject_deps);
-    let trust_ok = matches!(
-        verify_trust_from_snapshot(&snap).status,
-        runt_trust::TrustStatus::Trusted | runt_trust::TrustStatus::NoDependencies,
-    );
-    assert!(deps_match);
-    assert!(!trust_ok);
-    if !deps_match || !trust_ok {
-        auto_sign_in_place(&mut snap).expect("auto_sign_in_place");
-    }
-
-    assert_eq!(
-        verify_trust_from_snapshot(&snap).status,
-        runt_trust::TrustStatus::Trusted,
-        "bootstrap must sign matching-but-unsigned snapshots, not skip them"
-    );
-
-    std::env::remove_var("RUNT_TRUST_KEY_PATH");
-}
-
-/// Regression for the pyproject.toml trust-dialog flicker: simulate the
-/// auto-launch bootstrap end state (deps written + auto-signed) and drive
-/// it through `check_and_update_trust_state`. Trust must land on Trusted
-/// without a needs-approval transition.
-#[tokio::test]
-#[serial]
-async fn test_pyproject_bootstrap_state_lands_trusted() {
-    let temp_dir = tempfile::tempdir().unwrap();
-    let key_path = temp_dir.path().join("trust-key");
-    std::env::set_var("RUNT_TRUST_KEY_PATH", key_path.to_str().unwrap());
-
-    let tmp = tempfile::TempDir::new().unwrap();
-    let (room, _path) = test_room_with_path(&tmp, "pyproject_bootstrap.ipynb");
-
-    // Brand-new room state the user would see: trust banner is shown for
-    // a pyproject-backed notebook the daemon is about to populate.
-    {
-        room.state
-            .with_doc(|sd| sd.set_trust("untrusted", true))
-            .unwrap();
-    }
-
-    // What the bootstrap block writes into the doc after the fix: deps
-    // from pyproject.toml plus an auto-signature covering them.
-    let mut snap = snapshot_with_uv(vec!["pandas".to_string(), "numpy".to_string()]);
-    auto_sign_in_place(&mut snap).expect("auto_sign_in_place");
-    {
-        let mut doc = room.doc.write().await;
-        doc.set_metadata_snapshot(&snap).unwrap();
-    }
-
-    check_and_update_trust_state(&room).await;
-
-    let ts = room.trust_state.read().await;
-    assert_eq!(ts.status, runt_trust::TrustStatus::Trusted);
-    drop(ts);
-
-    let state = room.state.read(|sd| sd.read_state()).unwrap();
-    assert_eq!(state.trust.status, "trusted");
-    assert!(!state.trust.needs_approval);
 
     std::env::remove_var("RUNT_TRUST_KEY_PATH");
 }
@@ -5880,8 +5891,10 @@ dependencies:
         ..Default::default()
     };
 
-    // CRDT says the user wants pyyaml as a conda dep
-    let snapshot = snapshot_with_conda(vec!["numpy".to_string(), "pyyaml".to_string()]);
+    // CRDT says the user wants pyyaml as a notebook-scoped conda dep. The
+    // environment.yml baseline remains project context and must not be copied
+    // back into the notebook metadata after promotion.
+    let snapshot = snapshot_with_conda(vec!["pyyaml".to_string()]);
     {
         let mut doc = room.doc.write().await;
         let _ = doc.set_metadata_snapshot(&snapshot);
@@ -5903,6 +5916,13 @@ dependencies:
     assert!(
         updated.contains("  - pip:\n    - pyyaml\n"),
         "pip block should be untouched:\n{updated}"
+    );
+
+    let after = room.doc.read().await.get_metadata_snapshot().unwrap();
+    assert_eq!(
+        after.runt.conda.unwrap().dependencies,
+        vec!["pyyaml".to_string()],
+        "project-file promotion must not mirror environment.yml deps into notebook metadata"
     );
 }
 
@@ -6147,7 +6167,7 @@ async fn test_new_fresh_leaves_untrusted_when_deps_differ() {
 // ── #2157: environment.yml declares unbuilt conda env ─────────────────
 
 #[test]
-fn test_missing_conda_env_yml_name_detects_unbuilt_named_env() {
+fn test_missing_conda_env_yml_decision_detects_unbuilt_named_env() {
     let tmp = tempfile::tempdir().unwrap();
     let yml_path = tmp.path().join("environment.yml");
     std::fs::write(
@@ -6159,25 +6179,28 @@ fn test_missing_conda_env_yml_name_detects_unbuilt_named_env() {
         path: yml_path,
         kind: crate::project_file::ProjectFileKind::EnvironmentYml,
     };
+    let decision =
+        missing_conda_env_yml_decision(&detected).expect("unbuilt named env should gate launch");
     assert_eq!(
-        missing_conda_env_yml_name(&detected).as_deref(),
-        Some("nteract-integration-probe-definitely-not-built-xyz"),
+        decision.label,
+        "nteract-integration-probe-definitely-not-built-xyz"
     );
+    assert!(decision.create_command.starts_with("conda env create -f "));
 }
 
 #[test]
-fn test_missing_conda_env_yml_name_skips_non_envyml() {
+fn test_missing_conda_env_yml_decision_skips_non_envyml() {
     let tmp = tempfile::tempdir().unwrap();
     write_pyproject_with_deps(tmp.path(), &["pandas"]);
     let detected = crate::project_file::DetectedProjectFile {
         path: tmp.path().join("pyproject.toml"),
         kind: crate::project_file::ProjectFileKind::PyprojectToml,
     };
-    assert_eq!(missing_conda_env_yml_name(&detected), None);
+    assert_eq!(missing_conda_env_yml_decision(&detected), None);
 }
 
 #[test]
-fn test_missing_conda_env_yml_name_skips_unnamed_envyml() {
+fn test_missing_conda_env_yml_decision_detects_unbuilt_unnamed_envyml() {
     let tmp = tempfile::tempdir().unwrap();
     let yml_path = tmp.path().join("environment.yml");
     std::fs::write(
@@ -6189,10 +6212,53 @@ fn test_missing_conda_env_yml_name_skips_unnamed_envyml() {
         path: yml_path,
         kind: crate::project_file::ProjectFileKind::EnvironmentYml,
     };
-    assert_eq!(
-        missing_conda_env_yml_name(&detected),
-        None,
-        "unnamed environment.yml should not enter the named-env build decision flow",
+    let decision =
+        missing_conda_env_yml_decision(&detected).expect("unnamed env should gate creation");
+    assert!(
+        decision.label.contains("conda-envs"),
+        "unnamed env label should point at the computed cache prefix; got {:?}",
+        decision.label
+    );
+    assert!(
+        decision.create_command.contains("conda env create -p ")
+            && decision.create_command.contains(" -f "),
+        "unnamed env should get an explicit prefix create command; got {:?}",
+        decision.create_command
+    );
+}
+
+#[tokio::test]
+async fn test_project_environment_build_uses_preapproved_packages() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let store =
+        crate::trusted_packages::TrustedPackageStore::open(tmp.path().join("trusted.sqlite"))
+            .unwrap();
+    let (room, _notebook_path) =
+        test_room_with_path_and_store(&tmp, "project-env.ipynb", store.clone());
+    let yml_path = tmp.path().join("environment.yml");
+    std::fs::write(
+        &yml_path,
+        "channels:\n  - conda-forge\ndependencies:\n  - python\n  - pandas\n  - six\n",
+    )
+    .unwrap();
+    let detected = crate::project_file::DetectedProjectFile {
+        path: yml_path.clone(),
+        kind: crate::project_file::ProjectFileKind::EnvironmentYml,
+    };
+
+    assert!(
+        !project_environment_build_approved(&room, &detected),
+        "unapproved project packages should gate environment creation",
+    );
+
+    let config = crate::project_file::parse_environment_yml(&yml_path).unwrap();
+    store
+        .add_from_info(&environment_yml_trust_info(&config), "test")
+        .unwrap();
+
+    assert!(
+        project_environment_build_approved(&room, &detected),
+        "preapproved project packages should allow seamless environment creation",
     );
 }
 
@@ -6218,10 +6284,17 @@ fn test_missing_conda_env_yml_name_prefix_missing_reports_path() {
         path: yml_path,
         kind: crate::project_file::ProjectFileKind::EnvironmentYml,
     };
-    let reported = missing_conda_env_yml_name(&detected).expect("prefix: missing should report");
+    let decision =
+        missing_conda_env_yml_decision(&detected).expect("prefix: missing should report");
     assert!(
-        reported.contains("definitely-does-not-exist"),
-        "reported name should include the prefix path; got {reported:?}",
+        decision.label.contains("definitely-does-not-exist"),
+        "reported name should include the prefix path; got {:?}",
+        decision.label,
+    );
+    assert!(
+        decision.create_command.contains("conda env create -p "),
+        "prefix: missing should include an explicit create prefix; got {:?}",
+        decision.create_command,
     );
 }
 
@@ -6245,7 +6318,9 @@ fn test_missing_conda_env_yml_name_prefers_name_over_missing_prefix() {
         kind: crate::project_file::ProjectFileKind::EnvironmentYml,
     };
     assert_eq!(
-        missing_conda_env_yml_name(&detected).as_deref(),
+        missing_conda_env_yml_decision(&detected)
+            .as_ref()
+            .map(|d| d.label.as_str()),
         Some("myenv"),
     );
 }
@@ -6274,7 +6349,7 @@ fn test_missing_conda_env_yml_name_prefix_with_python_is_not_missing() {
         path: yml_path,
         kind: crate::project_file::ProjectFileKind::EnvironmentYml,
     };
-    assert_eq!(missing_conda_env_yml_name(&detected), None);
+    assert_eq!(missing_conda_env_yml_decision(&detected), None);
 }
 
 // ---------------------------------------------------------------------------

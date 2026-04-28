@@ -199,6 +199,19 @@ export class NotebookClient {
     }
   }
 
+  /** Approve creating/syncing the current project-file environment. */
+  async approveProjectEnvironment(projectFilePath?: string): Promise<NotebookResponse> {
+    try {
+      return await this.sendRequest({
+        type: "approve_project_environment",
+        ...(projectFilePath !== undefined ? { project_file_path: projectFilePath } : {}),
+      });
+    } catch (e) {
+      this.log.error("[notebook-client] Approve project environment failed:", e);
+      throw e;
+    }
+  }
+
   /** Run all code cells (daemon reads from synced doc). */
   async runAllCells(): Promise<NotebookResponse> {
     this.log.debug("[notebook-client] Running all cells");

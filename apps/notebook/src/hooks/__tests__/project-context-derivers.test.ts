@@ -196,8 +196,10 @@ describe("derivePixiInfo", () => {
       path: "/proj/pixi.toml",
       relative_path: "pixi.toml",
       workspace_name: null,
+      dependencies: ["python", "numpy"],
       has_dependencies: true,
       dependency_count: 2,
+      pypi_dependencies: ["requests", "rich"],
       has_pypi_dependencies: true,
       pypi_dependency_count: 2,
       python: "3.11.*",
@@ -208,7 +210,9 @@ describe("derivePixiInfo", () => {
   it("reports empty counts but does not return null for an empty pixi project", () => {
     const info = derivePixiInfo(pixiCtx());
     expect(info).not.toBeNull();
+    expect(info?.dependencies).toEqual([]);
     expect(info?.has_dependencies).toBe(false);
+    expect(info?.pypi_dependencies).toEqual([]);
     expect(info?.has_pypi_dependencies).toBe(false);
     expect(info?.channels).toEqual([]);
   });

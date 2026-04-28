@@ -13,8 +13,10 @@ export interface PixiInfo {
   path: string;
   relative_path: string;
   workspace_name: string | null;
+  dependencies: string[];
   has_dependencies: boolean;
   dependency_count: number;
+  pypi_dependencies: string[];
   has_pypi_dependencies: boolean;
   pypi_dependency_count: number;
   python: string | null;
@@ -45,8 +47,10 @@ export function derivePixiInfo(ctx: ProjectContext): PixiInfo | null {
     path: ctx.project_file.absolute_path,
     relative_path: ctx.project_file.relative_to_notebook,
     workspace_name: null,
+    dependencies: ctx.parsed.dependencies,
     has_dependencies: ctx.parsed.dependencies.length > 0,
     dependency_count: ctx.parsed.dependencies.length,
+    pypi_dependencies,
     has_pypi_dependencies: pypi_dependencies.length > 0,
     pypi_dependency_count: pypi_dependencies.length,
     python: ctx.parsed.requires_python,

@@ -30,6 +30,7 @@ export type NotebookRequest =
   | { type: "shutdown_kernel" }
   | { type: "sync_environment"; guard?: DependencyGuard }
   | { type: "approve_trust"; dependency_fingerprint?: string }
+  | { type: "approve_project_environment"; project_file_path?: string }
   | { type: "run_all_cells" }
   | { type: "run_all_cells_guarded"; observed_heads: string[] }
   | { type: "send_comm"; message: CommRequestMessage }

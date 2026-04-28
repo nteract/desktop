@@ -107,7 +107,7 @@ export function useDependencies() {
   const runtimeState = useRuntimeState();
 
   // Reactive read from the WASM Automerge doc via useSyncExternalStore.
-  // Re-renders automatically when the doc changes (bootstrap, sync, writes).
+  // Re-renders automatically when notebook metadata changes.
   const uvDeps = useUvDependencies();
   const dependencies = uvDeps
     ? {

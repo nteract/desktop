@@ -937,11 +937,10 @@ async fn auto_approve_allowlisted_snapshot(room: &NotebookRoom) -> Result<bool, 
 /// and write the signature + timestamp back into the snapshot in place.
 ///
 /// Does not persist the snapshot — the caller writes it back to the doc.
-/// Used by both `resign_trusted_snapshot` (re-sign a previously-Trusted
-/// notebook whose deps changed) and the project-file bootstrap path in
-/// `auto_launch_kernel` (auto-sign deps the daemon itself sourced from
-/// pyproject.toml / pixi.toml / environment.yml so the trust dialog
-/// doesn't fire on deps that came from a file the user already owns).
+/// Used by `resign_trusted_snapshot` (re-sign a previously-Trusted notebook
+/// whose deps changed) and by explicit trust approval paths. Project-file deps
+/// are runtime context and should not be signed unless they have been copied
+/// into notebook metadata.
 pub(crate) fn auto_sign_in_place(snapshot: &mut NotebookMetadataSnapshot) -> Result<(), String> {
     let runt_value = serde_json::to_value(&snapshot.runt)
         .map_err(|e| format!("serialize runt metadata: {}", e))?;
@@ -1015,8 +1014,8 @@ pub(crate) async fn resolve_metadata_snapshot(
     None
 }
 
-/// If the detected project file is an `environment.yml` whose declared
-/// conda env isn't built on this machine, return the declared env name.
+/// If the detected project file is an `environment.yml` whose target
+/// conda env isn't built on this machine, return the build decision details.
 ///
 /// The auto-launch path uses this to detect the miss upfront and set a
 /// specific error lifecycle (with `KernelErrorReason::CondaEnvYmlMissing`
@@ -1024,39 +1023,105 @@ pub(crate) async fn resolve_metadata_snapshot(
 /// die with a generic "could not resolve conda environment prefix" and
 /// leaving the kernel stuck in `initializing` forever. Covers #2157.
 ///
-/// Returns `None` when the project file isn't `environment.yml`, when
-/// the env is built and usable, or when env.yml has no `name:`/`prefix:`
-/// (the kernel path's existing error handles the shape-broken case).
-pub(crate) fn missing_conda_env_yml_name(
+/// Returns `None` when the project file isn't `environment.yml` or when
+/// the env is already built and usable.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CondaEnvYmlBuildDecision {
+    pub label: String,
+    pub create_command: String,
+}
+
+pub(crate) fn missing_conda_env_yml_decision(
     detected: &crate::project_file::DetectedProjectFile,
-) -> Option<String> {
+) -> Option<CondaEnvYmlBuildDecision> {
     if detected.kind != crate::project_file::ProjectFileKind::EnvironmentYml {
         return None;
     }
-    // `resolve_conda_env_prefix` returns the `prefix:` value verbatim
-    // without checking existence (it only validates via `find_named_conda_env`
-    // for the `name:` path). For an env declared with `prefix: /missing`
-    // we'd incorrectly conclude the env is built and skip the typed
-    // error. Verify the python binary exists before accepting the prefix.
-    if let Some(prefix) = crate::project_file::resolve_conda_env_prefix(&detected.path) {
-        if crate::project_file::conda_python_path(&prefix).exists() {
-            return None;
+
+    let config = crate::project_file::parse_environment_yml(&detected.path).ok()?;
+    let conda_prefix = if let Some(ref prefix) = config.prefix {
+        prefix.clone()
+    } else if let Some(ref name) = config.name {
+        crate::project_file::find_named_conda_env(name)
+            .unwrap_or_else(|| crate::project_file::default_conda_envs_dir().join(name))
+    } else {
+        let cache_dir = crate::paths::default_cache_dir().join("conda-envs");
+        let conda_deps_tmp = kernel_env::CondaDependencies {
+            dependencies: config.dependencies.clone(),
+            channels: config.channels.clone(),
+            python: config.python.clone(),
+            env_id: None,
+        };
+        cache_dir.join(kernel_env::conda::compute_env_hash(&conda_deps_tmp))
+    };
+
+    if crate::project_file::conda_python_path(&conda_prefix).exists() {
+        return None;
+    }
+
+    let label = config
+        .name
+        .clone()
+        .unwrap_or_else(|| conda_prefix.display().to_string());
+    let create_command = if config.name.is_some() && config.prefix.is_none() {
+        format!("conda env create -f {}", detected.path.display())
+    } else {
+        format!(
+            "conda env create -p {} -f {}",
+            conda_prefix.display(),
+            detected.path.display()
+        )
+    };
+
+    Some(CondaEnvYmlBuildDecision {
+        label,
+        create_command,
+    })
+}
+
+pub(crate) fn format_conda_env_yml_build_details(decision: &CondaEnvYmlBuildDecision) -> String {
+    format!(
+        "environment.yml declares conda env '{}', which is not built on this machine. Run: {}",
+        decision.label, decision.create_command
+    )
+}
+
+pub(crate) fn project_environment_build_approved(
+    room: &NotebookRoom,
+    detected: &crate::project_file::DetectedProjectFile,
+) -> bool {
+    let Ok(config) = crate::project_file::parse_environment_yml(&detected.path) else {
+        return false;
+    };
+    let trust_info = environment_yml_trust_info(&config);
+    match room.trusted_packages.all_dependencies_approved(&trust_info) {
+        Ok(approved) => approved,
+        Err(error) => {
+            warn!(
+                "[trusted-packages] Failed to check project environment approval for {:?}: {}",
+                detected.path, error
+            );
+            false
         }
     }
-    // Declared but not built. Prefer the `name:` for display, fall back
-    // to the `prefix:` path. If env.yml has neither, leave it to the
-    // existing conda:env_yml launch path instead of inventing a fake
-    // named-env decision for an unnamed spec.
-    let config = crate::project_file::parse_environment_yml(&detected.path).ok();
-    if let Some(ref c) = config {
-        if let Some(ref name) = c.name {
-            return Some(name.clone());
-        }
-        if let Some(ref prefix) = c.prefix {
-            return Some(prefix.display().to_string());
-        }
+}
+
+pub(crate) fn environment_yml_trust_info(
+    config: &crate::project_file::EnvironmentYmlConfig,
+) -> runt_trust::TrustInfo {
+    runt_trust::TrustInfo {
+        status: runt_trust::TrustStatus::Untrusted,
+        uv_dependencies: vec![],
+        approved_uv_dependencies: vec![],
+        conda_dependencies: config.dependencies.clone(),
+        approved_conda_dependencies: vec![],
+        conda_channels: config.channels.clone(),
+        pixi_dependencies: vec![],
+        approved_pixi_dependencies: vec![],
+        pixi_pypi_dependencies: vec![],
+        approved_pixi_pypi_dependencies: vec![],
+        pixi_channels: vec![],
     }
-    None
 }
 
 /// Check whether a notebook's inline dependency list exactly matches a
@@ -2551,151 +2616,6 @@ pub(crate) async fn auto_launch_kernel(
     let project_source: Option<notebook_protocol::connection::EnvSource> =
         detected_project_file.as_ref().map(|d| d.to_env_source());
 
-    // Step 3b: Bootstrap project deps into CRDT metadata.
-    // When a project file exists, populate the inline dep section with the
-    // project's deps so that the UI and MCP tools can see what's available.
-    if let Some(ref detected) = detected_project_file {
-        match detected.kind {
-            crate::project_file::ProjectFileKind::PixiToml => {
-                if let Ok(info) = kernel_launch::tools::pixi_info(&detected.path).await {
-                    let deps = info.default_deps_snapshot();
-                    if !deps.is_empty() {
-                        let mut doc = room.doc.write().await;
-                        let mut changed = false;
-                        doc.fork_and_merge(|fork| {
-                            let mut snap = fork.get_metadata_snapshot().unwrap_or_default();
-                            let current_deps = snap.runt.pixi.as_ref().map(|p| &p.dependencies);
-                            let deps_match = current_deps.is_some_and(|d| d == &deps);
-                            // Re-sign even when deps already match if the snapshot
-                            // isn't verifiably trusted — covers notebooks bootstrapped
-                            // by the pre-fix build (matching deps, no signature).
-                            let trust_ok = matches!(
-                                verify_trust_from_snapshot(&snap).status,
-                                runt_trust::TrustStatus::Trusted
-                                    | runt_trust::TrustStatus::NoDependencies
-                            );
-                            if !deps_match || !trust_ok {
-                                let pixi = snap.pixi_section_or_default();
-                                pixi.dependencies = deps;
-                                if let Err(e) = auto_sign_in_place(&mut snap) {
-                                    warn!(
-                                        "[notebook-sync] Failed to auto-sign pixi.toml bootstrap: {}",
-                                        e
-                                    );
-                                }
-                                let _ = fork.set_metadata_snapshot(&snap);
-                                changed = true;
-                            }
-                        });
-                        if changed {
-                            info!("[notebook-sync] Bootstrapped pixi.toml deps into CRDT");
-                        } else {
-                            debug!(
-                                "[notebook-sync] Pixi deps already current in CRDT, skipping write"
-                            );
-                        }
-                    }
-                }
-            }
-            crate::project_file::ProjectFileKind::PyprojectToml => {
-                // Read [project.dependencies] from pyproject.toml
-                if let Ok(content) = std::fs::read_to_string(&detected.path) {
-                    let deps = extract_pyproject_deps(&content);
-                    if !deps.is_empty() {
-                        let mut doc = room.doc.write().await;
-                        let mut changed = false;
-                        doc.fork_and_merge(|fork| {
-                            let mut snap = fork.get_metadata_snapshot().unwrap_or_default();
-                            let current_deps = snap.runt.uv.as_ref().map(|u| &u.dependencies);
-                            let deps_match = current_deps.is_some_and(|d| d == &deps);
-                            let trust_ok = matches!(
-                                verify_trust_from_snapshot(&snap).status,
-                                runt_trust::TrustStatus::Trusted
-                                    | runt_trust::TrustStatus::NoDependencies
-                            );
-                            if !deps_match || !trust_ok {
-                                let uv = snap.runt.uv.get_or_insert_with(|| {
-                                    notebook_doc::metadata::UvInlineMetadata {
-                                        dependencies: Vec::new(),
-                                        requires_python: None,
-                                        prerelease: None,
-                                    }
-                                });
-                                uv.dependencies = deps;
-                                if let Err(e) = auto_sign_in_place(&mut snap) {
-                                    warn!(
-                                        "[notebook-sync] Failed to auto-sign pyproject.toml bootstrap: {}",
-                                        e
-                                    );
-                                }
-                                let _ = fork.set_metadata_snapshot(&snap);
-                                changed = true;
-                            }
-                        });
-                        if changed {
-                            info!("[notebook-sync] Bootstrapped pyproject.toml deps into CRDT");
-                        } else {
-                            debug!("[notebook-sync] Pyproject deps already current in CRDT, skipping write");
-                        }
-                    }
-                }
-            }
-            crate::project_file::ProjectFileKind::EnvironmentYml => {
-                if let Ok(env_config) = crate::project_file::parse_environment_yml(&detected.path) {
-                    let deps = env_config.dependencies;
-                    let channels = env_config.channels;
-                    if !deps.is_empty() {
-                        let mut doc = room.doc.write().await;
-                        let mut changed = false;
-                        doc.fork_and_merge(|fork| {
-                            let mut snap = fork.get_metadata_snapshot().unwrap_or_default();
-                            let current_deps = snap.runt.conda.as_ref().map(|c| &c.dependencies);
-                            let current_channels = snap.runt.conda.as_ref().map(|c| &c.channels);
-                            let deps_match = current_deps.is_some_and(|d| d == &deps);
-                            let channels_match = current_channels.is_some_and(|c| c == &channels);
-                            let trust_ok = matches!(
-                                verify_trust_from_snapshot(&snap).status,
-                                runt_trust::TrustStatus::Trusted
-                                    | runt_trust::TrustStatus::NoDependencies
-                            );
-                            if !deps_match || !channels_match || !trust_ok {
-                                let conda = snap.runt.conda.get_or_insert_with(|| {
-                                    notebook_doc::metadata::CondaInlineMetadata {
-                                        dependencies: Vec::new(),
-                                        channels: Vec::new(),
-                                        python: None,
-                                    }
-                                });
-                                conda.dependencies = deps;
-                                // Channels are part of the signed trust
-                                // payload. Mirror env.yml's channels
-                                // exactly so reconciliation on reopen
-                                // can verify the notebook's channel
-                                // list didn't drift from source.
-                                conda.channels = channels;
-                                if let Err(e) = auto_sign_in_place(&mut snap) {
-                                    warn!(
-                                        "[notebook-sync] Failed to auto-sign environment.yml bootstrap: {}",
-                                        e
-                                    );
-                                }
-                                let _ = fork.set_metadata_snapshot(&snap);
-                                changed = true;
-                            }
-                        });
-                        if changed {
-                            info!("[notebook-sync] Bootstrapped environment.yml deps into CRDT");
-                        } else {
-                            debug!(
-                                "[notebook-sync] Conda deps already current in CRDT, skipping write"
-                            );
-                        }
-                    }
-                }
-            }
-        }
-    }
-
     // #2157/#2170: If the detected project file is an environment.yml whose
     // declared conda env isn't built on this machine, surface an explicit
     // awaiting-user-decision lifecycle instead of spawning a runtime agent that would die with
@@ -2705,23 +2625,26 @@ pub(crate) async fn auto_launch_kernel(
     // Writing AwaitingEnvBuild + details gives the frontend enough to
     // render a cohesive decision dialog and MCP tools enough to report the miss.
     if let Some(ref detected) = detected_project_file {
-        if let Some(env_name) = missing_conda_env_yml_name(detected) {
-            let yml_path = detected.path.display().to_string();
-            let details = format!(
-                "environment.yml declares conda env '{}', which is not built on this machine. Run: conda env create -f {}",
-                env_name, yml_path
-            );
-            warn!("[notebook-sync] {}", details);
-            if let Err(e) = room.state.with_doc(|sd| {
-                sd.set_lifecycle_with_error_details(
-                    &RuntimeLifecycle::AwaitingEnvBuild,
-                    Some(runtime_doc::KernelErrorReason::CondaEnvYmlMissing),
-                    Some(&details),
-                )
-            }) {
-                warn!("[runtime-state] {}", e);
+        if let Some(decision) = missing_conda_env_yml_decision(detected) {
+            if project_environment_build_approved(room, detected) {
+                info!(
+                    "[notebook-sync] Approved environment.yml build for {:?}; continuing launch",
+                    detected.path
+                );
+            } else {
+                let details = format_conda_env_yml_build_details(&decision);
+                warn!("[notebook-sync] {}", details);
+                if let Err(e) = room.state.with_doc(|sd| {
+                    sd.set_lifecycle_with_error_details(
+                        &RuntimeLifecycle::AwaitingEnvBuild,
+                        Some(runtime_doc::KernelErrorReason::CondaEnvYmlMissing),
+                        Some(&details),
+                    )
+                }) {
+                    warn!("[runtime-state] {}", e);
+                }
+                return;
             }
-            return;
         }
     }
 
@@ -3189,23 +3112,26 @@ pub(crate) async fn auto_launch_kernel(
             path: yml_path.clone(),
             kind: crate::project_file::ProjectFileKind::EnvironmentYml,
         };
-        if let Some(env_name) = missing_conda_env_yml_name(&detected_yml) {
-            let details = format!(
-                "environment.yml declares conda env '{}', which is not built on this machine. Run: conda env create -f {}",
-                env_name,
-                yml_path.display()
-            );
-            warn!("[notebook-sync] {}", details);
-            if let Err(e) = room.state.with_doc(|sd| {
-                sd.set_lifecycle_with_error_details(
-                    &RuntimeLifecycle::AwaitingEnvBuild,
-                    Some(KernelErrorReason::CondaEnvYmlMissing),
-                    Some(&details),
-                )
-            }) {
-                warn!("[runtime-state] {}", e);
+        if let Some(decision) = missing_conda_env_yml_decision(&detected_yml) {
+            if project_environment_build_approved(room, &detected_yml) {
+                info!(
+                    "[notebook-sync] Approved environment.yml build for {:?}; continuing launch",
+                    detected_yml.path
+                );
+            } else {
+                let details = format_conda_env_yml_build_details(&decision);
+                warn!("[notebook-sync] {}", details);
+                if let Err(e) = room.state.with_doc(|sd| {
+                    sd.set_lifecycle_with_error_details(
+                        &RuntimeLifecycle::AwaitingEnvBuild,
+                        Some(KernelErrorReason::CondaEnvYmlMissing),
+                        Some(&details),
+                    )
+                }) {
+                    warn!("[runtime-state] {}", e);
+                }
+                return;
             }
-            return;
         }
 
         let env_config = match crate::project_file::parse_environment_yml(&yml_path) {
@@ -3762,6 +3688,7 @@ pub(crate) fn request_label(req: &NotebookRequest) -> &'static str {
         NotebookRequest::CloneAsEphemeral { .. } => "CloneAsEphemeral",
         NotebookRequest::SyncEnvironment { .. } => "SyncEnvironment",
         NotebookRequest::ApproveTrust { .. } => "ApproveTrust",
+        NotebookRequest::ApproveProjectEnvironment { .. } => "ApproveProjectEnvironment",
         NotebookRequest::GetDocBytes { .. } => "GetDocBytes",
     }
 }
@@ -3846,16 +3773,20 @@ pub(crate) async fn handle_notebook_request(
             dependency_fingerprint,
         } => crate::requests::approve_trust::handle(room, dependency_fingerprint).await,
 
+        NotebookRequest::ApproveProjectEnvironment { project_file_path } => {
+            crate::requests::approve_project_environment::handle(room, project_file_path).await
+        }
+
         NotebookRequest::GetDocBytes {} => crate::requests::get_doc_bytes::handle(room).await,
     }
 }
 
 /// Promote inline deps from CRDT metadata to a project file.
 ///
-/// When a kernel is project-backed (pixi:toml or uv:pyproject), inline deps in
-/// the CRDT are "intent" — the user wants this package. This function promotes
-/// them to the project file via `pixi add` / `uv add`, then clears the inline
-/// section from the CRDT.
+/// When a kernel is project-backed (pixi:toml, uv:pyproject, or
+/// conda:env_yml), inline deps in the CRDT are notebook intent. This function
+/// promotes new inline deps to the project file without mirroring the full
+/// project-file dependency set back into notebook metadata.
 ///
 /// Find the byte offset in an environment.yml string where new dependencies
 /// should be inserted (end of the `dependencies:` list, before the next
@@ -4067,20 +3998,6 @@ pub(crate) async fn promote_inline_deps_to_project(
             }
         }
 
-        // Always re-bootstrap CRDT from pixi.toml (even on partial failure)
-        // so the CRDT reflects what actually happened.
-        if !promoted.is_empty() || !errors.is_empty() {
-            if let Ok(info) = kernel_launch::tools::pixi_info(pixi_toml_path).await {
-                let deps = info.default_deps_snapshot();
-                let mut doc = room.doc.write().await;
-                doc.fork_and_merge(|fork| {
-                    let mut snap = fork.get_metadata_snapshot().unwrap_or_default();
-                    let pixi = snap.pixi_section_or_default();
-                    pixi.dependencies = deps;
-                    let _ = fork.set_metadata_snapshot(&snap);
-                });
-            }
-        }
         if !errors.is_empty() {
             return Err(errors.join("; "));
         }
@@ -4175,25 +4092,6 @@ pub(crate) async fn promote_inline_deps_to_project(
             }
         }
 
-        // Re-bootstrap CRDT from environment.yml after changes
-        if !promoted.is_empty() || !errors.is_empty() {
-            if let Ok(env_config) = crate::project_file::parse_environment_yml(yml_path) {
-                let deps = env_config.dependencies;
-                let mut doc = room.doc.write().await;
-                doc.fork_and_merge(|fork| {
-                    let mut snap = fork.get_metadata_snapshot().unwrap_or_default();
-                    let conda = snap.runt.conda.get_or_insert_with(|| {
-                        notebook_doc::metadata::CondaInlineMetadata {
-                            dependencies: Vec::new(),
-                            channels: Vec::new(),
-                            python: None,
-                        }
-                    });
-                    conda.dependencies = deps;
-                    let _ = fork.set_metadata_snapshot(&snap);
-                });
-            }
-        }
         if !errors.is_empty() {
             return Err(errors.join("; "));
         }
@@ -4265,25 +4163,6 @@ pub(crate) async fn promote_inline_deps_to_project(
             }
         }
 
-        // Always re-bootstrap CRDT from pyproject.toml (even on partial failure)
-        if !promoted.is_empty() || !errors.is_empty() {
-            if let Ok(content) = std::fs::read_to_string(pyproject_path) {
-                let deps = extract_pyproject_deps(&content);
-                let mut doc = room.doc.write().await;
-                doc.fork_and_merge(|fork| {
-                    let mut snap = fork.get_metadata_snapshot().unwrap_or_default();
-                    let uv = snap.runt.uv.get_or_insert_with(|| {
-                        notebook_doc::metadata::UvInlineMetadata {
-                            dependencies: Vec::new(),
-                            requires_python: None,
-                            prerelease: None,
-                        }
-                    });
-                    uv.dependencies = deps;
-                    let _ = fork.set_metadata_snapshot(&snap);
-                });
-            }
-        }
         if !errors.is_empty() {
             return Err(errors.join("; "));
         }
