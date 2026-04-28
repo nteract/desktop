@@ -122,6 +122,30 @@ impl NteractMcp {
     pub fn last_session_drop(&self) -> &Arc<RwLock<Option<SessionDropInfo>>> {
         &self.last_session_drop
     }
+
+    /// Explicitly drop the active session, closing the daemon peer connection
+    /// immediately.
+    ///
+    /// Call this before the process exits to trigger prompt session cleanup in
+    /// the daemon rather than relying on OS-level TCP connection close + the
+    /// 30s eviction delay. Dropping the `NotebookSession` closes its
+    /// `DocHandle` channels, which makes the sync task break out of its loop
+    /// and close the TCP writer — the daemon sees EOF and decrements the peer
+    /// count, starting the eviction timer right away.
+    ///
+    /// Without this, session cleanup depends on the tokio runtime tearing down
+    /// tasks in the right order during process exit, which is unreliable under
+    /// SIGTERM.
+    pub async fn shutdown(&self) {
+        let old = self.session.write().await.take();
+        if let Some(session) = old {
+            tracing::info!(
+                "[mcp] Shutdown: disconnecting session {}",
+                session.notebook_id
+            );
+            drop(session);
+        }
+    }
 }
 
 impl ServerHandler for NteractMcp {
