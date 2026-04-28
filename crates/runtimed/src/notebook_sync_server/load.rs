@@ -615,12 +615,14 @@ where
                     .as_ref()
                     .map(|u| u.dependencies.clone())
                     .unwrap_or_default(),
+                approved_uv_dependencies: vec![],
                 conda_dependencies: meta
                     .runt
                     .conda
                     .as_ref()
                     .map(|c| c.dependencies.clone())
                     .unwrap_or_default(),
+                approved_conda_dependencies: vec![],
                 conda_channels: meta
                     .runt
                     .conda
@@ -633,12 +635,14 @@ where
                     .as_ref()
                     .map(|p| p.dependencies.clone())
                     .unwrap_or_default(),
+                approved_pixi_dependencies: vec![],
                 pixi_pypi_dependencies: meta
                     .runt
                     .pixi
                     .as_ref()
                     .map(|p| p.pypi_dependencies.clone())
                     .unwrap_or_default(),
+                approved_pixi_pypi_dependencies: vec![],
                 pixi_channels: meta
                     .runt
                     .pixi

@@ -1,4 +1,4 @@
-import { AlertTriangleIcon, PackageIcon, ShieldAlertIcon } from "lucide-react";
+import { AlertTriangleIcon, CheckIcon, PackageIcon, ShieldAlertIcon } from "lucide-react";
 import { useCallback } from "react";
 import { Button } from "@/components/ui/button";
 import type { TrustInfo, TyposquatWarning } from "../hooks/useTrust";
@@ -21,12 +21,29 @@ interface TrustDialogProps {
   approvalError?: string | null;
 }
 
-/** Package list item with optional typosquat warning */
-function PackageItem({ pkg, warning }: { pkg: string; warning?: TyposquatWarning }) {
+/** Package list item with optional allowlist and typosquat status */
+function PackageItem({
+  pkg,
+  warning,
+  approved,
+}: {
+  pkg: string;
+  warning?: TyposquatWarning;
+  approved?: boolean;
+}) {
   return (
     <div className="flex items-center gap-2 py-1.5 px-2">
-      <PackageIcon className="size-4 shrink-0 text-muted-foreground" />
+      {approved ? (
+        <CheckIcon className="size-4 shrink-0 text-emerald-600 dark:text-emerald-400" />
+      ) : (
+        <PackageIcon className="size-4 shrink-0 text-muted-foreground" />
+      )}
       <span className="font-mono text-sm truncate">{pkg}</span>
+      {approved && (
+        <span className="text-xs text-emerald-700 dark:text-emerald-300 bg-emerald-50 dark:bg-emerald-900/30 px-1.5 py-0.5 rounded">
+          approved
+        </span>
+      )}
       {warning && (
         <span className="inline-flex items-center gap-1 text-xs text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-900/30 px-1.5 py-0.5 rounded">
           <AlertTriangleIcon className="size-3" />
@@ -87,6 +104,10 @@ export function TrustDialog({
 
   const hasTyposquats = typosquatWarnings.length > 0;
   const isSignatureInvalid = trustInfo?.status === "signature_invalid";
+  const approvedUv = new Set(trustInfo?.approved_uv_dependencies ?? []);
+  const approvedConda = new Set(trustInfo?.approved_conda_dependencies ?? []);
+  const approvedPixi = new Set(trustInfo?.approved_pixi_dependencies ?? []);
+  const approvedPixiPypi = new Set(trustInfo?.approved_pixi_pypi_dependencies ?? []);
 
   return (
     <RuntimeDecisionDialog
@@ -148,7 +169,12 @@ export function TrustDialog({
             <h4 className="text-sm font-medium text-muted-foreground mb-2">PyPI Packages</h4>
             <div className="border rounded-md divide-y">
               {trustInfo.uv_dependencies.map((pkg) => (
-                <PackageItem key={pkg} pkg={pkg} warning={getWarning(pkg)} />
+                <PackageItem
+                  key={pkg}
+                  pkg={pkg}
+                  warning={getWarning(pkg)}
+                  approved={approvedUv.has(pkg)}
+                />
               ))}
             </div>
           </div>
@@ -167,7 +193,12 @@ export function TrustDialog({
             </h4>
             <div className="border rounded-md divide-y">
               {trustInfo.conda_dependencies.map((pkg) => (
-                <PackageItem key={pkg} pkg={pkg} warning={getWarning(pkg)} />
+                <PackageItem
+                  key={pkg}
+                  pkg={pkg}
+                  warning={getWarning(pkg)}
+                  approved={approvedConda.has(pkg)}
+                />
               ))}
             </div>
           </div>
@@ -186,7 +217,12 @@ export function TrustDialog({
             </h4>
             <div className="border rounded-md divide-y">
               {trustInfo.pixi_dependencies.map((pkg) => (
-                <PackageItem key={pkg} pkg={pkg} warning={getWarning(pkg)} />
+                <PackageItem
+                  key={pkg}
+                  pkg={pkg}
+                  warning={getWarning(pkg)}
+                  approved={approvedPixi.has(pkg)}
+                />
               ))}
             </div>
           </div>
@@ -198,7 +234,12 @@ export function TrustDialog({
             <h4 className="text-sm font-medium text-muted-foreground mb-2">Pixi PyPI Packages</h4>
             <div className="border rounded-md divide-y">
               {trustInfo.pixi_pypi_dependencies.map((pkg) => (
-                <PackageItem key={pkg} pkg={pkg} warning={getWarning(pkg)} />
+                <PackageItem
+                  key={pkg}
+                  pkg={pkg}
+                  warning={getWarning(pkg)}
+                  approved={approvedPixiPypi.has(pkg)}
+                />
               ))}
             </div>
           </div>

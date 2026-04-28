@@ -16,10 +16,14 @@ function makeTrustInfo(overrides: Partial<TrustInfo> = {}): TrustInfo {
   return {
     status: "untrusted",
     uv_dependencies: [],
+    approved_uv_dependencies: [],
     conda_dependencies: [],
+    approved_conda_dependencies: [],
     conda_channels: [],
     pixi_dependencies: [],
+    approved_pixi_dependencies: [],
     pixi_pypi_dependencies: [],
+    approved_pixi_pypi_dependencies: [],
     pixi_channels: [],
     ...overrides,
   };
@@ -130,6 +134,39 @@ describe("TrustDialog", () => {
     it("hides typosquat alert banner when no warnings", () => {
       render(<TrustDialog {...defaultProps} typosquatWarnings={[]} />);
       expect(screen.queryByText("Potential typosquatting detected")).not.toBeInTheDocument();
+    });
+  });
+
+  describe("approved package markers", () => {
+    it("marks allowlisted packages as approved", () => {
+      render(
+        <TrustDialog
+          {...defaultProps}
+          trustInfo={makeTrustInfo({
+            uv_dependencies: ["pandas>=2", "polars"],
+            approved_uv_dependencies: ["pandas>=2"],
+          })}
+        />,
+      );
+
+      expect(screen.getByText("approved")).toBeInTheDocument();
+      expect(screen.getByText("pandas>=2")).toBeInTheDocument();
+      expect(screen.getByText("polars")).toBeInTheDocument();
+    });
+
+    it("keeps typosquat warnings visible for novel packages", () => {
+      render(
+        <TrustDialog
+          {...defaultProps}
+          trustInfo={makeTrustInfo({
+            uv_dependencies: ["pandas", "reqeusts>=2"],
+            approved_uv_dependencies: ["pandas"],
+          })}
+          typosquatWarnings={[{ package: "reqeusts", similar_to: "requests", distance: 1 }]}
+        />,
+      );
+
+      expect(screen.getByText(/Similar to "requests"/)).toBeInTheDocument();
     });
   });
 

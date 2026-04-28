@@ -2,6 +2,14 @@ use super::*;
 
 pub type NotebookRooms = Arc<Mutex<HashMap<uuid::Uuid, Arc<NotebookRoom>>>>;
 
+pub(crate) struct RoomCreationOptions<'a> {
+    pub path: Option<PathBuf>,
+    pub docs_dir: &'a Path,
+    pub blob_store: Arc<BlobStore>,
+    pub ephemeral: bool,
+    pub trusted_packages: crate::trusted_packages::TrustedPackageStore,
+}
+
 /// Look up an open room by its canonical .ipynb path.
 ///
 /// Returns `None` if no room is currently serving that path. O(1) lookup
@@ -30,10 +38,7 @@ pub async fn get_or_create_room(
     rooms: &NotebookRooms,
     path_index: &Arc<tokio::sync::Mutex<PathIndex>>,
     uuid: uuid::Uuid,
-    path: Option<PathBuf>,
-    docs_dir: &Path,
-    blob_store: Arc<BlobStore>,
-    ephemeral: bool,
+    options: RoomCreationOptions<'_>,
 ) -> Arc<NotebookRoom> {
     // Fast path: room already exists.
     {
@@ -45,12 +50,13 @@ pub async fn get_or_create_room(
 
     // Create new room and insert.
     info!("[notebook-sync] Creating room for {}", uuid);
-    let room = Arc::new(NotebookRoom::new_fresh(
+    let room = Arc::new(NotebookRoom::new_fresh_with_trusted_packages(
         uuid,
-        path.clone(),
-        docs_dir,
-        blob_store,
-        ephemeral,
+        options.path.clone(),
+        options.docs_dir,
+        options.blob_store,
+        options.ephemeral,
+        options.trusted_packages,
     ));
 
     {
@@ -67,10 +73,10 @@ pub async fn get_or_create_room(
     // Single-writer invariant: only the daemon writes this key. Also
     // re-runs after untitled promotion and save-as rename; see
     // `project_context::refresh_project_context` callers.
-    super::project_context::refresh_project_context_async(&room, path.as_deref()).await;
+    super::project_context::refresh_project_context_async(&room, options.path.as_deref()).await;
 
     // Insert into path_index (under a separate lock per the locking convention).
-    if let Some(ref p) = path {
+    if let Some(ref p) = options.path {
         match path_index.lock().await.insert(p.clone(), uuid) {
             Ok(()) => {}
             Err(e) => {
@@ -85,7 +91,7 @@ pub async fn get_or_create_room(
     }
 
     // Spawn file watcher for .ipynb files (not for untitled notebooks).
-    if let Some(ref notebook_path) = path {
+    if let Some(ref notebook_path) = options.path {
         if notebook_path.extension().is_some_and(|ext| ext == "ipynb") {
             let shutdown_tx = spawn_notebook_file_watcher(notebook_path.clone(), room.clone());
             // Blocking lock is OK here — room is brand new, no contention.

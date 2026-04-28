@@ -2,8 +2,8 @@
 name = "runtimed-wasm"
 version = "0.2.7"
 edition.workspace = true
-license.workspace = true
-repository.workspace = true
+license = "BSD-3-Clause"
+repository = "https://github.com/nteract/desktop"
 description = "WASM bindings for runtimed notebook document operations, compiled from the same automerge crate as the daemon"
 
 [lib]

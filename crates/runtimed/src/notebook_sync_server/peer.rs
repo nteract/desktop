@@ -435,25 +435,9 @@ where
     //
     // Scope the trust_state read guard so it drops before acquiring state_doc
     // write lock (deadlock prevention: no lock held across `.await`).
-    let (status_str, needs_approval) = {
-        let trust_state = room.trust_state.read().await;
-        let needs_approval = !matches!(
-            trust_state.status,
-            runt_trust::TrustStatus::Trusted | runt_trust::TrustStatus::NoDependencies
-        );
-        let status_str = match &trust_state.status {
-            runt_trust::TrustStatus::Trusted => "trusted",
-            runt_trust::TrustStatus::Untrusted => "untrusted",
-            runt_trust::TrustStatus::SignatureInvalid => "signature_invalid",
-            runt_trust::TrustStatus::NoDependencies => "no_dependencies",
-        };
-        (status_str, needs_approval)
-    };
-    if let Err(e) = room
-        .state
-        .with_doc(|sd| sd.set_trust(status_str, needs_approval))
     {
-        warn!("[runtime-state] {}", e);
+        let trust_state = room.trust_state.read().await;
+        write_trust_to_runtime_state(&room, &trust_state);
     }
     // Re-verify trust from doc metadata — picks up trust signatures that were
     // written to the Automerge doc (e.g., from a previous approval or from

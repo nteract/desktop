@@ -34,6 +34,31 @@ The xtask commands auto-detect sccache and set `RUSTC_WRAPPER` when it's
 available — no configuration needed. You'll see "Using sccache for compilation
 cache" in the build output when it's active.
 
+## Windows Target Checks From macOS
+
+Use [`cargo-xwin`](https://github.com/rust-cross/cargo-xwin) when validating
+Windows MSVC compile errors from macOS. A direct
+`cargo check --target x86_64-pc-windows-msvc` does not provide the Windows SDK
+or MSVC CRT headers that C dependencies need.
+
+Install the local tools:
+
+```bash
+rustup target add x86_64-pc-windows-msvc
+cargo install cargo-xwin
+brew install llvm nasm
+```
+
+Then run the Windows check through cargo-xwin:
+
+```bash
+cargo xwin check -p runtimed --lib --target x86_64-pc-windows-msvc
+```
+
+The first run downloads the MSVC CRT and Windows SDK into cargo-xwin's cache.
+`nasm` is required by `aws-lc-sys`, and Homebrew's LLVM provides the
+`clang-cl`/`lld-link` toolchain used by the cross build.
+
 ## Choosing a Workflow
 
 ### `cargo xtask dev` — One Command Setup + Dev

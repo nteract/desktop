@@ -5,8 +5,11 @@
 //! notebook CRDT. Callers never receive raw signature material to apply
 //! themselves.
 
-use crate::notebook_sync_server::{auto_sign_in_place, check_and_update_trust_state, NotebookRoom};
+use crate::notebook_sync_server::{
+    auto_sign_in_place, check_and_update_trust_state, verify_trust_from_snapshot, NotebookRoom,
+};
 use crate::protocol::NotebookResponse;
+use tracing::warn;
 
 const TRUST_APPROVAL_STALE_REASON: &str =
     "Dependencies changed while the trust dialog was open. Review before approving.";
@@ -15,15 +18,26 @@ pub(crate) async fn handle(
     room: &NotebookRoom,
     dependency_fingerprint: Option<String>,
 ) -> NotebookResponse {
-    let persist_bytes = {
+    let (persist_bytes, trust_info) = {
         let mut doc = room.doc.write().await;
 
-        if let Err(error) = apply_trust_approval(&mut doc, dependency_fingerprint.as_deref()) {
-            return error.into_response();
-        }
+        let trust_info = match apply_trust_approval(&mut doc, dependency_fingerprint.as_deref()) {
+            Ok(trust_info) => trust_info,
+            Err(error) => return error.into_response(),
+        };
 
-        doc.save()
+        (doc.save(), trust_info)
     };
+
+    if let Err(error) = room
+        .trusted_packages
+        .add_from_info(&trust_info, "trust_dialog")
+    {
+        warn!(
+            "[trusted-packages] Failed to remember approved dependencies: {}",
+            error
+        );
+    }
 
     let _ = room.broadcasts.changed_tx.send(());
     if let Some(ref debouncer) = room.persistence.debouncer {
@@ -62,7 +76,7 @@ impl TrustApprovalError {
 fn apply_trust_approval(
     doc: &mut notebook_doc::NotebookDoc,
     dependency_fingerprint: Option<&str>,
-) -> Result<(), TrustApprovalError> {
+) -> Result<runt_trust::TrustInfo, TrustApprovalError> {
     let Some(mut snapshot) = doc.get_metadata_snapshot() else {
         return Err(TrustApprovalError::NoMetadata);
     };
@@ -75,9 +89,12 @@ fn apply_trust_approval(
     }
 
     auto_sign_in_place(&mut snapshot).map_err(TrustApprovalError::Sign)?;
+    let trust_info = verify_trust_from_snapshot(&snapshot).info;
 
     doc.set_metadata_snapshot(&snapshot)
-        .map_err(|e| TrustApprovalError::Write(format!("Failed to write trust approval: {}", e)))
+        .map_err(|e| TrustApprovalError::Write(format!("Failed to write trust approval: {}", e)))?;
+
+    Ok(trust_info)
 }
 
 #[cfg(test)]
@@ -121,7 +138,7 @@ mod tests {
 
         let result = apply_trust_approval(&mut doc, Some("stale"));
 
-        assert_eq!(result, Err(TrustApprovalError::StaleFingerprint));
+        assert!(matches!(result, Err(TrustApprovalError::StaleFingerprint)));
         let snapshot = doc.get_metadata_snapshot().unwrap();
         assert!(snapshot.runt.trust_signature.is_none());
         assert!(snapshot.runt.trust_timestamp.is_none());

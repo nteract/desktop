@@ -53,15 +53,23 @@ export function useTrust() {
     return {
       status: runtimeState.trust.status,
       uv_dependencies: uvList,
+      approved_uv_dependencies: runtimeState.trust.approved_uv_dependencies,
       conda_dependencies: condaList,
+      approved_conda_dependencies: runtimeState.trust.approved_conda_dependencies,
       conda_channels: channels,
       pixi_dependencies: pixiList,
+      approved_pixi_dependencies: runtimeState.trust.approved_pixi_dependencies,
       pixi_pypi_dependencies: pixiPypiList,
+      approved_pixi_pypi_dependencies: runtimeState.trust.approved_pixi_pypi_dependencies,
       pixi_channels: pixiChannels,
     };
   }, [
     runtimeLoaded,
     runtimeState.trust.status,
+    runtimeState.trust.approved_uv_dependencies,
+    runtimeState.trust.approved_conda_dependencies,
+    runtimeState.trust.approved_pixi_dependencies,
+    runtimeState.trust.approved_pixi_pypi_dependencies,
     uvDeps?.dependencies,
     condaDeps?.dependencies,
     condaDeps?.channels,

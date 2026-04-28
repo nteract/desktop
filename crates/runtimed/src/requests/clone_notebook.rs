@@ -69,8 +69,16 @@ pub(crate) async fn handle_inner(
 
     // 4. Create the new ephemeral room (empty).
     let clone_room = get_or_create_room(
-        rooms, path_index, clone_uuid, None, // ephemeral, no file path
-        docs_dir, blob_store, true, // ephemeral
+        rooms,
+        path_index,
+        clone_uuid,
+        crate::notebook_sync_server::RoomCreationOptions {
+            path: None, // ephemeral, no file path
+            docs_dir,
+            blob_store,
+            ephemeral: true,
+            trusted_packages: source_room.trusted_packages.clone(),
+        },
     )
     .await;
 

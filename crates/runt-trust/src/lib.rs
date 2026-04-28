@@ -48,16 +48,28 @@ pub struct TrustInfo {
     pub status: TrustStatus,
     /// The UV dependencies that will be installed (if any).
     pub uv_dependencies: Vec<String>,
+    /// UV dependencies already present in the local trusted package allowlist.
+    #[serde(default)]
+    pub approved_uv_dependencies: Vec<String>,
     /// The conda dependencies that will be installed (if any).
     pub conda_dependencies: Vec<String>,
+    /// Conda dependencies already present in the local trusted package allowlist.
+    #[serde(default)]
+    pub approved_conda_dependencies: Vec<String>,
     /// Conda channels configured.
     pub conda_channels: Vec<String>,
     /// The Pixi conda-style dependencies that will be installed (if any).
     #[serde(default)]
     pub pixi_dependencies: Vec<String>,
+    /// Pixi conda-style dependencies already present in the local trusted package allowlist.
+    #[serde(default)]
+    pub approved_pixi_dependencies: Vec<String>,
     /// The Pixi PyPI dependencies that will be installed (if any).
     #[serde(default)]
     pub pixi_pypi_dependencies: Vec<String>,
+    /// Pixi PyPI dependencies already present in the local trusted package allowlist.
+    #[serde(default)]
+    pub approved_pixi_pypi_dependencies: Vec<String>,
     /// Pixi channels configured.
     #[serde(default)]
     pub pixi_channels: Vec<String>,
@@ -349,10 +361,14 @@ pub fn verify_notebook_trust(
         return Ok(TrustInfo {
             status: TrustStatus::NoDependencies,
             uv_dependencies,
+            approved_uv_dependencies: vec![],
             conda_dependencies,
+            approved_conda_dependencies: vec![],
             conda_channels,
             pixi_dependencies,
+            approved_pixi_dependencies: vec![],
             pixi_pypi_dependencies,
+            approved_pixi_pypi_dependencies: vec![],
             pixi_channels,
         });
     }
@@ -380,10 +396,14 @@ pub fn verify_notebook_trust(
     Ok(TrustInfo {
         status,
         uv_dependencies,
+        approved_uv_dependencies: vec![],
         conda_dependencies,
+        approved_conda_dependencies: vec![],
         conda_channels,
         pixi_dependencies,
+        approved_pixi_dependencies: vec![],
         pixi_pypi_dependencies,
+        approved_pixi_pypi_dependencies: vec![],
         pixi_channels,
     })
 }
@@ -591,10 +611,14 @@ mod tests {
         let info = TrustInfo {
             status: TrustStatus::NoDependencies,
             uv_dependencies: vec![],
+            approved_uv_dependencies: vec![],
             conda_dependencies: vec![],
+            approved_conda_dependencies: vec![],
             conda_channels: vec![],
             pixi_dependencies: vec![],
+            approved_pixi_dependencies: vec![],
             pixi_pypi_dependencies: vec![],
+            approved_pixi_pypi_dependencies: vec![],
             pixi_channels: vec![],
         };
 

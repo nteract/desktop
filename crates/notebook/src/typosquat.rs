@@ -157,6 +157,11 @@ const POPULAR_PACKAGES: &[&str] = &[
     "httpretty",
     "responses",
     "moto",
+    // Also include package-manager/runtime names that appear in non-PyPI
+    // dependency specs. The checker is currently shared across ecosystems,
+    // so exact runtime specs like conda's `python=3.11` must not warn as
+    // near-misses of Python packages such as `ipython`.
+    "python",
     "ipython",
     "jupyter",
     "notebook",
@@ -414,6 +419,7 @@ mod tests {
     fn test_known_false_positive_pairs() {
         // These are all legitimate packages that are close in edit distance
         // to other popular packages — they must NOT be flagged.
+        assert!(check_typosquat("python=3.11").is_none()); // conda runtime spec, not vs ipython
         assert!(check_typosquat("sympy").is_none()); // vs numpy/scipy/mypy
         assert!(check_typosquat("scapy").is_none()); // vs scipy/scrapy
         assert!(check_typosquat("spacy").is_none()); // vs scipy
@@ -436,6 +442,9 @@ mod tests {
     #[test]
     fn test_typosquats_of_new_entries() {
         // Typosquats of newly added packages should still be detected
+        let warning = check_typosquat("pyhton").expect("should detect typosquat of python");
+        assert_eq!(warning.similar_to, "python");
+
         let warning = check_typosquat("symppy").expect("should detect typosquat of sympy");
         assert_eq!(warning.similar_to, "sympy");
 
