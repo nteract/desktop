@@ -1,4 +1,5 @@
-//! Dependency management tools: add_dependency, remove_dependency, get_dependencies, sync_environment.
+//! Dependency management tools: add_dependency, remove_dependency, get_dependencies,
+//! approve_trust, sync_environment.
 
 use rmcp::model::{CallToolRequestParams, CallToolResult};
 use rmcp::ErrorData as McpError;
@@ -6,6 +7,7 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 
 use notebook_protocol::protocol::{NotebookRequest, NotebookResponse};
+use notebook_sync::handle::DocHandle;
 
 use crate::NteractMcp;
 
@@ -75,6 +77,15 @@ pub struct RemoveDependencyParams {
 #[allow(dead_code)]
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct GetDependenciesParams {}
+
+#[allow(dead_code)]
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ApproveTrustParams {
+    /// Optional dependency fingerprint from a prior get_dependencies call.
+    /// If supplied and dependencies changed since review, approval is rejected.
+    #[serde(default)]
+    pub dependency_fingerprint: Option<String>,
+}
 
 #[allow(dead_code)]
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -176,6 +187,37 @@ fn remove_dep_for_manager(
     }
 }
 
+fn dependency_fingerprint_for_handle(handle: &DocHandle) -> Option<String> {
+    handle
+        .get_notebook_metadata()
+        .map(|snapshot| snapshot.dependency_fingerprint())
+}
+
+async fn approve_current_trust(
+    handle: &DocHandle,
+    dependency_fingerprint: Option<String>,
+    action: &str,
+) -> Result<(), String> {
+    if let Err(e) = handle.confirm_sync().await {
+        tracing::warn!("confirm_sync failed before {action}: {e}");
+    }
+
+    match handle
+        .send_request(NotebookRequest::ApproveTrust {
+            dependency_fingerprint,
+        })
+        .await
+    {
+        Ok(NotebookResponse::Ok {}) => Ok(()),
+        Ok(NotebookResponse::GuardRejected { reason }) => Err(reason),
+        Ok(NotebookResponse::Error { error }) => Err(error),
+        Ok(other) => Err(format!(
+            "Unexpected approve_trust response during {action}: {other:?}"
+        )),
+        Err(e) => Err(format!("Failed to approve dependency metadata: {e}")),
+    }
+}
+
 /// Add a package dependency. Auto-detects the notebook's package manager (uv, conda, or pixi).
 ///
 /// Tolerates agents passing a list-like string (e.g. `"['pandas','numpy']"` or
@@ -210,12 +252,12 @@ pub async fn add_dependency(
             return tool_error(&e);
         }
     }
+    let dependency_fingerprint = dependency_fingerprint_for_handle(&handle);
     // For the response, use the first package as `package` for backward compat
     let package = packages.first().map(|s| s.as_str()).unwrap_or(raw_package);
 
-    // Ensure daemon has the metadata change before any follow-up action
-    if let Err(e) = handle.confirm_sync().await {
-        tracing::warn!("confirm_sync failed after add_dependency: {e}");
+    if let Err(e) = approve_current_trust(&handle, dependency_fingerprint, "add_dependency").await {
+        return tool_error(&e);
     }
 
     // Read back current dependencies
@@ -366,9 +408,14 @@ pub async fn remove_dependency(
     let removed = remove_dep_for_manager(&handle, package, &manager)
         .map_err(|e| McpError::internal_error(e, None))?;
 
-    // Ensure daemon has the metadata change
-    if let Err(e) = handle.confirm_sync().await {
-        tracing::warn!("confirm_sync failed after remove_dependency: {e}");
+    let dependency_fingerprint = dependency_fingerprint_for_handle(&handle);
+
+    if removed {
+        if let Err(e) =
+            approve_current_trust(&handle, dependency_fingerprint, "remove_dependency").await
+        {
+            return tool_error(&e);
+        }
     }
 
     let deps = get_deps_for_manager(&handle, &manager);
@@ -391,6 +438,8 @@ pub async fn get_dependencies(
 
     let manager = detect_package_manager(&handle);
     let deps = get_deps_for_manager(&handle, &manager);
+    let dependency_fingerprint = dependency_fingerprint_for_handle(&handle);
+    let trust = handle.get_runtime_state().ok().map(|s| s.trust);
 
     // Include prewarmed packages from RuntimeStateDoc when available
     let prewarmed = handle
@@ -414,13 +463,58 @@ pub async fn get_dependencies(
         "dependencies": deps,
         "package_manager": manager.as_str(),
         "mode": mode,
+        "dependency_fingerprint": dependency_fingerprint,
     });
+    if let Some(trust) = trust {
+        result["trust"] = serde_json::json!({
+            "status": trust.status,
+            "needs_approval": trust.needs_approval,
+        });
+    }
     if let Some(ref source) = env_source {
         result["env_source"] = serde_json::json!(source);
     }
     if !prewarmed.is_empty() {
         result["available_packages"] = serde_json::json!(prewarmed);
     }
+    tool_success(&serde_json::to_string_pretty(&result).unwrap_or_default())
+}
+
+/// Approve/sign the current dependency metadata for headless clients.
+pub async fn approve_trust(
+    server: &NteractMcp,
+    request: &CallToolRequestParams,
+) -> Result<CallToolResult, McpError> {
+    let handle = require_handle!(server);
+    let supplied_fingerprint = arg_str(request, "dependency_fingerprint").map(str::to_string);
+    let current_fingerprint = dependency_fingerprint_for_handle(&handle);
+    let expected_fingerprint = supplied_fingerprint
+        .clone()
+        .or_else(|| current_fingerprint.clone());
+
+    if let Err(e) =
+        approve_current_trust(&handle, expected_fingerprint.clone(), "approve_trust").await
+    {
+        return tool_error(&e);
+    }
+
+    if let Err(e) = handle.confirm_sync().await {
+        tracing::warn!("confirm_sync failed after approve_trust: {e}");
+    }
+
+    let trust = handle.get_runtime_state().ok().map(|s| s.trust);
+    let mut result = serde_json::json!({
+        "approved": true,
+        "dependency_fingerprint": expected_fingerprint,
+        "supplied_fingerprint": supplied_fingerprint,
+    });
+    if let Some(trust) = trust {
+        result["trust"] = serde_json::json!({
+            "status": trust.status,
+            "needs_approval": trust.needs_approval,
+        });
+    }
+
     tool_success(&serde_json::to_string_pretty(&result).unwrap_or_default())
 }
 

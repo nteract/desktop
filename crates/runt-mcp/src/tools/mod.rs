@@ -240,10 +240,22 @@ pub fn all_tools() -> Vec<Tool> {
         ),
         Tool::new(
             "get_dependencies",
-            "Get the notebook's declared dependencies.",
+            "Get the notebook's declared dependencies, dependency fingerprint, and trust state.",
             schema_for::<deps::GetDependenciesParams>(),
         )
         .annotate(ToolAnnotations::new().read_only(true).open_world(false)),
+        Tool::new(
+            "approve_trust",
+            "Approve and sign the current dependency metadata for headless use. \
+             Pass dependency_fingerprint from get_dependencies to reject stale approvals.",
+            schema_for::<deps::ApproveTrustParams>(),
+        )
+        .annotate(
+            ToolAnnotations::new()
+                .destructive(false)
+                .idempotent(true)
+                .open_world(false),
+        ),
         // -- Editing --
         Tool::new(
             "replace_match",
@@ -309,6 +321,7 @@ pub async fn dispatch(
         "add_dependency" => deps::add_dependency(server, request).await,
         "remove_dependency" => deps::remove_dependency(server, request).await,
         "get_dependencies" => deps::get_dependencies(server, request).await,
+        "approve_trust" => deps::approve_trust(server, request).await,
         // Editing
         "replace_match" => editing::replace_match(server, request).await,
         "replace_regex" => editing::replace_regex(server, request).await,

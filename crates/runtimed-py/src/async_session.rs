@@ -207,6 +207,27 @@ impl AsyncSession {
         })
     }
 
+    /// Get the current dependency fingerprint used for guarded trust approval.
+    fn dependency_fingerprint<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let state = Arc::clone(&self.state);
+        future_into_py(py, async move {
+            session_core::dependency_fingerprint(&state).await
+        })
+    }
+
+    /// Approve and sign the current dependency metadata.
+    #[pyo3(signature = (dependency_fingerprint=None))]
+    fn approve_trust<'py>(
+        &self,
+        py: Python<'py>,
+        dependency_fingerprint: Option<String>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let state = Arc::clone(&self.state);
+        future_into_py(py, async move {
+            session_core::approve_trust(&state, dependency_fingerprint).await
+        })
+    }
+
     // =========================================================================
     // Connection
     // =========================================================================
@@ -851,7 +872,7 @@ impl AsyncSession {
         future_into_py(py, async move {
             let mut snapshot = session_core::get_notebook_metadata(&state).await?;
             snapshot.add_uv_dependency(&package);
-            session_core::set_notebook_metadata(&state, &snapshot).await
+            session_core::set_notebook_metadata_and_approve(&state, &snapshot).await
         })
     }
 
@@ -867,7 +888,7 @@ impl AsyncSession {
             for package in &packages {
                 snapshot.add_uv_dependency(package);
             }
-            session_core::set_notebook_metadata(&state, &snapshot).await
+            session_core::set_notebook_metadata_and_approve(&state, &snapshot).await
         })
     }
 
@@ -883,7 +904,7 @@ impl AsyncSession {
             let mut snapshot = session_core::get_notebook_metadata(&state).await?;
             let removed = snapshot.remove_uv_dependency(&package);
             if removed {
-                session_core::set_notebook_metadata(&state, &snapshot).await?;
+                session_core::set_notebook_metadata_and_approve(&state, &snapshot).await?;
             }
             Ok(removed)
         })
@@ -916,7 +937,7 @@ impl AsyncSession {
                 .map_err(pyo3::exceptions::PyValueError::new_err)?;
             let mut snapshot = session_core::get_notebook_metadata(&state).await?;
             snapshot.add_conda_dependency(&package);
-            session_core::set_notebook_metadata(&state, &snapshot).await
+            session_core::set_notebook_metadata_and_approve(&state, &snapshot).await
         })
     }
 
@@ -936,7 +957,7 @@ impl AsyncSession {
             for package in &packages {
                 snapshot.add_conda_dependency(package);
             }
-            session_core::set_notebook_metadata(&state, &snapshot).await
+            session_core::set_notebook_metadata_and_approve(&state, &snapshot).await
         })
     }
 
@@ -952,7 +973,7 @@ impl AsyncSession {
             let mut snapshot = session_core::get_notebook_metadata(&state).await?;
             let removed = snapshot.remove_conda_dependency(&package);
             if removed {
-                session_core::set_notebook_metadata(&state, &snapshot).await?;
+                session_core::set_notebook_metadata_and_approve(&state, &snapshot).await?;
             }
             Ok(removed)
         })
@@ -985,7 +1006,7 @@ impl AsyncSession {
                 .map_err(pyo3::exceptions::PyValueError::new_err)?;
             let mut snapshot = session_core::get_notebook_metadata(&state).await?;
             snapshot.add_pixi_dependency(&package);
-            session_core::set_notebook_metadata(&state, &snapshot).await
+            session_core::set_notebook_metadata_and_approve(&state, &snapshot).await
         })
     }
 
@@ -1005,7 +1026,7 @@ impl AsyncSession {
             for package in &packages {
                 snapshot.add_pixi_dependency(package);
             }
-            session_core::set_notebook_metadata(&state, &snapshot).await
+            session_core::set_notebook_metadata_and_approve(&state, &snapshot).await
         })
     }
 
@@ -1021,7 +1042,7 @@ impl AsyncSession {
             let mut snapshot = session_core::get_notebook_metadata(&state).await?;
             let removed = snapshot.remove_pixi_dependency(&package);
             if removed {
-                session_core::set_notebook_metadata(&state, &snapshot).await?;
+                session_core::set_notebook_metadata_and_approve(&state, &snapshot).await?;
             }
             Ok(removed)
         })
