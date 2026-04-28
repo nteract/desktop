@@ -574,6 +574,69 @@ mod tests {
         .unwrap()
     }
 
+    fn registered_tool(name: &str) -> Tool {
+        all_tools()
+            .into_iter()
+            .find(|tool| tool.name == name)
+            .unwrap_or_else(|| panic!("missing registered tool: {name}"))
+    }
+
+    #[test]
+    fn approve_trust_tool_exposes_optional_fingerprint_schema() {
+        let tool = registered_tool("approve_trust");
+        let properties = tool
+            .input_schema
+            .get("properties")
+            .and_then(serde_json::Value::as_object)
+            .expect("approve_trust schema should expose properties");
+
+        assert!(properties.contains_key("dependency_fingerprint"));
+        let fingerprint_is_required = tool
+            .input_schema
+            .get("required")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|required| {
+                required
+                    .iter()
+                    .any(|field| field == "dependency_fingerprint")
+            });
+        assert!(!fingerprint_is_required);
+        assert!(tool
+            .description
+            .as_deref()
+            .unwrap_or_default()
+            .contains("dependency_fingerprint"));
+
+        let annotations = tool
+            .annotations
+            .expect("approve_trust should advertise safe mutation hints");
+        assert_eq!(annotations.destructive_hint, Some(false));
+        assert_eq!(annotations.idempotent_hint, Some(true));
+        assert_eq!(annotations.open_world_hint, Some(false));
+    }
+
+    #[test]
+    fn get_dependencies_tool_advertises_trust_metadata() {
+        let tool = registered_tool("get_dependencies");
+
+        assert!(tool
+            .description
+            .as_deref()
+            .unwrap_or_default()
+            .contains("dependency fingerprint"));
+        assert!(tool
+            .description
+            .as_deref()
+            .unwrap_or_default()
+            .contains("trust state"));
+
+        let annotations = tool
+            .annotations
+            .expect("get_dependencies should advertise read-only hints");
+        assert_eq!(annotations.read_only_hint, Some(true));
+        assert_eq!(annotations.open_world_hint, Some(false));
+    }
+
     #[test]
     fn arg_bool_json_true() {
         let req = make_request(serde_json::json!({"flag": true}));

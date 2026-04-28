@@ -1396,16 +1396,19 @@ async fn test_multiple_notebooks_concurrent_isolation() {
     let nb_c = nb_c.handle;
 
     assert!(
-        wait_for_session_ready(&nb_a, Duration::from_secs(2)).await,
-        "alpha notebook should reach session-ready state within 2s"
+        wait_for_session_ready(&nb_a, SESSION_READY_TIMEOUT).await,
+        "alpha notebook should reach session-ready state within {:?}",
+        SESSION_READY_TIMEOUT
     );
     assert!(
-        wait_for_session_ready(&nb_b, Duration::from_secs(2)).await,
-        "beta notebook should reach session-ready state within 2s"
+        wait_for_session_ready(&nb_b, SESSION_READY_TIMEOUT).await,
+        "beta notebook should reach session-ready state within {:?}",
+        SESSION_READY_TIMEOUT
     );
     assert!(
-        wait_for_session_ready(&nb_c, Duration::from_secs(2)).await,
-        "gamma notebook should reach session-ready state within 2s"
+        wait_for_session_ready(&nb_c, SESSION_READY_TIMEOUT).await,
+        "gamma notebook should reach session-ready state within {:?}",
+        SESSION_READY_TIMEOUT
     );
 
     // Add cells to each notebook
@@ -1442,32 +1445,38 @@ async fn test_multiple_notebooks_concurrent_isolation() {
     let handle_c = fresh_c.unwrap().handle;
 
     assert!(
-        wait_for_session_ready(&handle_a, Duration::from_secs(2)).await,
-        "alpha client should reach session-ready state within 2s"
+        wait_for_session_ready(&handle_a, SESSION_READY_TIMEOUT).await,
+        "alpha client should reach session-ready state within {:?}",
+        SESSION_READY_TIMEOUT
     );
     assert!(
-        wait_for_session_ready(&handle_b, Duration::from_secs(2)).await,
-        "beta client should reach session-ready state within 2s"
+        wait_for_session_ready(&handle_b, SESSION_READY_TIMEOUT).await,
+        "beta client should reach session-ready state within {:?}",
+        SESSION_READY_TIMEOUT
     );
     assert!(
-        wait_for_session_ready(&handle_c, Duration::from_secs(2)).await,
-        "gamma client should reach session-ready state within 2s"
+        wait_for_session_ready(&handle_c, SESSION_READY_TIMEOUT).await,
+        "gamma client should reach session-ready state within {:?}",
+        SESSION_READY_TIMEOUT
     );
 
     // Wait for initial sync to deliver the cells map before reading.
     // session_ready only guarantees status=Interactive, not that the
     // snapshot watch channel has published cells from the sync frames.
     assert!(
-        wait_for_cells_map(&handle_a, Duration::from_secs(2)).await,
-        "alpha sync did not deliver cells map within 2s"
+        wait_for_cells_map(&handle_a, SESSION_READY_TIMEOUT).await,
+        "alpha sync did not deliver cells map within {:?}",
+        SESSION_READY_TIMEOUT
     );
     assert!(
-        wait_for_cells_map(&handle_b, Duration::from_secs(2)).await,
-        "beta sync did not deliver cells map within 2s"
+        wait_for_cells_map(&handle_b, SESSION_READY_TIMEOUT).await,
+        "beta sync did not deliver cells map within {:?}",
+        SESSION_READY_TIMEOUT
     );
     assert!(
-        wait_for_cells_map(&handle_c, Duration::from_secs(2)).await,
-        "gamma sync did not deliver cells map within 2s"
+        wait_for_cells_map(&handle_c, SESSION_READY_TIMEOUT).await,
+        "gamma sync did not deliver cells map within {:?}",
+        SESSION_READY_TIMEOUT
     );
 
     let cells_a = handle_a.get_cells();
@@ -1833,8 +1842,9 @@ async fn test_pipe_mode_forwards_sync_frames() {
     // mutate it. Otherwise `add_cell_after` panics with
     // `InvalidObjId("cells map not found")` — a flake under loaded CI.
     assert!(
-        wait_for_cells_map(&client2, Duration::from_secs(2)).await,
-        "initial sync did not deliver the cells map within 2s"
+        wait_for_cells_map(&client2, SESSION_READY_TIMEOUT).await,
+        "initial sync did not deliver the cells map within {:?}",
+        SESSION_READY_TIMEOUT
     );
     client2.add_cell_after("cell-1", "code", None).unwrap();
     client2
@@ -1950,8 +1960,9 @@ async fn test_pipe_mode_only_pipes_allowed_frame_types() {
     .unwrap()
     .handle;
     assert!(
-        wait_for_cells_map(&client2, Duration::from_secs(2)).await,
-        "initial sync did not deliver the cells map within 2s"
+        wait_for_cells_map(&client2, SESSION_READY_TIMEOUT).await,
+        "initial sync did not deliver the cells map within {:?}",
+        SESSION_READY_TIMEOUT
     );
     client2.add_cell_after("bc-cell", "code", None).unwrap();
     client2.update_source("bc-cell", "x = 1").unwrap();
@@ -2106,8 +2117,9 @@ async fn test_pipe_mode_preserves_frame_order() {
     // mutate it. Otherwise `add_cell_after` panics with
     // `InvalidObjId("cells map not found")` — a flake under loaded CI.
     assert!(
-        wait_for_cells_map(&client2, Duration::from_secs(2)).await,
-        "initial sync did not deliver the cells map within 2s"
+        wait_for_cells_map(&client2, SESSION_READY_TIMEOUT).await,
+        "initial sync did not deliver the cells map within {:?}",
+        SESSION_READY_TIMEOUT
     );
     client2.add_cell_after("cell-1", "code", None).unwrap();
     client2
@@ -2412,8 +2424,9 @@ async fn test_create_notebook_with_deps() {
     let handle = result.handle;
 
     assert!(
-        wait_for_session_ready(&handle, Duration::from_secs(2)).await,
-        "client should reach session-ready state within 2s"
+        wait_for_session_ready(&handle, SESSION_READY_TIMEOUT).await,
+        "client should reach session-ready state within {:?}",
+        SESSION_READY_TIMEOUT
     );
 
     // Poll for metadata to arrive via Automerge sync
@@ -2485,8 +2498,9 @@ async fn test_create_notebook_with_explicit_manager_no_deps() {
     let handle = result.handle;
 
     assert!(
-        wait_for_session_ready(&handle, Duration::from_secs(2)).await,
-        "client should reach session-ready state within 2s"
+        wait_for_session_ready(&handle, SESSION_READY_TIMEOUT).await,
+        "client should reach session-ready state within {:?}",
+        SESSION_READY_TIMEOUT
     );
 
     // Poll for metadata to arrive via Automerge sync
@@ -2555,8 +2569,9 @@ async fn test_create_notebook_default_manager_with_deps() {
     let handle = result.handle;
 
     assert!(
-        wait_for_session_ready(&handle, Duration::from_secs(2)).await,
-        "client should reach session-ready state within 2s"
+        wait_for_session_ready(&handle, SESSION_READY_TIMEOUT).await,
+        "client should reach session-ready state within {:?}",
+        SESSION_READY_TIMEOUT
     );
 
     // Poll for metadata to arrive via Automerge sync
