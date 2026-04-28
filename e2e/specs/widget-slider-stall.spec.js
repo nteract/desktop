@@ -57,6 +57,14 @@ async function waitForOutputTextContaining(text, timeout = 30000) {
   });
 }
 
+async function waitForSliderModel(timeout = 30000) {
+  await browser.waitUntil(async () => (await getSliderCommId()) !== null, {
+    timeout,
+    interval: 500,
+    timeoutMsg: `Slider model not found in widget store within ${timeout / 1000}s`,
+  });
+}
+
 /**
  * Find the isolated iframe inside a cell's output area.
  * Returns the iframe element or null if not found.
@@ -131,6 +139,34 @@ function alternatingValues(count, low = 4.9, high = 5.1) {
   return values;
 }
 
+async function executeSliderCellUntilReady(cell, timeout = 60000) {
+  const deadline = Date.now() + timeout;
+  const executeButton = await cell.$('[data-testid="execute-button"]');
+  await executeButton.waitForClickable({ timeout: 5000 });
+
+  while (Date.now() < deadline) {
+    await executeButton.click();
+
+    try {
+      await waitForSliderModel(15000);
+      return;
+    } catch {
+      // The execute handler is intentionally fail-closed until the first
+      // RuntimeStateDoc sync marks the session ready. If the early click lands
+      // in that window, retry instead of treating the missed busy edge as the
+      // widget regression this spec is meant to catch.
+    }
+
+    await browser.waitUntil(async () => (await getKernelStatus()) === "idle", {
+      timeout: 120000,
+      interval: 500,
+      timeoutMsg: "Kernel not idle after slider cell execution attempt",
+    });
+  }
+
+  throw new Error("Slider model not found after retrying execution");
+}
+
 describe("Widget Slider Stall Reproducer", () => {
   let sliderCell;
 
@@ -149,20 +185,7 @@ describe("Widget Slider Stall Reproducer", () => {
     // saved display payload.
     sliderCell = cells[1];
     await setCellSource(sliderCell, SLIDER_SOURCE);
-
-    const executeButton = await sliderCell.$('[data-testid="execute-button"]');
-    await executeButton.waitForClickable({ timeout: 5000 });
-    await executeButton.click();
-
-    // Wait for the click to reach the kernel before checking idle/model state.
-    await browser.waitUntil(
-      async () => (await getKernelStatus()) === "busy" || (await getSliderCommId()) !== null,
-      {
-        timeout: 10000,
-        interval: 200,
-        timeoutMsg: "Kernel did not begin slider cell execution",
-      },
-    );
+    await executeSliderCellUntilReady(sliderCell);
 
     // Wait for kernel to finish executing (ipywidgets init can be slow)
     await browser.waitUntil(
@@ -190,14 +213,7 @@ describe("Widget Slider Stall Reproducer", () => {
     console.log("[slider-stall] Widget iframe detected in output area");
 
     // Wait for the widget store to have the slider model
-    await browser.waitUntil(
-      async () => (await getSliderCommId()) !== null,
-      {
-        timeout: 30000,
-        interval: 500,
-        timeoutMsg: "Slider model not found in widget store within 30s",
-      },
-    );
+    await waitForSliderModel();
 
     const commId = await getSliderCommId();
     console.log(`[slider-stall] Slider model found: ${commId}`);
