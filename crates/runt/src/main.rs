@@ -233,6 +233,14 @@ enum Commands {
         /// Attempt to fix issues automatically
         #[arg(long)]
         fix: bool,
+        /// Install and configure without starting the daemon process.
+        ///
+        /// Used by the NSIS post-install hook so the daemon binary and startup
+        /// configuration are written without spawning a long-running child
+        /// process inside the installer's Job Object. The daemon will start
+        /// automatically at next login via the Startup folder entry.
+        #[arg(long)]
+        no_start: bool,
         /// Output in JSON format
         #[arg(long)]
         json: bool,
@@ -487,6 +495,14 @@ enum DaemonCommands {
         /// Attempt to fix issues automatically
         #[arg(long)]
         fix: bool,
+        /// Install and configure without starting the daemon process.
+        ///
+        /// Used by the NSIS post-install hook so the daemon binary and startup
+        /// configuration are written without spawning a long-running child
+        /// process inside the installer's Job Object. The daemon will start
+        /// automatically at next login via the Startup folder entry.
+        #[arg(long)]
+        no_start: bool,
         /// Output in JSON format
         #[arg(long)]
         json: bool,
@@ -637,8 +653,17 @@ async fn async_main(command: Option<Commands>) -> Result<()> {
 
         // Top-level convenience aliases
         Some(Commands::Status { json }) => daemon_command(DaemonCommands::Status { json }).await?,
-        Some(Commands::Doctor { fix, json }) => {
-            daemon_command(DaemonCommands::Doctor { fix, json }).await?
+        Some(Commands::Doctor {
+            fix,
+            no_start,
+            json,
+        }) => {
+            daemon_command(DaemonCommands::Doctor {
+                fix,
+                no_start,
+                json,
+            })
+            .await?
         }
         Some(Commands::Logs { follow, lines }) => {
             daemon_command(DaemonCommands::Logs { follow, lines }).await?
@@ -2227,8 +2252,20 @@ async fn daemon_command(command: DaemonCommands) -> Result<()> {
                 }
             }
         }
-        DaemonCommands::Doctor { fix, json } => {
-            doctor_command(&mut manager, &client, daemon_info.as_ref(), fix, json).await?;
+        DaemonCommands::Doctor {
+            fix,
+            no_start,
+            json,
+        } => {
+            doctor_command(
+                &mut manager,
+                &client,
+                daemon_info.as_ref(),
+                fix,
+                no_start,
+                json,
+            )
+            .await?;
         }
         DaemonCommands::Start => {
             if runt_workspace::is_dev_mode() {
@@ -2447,6 +2484,7 @@ async fn doctor_command(
     client: &runtimed::client::PoolClient,
     daemon_info: Option<&runtimed::singleton::DaemonInfo>,
     fix: bool,
+    no_start: bool,
     json: bool,
 ) -> Result<()> {
     use serde::Serialize;
@@ -3307,8 +3345,14 @@ async fn doctor_command(
             }
         }
 
-        // Start if installed but not running
-        if manager.is_installed() && !daemon_running_before {
+        // Start if installed but not running.
+        //
+        // Skipped when --no-start is set. The NSIS post-install hook passes
+        // --no-start so the daemon binary and startup script are written to
+        // disk without spawning a long-running child inside the installer's
+        // Windows Job Object. The daemon will start automatically at next
+        // login via the Startup folder entry that create_service_config() writes.
+        if manager.is_installed() && !daemon_running_before && !no_start {
             match manager.start() {
                 Ok(()) => {
                     actions_taken.push("Started daemon service".to_string());

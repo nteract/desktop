@@ -126,7 +126,14 @@
   !insertmacro NTERACT_WRITE_SHIM "$R6\$R8.cmd" "$\"$INSTDIR\runt.exe$\" %*"
   !insertmacro NTERACT_WRITE_SHIM "$R6\$R7.cmd" "$\"$INSTDIR\runt.exe$\" notebook %*"
 
-  nsExec::ExecToStack '"$INSTDIR\runt.exe" daemon doctor --fix'
+  ; Run daemon doctor --fix --no-start. This installs the daemon binary and
+  ; writes the Startup folder VBS entry (so the daemon auto-starts at login)
+  ; but does NOT spawn the daemon process itself. Spawning a long-running
+  ; daemon here would leave it inside the installer's Windows Job Object:
+  ; the GHA Actions runner (and PowerShell's Start-Process -Wait) waits for
+  ; the entire Job to drain before the step completes, causing a 75-minute
+  ; timeout on every CI run. The daemon will start at next user login instead.
+  nsExec::ExecToStack '"$INSTDIR\runt.exe" daemon doctor --fix --no-start'
   Pop $R5
   Pop $R4
   !insertmacro NTERACT_APPEND_BOOTSTRAP_LOG "$R4"
