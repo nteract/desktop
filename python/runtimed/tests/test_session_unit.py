@@ -230,6 +230,52 @@ class TestCreateNotebookValidation:
             client.create_notebook(working_dir=str(test_file))
 
 
+class _NotebookTrustSession:
+    notebook_id = "trust-notebook"
+
+    def __init__(self, fingerprint="sha256:current"):
+        self._fingerprint = fingerprint
+        self.approve_trust_calls = []
+
+    async def dependency_fingerprint(self):
+        return self._fingerprint
+
+    async def approve_trust(self, dependency_fingerprint=None):
+        self.approve_trust_calls.append(dependency_fingerprint)
+
+
+class TestNotebookTrustMethods:
+    """Notebook trust helpers delegate to the native session."""
+
+    @pytest.mark.asyncio
+    async def test_dependency_fingerprint_delegates_to_session(self):
+        from runtimed._notebook import Notebook
+
+        notebook = Notebook(_NotebookTrustSession("sha256:reviewed"))
+
+        assert await notebook.dependency_fingerprint() == "sha256:reviewed"
+
+    @pytest.mark.asyncio
+    async def test_dependency_fingerprint_allows_missing_metadata(self):
+        from runtimed._notebook import Notebook
+
+        notebook = Notebook(_NotebookTrustSession(None))
+
+        assert await notebook.dependency_fingerprint() is None
+
+    @pytest.mark.asyncio
+    async def test_approve_trust_passes_optional_fingerprint_to_session(self):
+        from runtimed._notebook import Notebook
+
+        session = _NotebookTrustSession()
+        notebook = Notebook(session)
+
+        await notebook.approve_trust()
+        await notebook.approve_trust("sha256:reviewed")
+
+        assert session.approve_trust_calls == [None, "sha256:reviewed"]
+
+
 class _ExecutionEntry:
     def __init__(self, status="queued", success=None, execution_count=None):
         self.status = status
@@ -269,11 +315,7 @@ class TestExecutionHandle:
         from runtimed._execution import Execution
 
         session = _ExecutionSession(
-            {
-                "exec-1": _ExecutionEntry(
-                    status="done", success=True, execution_count=12
-                )
-            }
+            {"exec-1": _ExecutionEntry(status="done", success=True, execution_count=12)}
         )
 
         execution = Execution(session, "cell-1", "exec-1")

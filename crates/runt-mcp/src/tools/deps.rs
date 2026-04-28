@@ -642,4 +642,23 @@ mod tests {
     fn parse_whitespace_trimmed() {
         assert_eq!(parse_package_param("  ['pandas']  "), vec!["pandas"]);
     }
+
+    #[test]
+    fn approve_trust_params_accept_missing_fingerprint() {
+        let params: ApproveTrustParams = serde_json::from_value(serde_json::json!({})).unwrap();
+
+        assert_eq!(params.dependency_fingerprint, None);
+    }
+
+    #[test]
+    fn approve_trust_params_accept_supplied_fingerprint() {
+        let params: ApproveTrustParams =
+            serde_json::from_value(serde_json::json!({"dependency_fingerprint": "sha256:abc"}))
+                .unwrap();
+
+        assert_eq!(
+            params.dependency_fingerprint,
+            Some("sha256:abc".to_string())
+        );
+    }
 }
