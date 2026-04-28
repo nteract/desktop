@@ -915,7 +915,13 @@ pub(crate) fn spawn_notebook_file_watcher(
                                     continue;
                                 }
                             };
-                            let external_metadata = parse_metadata_from_ipynb(&json);
+                            let mut external_metadata = parse_metadata_from_ipynb(&json);
+                            if let Some(ref mut meta) = external_metadata {
+                                super::metadata::apply_pyproject_bootstrap_to_snapshot(
+                                    &notebook_path,
+                                    meta,
+                                );
+                            }
 
                             // Check if kernel is running (to preserve outputs)
                             let has_kernel = room.has_kernel().await;

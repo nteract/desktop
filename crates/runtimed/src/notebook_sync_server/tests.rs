@@ -4248,6 +4248,57 @@ async fn test_pyproject_bootstrap_state_lands_trusted() {
     std::env::remove_var("RUNT_TRUST_KEY_PATH");
 }
 
+#[tokio::test]
+#[serial]
+async fn test_file_watcher_normalizes_pyproject_bootstrap_metadata() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let key_path = temp_dir.path().join("trust-key");
+    std::env::set_var("RUNT_TRUST_KEY_PATH", key_path.to_str().unwrap());
+
+    let project_dir = tempfile::tempdir().unwrap();
+    let notebook_path = project_dir.path().join("project.ipynb");
+    std::fs::write(
+        project_dir.path().join("pyproject.toml"),
+        r#"[project]
+name = "project"
+version = "0.1.0"
+dependencies = ["httpx", "numpy"]
+"#,
+    )
+    .unwrap();
+
+    // External .ipynb metadata as parsed from disk: no inline dependency
+    // section yet. Auto-launch derives that section from pyproject.toml in
+    // memory, and the watcher must compare against the same derived shape.
+    let mut external = snapshot_empty();
+    assert!(external.runt.uv.is_none());
+
+    let changed =
+        super::metadata::apply_pyproject_bootstrap_to_snapshot(&notebook_path, &mut external);
+    assert!(changed);
+    assert_eq!(
+        external.runt.uv.as_ref().map(|uv| uv.dependencies.clone()),
+        Some(vec!["httpx".to_string(), "numpy".to_string()])
+    );
+    assert_eq!(
+        verify_trust_from_snapshot(&external).status,
+        runt_trust::TrustStatus::Trusted
+    );
+
+    let mut current = snapshot_empty();
+    current.runt.uv = external.runt.uv.clone();
+    current.runt.trust_signature = external.runt.trust_signature.clone();
+    current.runt.trust_timestamp = external.runt.trust_timestamp.clone();
+
+    assert_eq!(
+        Some(&external),
+        Some(&current),
+        "normalized external metadata should match the CRDT bootstrap shape"
+    );
+
+    std::env::remove_var("RUNT_TRUST_KEY_PATH");
+}
+
 // ── Per-agent oneshot channel tests ──────────────────────────────
 
 #[tokio::test]

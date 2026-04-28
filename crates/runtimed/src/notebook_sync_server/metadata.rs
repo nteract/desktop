@@ -1126,6 +1126,63 @@ pub(crate) fn project_file_deps_match_trust_info(
     }
 }
 
+/// Apply the same derived pyproject.toml dependency view used by auto-launch
+/// to a metadata snapshot parsed from disk.
+///
+/// The file watcher compares external `.ipynb` metadata against the in-memory
+/// CRDT snapshot. For project-backed notebooks, auto-launch intentionally
+/// injects `[project].dependencies` into `metadata.runt.uv` so the UI and MCP
+/// can expose the active environment. Those deps are derived from
+/// `pyproject.toml`, so the `.ipynb` on disk may not contain them yet. Normalize
+/// the parsed snapshot before comparing; otherwise the watcher treats the
+/// derived deps as an external deletion and churns metadata on every watch
+/// event.
+pub(crate) fn apply_pyproject_bootstrap_to_snapshot(
+    notebook_path: &Path,
+    snapshot: &mut NotebookMetadataSnapshot,
+) -> bool {
+    let Some(detected) = crate::project_file::detect_project_file(notebook_path) else {
+        return false;
+    };
+    if detected.kind != crate::project_file::ProjectFileKind::PyprojectToml {
+        return false;
+    }
+    let Ok(content) = std::fs::read_to_string(&detected.path) else {
+        return false;
+    };
+    let deps = extract_pyproject_deps(&content);
+    if deps.is_empty() {
+        return false;
+    }
+
+    let current_deps = snapshot.runt.uv.as_ref().map(|u| &u.dependencies);
+    let deps_match = current_deps.is_some_and(|d| d == &deps);
+    let trust_ok = matches!(
+        verify_trust_from_snapshot(snapshot).status,
+        runt_trust::TrustStatus::Trusted | runt_trust::TrustStatus::NoDependencies,
+    );
+    if deps_match && trust_ok {
+        return false;
+    }
+
+    let uv = snapshot
+        .runt
+        .uv
+        .get_or_insert_with(|| notebook_doc::metadata::UvInlineMetadata {
+            dependencies: Vec::new(),
+            requires_python: None,
+            prerelease: None,
+        });
+    uv.dependencies = deps;
+    if let Err(e) = auto_sign_in_place(snapshot) {
+        warn!(
+            "[notebook-sync] Failed to auto-sign pyproject.toml watcher metadata: {}",
+            e
+        );
+    }
+    true
+}
+
 /// Verify trust status of a notebook by reading its file from disk.
 /// Returns TrustState with the verification result.
 ///
