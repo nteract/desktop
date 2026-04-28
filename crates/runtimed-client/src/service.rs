@@ -796,24 +796,46 @@ Set WshShell = Nothing
         // with `bInheritHandles=FALSE`. The daemon needs no inherited
         // handles - logging goes to a file (see runtimed::main), and stdio
         // is unused.
+        // lpApplicationName: NUL-terminated UTF-16 path to the binary, no
+        // surrounding quotes (Windows does not parse application-name).
+        let app_name: Vec<u16> = self
+            .config
+            .binary_path
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+
+        // lpCommandLine: NUL-terminated UTF-16 with the path quoted as argv[0].
+        // Mutable because CreateProcessW may write into it.
         let mut cmd_line: Vec<u16> = std::iter::once(b'"' as u16)
             .chain(self.config.binary_path.as_os_str().encode_wide())
             .chain(std::iter::once(b'"' as u16))
             .chain(std::iter::once(0))
             .collect();
 
+        // SAFETY: STARTUPINFOW and PROCESS_INFORMATION are POD structs whose
+        // all-zero bit pattern is a valid initial state per the Win32 ABI.
+        // STARTUPINFOW.cb must equal size_of::<STARTUPINFOW>() before passing
+        // to CreateProcessW; we set it immediately after zeroing.
         let mut si: STARTUPINFOW = unsafe { std::mem::zeroed() };
         si.cb = std::mem::size_of::<STARTUPINFOW>() as u32;
-
         let mut pi: PROCESS_INFORMATION = unsafe { std::mem::zeroed() };
 
+        // SAFETY: app_name and cmd_line are NUL-terminated UTF-16 buffers
+        // owned by this stack frame and live through the call. &si and &mut pi
+        // point at correctly-initialized POD structs (see above). All pointer
+        // arguments documented as nullable (security attrs, environment,
+        // current directory) are passed as null. bInheritHandles=FALSE
+        // (passed as 0) is the load-bearing flag - see the comment block
+        // above for why redirecting stdio alone is not sufficient.
         let ok = unsafe {
             CreateProcessW(
-                std::ptr::null(),
+                app_name.as_ptr(),
                 cmd_line.as_mut_ptr(),
                 std::ptr::null_mut(),
                 std::ptr::null_mut(),
-                0, // bInheritHandles = FALSE
+                0,
                 DETACHED_PROCESS | CREATE_NO_WINDOW,
                 std::ptr::null_mut(),
                 std::ptr::null(),
@@ -827,6 +849,10 @@ Set WshShell = Nothing
             return Err(ServiceError::StartFailed(err.to_string()));
         }
 
+        // SAFETY: pi.hProcess and pi.hThread are valid handles populated by
+        // a successful CreateProcessW. We don't need to wait on or query the
+        // process from this side, so closing both handles immediately is
+        // correct - the kernel keeps the process alive until it exits.
         unsafe {
             CloseHandle(pi.hProcess);
             CloseHandle(pi.hThread);

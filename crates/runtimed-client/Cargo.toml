@@ -42,10 +42,10 @@ smappservice-rs = "0.1"
 libc = "0.2"
 
 [target.'cfg(windows)'.dependencies]
-# Win32_System_Threading: CreateProcessW with bInheritHandles=FALSE (the
-# daemon spawn path - prevents pipe handles inherited from a captured-stdout
-# parent like NSIS's nsExec::ExecToStack from leaking into the daemon).
-windows-sys = { version = "0.52", features = ["Win32_Storage_FileSystem", "Win32_Foundation", "Win32_System_Threading"] }
+# Win32_System_Threading: CreateProcessW for the daemon spawn path. windows-sys
+# 0.52 gates that symbol on Win32_Security as well (CreateProcessW takes
+# *const SECURITY_ATTRIBUTES for lpProcessAttributes / lpThreadAttributes).
+windows-sys = { version = "0.52", features = ["Win32_Storage_FileSystem", "Win32_Foundation", "Win32_Security", "Win32_System_Threading"] }
 
 [dev-dependencies]
 tempfile = "3"
