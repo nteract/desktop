@@ -1,0 +1,7 @@
+name: nteract-qa-missing-env-beta
+channels:
+  - conda-forge
+dependencies:
+  - python=3.12
+  - ipykernel
+  - numpy

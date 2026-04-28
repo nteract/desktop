@@ -132,10 +132,7 @@ describe("shouldShowKernelLaunchErrorBanner", () => {
     ).toBe(false);
   });
 
-  it("shows for CondaEnvYmlMissing — no dedicated UI exists yet", () => {
-    // Codex review on #2236: excluding this reason suppressed the only
-    // real rendered surface the daemon's `error_details` has.
-    // `environment.yml` unbuilt-env failures now use the generic banner.
+  it("hides for CondaEnvYmlMissing (toolbar and env-build dialog own that UX)", () => {
     expect(
       shouldShowKernelLaunchErrorBanner({
         lifecycle: ERROR,
@@ -144,7 +141,7 @@ describe("shouldShowKernelLaunchErrorBanner", () => {
         errorReason: KERNEL_ERROR_REASON.CONDA_ENV_YML_MISSING,
         runtime: "python",
       }),
-    ).toBe(true);
+    ).toBe(false);
   });
 
   it("hides for Deno runtime (toolbar renders its own install prompt)", () => {

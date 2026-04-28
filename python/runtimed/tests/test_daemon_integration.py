@@ -2667,8 +2667,8 @@ class TestTrustApproval:
     async def test_envyml_missing_env_surfaces_error_state(self, client, tmp_path):
         """#2157: when environment.yml declares a conda env that isn't built
         on this machine, the daemon must set RuntimeStateDoc lifecycle to
-        Error with a typed reason and descriptive details — NOT silently
-        fall back to a pool env, and NOT leave the kernel stuck in
+        AwaitingEnvBuild with a typed reason and descriptive details — NOT
+        silently fall back to a pool env, and NOT leave the kernel stuck in
         `initializing` forever.
         """
         import asyncio
@@ -2705,24 +2705,27 @@ class TestTrustApproval:
         notebook = Notebook(session)
 
         # Poll briefly for the daemon to detect the miss and write the
-        # error lifecycle. Auto-launch runs in a spawned task, so the
+        # awaiting-env-build lifecycle. Auto-launch runs in a spawned task, so the
         # state might lag the open_notebook response.
         deadline = asyncio.get_event_loop().time() + 5.0
         kernel_state = None
         while asyncio.get_event_loop().time() < deadline:
             kernel_state = notebook.runtime.kernel
             lifecycle = kernel_state.lifecycle
-            # RuntimeLifecycle serializes as {"lifecycle": "Error"} or the
+            # RuntimeLifecycle serializes as {"lifecycle": "AwaitingEnvBuild"} or the
             # typed enum depending on binding — match both shapes.
-            if getattr(lifecycle, "lifecycle", None) == "Error" or str(lifecycle) == "Error":
+            if (
+                getattr(lifecycle, "lifecycle", None) == "AwaitingEnvBuild"
+                or str(lifecycle) == "AwaitingEnvBuild"
+            ):
                 break
             await asyncio.sleep(0.1)
 
         assert kernel_state is not None
         lifecycle = kernel_state.lifecycle
         lifecycle_tag = getattr(lifecycle, "lifecycle", None) or str(lifecycle)
-        assert lifecycle_tag == "Error", (
-            f"expected lifecycle=Error after env.yml miss; got {lifecycle_tag!r}"
+        assert lifecycle_tag == "AwaitingEnvBuild", (
+            f"expected lifecycle=AwaitingEnvBuild after env.yml miss; got {lifecycle_tag!r}"
         )
         assert kernel_state.error_reason == KERNEL_ERROR_REASON.CONDA_ENV_YML_MISSING
         details = kernel_state.error_details or ""

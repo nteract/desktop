@@ -840,7 +840,7 @@ impl ExecutionResult {
 #[derive(Clone, Debug)]
 pub struct PyKernelState {
     /// Flat status string: "not_started", "starting", "idle", "busy",
-    /// "error", "shutdown", "awaiting_trust". Projected from
+    /// "error", "shutdown", "awaiting_trust", "awaiting_env_build". Projected from
     /// [`RuntimeLifecycle::to_legacy`] for callers that want a simple
     /// string bucket; use `lifecycle` for the full typed variant.
     pub status: String,
@@ -848,19 +848,22 @@ pub struct PyKernelState {
     /// "connecting". Only non-empty when `status == "starting"`.
     pub starting_phase: String,
     /// Typed lifecycle variant name: "NotStarted", "AwaitingTrust",
-    /// "Resolving", "PreparingEnv", "Launching", "Connecting", "Running",
-    /// "Error", "Shutdown". Paired with `activity` when "Running".
+    /// "AwaitingEnvBuild", "Resolving", "PreparingEnv", "Launching",
+    /// "Connecting", "Running", "Error", "Shutdown". Paired with
+    /// `activity` when "Running".
     pub lifecycle: String,
     /// Activity sub-state when `lifecycle == "Running"`: "Unknown",
     /// "Idle", "Busy". Empty string otherwise.
     pub activity: String,
-    /// Typed error reason when `lifecycle == "Error"`. `None` when the
-    /// CRDT key is absent (pre-migration doc); `Some("")` when the key is
-    /// scaffolded but no reason has been recorded.
+    /// Typed reason for lifecycle states that carry a specific cause
+    /// (`Error`, `AwaitingEnvBuild`). `None` when the CRDT key is absent
+    /// (pre-migration doc); `Some("")` when the key is scaffolded but no
+    /// reason has been recorded.
     pub error_reason: Option<String>,
-    /// Free-form details accompanying an error, shown to the user via
-    /// the frontend banner and surfaced to MCP tools. `None` when the
-    /// CRDT key is absent; `Some("")` when scaffolded but unset.
+    /// Free-form details accompanying an error or user-decision state,
+    /// shown to the user via the frontend banner/dialog and surfaced to MCP
+    /// tools. `None` when the CRDT key is absent; `Some("")` when scaffolded
+    /// but unset.
     pub error_details: Option<String>,
     /// Kernel display name (e.g. "charming-toucan")
     pub name: String,

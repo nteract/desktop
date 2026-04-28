@@ -285,7 +285,7 @@ fn hydrate_kernel_state(state: &mut SessionState) {
     };
     // A kernel is "usable" once it's running or mid-launch. That covers
     // every lifecycle variant except `NotStarted`, `AwaitingTrust`,
-    // `Error`, and `Shutdown`.
+    // `AwaitingEnvBuild`, `Error`, and `Shutdown`.
     let running = matches!(
         rs.kernel.lifecycle,
         RuntimeLifecycle::Running(_)
@@ -353,6 +353,7 @@ async fn ensure_create_runtime_ready(
             }
             RuntimeLifecycle::NotStarted
             | RuntimeLifecycle::AwaitingTrust
+            | RuntimeLifecycle::AwaitingEnvBuild
             | RuntimeLifecycle::Shutdown => {
                 if !forced_launch {
                     start_kernel(state, &runtime, "auto", None).await?;

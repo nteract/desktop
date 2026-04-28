@@ -1,0 +1,8 @@
+name: nteract-qa-missing-env-alpha
+channels:
+  - conda-forge
+dependencies:
+  - python=3.12
+  - ipykernel
+  - pandas
+  - matplotlib

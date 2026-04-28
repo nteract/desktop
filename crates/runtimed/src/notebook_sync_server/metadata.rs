@@ -928,9 +928,9 @@ pub(crate) fn missing_conda_env_yml_name(
         }
     }
     // Declared but not built. Prefer the `name:` for display, fall back
-    // to the `prefix:` path, then to a placeholder if env.yml has
-    // neither (the kernel path's existing error handles the
-    // shape-broken case; we still want a useful banner).
+    // to the `prefix:` path. If env.yml has neither, leave it to the
+    // existing conda:env_yml launch path instead of inventing a fake
+    // named-env decision for an unnamed spec.
     let config = crate::project_file::parse_environment_yml(&detected.path).ok();
     if let Some(ref c) = config {
         if let Some(ref name) = c.name {
@@ -940,7 +940,7 @@ pub(crate) fn missing_conda_env_yml_name(
             return Some(prefix.display().to_string());
         }
     }
-    Some(String::from("(unnamed)"))
+    None
 }
 
 /// Check whether a notebook's inline dependency list exactly matches a
@@ -2572,14 +2572,14 @@ pub(crate) async fn auto_launch_kernel(
         }
     }
 
-    // #2157: If the detected project file is an environment.yml whose
-    // declared conda env isn't built on this machine, surface a typed
-    // error instead of spawning a runtime agent that would die with
+    // #2157/#2170: If the detected project file is an environment.yml whose
+    // declared conda env isn't built on this machine, surface an explicit
+    // awaiting-user-decision lifecycle instead of spawning a runtime agent that would die with
     // "could not resolve conda environment prefix". Silent fallback to
     // a pool env was rejected as user-hostile: env.yml users expect
     // their declared deps to be installed, and a pool env lacks them.
-    // Writing Error + details gives the frontend enough to render a
-    // specific banner and MCP tools enough to report the miss.
+    // Writing AwaitingEnvBuild + details gives the frontend enough to
+    // render a cohesive decision dialog and MCP tools enough to report the miss.
     if let Some(ref detected) = detected_project_file {
         if let Some(env_name) = missing_conda_env_yml_name(detected) {
             let yml_path = detected.path.display().to_string();
@@ -2590,7 +2590,7 @@ pub(crate) async fn auto_launch_kernel(
             warn!("[notebook-sync] {}", details);
             if let Err(e) = room.state.with_doc(|sd| {
                 sd.set_lifecycle_with_error_details(
-                    &RuntimeLifecycle::Error,
+                    &RuntimeLifecycle::AwaitingEnvBuild,
                     Some(runtime_doc::KernelErrorReason::CondaEnvYmlMissing),
                     Some(&details),
                 )
@@ -3039,6 +3039,203 @@ pub(crate) async fn auto_launch_kernel(
             }
         } else {
             (pooled_env, None)
+        }
+    } else if matches!(env_source, EnvSource::EnvYml) {
+        let yml_path = detected_project_file
+            .as_ref()
+            .filter(|d| d.kind == crate::project_file::ProjectFileKind::EnvironmentYml)
+            .map(|d| d.path.clone())
+            .or_else(|| {
+                notebook_path_opt.as_ref().and_then(|p| {
+                    crate::project_file::find_nearest_project_file(
+                        p,
+                        &[crate::project_file::ProjectFileKind::EnvironmentYml],
+                    )
+                    .map(|d| d.path)
+                })
+            });
+
+        let Some(yml_path) = yml_path else {
+            warn!("[notebook-sync] conda:env_yml but no environment.yml found");
+            reset_starting_state(room, None).await;
+            return;
+        };
+
+        let detected_yml = crate::project_file::DetectedProjectFile {
+            path: yml_path.clone(),
+            kind: crate::project_file::ProjectFileKind::EnvironmentYml,
+        };
+        if let Some(env_name) = missing_conda_env_yml_name(&detected_yml) {
+            let details = format!(
+                "environment.yml declares conda env '{}', which is not built on this machine. Run: conda env create -f {}",
+                env_name,
+                yml_path.display()
+            );
+            warn!("[notebook-sync] {}", details);
+            if let Err(e) = room.state.with_doc(|sd| {
+                sd.set_lifecycle_with_error_details(
+                    &RuntimeLifecycle::AwaitingEnvBuild,
+                    Some(KernelErrorReason::CondaEnvYmlMissing),
+                    Some(&details),
+                )
+            }) {
+                warn!("[runtime-state] {}", e);
+            }
+            return;
+        }
+
+        let env_config = match crate::project_file::parse_environment_yml(&yml_path) {
+            Ok(config) => config,
+            Err(e) => {
+                error!("[notebook-sync] Failed to parse environment.yml: {}", e);
+                reset_starting_state(room, None).await;
+                return;
+            }
+        };
+
+        let conda_prefix = if let Some(ref prefix) = env_config.prefix {
+            prefix.clone()
+        } else if let Some(ref name) = env_config.name {
+            crate::project_file::find_named_conda_env(name)
+                .unwrap_or_else(|| crate::project_file::default_conda_envs_dir().join(name))
+        } else {
+            let cache_dir = crate::paths::default_cache_dir().join("conda-envs");
+            let conda_deps_tmp = kernel_env::CondaDependencies {
+                dependencies: env_config.dependencies.clone(),
+                channels: env_config.channels.clone(),
+                python: env_config.python.clone(),
+                env_id: None,
+            };
+            cache_dir.join(kernel_env::conda::compute_env_hash(&conda_deps_tmp))
+        };
+
+        let mut all_deps = env_config.dependencies.clone();
+        if let Some(crdt_deps) = metadata_snapshot.as_ref().and_then(get_inline_conda_deps) {
+            let base_names: std::collections::HashSet<String> = all_deps
+                .iter()
+                .map(|d| notebook_doc::metadata::extract_package_name(d).to_lowercase())
+                .collect();
+            for dep in &crdt_deps {
+                let name = notebook_doc::metadata::extract_package_name(dep).to_lowercase();
+                if !base_names.contains(&name) {
+                    all_deps.push(dep.clone());
+                }
+            }
+        }
+
+        let base_names: std::collections::HashSet<String> = all_deps
+            .iter()
+            .map(|d| notebook_doc::metadata::extract_package_name(d).to_lowercase())
+            .collect();
+        if !base_names.contains("ipykernel") {
+            all_deps.push("ipykernel".to_string());
+        }
+
+        let channels = if env_config.channels.is_empty() {
+            vec!["conda-forge".to_string()]
+        } else {
+            env_config.channels.clone()
+        };
+
+        let env_name_display = env_config.name.as_deref().unwrap_or("<unnamed>");
+        info!(
+            "[notebook-sync] conda:env_yml: env '{}' at {:?} with {} deps",
+            env_name_display,
+            conda_prefix,
+            all_deps.len()
+        );
+
+        let conda_deps = kernel_env::CondaDependencies {
+            dependencies: all_deps,
+            channels,
+            python: env_config.python.clone(),
+            env_id: None,
+        };
+
+        let python_path = crate::project_file::conda_python_path(&conda_prefix);
+        if python_path.exists() {
+            let conda_env = kernel_env::CondaEnvironment {
+                env_path: conda_prefix.clone(),
+                python_path: python_path.clone(),
+            };
+            progress_handler.on_progress(
+                "conda",
+                kernel_env::EnvProgressPhase::Installing {
+                    total: conda_deps.dependencies.len(),
+                },
+            );
+            if let Err(e) = kernel_env::conda::sync_dependencies(&conda_env, &conda_deps).await {
+                warn!(
+                    "[notebook-sync] conda:env_yml sync into existing env failed: {}, continuing with existing env",
+                    e
+                );
+            }
+            let env = Some(crate::PooledEnv {
+                env_type: crate::EnvType::Conda,
+                venv_path: conda_prefix,
+                python_path,
+                prewarmed_packages: vec![],
+            });
+            (
+                env,
+                metadata_snapshot.as_ref().and_then(get_inline_conda_deps),
+            )
+        } else {
+            let parent = conda_prefix
+                .parent()
+                .unwrap_or_else(|| std::path::Path::new("/tmp"));
+            if let Err(e) = tokio::fs::create_dir_all(parent).await {
+                error!(
+                    "[notebook-sync] Failed to create conda envs directory {:?}: {}",
+                    parent, e
+                );
+                reset_starting_state(room, None).await;
+                return;
+            }
+
+            match kernel_env::conda::prepare_environment_in(
+                &conda_deps,
+                parent,
+                progress_handler.clone(),
+            )
+            .await
+            {
+                Ok(prepared) => {
+                    let final_prefix = if prepared.env_path != conda_prefix {
+                        match tokio::fs::rename(&prepared.env_path, &conda_prefix).await {
+                            Ok(()) => conda_prefix.clone(),
+                            Err(e) => {
+                                warn!(
+                                    "[notebook-sync] Failed to rename {:?} -> {:?}: {}, using hash path",
+                                    prepared.env_path, conda_prefix, e
+                                );
+                                prepared.env_path
+                            }
+                        }
+                    } else {
+                        prepared.env_path
+                    };
+                    let python = crate::project_file::conda_python_path(&final_prefix);
+                    let env = Some(crate::PooledEnv {
+                        env_type: crate::EnvType::Conda,
+                        venv_path: final_prefix,
+                        python_path: python,
+                        prewarmed_packages: vec![],
+                    });
+                    (
+                        env,
+                        metadata_snapshot.as_ref().and_then(get_inline_conda_deps),
+                    )
+                }
+                Err(e) => {
+                    error!(
+                        "[notebook-sync] Failed to create conda env '{}' from environment.yml: {}",
+                        env_name_display, e
+                    );
+                    reset_starting_state(room, None).await;
+                    return;
+                }
+            }
         }
     } else if matches!(env_source, EnvSource::Inline(PackageManager::Pixi)) {
         // pixi exec handles its own env caching — just extract deps for the -w flags

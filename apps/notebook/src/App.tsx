@@ -23,6 +23,7 @@ import { type DaemonStatus, DaemonStatusBanner } from "./components/DaemonStatus
 import { DebugBanner } from "./components/DebugBanner";
 import { DenoDependencyHeader } from "./components/DenoDependencyHeader";
 import { DependencyHeader } from "./components/DependencyHeader";
+import { EnvBuildDecisionDialog } from "./components/EnvBuildDecisionDialog";
 import { GlobalFindBar } from "./components/GlobalFindBar";
 import { NotebookToolbar } from "./components/NotebookToolbar";
 import { NotebookView } from "./components/NotebookView";
@@ -220,6 +221,8 @@ function AppContent() {
   const [dependencyHeaderOpen, setDependencyHeaderOpen] = useState(false);
   const [showIsolationTest, setShowIsolationTest] = useState(false);
   const [trustDialogOpen, setTrustDialogOpen] = useState(false);
+  const [envBuildDialogOpen, setEnvBuildDialogOpen] = useState(false);
+  const [dismissedEnvBuildDetails, setDismissedEnvBuildDetails] = useState<string | null>(null);
   const [pendingTrustAction, setPendingTrustAction] = useState<PendingTrustAction | null>(null);
   const pendingTrustActionRef = useRef<PendingTrustAction | null>(null);
   const [trustActionNotice, setTrustActionNotice] = useState<string | null>(null);
@@ -399,6 +402,17 @@ function AppContent() {
     return () => clearTimeout(timeout);
   }, [kernelStatus, trustApprovalHandoffPending]);
 
+  useEffect(() => {
+    if (lifecycle.lifecycle !== "AwaitingEnvBuild") {
+      setEnvBuildDialogOpen(false);
+      setDismissedEnvBuildDetails(null);
+      return;
+    }
+    if (errorDetails !== dismissedEnvBuildDetails) {
+      setEnvBuildDialogOpen(true);
+    }
+  }, [dismissedEnvBuildDetails, errorDetails, lifecycle.lifecycle]);
+
   const { kernelStatus: displayKernelStatus, statusKey: displayStatusKey } =
     getTrustApprovalHandoffDisplayStatus({
       pending: trustApprovalHandoffPending,
@@ -520,7 +534,8 @@ function AppContent() {
   useEffect(() => {
     if (
       kernelStatus === KERNEL_STATUS.NOT_STARTED ||
-      kernelStatus === KERNEL_STATUS.AWAITING_TRUST
+      kernelStatus === KERNEL_STATUS.AWAITING_TRUST ||
+      kernelStatus === KERNEL_STATUS.AWAITING_ENV_BUILD
     ) {
       updateManager.reset();
     }
@@ -740,6 +755,7 @@ function AppContent() {
           setTrustActionNotice(response.reason);
           return false;
         }
+        envProgress.reset();
         return true;
       }
       // Untrusted - show dialog and mark pending start
@@ -748,7 +764,14 @@ function AppContent() {
       setTrustDialogOpen(true);
       return false;
     },
-    [sessionReady, checkTrust, launchKernel, setBlockedTrustAction, setTrustActionNotice],
+    [
+      sessionReady,
+      checkTrust,
+      launchKernel,
+      envProgress,
+      setBlockedTrustAction,
+      setTrustActionNotice,
+    ],
   );
 
   const performTrustedSyncDeps = useCallback(
@@ -1027,6 +1050,24 @@ function AppContent() {
     [setBlockedTrustAction],
   );
 
+  const handleEnvBuildDialogOpenChange = useCallback(
+    (open: boolean) => {
+      setEnvBuildDialogOpen(open);
+      if (!open) {
+        setDismissedEnvBuildDetails(errorDetails);
+      }
+    },
+    [errorDetails],
+  );
+
+  const handleEnvBuildRetry = useCallback(async () => {
+    setDismissedEnvBuildDetails(null);
+    const started = await tryStartKernel();
+    if (!started) {
+      setEnvBuildDialogOpen(true);
+    }
+  }, [tryStartKernel]);
+
   // Start kernel explicitly with pyproject.toml (user action from DependencyHeader)
   const handleStartKernelWithPyproject = useCallback(async () => {
     if (!sessionReady) {
@@ -1163,8 +1204,14 @@ function AppContent() {
       // Start kernel via daemon if not running or awaiting trust
       if (
         kernelStatus === KERNEL_STATUS.NOT_STARTED ||
-        kernelStatus === KERNEL_STATUS.AWAITING_TRUST
+        kernelStatus === KERNEL_STATUS.AWAITING_TRUST ||
+        kernelStatus === KERNEL_STATUS.AWAITING_ENV_BUILD
       ) {
+        if (kernelStatus === KERNEL_STATUS.AWAITING_ENV_BUILD) {
+          setDismissedEnvBuildDetails(null);
+          setEnvBuildDialogOpen(true);
+          return;
+        }
         const started = await tryStartKernel(captureRunAllTrustAction());
         if (!started) {
           logger.debug("[App] handleRunAllCells: kernel not started, skipping");
@@ -1710,6 +1757,12 @@ function AppContent() {
           approveOnlyLabel={trustApproveOnlyLabel}
           description={trustDialogDescription}
           approvalError={approvalError}
+        />
+        <EnvBuildDecisionDialog
+          open={envBuildDialogOpen}
+          onOpenChange={handleEnvBuildDialogOpenChange}
+          errorDetails={errorDetails}
+          onRetry={handleEnvBuildRetry}
         />
         <CrdtBridgeProvider
           getHandle={getHandle}

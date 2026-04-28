@@ -18,11 +18,8 @@ import { Button } from "@/components/ui/button";
  * - Skip `runtime === "deno"`: toolbar renders the Deno
  *   "auto-install failed" prompt that already consumes it.
  *
- * Everything else — including `CondaEnvYmlMissing`, stderr tails from
- * generic subprocess crashes, env-build rate limits — falls through
- * to this banner. `CondaEnvYmlMissing`'s `error_details` carries the
- * conda env name + remediation command; surfacing that string in the
- * banner is a strict upgrade on the previous tooltip-only surface.
+ * Everything else — stderr tails from generic subprocess crashes,
+ * env-build rate limits — falls through to this banner.
  */
 export function shouldShowKernelLaunchErrorBanner(params: {
   lifecycle: RuntimeLifecycle;
@@ -33,6 +30,7 @@ export function shouldShowKernelLaunchErrorBanner(params: {
   if (params.lifecycle.lifecycle !== "Error") return false;
   if (!params.errorDetails || params.errorDetails.length === 0) return false;
   if (params.errorReason === KERNEL_ERROR_REASON.MISSING_IPYKERNEL) return false;
+  if (params.errorReason === KERNEL_ERROR_REASON.CONDA_ENV_YML_MISSING) return false;
   if (params.runtime === "deno") return false;
   return true;
 }

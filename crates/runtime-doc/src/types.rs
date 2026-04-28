@@ -252,6 +252,7 @@ pub enum RuntimeLifecycle {
     #[default]
     NotStarted,
     AwaitingTrust,
+    AwaitingEnvBuild,
     Resolving,
     PreparingEnv,
     Launching,
@@ -271,6 +272,7 @@ impl RuntimeLifecycle {
         match self {
             Self::NotStarted => "NotStarted",
             Self::AwaitingTrust => "AwaitingTrust",
+            Self::AwaitingEnvBuild => "AwaitingEnvBuild",
             Self::Resolving => "Resolving",
             Self::PreparingEnv => "PreparingEnv",
             Self::Launching => "Launching",
@@ -290,6 +292,7 @@ impl RuntimeLifecycle {
         match lifecycle {
             "NotStarted" => Some(Self::NotStarted),
             "AwaitingTrust" => Some(Self::AwaitingTrust),
+            "AwaitingEnvBuild" => Some(Self::AwaitingEnvBuild),
             "Resolving" => Some(Self::Resolving),
             "PreparingEnv" => Some(Self::PreparingEnv),
             "Launching" => Some(Self::Launching),
@@ -329,6 +332,7 @@ impl RuntimeLifecycle {
             "error" => Self::Error,
             "shutdown" => Self::Shutdown,
             "awaiting_trust" => Self::AwaitingTrust,
+            "awaiting_env_build" => Self::AwaitingEnvBuild,
             _ => Self::NotStarted,
         }
     }
@@ -345,6 +349,7 @@ impl RuntimeLifecycle {
         match self {
             Self::NotStarted => ("not_started", ""),
             Self::AwaitingTrust => ("awaiting_trust", ""),
+            Self::AwaitingEnvBuild => ("awaiting_env_build", ""),
             Self::Resolving => ("starting", "resolving"),
             Self::PreparingEnv => ("starting", "preparing_env"),
             Self::Launching => ("starting", "launching"),
@@ -438,6 +443,10 @@ mod tests {
             KernelErrorReason::MissingIpykernel.as_str(),
             "missing_ipykernel"
         );
+        assert_eq!(
+            KernelErrorReason::CondaEnvYmlMissing.as_str(),
+            "conda_env_yml_missing"
+        );
     }
 
     #[test]
@@ -445,6 +454,10 @@ mod tests {
         assert_eq!(
             KernelErrorReason::parse("missing_ipykernel"),
             Some(KernelErrorReason::MissingIpykernel)
+        );
+        assert_eq!(
+            KernelErrorReason::parse("conda_env_yml_missing"),
+            Some(KernelErrorReason::CondaEnvYmlMissing)
         );
         assert_eq!(KernelErrorReason::parse(""), None);
         assert_eq!(KernelErrorReason::parse("bogus"), None);
@@ -455,7 +468,10 @@ mod tests {
 
     #[test]
     fn error_reason_as_str_round_trips_through_parse() {
-        let reasons = [KernelErrorReason::MissingIpykernel];
+        let reasons = [
+            KernelErrorReason::MissingIpykernel,
+            KernelErrorReason::CondaEnvYmlMissing,
+        ];
         for r in reasons {
             assert_eq!(KernelErrorReason::parse(r.as_str()), Some(r));
         }
@@ -477,6 +493,7 @@ mod tests {
         use RuntimeLifecycle::*;
         assert_eq!(NotStarted.variant_str(), "NotStarted");
         assert_eq!(AwaitingTrust.variant_str(), "AwaitingTrust");
+        assert_eq!(AwaitingEnvBuild.variant_str(), "AwaitingEnvBuild");
         assert_eq!(Resolving.variant_str(), "Resolving");
         assert_eq!(PreparingEnv.variant_str(), "PreparingEnv");
         assert_eq!(Launching.variant_str(), "Launching");
@@ -493,6 +510,10 @@ mod tests {
         assert_eq!(
             RuntimeLifecycle::parse("AwaitingTrust", ""),
             Some(AwaitingTrust)
+        );
+        assert_eq!(
+            RuntimeLifecycle::parse("AwaitingEnvBuild", ""),
+            Some(AwaitingEnvBuild)
         );
         assert_eq!(RuntimeLifecycle::parse("Resolving", ""), Some(Resolving));
         assert_eq!(
@@ -554,6 +575,7 @@ mod tests {
         use RuntimeLifecycle::*;
         assert_eq!(NotStarted.to_legacy(), ("not_started", ""));
         assert_eq!(AwaitingTrust.to_legacy(), ("awaiting_trust", ""));
+        assert_eq!(AwaitingEnvBuild.to_legacy(), ("awaiting_env_build", ""));
         assert_eq!(Resolving.to_legacy(), ("starting", "resolving"));
         assert_eq!(PreparingEnv.to_legacy(), ("starting", "preparing_env"));
         assert_eq!(Launching.to_legacy(), ("starting", "launching"));

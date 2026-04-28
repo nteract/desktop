@@ -1,5 +1,6 @@
 import {
   ArrowDownToLine,
+  Copy,
   ChevronsRight,
   Code,
   Info,
@@ -23,6 +24,7 @@ import {
 } from "../lib/kernel-status";
 import type { KernelspecInfo } from "../types";
 import { CondaIcon, DenoIcon, PixiIcon, PythonIcon, UvIcon } from "./icons";
+import { extractCondaEnvCreateCommand } from "./EnvBuildDecisionDialog";
 
 /** Badge color variant for environment sources */
 type EnvBadgeVariant = "uv" | "conda" | "pixi";
@@ -82,12 +84,17 @@ export function NotebookToolbar({
   onRestartToUpdate,
 }: NotebookToolbarProps) {
   const [kernelspecs, setKernelspecs] = useState<KernelspecInfo[]>([]);
+  const [condaCommandCopied, setCondaCommandCopied] = useState(false);
 
   useEffect(() => {
     if (listKernelspecs) {
       listKernelspecs().then(setKernelspecs);
     }
   }, [listKernelspecs]);
+
+  useEffect(() => {
+    setCondaCommandCopied(false);
+  }, [kernelErrorMessage]);
 
   const handleStartKernel = useCallback(() => {
     // In daemon mode (no listKernelspecs), just call with empty name - backend auto-selects
@@ -127,6 +134,17 @@ export function NotebookToolbar({
     : kernelStatus === KERNEL_STATUS.ERROR && kernelErrorMessage
       ? `Error \u2014 ${kernelErrorMessage}`
       : kernelStatusText;
+  const condaEnvCreateCommand = extractCondaEnvCreateCommand(kernelErrorMessage ?? null);
+  const showCondaEnvYmlMissingBanner =
+    runtime === "python" &&
+    lifecycle.lifecycle === "Error" &&
+    errorReason === KERNEL_ERROR_REASON.CONDA_ENV_YML_MISSING &&
+    !!kernelErrorMessage;
+  const copyCondaEnvCommand = useCallback(async () => {
+    if (!condaEnvCreateCommand) return;
+    await navigator.clipboard.writeText(condaEnvCreateCommand);
+    setCondaCommandCopied(true);
+  }, [condaEnvCreateCommand]);
 
   // Derive env manager label for the runtime pill (e.g. "uv", "conda", "pixi")
   const envManager: EnvBadgeVariant | null =
@@ -397,6 +415,14 @@ export function NotebookToolbar({
         errorReason === KERNEL_ERROR_REASON.MISSING_IPYKERNEL &&
         envSource &&
         renderMissingIpykernelPrompt(envSource)}
+      {showCondaEnvYmlMissingBanner && (
+        <CondaEnvYmlMissingBanner
+          details={kernelErrorMessage}
+          command={condaEnvCreateCommand}
+          copied={condaCommandCopied}
+          onCopyCommand={copyCondaEnvCommand}
+        />
+      )}
     </header>
   );
 }
@@ -445,6 +471,42 @@ function renderMissingIpykernelPrompt(envSource: string): ReactElement | null {
     );
   }
   return null;
+}
+
+function CondaEnvYmlMissingBanner({
+  details,
+  command,
+  copied,
+  onCopyCommand,
+}: {
+  details: string;
+  command: string | null;
+  copied: boolean;
+  onCopyCommand: () => void;
+}): ReactElement {
+  return (
+    <div className="border-t px-3 py-2" data-testid="conda-env-yml-missing-banner">
+      <div className="flex items-start justify-between gap-3 text-xs text-amber-800 dark:text-amber-300">
+        <div className="flex min-w-0 items-start gap-2">
+          <Info className="h-3.5 w-3.5 mt-0.5 shrink-0" />
+          <span className="min-w-0">
+            <span className="font-medium">Conda environment not built.</span> <span>{details}</span>
+          </span>
+        </div>
+        {command && (
+          <button
+            type="button"
+            onClick={onCopyCommand}
+            className="flex shrink-0 items-center gap-1 rounded px-2 py-1 text-xs font-medium text-amber-900 transition-colors hover:bg-amber-500/20 dark:text-amber-200"
+            data-testid="copy-conda-env-command"
+          >
+            <Copy className="h-3 w-3" />
+            {copied ? "Copied" : "Copy command"}
+          </button>
+        )}
+      </div>
+    </div>
+  );
 }
 
 function MissingIpykernelBanner({

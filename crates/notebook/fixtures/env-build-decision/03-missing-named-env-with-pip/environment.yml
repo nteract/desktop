@@ -1,0 +1,9 @@
+name: nteract-qa-missing-env-pip
+channels:
+  - conda-forge
+dependencies:
+  - python=3.12
+  - ipykernel
+  - pip
+  - pip:
+      - rich==13.9.4
