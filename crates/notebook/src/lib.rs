@@ -1028,15 +1028,14 @@ async fn begin_upgrade(
 
 /// Get the status of all open notebooks for the upgrade screen.
 ///
-/// Returns a list of notebooks with their kernel status and display name.
+/// Returns a list of notebooks with their display name.
 #[tauri::command]
 async fn get_upgrade_notebook_status(
     app: tauri::AppHandle,
     registry: tauri::State<'_, WindowNotebookRegistry>,
 ) -> Result<Vec<UpgradeNotebookStatus>, String> {
     registry.prune_stale_entries(&app);
-    // Extract data from registry without holding lock across await
-    let notebook_data: Vec<(String, String, String, SharedNotebookSync)> = {
+    let notebook_data: Vec<(String, String, String)> = {
         let contexts = registry.contexts.lock().map_err(|e| e.to_string())?;
         contexts
             .iter()
@@ -1049,36 +1048,18 @@ async fn get_upgrade_notebook_status(
                     .and_then(|p| p.file_name())
                     .map(|n| n.to_string_lossy().to_string())
                     .unwrap_or_else(|| "Untitled".to_string());
-                Some((
-                    label.clone(),
-                    notebook_id,
-                    display_name,
-                    context.notebook_sync.clone(),
-                ))
+                Some((label.clone(), notebook_id, display_name))
             })
             .collect()
     };
 
-    // Now do async operations without holding the std::sync::Mutex
-    let mut statuses = Vec::new();
-    for (window_label, notebook_id, display_name, notebook_sync) in notebook_data {
-        let kernel_status = {
-            let guard = notebook_sync.lock().await;
-            if let Some(handle) = guard.as_ref() {
-                match handle.send_request(NotebookRequest::GetKernelInfo {}).await {
-                    Ok(NotebookResponse::KernelInfo { status, .. }) => Some(status),
-                    _ => None,
-                }
-            } else {
-                None
-            }
-        };
-
+    let mut statuses = Vec::with_capacity(notebook_data.len());
+    for (window_label, notebook_id, display_name) in notebook_data {
         statuses.push(UpgradeNotebookStatus {
             window_label,
             notebook_id,
             display_name,
-            kernel_status,
+            kernel_status: None,
         });
     }
 

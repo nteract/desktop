@@ -1,4 +1,8 @@
-//! `NotebookRequest::GetKernelInfo` handler.
+//! Compatibility handler for `NotebookRequest::GetKernelInfo`.
+//!
+//! Current clients should read `RuntimeStateDoc` directly. This remains on the
+//! wire so an older app UI can still talk to the newer daemon it launches
+//! during upgrade.
 
 use runtime_doc::RuntimeLifecycle;
 
@@ -6,7 +10,6 @@ use crate::notebook_sync_server::NotebookRoom;
 use crate::protocol::NotebookResponse;
 
 pub(crate) async fn handle(room: &NotebookRoom) -> NotebookResponse {
-    // Read from RuntimeStateDoc (source of truth for runtime agent).
     let state = room.state.read(|sd| sd.read_state());
     match state {
         Ok(state) if !matches!(state.kernel.lifecycle, RuntimeLifecycle::NotStarted) => {

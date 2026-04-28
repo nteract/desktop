@@ -352,9 +352,15 @@ pub enum NotebookRequest {
     ShutdownKernel {},
 
     /// Get info about the current kernel (if any).
+    ///
+    /// Compatibility request for older app upgrade UIs and SDK clients.
+    /// Current clients should read `RuntimeStateDoc` instead.
     GetKernelInfo {},
 
     /// Get the execution queue state.
+    ///
+    /// Compatibility request for older SDK clients. Current clients should
+    /// read `RuntimeStateDoc` instead.
     GetQueueState {},
 
     /// Run all code cells from the synced document.
@@ -498,6 +504,9 @@ pub enum NotebookResponse {
     GuardRejected { reason: String },
 
     /// Kernel info response.
+    ///
+    /// Compatibility response for `GetKernelInfo`; current clients derive this
+    /// from `RuntimeStateDoc`.
     KernelInfo {
         kernel_type: Option<String>,
         env_source: Option<String>,
@@ -505,6 +514,9 @@ pub enum NotebookResponse {
     },
 
     /// Queue state response.
+    ///
+    /// Compatibility response for `GetQueueState`; current clients derive this
+    /// from `RuntimeStateDoc`.
     QueueState {
         executing: Option<QueueEntry>,
         queued: Vec<QueueEntry>,

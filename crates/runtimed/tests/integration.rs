@@ -981,7 +981,11 @@ async fn test_parallel_daemon_requests_same_session_no_disconnect() {
             if index % 2 == 0 {
                 handle.send_request(NotebookRequest::GetDocBytes {}).await
             } else {
-                handle.send_request(NotebookRequest::GetKernelInfo {}).await
+                handle
+                    .send_request(NotebookRequest::CheckToolAvailable {
+                        tool: "deno".to_string(),
+                    })
+                    .await
             }
         }));
     }
@@ -992,7 +996,7 @@ async fn test_parallel_daemon_requests_same_session_no_disconnect() {
             if index % 2 == 0 {
                 assert!(matches!(response, NotebookResponse::DocBytes { .. }));
             } else {
-                assert!(matches!(response, NotebookResponse::KernelInfo { .. }));
+                assert!(matches!(response, NotebookResponse::ToolAvailable { .. }));
             }
         }
     })

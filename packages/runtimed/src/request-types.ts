@@ -91,17 +91,6 @@ export type NotebookResponse =
   | { result: "no_kernel" }
   | { result: "guard_rejected"; reason: string }
   | {
-      result: "kernel_info";
-      kernel_type?: string;
-      env_source?: string;
-      status: string;
-    }
-  | {
-      result: "queue_state";
-      executing?: { cell_id: string; execution_id: string } | null;
-      queued: { cell_id: string; execution_id: string }[];
-    }
-  | {
       result: "all_cells_queued";
       queued: { cell_id: string; execution_id: string }[];
     }

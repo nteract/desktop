@@ -1541,11 +1541,7 @@ mod tests {
                 NotebookFrameType::Response,
                 &NotebookResponseEnvelope {
                     id: Some(ids[0].clone()),
-                    response: NotebookResponse::KernelInfo {
-                        kernel_type: Some("python".into()),
-                        env_source: Some("uv:inline".into()),
-                        status: "idle".into(),
-                    },
+                    response: NotebookResponse::ToolAvailable { available: true },
                 },
             )
             .await
@@ -1553,9 +1549,15 @@ mod tests {
         });
 
         let (progress_tx, mut progress_rx) = broadcast::channel(8);
-        let first =
-            handle.send_request_with_broadcast(NotebookRequest::GetKernelInfo {}, progress_tx);
-        let second = handle.send_request(NotebookRequest::GetKernelInfo {});
+        let first = handle.send_request_with_broadcast(
+            NotebookRequest::CheckToolAvailable {
+                tool: "deno".to_string(),
+            },
+            progress_tx,
+        );
+        let second = handle.send_request(NotebookRequest::CheckToolAvailable {
+            tool: "python".to_string(),
+        });
 
         let (first_response, second_response) = tokio::join!(first, second);
         let first_response = first_response.expect("first response");
@@ -1567,7 +1569,7 @@ mod tests {
 
         assert!(matches!(
             first_response,
-            NotebookResponse::KernelInfo { .. }
+            NotebookResponse::ToolAvailable { .. }
         ));
         assert!(matches!(second_response, NotebookResponse::NoKernel {}));
         assert!(matches!(progress, NotebookBroadcast::Comm { .. }));

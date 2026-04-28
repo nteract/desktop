@@ -167,43 +167,5 @@ export type DaemonBroadcast =
       env_type: "conda" | "uv";
     } & EnvProgressPhase);
 
-/** Response types from daemon notebook requests */
-export type DaemonNotebookResponse =
-  | { result: "kernel_launched"; kernel_type: string; env_source: string }
-  | {
-      result: "kernel_already_running";
-      kernel_type: string;
-      env_source: string;
-    }
-  | { result: "cell_queued"; cell_id: string; execution_id: string }
-  | { result: "outputs_cleared"; cell_id: string }
-  | { result: "interrupt_sent" }
-  | { result: "kernel_shutting_down" }
-  | { result: "no_kernel" }
-  | { result: "guard_rejected"; reason: string }
-  | {
-      result: "kernel_info";
-      kernel_type?: string;
-      env_source?: string;
-      status: string;
-    }
-  | {
-      result: "queue_state";
-      executing?: { cell_id: string; execution_id: string } | null;
-      queued: { cell_id: string; execution_id: string }[];
-    }
-  | {
-      result: "all_cells_queued";
-      queued: { cell_id: string; execution_id: string }[];
-    }
-  | { result: "ok" }
-  | { result: "error"; error: string }
-  | { result: "sync_environment_complete"; synced_packages: string[] }
-  | {
-      result: "sync_environment_failed";
-      error: string;
-      needs_restart: boolean;
-    };
-
 // Pool state types removed — pool state now syncs via PoolDoc (Automerge).
 // See apps/notebook/src/lib/pool-state.ts for the new types.
