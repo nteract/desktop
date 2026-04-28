@@ -989,7 +989,7 @@ impl Daemon {
         // Retained as a one-release compatibility shim for stale
         // `runt-mcp` / `nteract-mcp` proxies that predate `GetDaemonInfo`.
         // New consumers go through the socket (see
-        // `runtimed_client::daemon_connection`). Target v2.4 for removal.
+        // `runtimed_client::daemon_connection`). Target v3.0 for removal.
         if let Err(e) = self
             ._lock
             .write_info(&self.config.socket_path.to_string_lossy(), blob_port)

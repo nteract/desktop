@@ -573,13 +573,9 @@ impl NotebookRoom {
         if is_alive {
             let info = self.state.read(|sd| {
                 let state = sd.read_state();
-                // The wire-level NotebookKernelInfo.status field is still a
+                // The daemon-info NotebookKernelInfo.status field is still a
                 // legacy string; derive it from the typed lifecycle via
-                // to_legacy so the wire contract is unchanged. This crate
-                // has migrated to the typed lifecycle internally; callers
-                // of kernel_info (currently NotebookKernelInfo on the
-                // wire) remain on strings until a later phase retires
-                // the wire field.
+                // to_legacy so the daemon-info contract is unchanged.
                 if !matches!(
                     state.kernel.lifecycle,
                     runtime_doc::RuntimeLifecycle::NotStarted

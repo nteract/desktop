@@ -1541,10 +1541,8 @@ mod tests {
                 NotebookFrameType::Response,
                 &NotebookResponseEnvelope {
                     id: Some(ids[0].clone()),
-                    response: NotebookResponse::KernelInfo {
-                        kernel_type: Some("python".into()),
-                        env_source: Some("uv:inline".into()),
-                        status: "idle".into(),
+                    response: NotebookResponse::DocBytes {
+                        bytes: vec![1, 2, 3],
                     },
                 },
             )
@@ -1554,8 +1552,8 @@ mod tests {
 
         let (progress_tx, mut progress_rx) = broadcast::channel(8);
         let first =
-            handle.send_request_with_broadcast(NotebookRequest::GetKernelInfo {}, progress_tx);
-        let second = handle.send_request(NotebookRequest::GetKernelInfo {});
+            handle.send_request_with_broadcast(NotebookRequest::GetDocBytes {}, progress_tx);
+        let second = handle.send_request(NotebookRequest::GetDocBytes {});
 
         let (first_response, second_response) = tokio::join!(first, second);
         let first_response = first_response.expect("first response");
@@ -1565,10 +1563,7 @@ mod tests {
             .await
             .expect("request progress broadcast");
 
-        assert!(matches!(
-            first_response,
-            NotebookResponse::KernelInfo { .. }
-        ));
+        assert!(matches!(first_response, NotebookResponse::DocBytes { .. }));
         assert!(matches!(second_response, NotebookResponse::NoKernel {}));
         assert!(matches!(progress, NotebookBroadcast::Comm { .. }));
 

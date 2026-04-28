@@ -351,12 +351,6 @@ pub enum NotebookRequest {
     /// Shutdown the kernel for this room.
     ShutdownKernel {},
 
-    /// Get info about the current kernel (if any).
-    GetKernelInfo {},
-
-    /// Get the execution queue state.
-    GetQueueState {},
-
     /// Run all code cells from the synced document.
     /// Daemon reads cell sources from the Automerge doc and queues them.
     RunAllCells {},
@@ -449,10 +443,6 @@ pub enum NotebookRequest {
     /// Get the full Automerge document bytes from the daemon's canonical doc.
     /// Used by the frontend to bootstrap its WASM Automerge peer.
     GetDocBytes {},
-
-    /// Check if a runtime tool is available (e.g., "deno").
-    /// The daemon checks without triggering bootstrap — safe for UI hints.
-    CheckToolAvailable { tool: String },
 }
 
 /// Responses from daemon to notebook app.
@@ -496,19 +486,6 @@ pub enum NotebookResponse {
     /// A guarded action was not queued because current notebook state no
     /// longer matches the state the user approved.
     GuardRejected { reason: String },
-
-    /// Kernel info response.
-    KernelInfo {
-        kernel_type: Option<String>,
-        env_source: Option<String>,
-        status: String, // "idle", "busy", "not_started"
-    },
-
-    /// Queue state response.
-    QueueState {
-        executing: Option<QueueEntry>,
-        queued: Vec<QueueEntry>,
-    },
 
     /// All cells queued for execution.
     AllCellsQueued { queued: Vec<QueueEntry> },
@@ -569,9 +546,6 @@ pub enum NotebookResponse {
         /// Raw Automerge document bytes, encoded as a Vec for JSON transport.
         bytes: Vec<u8>,
     },
-
-    /// Tool availability result.
-    ToolAvailable { available: bool },
 }
 
 /// Broadcast messages from daemon to all peers in a room.

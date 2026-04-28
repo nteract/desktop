@@ -600,6 +600,33 @@ On the TypeScript side, `isBinaryMime()` has been deleted from `manifest-resolut
 
 The classification rules: `image/*` → binary (EXCEPT `image/svg+xml` — that's text). `audio/*`, `video/*` → binary. `application/*` → binary by default (EXCEPT json, javascript, xml, and `+json`/`+xml` suffixes). `text/*` → always text.
 
+### Notebook Protocol and Upgrade Compatibility
+
+Notebook request/response compatibility is not a general "old UI can keep
+using a new daemon" guarantee. The supported in-place upgrade path is narrower:
+the old app opens the upgrade window, gathers notebook status, optionally shuts
+down busy kernels, downloads the update, closes notebook windows and clears sync
+handles, then installs the bundled daemon and waits for daemon readiness/version
+before relaunching the new app. After the daemon swap, the old upgrade window
+must not depend on normal notebook request/response traffic.
+
+When changing `notebook-protocol`:
+- Prefer `RuntimeStateDoc`, `PoolDoc`, daemon info, or typed sync state for
+  state queries. Do not keep request/response variants alive just because old
+  notebook windows once used them; those windows are closed before daemon
+  upgrade.
+- Keep upgrade-window commands working across the temporary old-UI/new-bundle
+  boundary. Those commands live in `crates/notebook/src/lib.rs` and should use
+  Tauri commands, daemon readiness checks, and daemon info rather than notebook
+  RPCs after the daemon is replaced.
+- If a true wire break is needed for active notebook sessions, make it explicit
+  in the protocol shape and be willing to bump the messaging/protocol version
+  rather than carrying stale compatibility shims indefinitely.
+- `packages/runtimed/src/request-types.ts` is a frontend client subset, not a
+  complete mirror of every Rust protocol variant. Add frontend-used variants
+  there intentionally; do not use it as a reason to preserve Rust-only dead
+  variants.
+
 ### Crate Boundaries
 
 | Crate | Owns | Modify when |

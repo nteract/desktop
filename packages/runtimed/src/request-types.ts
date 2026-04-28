@@ -1,8 +1,7 @@
 /**
- * TypeScript equivalents of NotebookRequest/NotebookResponse from
- * crates/notebook-protocol/src/protocol.rs.
- *
- * Only includes variants currently used by the frontend client.
+ * Frontend client subset of NotebookRequest/NotebookResponse from
+ * crates/notebook-protocol/src/protocol.rs. This intentionally includes only
+ * variants currently used by the frontend client.
  * These are transport-agnostic — callers encode them as needed.
  */
 
@@ -90,17 +89,6 @@ export type NotebookResponse =
   | { result: "kernel_shutting_down" }
   | { result: "no_kernel" }
   | { result: "guard_rejected"; reason: string }
-  | {
-      result: "kernel_info";
-      kernel_type?: string;
-      env_source?: string;
-      status: string;
-    }
-  | {
-      result: "queue_state";
-      executing?: { cell_id: string; execution_id: string } | null;
-      queued: { cell_id: string; execution_id: string }[];
-    }
   | {
       result: "all_cells_queued";
       queued: { cell_id: string; execution_id: string }[];

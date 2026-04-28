@@ -975,25 +975,17 @@ async fn test_parallel_daemon_requests_same_session_no_disconnect() {
     );
 
     let mut joins = Vec::new();
-    for index in 0..10 {
+    for _ in 0..10 {
         let handle = handle.clone();
         joins.push(tokio::spawn(async move {
-            if index % 2 == 0 {
-                handle.send_request(NotebookRequest::GetDocBytes {}).await
-            } else {
-                handle.send_request(NotebookRequest::GetKernelInfo {}).await
-            }
+            handle.send_request(NotebookRequest::GetDocBytes {}).await
         }));
     }
 
     tokio::time::timeout(Duration::from_secs(20), async {
-        for (index, join) in joins.into_iter().enumerate() {
+        for join in joins {
             let response = join.await.unwrap().unwrap();
-            if index % 2 == 0 {
-                assert!(matches!(response, NotebookResponse::DocBytes { .. }));
-            } else {
-                assert!(matches!(response, NotebookResponse::KernelInfo { .. }));
-            }
+            assert!(matches!(response, NotebookResponse::DocBytes { .. }));
         }
     })
     .await
