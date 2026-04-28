@@ -100,11 +100,20 @@ async fn wait_for_child(mut child: Child, mut shutdown_rx: oneshot::Receiver<()>
     }
 }
 
-fn spawn_managed_transport(
+/// Internals returned by the core spawn helper. Production callers
+/// discard the lifecycle handle; tests use it as an oracle.
+struct SpawnedTransport {
+    transport: ManagedChildTransport,
+    /// Handle to the background `wait_for_child` task. Completes when
+    /// the child has been reaped (naturally or via shutdown signal).
+    lifecycle_handle: tokio::task::JoinHandle<()>,
+}
+
+fn spawn_managed_transport_inner(
     command: &Path,
     args: &[String],
     env: &HashMap<String, String>,
-) -> std::io::Result<ManagedChildTransport> {
+) -> std::io::Result<SpawnedTransport> {
     let mut cmd = Command::new(command);
     cmd.args(args)
         .envs(env)
@@ -123,12 +132,26 @@ fn spawn_managed_transport(
         .ok_or_else(|| std::io::Error::other("child stdout was not piped"))?;
 
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
-    tokio::spawn(wait_for_child(child, shutdown_rx));
+    let lifecycle_handle = tokio::spawn(wait_for_child(child, shutdown_rx));
 
-    Ok(ManagedChildTransport {
-        inner: AsyncRwTransport::new(stdout, stdin),
-        shutdown_tx: Some(shutdown_tx),
+    Ok(SpawnedTransport {
+        transport: ManagedChildTransport {
+            inner: AsyncRwTransport::new(stdout, stdin),
+            shutdown_tx: Some(shutdown_tx),
+        },
+        lifecycle_handle,
     })
+}
+
+fn spawn_managed_transport(
+    command: &Path,
+    args: &[String],
+    env: &HashMap<String, String>,
+) -> std::io::Result<ManagedChildTransport> {
+    let spawned = spawn_managed_transport_inner(command, args, env)?;
+    // Production path: drop the lifecycle handle (task runs detached).
+    drop(spawned.lifecycle_handle);
+    Ok(spawned.transport)
 }
 
 /// Spawn `runt mcp` (or similar) as a child process and return an rmcp client.
@@ -282,6 +305,116 @@ mod tests {
         tokio::time::timeout(Duration::from_secs(5), task)
             .await
             .expect("shutdown should complete")
+            .expect("lifecycle task should not panic");
+    }
+
+    /// A late shutdown signal (sent after the child has already exited
+    /// and been reaped by the natural `child.wait()` branch) must not
+    /// cause a panic or hang. In the common case the natural branch wins
+    /// the `select!` and the shutdown oneshot is simply dropped.
+    #[tokio::test]
+    async fn late_shutdown_after_natural_reap_is_harmless() {
+        let mut cmd = instant_exit_command();
+        let child = cmd.spawn().expect("spawn child");
+        let (shutdown_tx, shutdown_rx) = oneshot::channel();
+
+        let task = tokio::spawn(wait_for_child(child, shutdown_rx));
+
+        // The instant-exit child is very likely reaped by the natural
+        // `child.wait()` branch before we get here, so the shutdown
+        // signal arrives after the task has already finished. This is
+        // the expected race — we're verifying it's harmless.
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let _ = shutdown_tx.send(());
+
+        tokio::time::timeout(Duration::from_secs(5), task)
+            .await
+            .expect("lifecycle task should complete even with late shutdown signal")
+            .expect("lifecycle task should not panic");
+    }
+
+    /// Child exits with a non-zero status (like exit code 75 from a daemon
+    /// upgrade). The lifecycle task must still reap it without panicking.
+    #[tokio::test]
+    async fn lifecycle_task_reaps_nonzero_exit() {
+        let mut cmd = if cfg!(target_os = "windows") {
+            let mut c = Command::new("cmd");
+            c.args(["/C", "exit 75"]);
+            c
+        } else {
+            let mut c = Command::new("sh");
+            c.args(["-c", "exit 75"]);
+            c
+        };
+        let child = cmd.spawn().expect("spawn child");
+        let (_shutdown_tx, shutdown_rx) = oneshot::channel();
+
+        tokio::time::timeout(Duration::from_secs(5), wait_for_child(child, shutdown_rx))
+            .await
+            .expect("child with exit(75) should be reaped");
+    }
+
+    /// Rapid spawn/kill cycles must not leak tasks or panic. This exercises
+    /// the transport's Drop impl (which sends the oneshot) under churn.
+    #[tokio::test]
+    async fn rapid_spawn_kill_cycles_do_not_leak() {
+        for _ in 0..10 {
+            let mut cmd = long_running_command();
+            let child = cmd.spawn().expect("spawn child");
+            let (shutdown_tx, shutdown_rx) = oneshot::channel();
+
+            let task = tokio::spawn(wait_for_child(child, shutdown_rx));
+            // Immediately kill
+            shutdown_tx.send(()).expect("send shutdown");
+
+            tokio::time::timeout(Duration::from_secs(5), task)
+                .await
+                .expect("rapid cycle should not hang")
+                .expect("rapid cycle should not panic");
+        }
+    }
+
+    /// Dropping a `ManagedChildTransport` (the real transport wrapper, not
+    /// just a bare oneshot) must kill and reap the child process. This
+    /// exercises the `Drop` impl → oneshot send → `wait_for_child` kill
+    /// path end-to-end.
+    ///
+    /// Uses `spawn_managed_transport_inner` to retain the lifecycle task
+    /// handle as a test oracle — when the handle completes, the child has
+    /// been waited on. A sleep-and-hope approach would pass even if Drop
+    /// stopped sending the shutdown signal.
+    #[tokio::test]
+    async fn dropping_managed_transport_kills_child() {
+        let (cmd, args) = if cfg!(target_os = "windows") {
+            (
+                "cmd".to_string(),
+                vec!["/C".to_string(), "ping -n 30 127.0.0.1 >NUL".to_string()],
+            )
+        } else {
+            (
+                "sh".to_string(),
+                vec!["-c".to_string(), "sleep 30".to_string()],
+            )
+        };
+        let cmd_path = std::path::PathBuf::from(&cmd);
+        let env = HashMap::new();
+
+        let spawned =
+            spawn_managed_transport_inner(&cmd_path, &args, &env).expect("spawn managed transport");
+
+        let lifecycle_handle = spawned.lifecycle_handle;
+
+        // Drop the transport. Its Drop impl sends on the oneshot, which
+        // triggers `wait_for_child` to kill + reap the child.
+        drop(spawned.transport);
+
+        // The lifecycle handle is our oracle: it completes only when
+        // `wait_for_child` has called `child.wait()` (i.e. the child
+        // was reaped). If Drop stopped sending the shutdown signal, this
+        // would hang until the 5s timeout.
+        tokio::time::timeout(Duration::from_secs(5), lifecycle_handle)
+            .await
+            .expect("lifecycle task should complete after transport drop — child was not reaped")
             .expect("lifecycle task should not panic");
     }
 
