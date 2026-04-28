@@ -285,6 +285,110 @@ mod tests {
             .expect("lifecycle task should not panic");
     }
 
+    /// Regression test for the original zombie scenario: the child has
+    /// already exited when the shutdown signal arrives. `start_kill()`
+    /// fails with ESRCH (no such process) on Unix, but `wait()` must
+    /// still succeed and reap the zombie.
+    #[tokio::test]
+    async fn shutdown_after_child_already_exited() {
+        let mut cmd = instant_exit_command();
+        let child = cmd.spawn().expect("spawn child");
+        let (shutdown_tx, shutdown_rx) = oneshot::channel();
+
+        // Wait for the child to exit naturally first.
+        let pid = child.id();
+        let task = tokio::spawn(wait_for_child(child, shutdown_rx));
+
+        // Give the instant-exit child time to terminate before we signal.
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        // Now signal shutdown. The child is already dead — `start_kill()`
+        // will hit ESRCH (or equivalent), but `wait()` should still reap.
+        // If the shutdown signal arrives after wait_for_child already
+        // reaped the child via the `child.wait()` branch, that's fine too —
+        // the oneshot is simply dropped.
+        let _ = shutdown_tx.send(());
+
+        tokio::time::timeout(Duration::from_secs(5), task)
+            .await
+            .expect("lifecycle task should complete even with late shutdown signal")
+            .expect("lifecycle task should not panic");
+
+        // Verify no zombie remains for this PID. On Linux we can check
+        // /proc/<pid>/stat; on other platforms we just trust the wait().
+        #[cfg(target_os = "linux")]
+        if let Some(pid) = pid {
+            let stat_path = format!("/proc/{pid}/stat");
+            assert!(
+                !std::path::Path::new(&stat_path).exists(),
+                "PID {pid} should have been reaped (no /proc entry)"
+            );
+        }
+        let _ = pid; // suppress unused warning on non-linux
+    }
+
+    /// Child exits with a non-zero status (like exit code 75 from a daemon
+    /// upgrade). The lifecycle task must still reap it without panicking.
+    #[tokio::test]
+    async fn lifecycle_task_reaps_nonzero_exit() {
+        let mut cmd = if cfg!(target_os = "windows") {
+            let mut c = Command::new("cmd");
+            c.args(["/C", "exit 75"]);
+            c
+        } else {
+            let mut c = Command::new("sh");
+            c.args(["-c", "exit 75"]);
+            c
+        };
+        let child = cmd.spawn().expect("spawn child");
+        let (_shutdown_tx, shutdown_rx) = oneshot::channel();
+
+        tokio::time::timeout(Duration::from_secs(5), wait_for_child(child, shutdown_rx))
+            .await
+            .expect("child with exit(75) should be reaped");
+    }
+
+    /// Rapid spawn/kill cycles must not leak tasks or panic. This exercises
+    /// the transport's Drop impl (which sends the oneshot) under churn.
+    #[tokio::test]
+    async fn rapid_spawn_kill_cycles_do_not_leak() {
+        for _ in 0..10 {
+            let mut cmd = long_running_command();
+            let child = cmd.spawn().expect("spawn child");
+            let (shutdown_tx, shutdown_rx) = oneshot::channel();
+
+            let task = tokio::spawn(wait_for_child(child, shutdown_rx));
+            // Immediately kill
+            shutdown_tx.send(()).expect("send shutdown");
+
+            tokio::time::timeout(Duration::from_secs(5), task)
+                .await
+                .expect("rapid cycle should not hang")
+                .expect("rapid cycle should not panic");
+        }
+    }
+
+    /// When the oneshot sender is dropped (simulating transport Drop without
+    /// explicit close), the receiver sees a closed channel. The lifecycle
+    /// task must handle this the same as an explicit shutdown signal.
+    #[tokio::test]
+    async fn dropped_sender_triggers_shutdown_path() {
+        let mut cmd = long_running_command();
+        let child = cmd.spawn().expect("spawn child");
+        let (shutdown_tx, shutdown_rx) = oneshot::channel();
+
+        let task = tokio::spawn(wait_for_child(child, shutdown_rx));
+
+        // Drop the sender instead of calling send() — this is what happens
+        // when ManagedChildTransport::drop fires.
+        drop(shutdown_tx);
+
+        tokio::time::timeout(Duration::from_secs(5), task)
+            .await
+            .expect("dropped sender should still clean up the child")
+            .expect("lifecycle task should not panic on dropped sender");
+    }
+
     #[tokio::test]
     async fn is_transport_closed_flips_when_child_exits() {
         let client = dead_transport_child().await;
