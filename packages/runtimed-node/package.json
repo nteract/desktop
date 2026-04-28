@@ -1,9 +1,14 @@
 {
-  "name": "@nteract/runtimed-node",
-  "version": "0.1.5",
+  "name": "@runtimed/node",
+  "version": "0.0.1",
   "description": "Node.js bindings for the runtimed daemon client (napi-rs).",
-  "private": true,
   "type": "module",
+  "license": "BSD-3-Clause",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/nteract/desktop.git",
+    "directory": "packages/runtimed-node"
+  },
   "main": "./src/index.cjs",
   "types": "./src/index.d.ts",
   "exports": {
@@ -17,8 +22,7 @@
     "src/index.cjs",
     "src/index.d.ts",
     "src/binding.cjs",
-    "src/binding.d.ts",
-    "src/runtimed-node.*.node"
+    "src/binding.d.ts"
   ],
   "napi": {
     "binaryName": "runtimed-node",
@@ -27,9 +31,20 @@
     ]
   },
   "scripts": {
+    "assemble:platform": "node scripts/assemble-platform-package.mjs",
     "build": "napi build --platform --release --js binding.cjs --dts binding.d.ts --manifest-path ../../crates/runtimed-node/Cargo.toml --output-dir src",
     "build:debug": "napi build --platform --js binding.cjs --dts binding.d.ts --manifest-path ../../crates/runtimed-node/Cargo.toml --output-dir src",
+    "pack:platform:dry-run": "node scripts/assemble-platform-package.mjs --pack-dry-run",
+    "prepack": "node -e \"const fs = require('node:fs'); const files = fs.readdirSync('src'); if (!files.includes('binding.cjs') || !files.includes('binding.d.ts')) { console.error('Run pnpm --dir packages/runtimed-node build before packing @runtimed/node.'); process.exit(1); }\"",
+    "pack:dry-run": "pnpm pack --dry-run",
     "smoke": "node -e \"const m = require('./src/index.cjs'); console.log('defaultSocketPath:', m.defaultSocketPath());\""
+  },
+  "optionalDependencies": {
+    "@runtimed/node-darwin-arm64": "workspace:*",
+    "@runtimed/node-linux-x64-gnu": "workspace:*"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "devDependencies": {
     "@napi-rs/cli": "^3.6.2"

@@ -1,0 +1,32 @@
+{
+  "name": "@runtimed/node-linux-x64-gnu",
+  "version": "0.0.1",
+  "description": "Linux x64 GNU native binding for @runtimed/node",
+  "type": "commonjs",
+  "main": "./runtimed-node.linux-x64-gnu.node",
+  "license": "BSD-3-Clause",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/nteract/desktop.git",
+    "directory": "packages/runtimed-node/npm/linux-x64-gnu"
+  },
+  "os": [
+    "linux"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "libc": [
+    "glibc"
+  ],
+  "files": [
+    "runtimed-node.linux-x64-gnu.node"
+  ],
+  "scripts": {
+    "prepack": "node -e \"const fs = require('node:fs'); if (!fs.existsSync('runtimed-node.linux-x64-gnu.node')) { console.error('Run pnpm --dir packages/runtimed-node assemble:platform before packing @runtimed/node-linux-x64-gnu.'); process.exit(1); }\"",
+    "pack:dry-run": "pnpm pack --dry-run"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

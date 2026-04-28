@@ -1,0 +1,42 @@
+{
+  "name": "@nteract/pi",
+  "version": "0.0.1",
+  "description": "nteract extensions for Pi",
+  "type": "module",
+  "license": "BSD-3-Clause",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/nteract/desktop.git",
+    "directory": "plugins/nteract/pi"
+  },
+  "keywords": [
+    "pi-package",
+    "nteract",
+    "notebook",
+    "python",
+    "repl"
+  ],
+  "pi": {
+    "extensions": [
+      "./extensions"
+    ]
+  },
+  "files": [
+    "README.md",
+    "extensions"
+  ],
+  "scripts": {
+    "pack:dry-run": "pnpm pack --dry-run"
+  },
+  "dependencies": {
+    "@runtimed/node": "workspace:*"
+  },
+  "peerDependencies": {
+    "@mariozechner/pi-coding-agent": "*",
+    "@mariozechner/pi-tui": "*",
+    "typebox": "*"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}
