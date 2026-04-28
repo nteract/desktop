@@ -1,13 +1,17 @@
 //! Child process spawning and MCP client identity forwarding.
 
 use std::collections::HashMap;
+use std::future::Future;
 use std::path::Path;
+use std::process::Stdio;
 
 use rmcp::model::Implementation;
-use rmcp::transport::{ConfigureCommandExt, TokioChildProcess};
+use rmcp::service::{RxJsonRpcMessage, TxJsonRpcMessage};
+use rmcp::transport::{async_rw::AsyncRwTransport, Transport};
 use rmcp::{ClientHandler, ServiceExt};
-use tokio::process::Command;
-use tracing::info;
+use tokio::process::{Child, ChildStdin, ChildStdout, Command};
+use tokio::sync::oneshot;
+use tracing::{info, warn};
 
 /// rmcp client role type alias.
 pub type RoleChild = rmcp::service::RoleClient;
@@ -32,6 +36,101 @@ impl ClientHandler for ChildClientHandler {
 /// A running child service.
 pub type RunningChild = rmcp::service::RunningService<RoleChild, ChildClientHandler>;
 
+/// Transport for a child MCP process whose lifecycle is owned by this proxy.
+struct ManagedChildTransport {
+    inner: AsyncRwTransport<RoleChild, ChildStdout, ChildStdin>,
+    shutdown_tx: Option<oneshot::Sender<()>>,
+}
+
+impl Drop for ManagedChildTransport {
+    fn drop(&mut self) {
+        if let Some(tx) = self.shutdown_tx.take() {
+            let _ = tx.send(());
+        }
+    }
+}
+
+impl Transport<RoleChild> for ManagedChildTransport {
+    type Error = std::io::Error;
+
+    fn send(
+        &mut self,
+        item: TxJsonRpcMessage<RoleChild>,
+    ) -> impl Future<Output = Result<(), Self::Error>> + Send + 'static {
+        self.inner.send(item)
+    }
+
+    fn receive(&mut self) -> impl Future<Output = Option<RxJsonRpcMessage<RoleChild>>> + Send {
+        self.inner.receive()
+    }
+
+    fn close(&mut self) -> impl Future<Output = Result<(), Self::Error>> + Send {
+        let close = self.inner.close();
+        let shutdown_tx = self.shutdown_tx.take();
+        async move {
+            let result = close.await;
+            if let Some(tx) = shutdown_tx {
+                let _ = tx.send(());
+            }
+            result
+        }
+    }
+}
+
+async fn wait_for_child(mut child: Child, mut shutdown_rx: oneshot::Receiver<()>) {
+    let child_id = child.id();
+
+    tokio::select! {
+        status = child.wait() => {
+            match status {
+                Ok(status) => info!(pid = ?child_id, %status, "Child process reaped"),
+                Err(e) => warn!(pid = ?child_id, error = %e, "Failed to wait for child process"),
+            }
+        }
+        _ = &mut shutdown_rx => {
+            if let Err(e) = child.start_kill() {
+                warn!(pid = ?child_id, error = %e, "Failed to request child process shutdown");
+            }
+
+            match child.wait().await {
+                Ok(status) => info!(pid = ?child_id, %status, "Child process stopped and reaped"),
+                Err(e) => warn!(pid = ?child_id, error = %e, "Failed to reap child process after shutdown"),
+            }
+        }
+    }
+}
+
+fn spawn_managed_transport(
+    command: &Path,
+    args: &[String],
+    env: &HashMap<String, String>,
+) -> std::io::Result<ManagedChildTransport> {
+    let mut cmd = Command::new(command);
+    cmd.args(args)
+        .envs(env)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit());
+
+    let mut child = cmd.spawn()?;
+    let stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| std::io::Error::other("child stdin was not piped"))?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| std::io::Error::other("child stdout was not piped"))?;
+
+    let (shutdown_tx, shutdown_rx) = oneshot::channel();
+    tokio::spawn(wait_for_child(child, shutdown_rx));
+
+    Ok(ManagedChildTransport {
+        inner: AsyncRwTransport::new(stdout, stdin),
+        shutdown_tx: Some(shutdown_tx),
+    })
+}
+
 /// Spawn `runt mcp` (or similar) as a child process and return an rmcp client.
 ///
 /// The upstream client's `name` and `title` are forwarded through the MCP
@@ -54,19 +153,8 @@ pub async fn spawn_child(
         args.join(" ")
     );
 
-    let cmd_path = command.to_path_buf();
-    let args_owned: Vec<String> = args.to_vec();
-    let env_owned: HashMap<String, String> = env.clone();
-
-    let transport = TokioChildProcess::new(Command::new(&cmd_path).configure(move |cmd| {
-        for arg in &args_owned {
-            cmd.arg(arg);
-        }
-        for (key, val) in &env_owned {
-            cmd.env(key, val);
-        }
-    }))
-    .map_err(|e| format!("Failed to spawn child process: {e}"))?;
+    let transport = spawn_managed_transport(command, args, env)
+        .map_err(|e| format!("Failed to spawn child process: {e}"))?;
 
     let handler = ChildClientHandler {
         upstream_name: upstream_name.to_string(),
@@ -145,6 +233,56 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
         cond()
+    }
+
+    fn instant_exit_command() -> Command {
+        if cfg!(target_os = "windows") {
+            let mut cmd = Command::new("cmd");
+            cmd.args(["/C", "exit 0"]);
+            cmd
+        } else {
+            let mut cmd = Command::new("sh");
+            cmd.args(["-c", "true"]);
+            cmd
+        }
+    }
+
+    fn long_running_command() -> Command {
+        if cfg!(target_os = "windows") {
+            let mut cmd = Command::new("cmd");
+            cmd.args(["/C", "ping -n 30 127.0.0.1 >NUL"]);
+            cmd
+        } else {
+            let mut cmd = Command::new("sh");
+            cmd.args(["-c", "sleep 30"]);
+            cmd
+        }
+    }
+
+    #[tokio::test]
+    async fn lifecycle_task_reaps_natural_child_exit() {
+        let mut cmd = instant_exit_command();
+        let child = cmd.spawn().expect("spawn child");
+        let (_shutdown_tx, shutdown_rx) = oneshot::channel();
+
+        tokio::time::timeout(Duration::from_secs(5), wait_for_child(child, shutdown_rx))
+            .await
+            .expect("child wait should complete");
+    }
+
+    #[tokio::test]
+    async fn lifecycle_task_kills_and_reaps_on_shutdown() {
+        let mut cmd = long_running_command();
+        let child = cmd.spawn().expect("spawn child");
+        let (shutdown_tx, shutdown_rx) = oneshot::channel();
+
+        let task = tokio::spawn(wait_for_child(child, shutdown_rx));
+        shutdown_tx.send(()).expect("send shutdown");
+
+        tokio::time::timeout(Duration::from_secs(5), task)
+            .await
+            .expect("shutdown should complete")
+            .expect("lifecycle task should not panic");
     }
 
     #[tokio::test]
