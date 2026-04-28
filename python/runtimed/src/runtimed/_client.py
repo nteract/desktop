@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from runtimed._internals import NativeAsyncClient
+from runtimed._internals import ExecutionResult, NativeAsyncClient
 from runtimed._notebook import Notebook
 from runtimed._notebook_info import NotebookInfo
 
@@ -86,6 +86,15 @@ class Client:
         """Flush prewarmed environment pool."""
         await self._native.flush_pool()
 
+    async def get_execution_result(self, execution_id: str) -> ExecutionResult:
+        """Read a terminal execution result by durable execution ID.
+
+        This does not require a connected notebook room. It reads the daemon's
+        durable execution store, so it can recover results after room eviction
+        or reconnect while the record is still retained.
+        """
+        return await self._native.get_execution_result(execution_id)
+
     async def close(self) -> None:
         """Close the client connection.
 
@@ -113,6 +122,7 @@ class Client:
             "|-|\n"
             "| `open_notebook()` `create_notebook()` `join_notebook()` |\n"
             "| `list_active_notebooks()` |\n"
+            "| `get_execution_result()` |\n"
             "| `ping()` `is_running()` `status()` |\n"
             "| `flush_pool()` `close()` |\n"
         )

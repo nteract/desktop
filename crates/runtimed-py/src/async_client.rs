@@ -10,6 +10,8 @@ use pyo3_async_runtimes::tokio::future_into_py;
 use crate::async_session::AsyncSession;
 use crate::daemon_paths::{get_socket_path, resolve_notebook_path};
 use crate::error::to_py_err;
+use crate::output::ExecutionResult;
+use crate::output_resolver;
 
 /// Room info data for async serialization (avoids needing GIL inside future).
 #[derive(IntoPyObject)]
@@ -130,6 +132,55 @@ impl AsyncClient {
         future_into_py(py, async move {
             let client = runtimed::client::PoolClient::new(socket_path);
             client.flush_pool().await.map_err(to_py_err)
+        })
+    }
+
+    /// Get a terminal execution result by execution ID.
+    ///
+    /// Reads the daemon's durable execution store, so this works after a
+    /// notebook room has been evicted or reconnected, as long as the record is
+    /// still within the daemon's retention window.
+    fn get_execution_result<'py>(
+        &self,
+        py: Python<'py>,
+        execution_id: &str,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let socket_path = self.socket_path.clone();
+        let execution_id = execution_id.to_string();
+        future_into_py(py, async move {
+            let info = runtimed::singleton::query_daemon_info(socket_path.clone()).await;
+            let execution_store_dir = info
+                .as_ref()
+                .and_then(|info| info.execution_store_dir.as_ref())
+                .map(PathBuf::from)
+                .unwrap_or_else(runtimed::default_execution_store_dir);
+            let store = runtimed::execution_store::ExecutionStore::new(execution_store_dir);
+            let record = store.read_record(&execution_id).await.ok_or_else(|| {
+                to_py_err(format!(
+                    "Execution not found in durable store: {execution_id}"
+                ))
+            })?;
+
+            let (blob_base_url, blob_store_path) =
+                crate::daemon_paths::get_blob_paths_async(&socket_path).await;
+            let outputs = output_resolver::resolve_cell_outputs(
+                &record.outputs,
+                &blob_base_url,
+                &blob_store_path,
+                None,
+            )
+            .await;
+            let success = record.success.unwrap_or_else(|| {
+                record.status == "done" && !outputs.iter().any(|o| o.output_type == "error")
+            });
+
+            Ok(ExecutionResult {
+                cell_id: record.cell_id.unwrap_or_default(),
+                execution_id: record.execution_id,
+                outputs,
+                success,
+                execution_count: record.execution_count,
+            })
         })
     }
 

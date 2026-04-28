@@ -1237,6 +1237,15 @@ impl AsyncSession {
         })
     }
 
+    /// Queue all code cells in document order. Returns queue entries with execution IDs.
+    fn queue_all_cells<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let state = Arc::clone(&self.state);
+        let notebook_id = self.notebook_id.clone();
+        future_into_py(py, async move {
+            session_core::queue_all_cells(&state, &notebook_id).await
+        })
+    }
+
     // =========================================================================
     // Low-level sync (for testing / cross-impl verification)
     // =========================================================================

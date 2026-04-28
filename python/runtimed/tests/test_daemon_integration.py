@@ -2158,7 +2158,7 @@ class TestExecuteCell:
         assert error_outputs[0].ename == "ValueError"
         assert "persisted error" in (error_outputs[0].evalue or "")
 
-    async def test_cell_execute_returns_execution_handle(self, notebook):
+    async def test_cell_execute_returns_execution_handle(self, notebook, daemon_process):
         """cell.execute() returns an Execution handle with execution_id."""
         await notebook.start()
 
@@ -2173,7 +2173,28 @@ class TestExecuteCell:
 
         result = await execution.result(timeout_secs=30.0)
         assert result.success
+        assert result.execution_id == execution.execution_id
         assert "handle test" in result.stdout
+
+        socket_path, _ = daemon_process
+        client = (
+            runtimed.Client(socket_path=str(socket_path))
+            if socket_path is not None
+            else runtimed.Client()
+        )
+        try:
+            recovered = None
+            for _ in range(20):
+                try:
+                    recovered = await client.get_execution_result(execution.execution_id)
+                    break
+                except runtimed.RuntimedError:
+                    await asyncio.sleep(0.1)
+            assert recovered is not None
+            assert recovered.execution_id == execution.execution_id
+            assert "handle test" in recovered.stdout
+        finally:
+            await client.close()
 
     async def test_await_execution_shorthand(self, notebook):
         """await execution works as shorthand for execution.result()."""
@@ -2186,6 +2207,7 @@ class TestExecuteCell:
         result = await execution
 
         assert result.success
+        assert result.execution_id == execution.execution_id
         assert "shorthand" in result.stdout
 
 
@@ -2215,6 +2237,22 @@ class TestExecutionIdScoping:
             f"Expected UUID (36 chars), got {execution.execution_id!r}"
         )
         assert execution.execution_id.count("-") == 4
+
+    async def test_queue_all_returns_execution_handles(self, notebook):
+        """notebook.queue_all() returns execution handles for each queued cell."""
+        await notebook.start()
+
+        first = await notebook.cells.create("print('first')")
+        second = await notebook.cells.create("print('second')")
+        await asyncio.sleep(0.5)
+
+        executions = await notebook.queue_all()
+
+        execution_by_cell = {execution.cell_id: execution for execution in executions}
+        assert set(execution_by_cell) == {first.id, second.id}
+        for execution in executions:
+            assert isinstance(execution.execution_id, str)
+            assert len(execution.execution_id) == 36
 
     async def test_idempotent_queue_returns_same_execution_id(self, notebook):
         """Re-queuing an already-queued cell returns the same execution_id."""
