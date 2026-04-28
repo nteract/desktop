@@ -123,24 +123,23 @@ impl NteractMcp {
         &self.last_session_drop
     }
 
-    /// Explicitly drop the active session, closing the daemon peer connection
-    /// immediately.
+    /// Disconnect this MCP process's peer from the active notebook session.
     ///
-    /// Call this before the process exits to trigger prompt session cleanup in
-    /// the daemon rather than relying on OS-level TCP connection close + the
-    /// 30s eviction delay. Dropping the `NotebookSession` closes its
-    /// `DocHandle` channels, which makes the sync task break out of its loop
-    /// and close the TCP writer — the daemon sees EOF and decrements the peer
-    /// count, starting the eviction timer right away.
+    /// This only drops **our** peer connection — it does NOT shut down the
+    /// kernel or evict the room. The daemon tracks `active_peers` per room
+    /// and only schedules eviction when the count hits zero. If other peers
+    /// (humans, other agents) are still connected, they are unaffected and
+    /// the room stays alive.
     ///
-    /// Without this, session cleanup depends on the tokio runtime tearing down
-    /// tasks in the right order during process exit, which is unreliable under
-    /// SIGTERM.
+    /// Call this before the process exits so the daemon sees a clean TCP
+    /// close immediately rather than waiting for the OS to reclaim the
+    /// socket (which delays the eviction timer start when we are the last
+    /// peer).
     pub async fn shutdown(&self) {
         let old = self.session.write().await.take();
         if let Some(session) = old {
             tracing::info!(
-                "[mcp] Shutdown: disconnecting session {}",
+                "[mcp] Shutdown: disconnecting our peer from session {}",
                 session.notebook_id
             );
             drop(session);

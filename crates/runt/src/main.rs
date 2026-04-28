@@ -932,10 +932,18 @@ async fn run_mcp_server(no_show: bool) -> Result<()> {
         }
     }
 
-    // Explicitly drop the notebook session before the process exits.
-    // This closes the DocHandle channels immediately, causing the sync task
-    // to shut down its TCP connection to the daemon. The daemon sees EOF
-    // and starts the eviction timer right away.
+    // Disconnect our peer from the notebook session before the process exits.
+    //
+    // This only drops OUR peer connection to the daemon — it does NOT shut
+    // down the kernel or evict the room. The daemon tracks `active_peers`
+    // per room and only starts the eviction timer when the count hits zero.
+    // If other peers (humans, other MCP agents) are still connected, the
+    // room and kernel stay alive.
+    //
+    // Why bother? Without an explicit drop, the OS reclaims the TCP socket
+    // on process exit, but the timing is non-deterministic (especially
+    // under SIGTERM where tokio runtime teardown order is unreliable). A
+    // clean disconnect lets the daemon decrement the peer count immediately.
     //
     // Runs on both normal exit (MCP client disconnect) and SIGTERM. On
     // daemon upgrade the std::process::exit() path skips this — the proxy
@@ -943,7 +951,7 @@ async fn run_mcp_server(no_show: bool) -> Result<()> {
     let old = session_for_shutdown.write().await.take();
     if let Some(session) = old {
         tracing::info!(
-            "[mcp] Disconnecting session {} before exit",
+            "[mcp] Disconnecting our peer from session {} before exit",
             session.notebook_id
         );
         drop(session);
