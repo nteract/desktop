@@ -25,6 +25,7 @@ interface TrustDialogProps {
   approveLabel?: string;
   approveOnlyLabel?: string;
   description?: string;
+  approvalError?: string | null;
 }
 
 /** Package list item with optional typosquat warning */
@@ -56,6 +57,7 @@ export function TrustDialog({
   approveLabel,
   approveOnlyLabel,
   description,
+  approvalError,
 }: TrustDialogProps) {
   const handleApprove = useCallback(async () => {
     const success = await onApprove();
@@ -112,6 +114,16 @@ export function TrustDialog({
         </DialogHeader>
 
         <div className="max-h-[300px] overflow-y-auto space-y-4">
+          {approvalError && (
+            <div
+              className="flex items-start gap-2 p-3 rounded-md bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800"
+              role="alert"
+            >
+              <AlertTriangleIcon className="size-5 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
+              <p className="text-sm text-amber-800 dark:text-amber-200">{approvalError}</p>
+            </div>
+          )}
+
           {/* UV (PyPI) Dependencies */}
           {trustInfo && trustInfo.uv_dependencies.length > 0 && (
             <div>

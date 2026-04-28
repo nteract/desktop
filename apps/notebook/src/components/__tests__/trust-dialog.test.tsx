@@ -174,6 +174,20 @@ describe("TrustDialog", () => {
       );
       expect(screen.getByText(/dependencies have been modified/)).toBeInTheDocument();
     });
+
+    it("shows approval errors inline while keeping the dependency review visible", () => {
+      render(
+        <TrustDialog
+          {...defaultProps}
+          approvalError="Dependencies changed while the trust dialog was open. Review before approving."
+        />,
+      );
+
+      expect(screen.getByRole("alert")).toHaveTextContent(
+        "Dependencies changed while the trust dialog was open. Review before approving.",
+      );
+      expect(screen.getByText("requests")).toBeInTheDocument();
+    });
   });
 
   describe("button labels", () => {
