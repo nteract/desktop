@@ -1,0 +1,123 @@
+name: Publish npm packages
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: npm dist-tag to publish under
+        default: next
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: npm-publish-${{ inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  native:
+    name: Native package (${{ matrix.target }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: darwin-arm64
+            runner: macos-latest
+          - target: linux-x64-gnu
+            runner: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: dsherret/rust-toolchain-file@v1
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          cache: pnpm
+
+      - name: Use npm with trusted publishing support
+        run: npm install -g npm@latest
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build native binding
+        run: pnpm --dir packages/runtimed-node build
+
+      - name: Assemble platform package
+        run: pnpm --dir packages/runtimed-node assemble:platform -- --expected-target "${{ matrix.target }}"
+
+      - name: Verify platform package
+        run: pnpm --dir packages/runtimed-node/npm/${{ matrix.target }} pack:dry-run
+
+      - name: Publish platform package
+        run: npm publish packages/runtimed-node/npm/${{ matrix.target }} --tag "${{ inputs.tag }}" --access public --provenance
+
+  wrapper:
+    name: Wrapper package
+    needs: [native]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: dsherret/rust-toolchain-file@v1
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          cache: pnpm
+
+      - name: Use npm with trusted publishing support
+        run: npm install -g npm@latest
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build native binding metadata
+        run: pnpm --dir packages/runtimed-node build
+
+      - name: Verify wrapper package
+        run: pnpm --dir packages/runtimed-node pack:dry-run
+
+      - name: Pack wrapper package
+        run: pnpm --dir packages/runtimed-node pack --pack-destination "$RUNNER_TEMP"
+
+      - name: Publish wrapper package
+        run: npm publish "$RUNNER_TEMP"/runtimed-node-*.tgz --tag "${{ inputs.tag }}" --access public --provenance
+
+  pi:
+    name: Pi package
+    needs: [wrapper]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          cache: pnpm
+
+      - name: Use npm with trusted publishing support
+        run: npm install -g npm@latest
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Verify Pi package
+        run: pnpm --dir plugins/nteract/pi pack:dry-run
+
+      - name: Pack Pi package
+        run: pnpm --dir plugins/nteract/pi pack --pack-destination "$RUNNER_TEMP"
+
+      - name: Publish Pi package
+        run: npm publish "$RUNNER_TEMP"/nteract-pi-*.tgz --tag "${{ inputs.tag }}" --access public --provenance

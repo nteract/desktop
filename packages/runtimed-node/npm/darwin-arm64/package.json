@@ -1,0 +1,29 @@
+{
+  "name": "@runtimed/node-darwin-arm64",
+  "version": "0.0.1",
+  "description": "macOS arm64 native binding for @runtimed/node",
+  "type": "commonjs",
+  "main": "./runtimed-node.darwin-arm64.node",
+  "license": "BSD-3-Clause",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/nteract/desktop.git",
+    "directory": "packages/runtimed-node/npm/darwin-arm64"
+  },
+  "os": [
+    "darwin"
+  ],
+  "cpu": [
+    "arm64"
+  ],
+  "files": [
+    "runtimed-node.darwin-arm64.node"
+  ],
+  "scripts": {
+    "prepack": "node -e \"const fs = require('node:fs'); if (!fs.existsSync('runtimed-node.darwin-arm64.node')) { console.error('Run pnpm --dir packages/runtimed-node assemble:platform before packing @runtimed/node-darwin-arm64.'); process.exit(1); }\"",
+    "pack:dry-run": "pnpm pack --dry-run"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

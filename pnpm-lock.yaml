@@ -532,6 +532,17 @@ importers:
       '@napi-rs/cli':
         specifier: ^3.6.2
         version: 3.6.2(@emnapi/core@1.9.1)(@emnapi/runtime@1.9.2)(@types/node@24.12.2)
+    optionalDependencies:
+      '@runtimed/node-darwin-arm64':
+        specifier: workspace:*
+        version: link:npm/darwin-arm64
+      '@runtimed/node-linux-x64-gnu':
+        specifier: workspace:*
+        version: link:npm/linux-x64-gnu
+
+  packages/runtimed-node/npm/darwin-arm64: {}
+
+  packages/runtimed-node/npm/linux-x64-gnu: {}
 
   packages/sift:
     dependencies:

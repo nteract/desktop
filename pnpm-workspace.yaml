@@ -1,6 +1,7 @@
 packages:
   - apps/*
   - packages/*
+  - packages/runtimed-node/npm/*
   - plugins/nteract/*
 
 onlyBuiltDependencies:

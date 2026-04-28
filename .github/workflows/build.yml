@@ -398,6 +398,9 @@ jobs:
       - name: Smoke test runtimed-node package
         run: pnpm --dir packages/runtimed-node smoke
 
+      - name: Check runtimed-node native package tarball
+        run: pnpm --dir packages/runtimed-node pack:platform:dry-run
+
       - name: Check runtimed-node package tarball
         run: pnpm --dir packages/runtimed-node pack:dry-run
 
