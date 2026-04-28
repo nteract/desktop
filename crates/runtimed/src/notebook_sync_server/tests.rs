@@ -113,6 +113,10 @@ fn test_blob_store(tmp: &tempfile::TempDir) -> Arc<BlobStore> {
     Arc::new(BlobStore::new(tmp.path().join("blobs")))
 }
 
+fn test_trusted_packages() -> crate::trusted_packages::TrustedPackageStore {
+    crate::trusted_packages::TrustedPackageStore::unavailable("test")
+}
+
 #[tokio::test]
 async fn notebook_room_has_uuid_id_populated() {
     let tmp = tempfile::TempDir::new().unwrap();
@@ -201,20 +205,26 @@ async fn test_get_or_create_room_reuses_existing() {
         &rooms,
         &path_index,
         uuid1,
-        None,
-        tmp.path(),
-        blob_store.clone(),
-        false,
+        RoomCreationOptions {
+            path: None,
+            docs_dir: tmp.path(),
+            blob_store: blob_store.clone(),
+            ephemeral: false,
+            trusted_packages: test_trusted_packages(),
+        },
     )
     .await;
     let room2 = get_or_create_room(
         &rooms,
         &path_index,
         uuid1,
-        None,
-        tmp.path(),
-        blob_store,
-        false,
+        RoomCreationOptions {
+            path: None,
+            docs_dir: tmp.path(),
+            blob_store,
+            ephemeral: false,
+            trusted_packages: test_trusted_packages(),
+        },
     )
     .await;
 
@@ -235,20 +245,26 @@ async fn test_get_or_create_room_different_notebooks() {
         &rooms,
         &path_index,
         uuid1,
-        None,
-        tmp.path(),
-        blob_store.clone(),
-        false,
+        RoomCreationOptions {
+            path: None,
+            docs_dir: tmp.path(),
+            blob_store: blob_store.clone(),
+            ephemeral: false,
+            trusted_packages: test_trusted_packages(),
+        },
     )
     .await;
     let room2 = get_or_create_room(
         &rooms,
         &path_index,
         uuid2,
-        None,
-        tmp.path(),
-        blob_store,
-        false,
+        RoomCreationOptions {
+            path: None,
+            docs_dir: tmp.path(),
+            blob_store,
+            ephemeral: false,
+            trusted_packages: test_trusted_packages(),
+        },
     )
     .await;
 
@@ -672,6 +688,14 @@ fn test_room_with_path(
     tmp: &tempfile::TempDir,
     notebook_filename: &str,
 ) -> (NotebookRoom, PathBuf) {
+    test_room_with_path_and_store(tmp, notebook_filename, test_trusted_packages())
+}
+
+fn test_room_with_path_and_store(
+    tmp: &tempfile::TempDir,
+    notebook_filename: &str,
+    trusted_packages: crate::trusted_packages::TrustedPackageStore,
+) -> (NotebookRoom, PathBuf) {
     let notebook_path = tmp.path().join(notebook_filename);
     let blob_store = test_blob_store(tmp);
     let notebook_id = notebook_path.to_string_lossy().to_string();
@@ -697,14 +721,19 @@ fn test_room_with_path(
             info: runt_trust::TrustInfo {
                 status: runt_trust::TrustStatus::Untrusted,
                 uv_dependencies: vec![],
+                approved_uv_dependencies: vec![],
                 conda_dependencies: vec![],
+                approved_conda_dependencies: vec![],
                 conda_channels: vec![],
                 pixi_dependencies: vec![],
+                approved_pixi_dependencies: vec![],
                 pixi_pypi_dependencies: vec![],
+                approved_pixi_pypi_dependencies: vec![],
                 pixi_channels: vec![],
             },
             pending_launch: false,
         })),
+        trusted_packages,
         state,
         runtime_agent_handle: Arc::new(Mutex::new(None)),
         runtime_agent_env_path: Arc::new(RwLock::new(None)),
@@ -3010,10 +3039,13 @@ async fn test_notebook_sync_path_handshake_reuses_existing_room() {
             &rooms,
             &path_index,
             uuid,
-            path,
-            &docs_dir,
-            blob_store.clone(),
-            false,
+            RoomCreationOptions {
+                path,
+                docs_dir: &docs_dir,
+                blob_store: blob_store.clone(),
+                ephemeral: false,
+                trusted_packages: test_trusted_packages(),
+            },
         )
         .await
     };
@@ -3029,10 +3061,13 @@ async fn test_notebook_sync_path_handshake_reuses_existing_room() {
             &rooms,
             &path_index,
             uuid,
-            path,
-            &docs_dir,
-            blob_store.clone(),
-            false,
+            RoomCreationOptions {
+                path,
+                docs_dir: &docs_dir,
+                blob_store: blob_store.clone(),
+                ephemeral: false,
+                trusted_packages: test_trusted_packages(),
+            },
         )
         .await
     };
@@ -3651,6 +3686,179 @@ async fn test_check_and_update_trust_state_no_deps() {
     let state = room.state.read(|sd| sd.read_state()).unwrap();
     assert_eq!(state.trust.status, "no_dependencies");
     assert!(!state.trust.needs_approval);
+}
+
+#[tokio::test]
+#[serial]
+async fn test_approve_trust_adds_dependencies_to_allowlist() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let key_path = tmp.path().join("trust-key");
+    std::env::set_var("RUNT_TRUST_KEY_PATH", key_path.to_str().unwrap());
+
+    let store =
+        crate::trusted_packages::TrustedPackageStore::open(tmp.path().join("trusted.sqlite"))
+            .unwrap();
+    let (room, _path) = test_room_with_path_and_store(&tmp, "approve.ipynb", store.clone());
+    {
+        let mut doc = room.doc.write().await;
+        doc.set_metadata_snapshot(&snapshot_with_uv(vec!["pandas>=2".to_string()]))
+            .unwrap();
+    }
+
+    let response = crate::requests::approve_trust::handle(&room, None).await;
+    assert!(matches!(response, NotebookResponse::Ok {}));
+
+    let info = runt_trust::TrustInfo {
+        status: runt_trust::TrustStatus::Untrusted,
+        uv_dependencies: vec!["Pandas".to_string()],
+        approved_uv_dependencies: vec![],
+        conda_dependencies: vec![],
+        approved_conda_dependencies: vec![],
+        conda_channels: vec![],
+        pixi_dependencies: vec![],
+        approved_pixi_dependencies: vec![],
+        pixi_pypi_dependencies: vec![],
+        approved_pixi_pypi_dependencies: vec![],
+        pixi_channels: vec![],
+    };
+    assert!(store.all_dependencies_approved(&info).unwrap());
+
+    std::env::remove_var("RUNT_TRUST_KEY_PATH");
+}
+
+#[tokio::test]
+#[serial]
+async fn test_allowlisted_unsigned_dependencies_auto_sign_and_trust() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let key_path = tmp.path().join("trust-key");
+    std::env::set_var("RUNT_TRUST_KEY_PATH", key_path.to_str().unwrap());
+
+    let store =
+        crate::trusted_packages::TrustedPackageStore::open(tmp.path().join("trusted.sqlite"))
+            .unwrap();
+    let seed = runt_trust::TrustInfo {
+        status: runt_trust::TrustStatus::Untrusted,
+        uv_dependencies: vec!["pandas".to_string(), "numpy".to_string()],
+        approved_uv_dependencies: vec![],
+        conda_dependencies: vec![],
+        approved_conda_dependencies: vec![],
+        conda_channels: vec![],
+        pixi_dependencies: vec![],
+        approved_pixi_dependencies: vec![],
+        pixi_pypi_dependencies: vec![],
+        approved_pixi_pypi_dependencies: vec![],
+        pixi_channels: vec![],
+    };
+    store.add_from_info(&seed, "test").unwrap();
+    let (room, _path) = test_room_with_path_and_store(&tmp, "auto.ipynb", store);
+    {
+        let mut doc = room.doc.write().await;
+        doc.set_metadata_snapshot(&snapshot_with_uv(vec![
+            "pandas>=2".to_string(),
+            "numpy".to_string(),
+        ]))
+        .unwrap();
+    }
+
+    check_and_update_trust_state(&room).await;
+
+    let ts = room.trust_state.read().await;
+    assert_eq!(ts.status, runt_trust::TrustStatus::Trusted);
+    assert_eq!(
+        ts.info.approved_uv_dependencies,
+        vec!["pandas>=2".to_string(), "numpy".to_string()]
+    );
+    drop(ts);
+    let snapshot = room.doc.read().await.get_metadata_snapshot().unwrap();
+    assert!(snapshot.runt.trust_signature.is_some());
+
+    std::env::remove_var("RUNT_TRUST_KEY_PATH");
+}
+
+#[tokio::test]
+#[serial]
+async fn test_allowlist_partial_coverage_stays_untrusted_with_markers() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let key_path = tmp.path().join("trust-key");
+    std::env::set_var("RUNT_TRUST_KEY_PATH", key_path.to_str().unwrap());
+
+    let store =
+        crate::trusted_packages::TrustedPackageStore::open(tmp.path().join("trusted.sqlite"))
+            .unwrap();
+    let seed = runt_trust::TrustInfo {
+        status: runt_trust::TrustStatus::Untrusted,
+        uv_dependencies: vec!["pandas".to_string()],
+        approved_uv_dependencies: vec![],
+        conda_dependencies: vec![],
+        approved_conda_dependencies: vec![],
+        conda_channels: vec![],
+        pixi_dependencies: vec![],
+        approved_pixi_dependencies: vec![],
+        pixi_pypi_dependencies: vec![],
+        approved_pixi_pypi_dependencies: vec![],
+        pixi_channels: vec![],
+    };
+    store.add_from_info(&seed, "test").unwrap();
+    let (room, _path) = test_room_with_path_and_store(&tmp, "partial.ipynb", store);
+    {
+        let mut doc = room.doc.write().await;
+        doc.set_metadata_snapshot(&snapshot_with_uv(vec![
+            "pandas>=2".to_string(),
+            "polars".to_string(),
+        ]))
+        .unwrap();
+    }
+
+    check_and_update_trust_state(&room).await;
+
+    let ts = room.trust_state.read().await;
+    assert_eq!(ts.status, runt_trust::TrustStatus::Untrusted);
+    assert_eq!(ts.info.approved_uv_dependencies, vec!["pandas>=2"]);
+    drop(ts);
+    let state = room.state.read(|sd| sd.read_state()).unwrap();
+    assert_eq!(state.trust.approved_uv_dependencies, vec!["pandas>=2"]);
+
+    std::env::remove_var("RUNT_TRUST_KEY_PATH");
+}
+
+#[tokio::test]
+#[serial]
+async fn test_allowlist_does_not_override_invalid_signature() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let key_path = tmp.path().join("trust-key");
+    std::env::set_var("RUNT_TRUST_KEY_PATH", key_path.to_str().unwrap());
+
+    let store =
+        crate::trusted_packages::TrustedPackageStore::open(tmp.path().join("trusted.sqlite"))
+            .unwrap();
+    let seed = runt_trust::TrustInfo {
+        status: runt_trust::TrustStatus::Untrusted,
+        uv_dependencies: vec!["numpy".to_string()],
+        approved_uv_dependencies: vec![],
+        conda_dependencies: vec![],
+        approved_conda_dependencies: vec![],
+        conda_channels: vec![],
+        pixi_dependencies: vec![],
+        approved_pixi_dependencies: vec![],
+        pixi_pypi_dependencies: vec![],
+        approved_pixi_pypi_dependencies: vec![],
+        pixi_channels: vec![],
+    };
+    store.add_from_info(&seed, "test").unwrap();
+    let (room, _path) = test_room_with_path_and_store(&tmp, "invalid.ipynb", store);
+    let mut snapshot = snapshot_with_uv(vec!["numpy".to_string()]);
+    snapshot.runt.trust_signature = Some("bad-signature-value".to_string());
+    {
+        let mut doc = room.doc.write().await;
+        doc.set_metadata_snapshot(&snapshot).unwrap();
+    }
+
+    check_and_update_trust_state(&room).await;
+
+    let ts = room.trust_state.read().await;
+    assert_eq!(ts.status, runt_trust::TrustStatus::SignatureInvalid);
+
+    std::env::remove_var("RUNT_TRUST_KEY_PATH");
 }
 
 #[tokio::test]
@@ -6105,10 +6313,13 @@ async fn test_clone_as_ephemeral_forks_cells_and_clears_outputs() {
         &rooms,
         &path_index,
         source_uuid,
-        Some(source_path.clone()),
-        &docs_dir,
-        blob_store.clone(),
-        false,
+        RoomCreationOptions {
+            path: Some(source_path.clone()),
+            docs_dir: &docs_dir,
+            blob_store: blob_store.clone(),
+            ephemeral: false,
+            trusted_packages: test_trusted_packages(),
+        },
     )
     .await;
 
@@ -6405,10 +6616,13 @@ async fn test_clone_as_ephemeral_carries_unknown_metadata_extras() {
         &rooms,
         &path_index,
         source_uuid,
-        Some(tmp.path().join("source.ipynb")),
-        &docs_dir,
-        blob_store.clone(),
-        false,
+        RoomCreationOptions {
+            path: Some(tmp.path().join("source.ipynb")),
+            docs_dir: &docs_dir,
+            blob_store: blob_store.clone(),
+            ephemeral: false,
+            trusted_packages: test_trusted_packages(),
+        },
     )
     .await;
 

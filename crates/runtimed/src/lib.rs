@@ -47,7 +47,12 @@ pub mod stream_terminal;
 pub mod sync_server;
 pub mod task_supervisor;
 pub mod terminal_size;
+pub(crate) mod trusted_packages;
 pub mod user_error;
+
+pub fn trusted_packages_db_path() -> std::path::PathBuf {
+    runtimed_client::daemon_base_dir().join("trusted-packages.sqlite")
+}
 
 /// Get the daemon version string (e.g., "0.1.0-dev.10+abc123").
 /// Used for protocol version checking and debugging.

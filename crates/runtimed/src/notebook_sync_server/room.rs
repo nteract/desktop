@@ -228,6 +228,8 @@ pub struct NotebookRoom {
     pub blob_store: Arc<BlobStore>,
     /// Trust state for this notebook (for auto-launch decisions).
     pub trust_state: Arc<RwLock<TrustState>>,
+    /// Daemon-local package allowlist for familiar dependency auto-approval.
+    pub trusted_packages: crate::trusted_packages::TrustedPackageStore,
     /// Per-notebook RuntimeStateDoc handle — daemon-authoritative ephemeral state
     /// (kernel status, queue, env sync). Clients sync read-only.
     /// Uses `std::sync::Mutex` internally (no `.await` needed).
@@ -279,12 +281,31 @@ impl NotebookRoom {
     /// Note: Trust state is initialized from disk because the Automerge doc
     /// starts empty (first client hasn't synced yet). Once the doc is populated,
     /// `check_and_update_trust_state` keeps room.trust_state current.
+    #[cfg(test)]
     pub fn new_fresh(
         uuid: uuid::Uuid,
         path: Option<PathBuf>,
         docs_dir: &Path,
         blob_store: Arc<BlobStore>,
         ephemeral: bool,
+    ) -> Self {
+        Self::new_fresh_with_trusted_packages(
+            uuid,
+            path,
+            docs_dir,
+            blob_store,
+            ephemeral,
+            crate::trusted_packages::TrustedPackageStore::unavailable("not configured"),
+        )
+    }
+
+    pub fn new_fresh_with_trusted_packages(
+        uuid: uuid::Uuid,
+        path: Option<PathBuf>,
+        docs_dir: &Path,
+        blob_store: Arc<BlobStore>,
+        ephemeral: bool,
+        trusted_packages: crate::trusted_packages::TrustedPackageStore,
     ) -> Self {
         let id = uuid;
         // Use uuid string as the notebook_id for doc filename derivation and NotebookDoc construction.
@@ -345,10 +366,14 @@ impl NotebookRoom {
                     info: runt_trust::TrustInfo {
                         status: runt_trust::TrustStatus::NoDependencies,
                         uv_dependencies: vec![],
+                        approved_uv_dependencies: vec![],
                         conda_dependencies: vec![],
+                        approved_conda_dependencies: vec![],
                         conda_channels: vec![],
                         pixi_dependencies: vec![],
+                        approved_pixi_dependencies: vec![],
                         pixi_pypi_dependencies: vec![],
+                        approved_pixi_pypi_dependencies: vec![],
                         pixi_channels: vec![],
                     },
                     pending_launch: false,
@@ -403,6 +428,7 @@ impl NotebookRoom {
             connections: RoomConnections::default(),
             blob_store,
             trust_state: Arc::new(RwLock::new(trust_state)),
+            trusted_packages,
             state,
             runtime_agent_handle: Arc::new(Mutex::new(None)),
             runtime_agent_env_path: Arc::new(RwLock::new(None)),
@@ -444,10 +470,14 @@ impl NotebookRoom {
                     info: runt_trust::TrustInfo {
                         status: runt_trust::TrustStatus::NoDependencies,
                         uv_dependencies: vec![],
+                        approved_uv_dependencies: vec![],
                         conda_dependencies: vec![],
+                        approved_conda_dependencies: vec![],
                         conda_channels: vec![],
                         pixi_dependencies: vec![],
+                        approved_pixi_dependencies: vec![],
                         pixi_pypi_dependencies: vec![],
+                        approved_pixi_pypi_dependencies: vec![],
                         pixi_channels: vec![],
                     },
                     pending_launch: false,
@@ -479,6 +509,9 @@ impl NotebookRoom {
             connections: RoomConnections::default(),
             blob_store,
             trust_state: Arc::new(RwLock::new(trust_state)),
+            trusted_packages: crate::trusted_packages::TrustedPackageStore::unavailable(
+                "not configured",
+            ),
             state,
             runtime_agent_handle: Arc::new(Mutex::new(None)),
             runtime_agent_env_path: Arc::new(RwLock::new(None)),

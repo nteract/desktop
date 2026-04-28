@@ -3,8 +3,8 @@ name = "sift-wasm"
 version = "0.1.7"
 edition.workspace = true
 description = "WASM bindings for nteract-predicate — used by @nteract/sift"
-repository.workspace = true
-license.workspace = true
+repository = "https://github.com/nteract/desktop"
+license = "BSD-3-Clause"
 publish = false
 
 [lib]

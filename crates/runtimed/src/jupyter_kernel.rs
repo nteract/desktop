@@ -287,6 +287,16 @@ impl KernelConnection for JupyterKernel {
                         cmd.stdout(Stdio::null());
                         cmd.stderr(Stdio::piped());
                         cmd.env("VIRTUAL_ENV", &pooled_env.venv_path);
+                        if bootstrap_dx {
+                            // Inline envs are daemon-owned and normally have
+                            // the launcher vendored into site-packages, but
+                            // old cache entries or pool-promoted envs may be
+                            // missing it. Inject the daemon-side launcher so
+                            // `-m nteract_kernel_launcher` works on cache hits
+                            // without requiring users to clear inline-envs.
+                            let dir = crate::launcher_cache::launcher_cache_dir().await?;
+                            cmd.env("PYTHONPATH", &dir);
+                        }
                         let uv_path = kernel_launch::tools::get_uv_path().await?;
                         if let Some(uv_dir) = uv_path.parent() {
                             cmd.env("PATH", prepend_to_path(uv_dir));
@@ -362,6 +372,14 @@ impl KernelConnection for JupyterKernel {
                         cmd.arg(&connection_file_path);
                         cmd.stdout(Stdio::null());
                         cmd.stderr(Stdio::piped());
+                        if bootstrap_dx {
+                            // See the uv:inline branch above. Conda inline
+                            // cache hits can predate launcher vendoring or be
+                            // claimed from a pool env; PYTHONPATH injection
+                            // makes those caches launchable.
+                            let dir = crate::launcher_cache::launcher_cache_dir().await?;
+                            cmd.env("PYTHONPATH", &dir);
+                        }
                         cmd
                     }
                     "conda:env_yml" => {
@@ -609,6 +627,14 @@ impl KernelConnection for JupyterKernel {
                         cmd.arg(&connection_file_path);
                         cmd.stdout(Stdio::null());
                         cmd.stderr(Stdio::piped());
+                        if bootstrap_dx {
+                            // Pool envs are daemon-owned and vendored at
+                            // creation/take time, but injecting the cached
+                            // launcher keeps stale pools from failing with
+                            // ModuleNotFoundError after an upgrade.
+                            let dir = crate::launcher_cache::launcher_cache_dir().await?;
+                            cmd.env("PYTHONPATH", &dir);
+                        }
 
                         if pooled_env.env_type == EnvType::Uv {
                             cmd.env("VIRTUAL_ENV", &pooled_env.venv_path);

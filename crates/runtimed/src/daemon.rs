@@ -32,6 +32,7 @@ use crate::protocol::{BlobRequest, BlobResponse, Request, Response};
 use crate::settings_doc::SettingsDoc;
 use crate::singleton::DaemonLock;
 use crate::task_supervisor::{spawn_best_effort, spawn_supervised};
+use crate::trusted_packages::{log_store_unavailable, TrustedPackageStore};
 use crate::{default_blob_store_dir, is_pool_env_dir, is_within_cache_dir, EnvType, PooledEnv};
 use runtimed_client::singleton::DaemonInfo;
 
@@ -48,6 +49,8 @@ pub struct DaemonConfig {
     pub execution_store_dir: PathBuf,
     /// Directory for persisted notebook Automerge documents.
     pub notebook_docs_dir: PathBuf,
+    /// SQLite database storing package names the user has approved before.
+    pub trusted_packages_db_path: PathBuf,
     /// Target number of UV environments to maintain.
     pub uv_pool_size: usize,
     /// Target number of Conda environments to maintain.
@@ -99,6 +102,7 @@ impl Default for DaemonConfig {
             blob_store_dir: default_blob_store_dir(),
             execution_store_dir: crate::default_execution_store_dir(),
             notebook_docs_dir: crate::default_notebook_docs_dir(),
+            trusted_packages_db_path: crate::trusted_packages_db_path(),
             uv_pool_size: 3,
             conda_pool_size: 3,
             pixi_pool_size: 2,
@@ -682,6 +686,8 @@ pub struct Daemon {
     pool_ready_pixi: Notify,
     /// Content-addressed blob store.
     pub(crate) blob_store: Arc<BlobStore>,
+    /// Local package allowlist used to auto-approve familiar dependencies.
+    pub(crate) trusted_packages: TrustedPackageStore,
     /// HTTP port for the blob server (set after startup).
     blob_port: Mutex<Option<u16>>,
     /// When the daemon process began. Reported via Ping for diagnostics.
@@ -808,6 +814,12 @@ impl Daemon {
         let pool_doc = Arc::new(RwLock::new(notebook_doc::pool_state::PoolDoc::new()));
 
         let blob_store = Arc::new(BlobStore::new(config.blob_store_dir.clone()));
+        let trusted_packages =
+            match TrustedPackageStore::open(config.trusted_packages_db_path.clone()) {
+                Ok(store) => store,
+                Err(error) => TrustedPackageStore::unavailable(error.to_string()),
+            };
+        log_store_unavailable(&trusted_packages);
 
         Ok(Arc::new(Self {
             uv_pool: Mutex::new(Pool::new(config.uv_pool_size, config.max_age_secs)),
@@ -825,6 +837,7 @@ impl Daemon {
             pool_doc,
             pool_doc_changed,
             blob_store,
+            trusted_packages,
             blob_port: Mutex::new(None),
             started_at: chrono::Utc::now(),
             notebook_rooms: Arc::new(Mutex::new(HashMap::new())),
@@ -1725,10 +1738,13 @@ impl Daemon {
                         &self.notebook_rooms,
                         &self.path_index,
                         ns_uuid,
-                        ns_path,
-                        &docs_dir,
-                        self.blob_store.clone(),
-                        false, // NotebookSync handshake is always persistent
+                        crate::notebook_sync_server::RoomCreationOptions {
+                            path: ns_path,
+                            docs_dir: &docs_dir,
+                            blob_store: self.blob_store.clone(),
+                            ephemeral: false, // NotebookSync handshake is always persistent
+                            trusted_packages: self.trusted_packages.clone(),
+                        },
                     )
                     .await
                 };
@@ -2021,10 +2037,13 @@ impl Daemon {
                     &self.notebook_rooms,
                     &self.path_index,
                     uuid,
-                    path,
-                    &docs_dir,
-                    self.blob_store.clone(),
-                    false, // OpenNotebook handshake is always persistent
+                    crate::notebook_sync_server::RoomCreationOptions {
+                        path,
+                        docs_dir: &docs_dir,
+                        blob_store: self.blob_store.clone(),
+                        ephemeral: false, // OpenNotebook handshake is always persistent
+                        trusted_packages: self.trusted_packages.clone(),
+                    },
                 )
                 .await
             }
@@ -2204,10 +2223,13 @@ impl Daemon {
             &self.notebook_rooms,
             &self.path_index,
             uuid,
-            None, // CreateNotebook creates untitled rooms with no file path
-            &docs_dir,
-            self.blob_store.clone(),
-            ephemeral,
+            crate::notebook_sync_server::RoomCreationOptions {
+                path: None, // CreateNotebook creates untitled rooms with no file path
+                docs_dir: &docs_dir,
+                blob_store: self.blob_store.clone(),
+                ephemeral,
+                trusted_packages: self.trusted_packages.clone(),
+            },
         )
         .await;
         self.mark_rooms_ever_seen();

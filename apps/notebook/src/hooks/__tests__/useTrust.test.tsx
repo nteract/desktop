@@ -43,6 +43,10 @@ vi.mock("../../lib/runtime-state", () => ({
     trust: {
       status: "untrusted",
       needs_approval: true,
+      approved_uv_dependencies: [],
+      approved_conda_dependencies: [],
+      approved_pixi_dependencies: [],
+      approved_pixi_pypi_dependencies: [],
     },
   }),
   useRuntimeStateLoaded: () => true,

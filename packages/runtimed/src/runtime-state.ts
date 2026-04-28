@@ -115,6 +115,10 @@ export type TrustStatus = "trusted" | "untrusted" | "signature_invalid" | "no_de
 export interface TrustState {
   status: TrustStatus;
   needs_approval: boolean;
+  approved_uv_dependencies: string[];
+  approved_conda_dependencies: string[];
+  approved_pixi_dependencies: string[];
+  approved_pixi_pypi_dependencies: string[];
 }
 
 export interface ExecutionState {
@@ -256,6 +260,10 @@ export const DEFAULT_RUNTIME_STATE: RuntimeState = {
   trust: {
     status: "no_dependencies",
     needs_approval: false,
+    approved_uv_dependencies: [],
+    approved_conda_dependencies: [],
+    approved_pixi_dependencies: [],
+    approved_pixi_pypi_dependencies: [],
   },
   last_saved: null,
   path: null,

@@ -49,10 +49,14 @@ export interface DaemonInfo {
 export interface TrustInfo {
   status: "trusted" | "untrusted" | "signature_invalid" | "no_dependencies";
   uv_dependencies: string[];
+  approved_uv_dependencies: string[];
   conda_dependencies: string[];
+  approved_conda_dependencies: string[];
   conda_channels: string[];
   pixi_dependencies: string[];
+  approved_pixi_dependencies: string[];
   pixi_pypi_dependencies: string[];
+  approved_pixi_pypi_dependencies: string[];
   pixi_channels: string[];
 }
 

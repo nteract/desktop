@@ -48,6 +48,10 @@
 //!   trust/
 //!     status: Str          ("trusted" | "untrusted" | "signature_invalid" | "no_dependencies")
 //!     needs_approval: bool
+//!     approved_uv_dependencies: List[Str]
+//!     approved_conda_dependencies: List[Str]
+//!     approved_pixi_dependencies: List[Str]
+//!     approved_pixi_pypi_dependencies: List[Str]
 //!   project_context/         Map (daemon-observed project-file context)
 //!     state: Str              ("pending" | "not_found" | "detected" | "unreadable")
 //!     observed_at: Str        (ISO timestamp, "" when state == "pending")
@@ -231,6 +235,14 @@ pub struct TrustRuntimeState {
     pub status: String,
     /// Whether the frontend should show the trust approval dialog
     pub needs_approval: bool,
+    /// UV dependency specs already present in the local trusted package allowlist.
+    pub approved_uv_dependencies: Vec<String>,
+    /// Conda dependency specs already present in the local trusted package allowlist.
+    pub approved_conda_dependencies: Vec<String>,
+    /// Pixi conda-style dependency specs already present in the local trusted package allowlist.
+    pub approved_pixi_dependencies: Vec<String>,
+    /// Pixi PyPI dependency specs already present in the local trusted package allowlist.
+    pub approved_pixi_pypi_dependencies: Vec<String>,
 }
 
 /// Snapshot of a single comm entry in the RuntimeStateDoc.
@@ -375,6 +387,14 @@ impl RuntimeStateDoc {
             .expect("scaffold trust.status");
         doc.put(&trust, "needs_approval", false)
             .expect("scaffold trust.needs_approval");
+        doc.put_object(&trust, "approved_uv_dependencies", ObjType::List)
+            .expect("scaffold trust.approved_uv_dependencies");
+        doc.put_object(&trust, "approved_conda_dependencies", ObjType::List)
+            .expect("scaffold trust.approved_conda_dependencies");
+        doc.put_object(&trust, "approved_pixi_dependencies", ObjType::List)
+            .expect("scaffold trust.approved_pixi_dependencies");
+        doc.put_object(&trust, "approved_pixi_pypi_dependencies", ObjType::List)
+            .expect("scaffold trust.approved_pixi_pypi_dependencies");
 
         // project_context/ — daemon-observed project-file context
         scaffold_project_context(&mut doc);
@@ -466,6 +486,14 @@ impl RuntimeStateDoc {
             .expect("scaffold trust.status");
         doc.put(&trust, "needs_approval", false)
             .expect("scaffold trust.needs_approval");
+        doc.put_object(&trust, "approved_uv_dependencies", ObjType::List)
+            .expect("scaffold trust.approved_uv_dependencies");
+        doc.put_object(&trust, "approved_conda_dependencies", ObjType::List)
+            .expect("scaffold trust.approved_conda_dependencies");
+        doc.put_object(&trust, "approved_pixi_dependencies", ObjType::List)
+            .expect("scaffold trust.approved_pixi_dependencies");
+        doc.put_object(&trust, "approved_pixi_pypi_dependencies", ObjType::List)
+            .expect("scaffold trust.approved_pixi_pypi_dependencies");
 
         scaffold_project_context(&mut doc);
 
@@ -774,6 +802,22 @@ impl RuntimeStateDoc {
         out
     }
 
+    fn replace_str_list(
+        &mut self,
+        obj: &automerge::ObjId,
+        key: &'static str,
+        values: &[String],
+    ) -> Result<(), RuntimeStateError> {
+        let list = self.scaffold_list(obj, key)?;
+        for i in (0..self.doc.length(&list)).rev() {
+            self.doc.delete(&list, i)?;
+        }
+        for (i, value) in values.iter().enumerate() {
+            self.doc.insert(&list, i, value.as_str())?;
+        }
+        Ok(())
+    }
+
     /// Read a List[Map] from a map object as `Vec<serde_json::Value>`.
     fn read_json_list(&self, obj: &automerge::ObjId, key: &str) -> Vec<serde_json::Value> {
         let Some(list_id) =
@@ -806,16 +850,54 @@ impl RuntimeStateDoc {
         status: &str,
         needs_approval: bool,
     ) -> Result<(), RuntimeStateError> {
+        self.set_trust_with_approved(status, needs_approval, &[], &[], &[], &[])
+    }
+
+    pub fn set_trust_with_approved(
+        &mut self,
+        status: &str,
+        needs_approval: bool,
+        approved_uv_dependencies: &[String],
+        approved_conda_dependencies: &[String],
+        approved_pixi_dependencies: &[String],
+        approved_pixi_pypi_dependencies: &[String],
+    ) -> Result<(), RuntimeStateError> {
         let trust = self.scaffold_map("trust")?;
         let cur_status = self.read_str(&trust, "status");
         let cur_needs = self.read_bool(&trust, "needs_approval");
+        let cur_uv = self.read_str_list(&trust, "approved_uv_dependencies");
+        let cur_conda = self.read_str_list(&trust, "approved_conda_dependencies");
+        let cur_pixi = self.read_str_list(&trust, "approved_pixi_dependencies");
+        let cur_pixi_pypi = self.read_str_list(&trust, "approved_pixi_pypi_dependencies");
 
-        if cur_status == status && cur_needs == needs_approval {
+        if cur_status == status
+            && cur_needs == needs_approval
+            && cur_uv == approved_uv_dependencies
+            && cur_conda == approved_conda_dependencies
+            && cur_pixi == approved_pixi_dependencies
+            && cur_pixi_pypi == approved_pixi_pypi_dependencies
+        {
             return Ok(());
         }
 
         self.doc.put(&trust, "status", status)?;
         self.doc.put(&trust, "needs_approval", needs_approval)?;
+        self.replace_str_list(&trust, "approved_uv_dependencies", approved_uv_dependencies)?;
+        self.replace_str_list(
+            &trust,
+            "approved_conda_dependencies",
+            approved_conda_dependencies,
+        )?;
+        self.replace_str_list(
+            &trust,
+            "approved_pixi_dependencies",
+            approved_pixi_dependencies,
+        )?;
+        self.replace_str_list(
+            &trust,
+            "approved_pixi_pypi_dependencies",
+            approved_pixi_pypi_dependencies,
+        )?;
         Ok(())
     }
 
@@ -2319,6 +2401,11 @@ impl RuntimeStateDoc {
             .map(|t| TrustRuntimeState {
                 status: self.read_str(t, "status"),
                 needs_approval: self.read_bool(t, "needs_approval"),
+                approved_uv_dependencies: self.read_str_list(t, "approved_uv_dependencies"),
+                approved_conda_dependencies: self.read_str_list(t, "approved_conda_dependencies"),
+                approved_pixi_dependencies: self.read_str_list(t, "approved_pixi_dependencies"),
+                approved_pixi_pypi_dependencies: self
+                    .read_str_list(t, "approved_pixi_pypi_dependencies"),
             })
             .unwrap_or_default();
 

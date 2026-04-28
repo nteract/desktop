@@ -10,6 +10,46 @@ pub struct TrustState {
     pub pending_launch: bool,
 }
 
+fn enrich_trust_info(room: &NotebookRoom, trust: &mut TrustState) {
+    if let Err(error) = room.trusted_packages.enrich_info(&mut trust.info) {
+        warn!(
+            "[trusted-packages] Failed to read package allowlist; continuing without approved markers: {}",
+            error
+        );
+    }
+}
+
+fn trust_status_str(status: &runt_trust::TrustStatus) -> &'static str {
+    match status {
+        runt_trust::TrustStatus::Trusted => "trusted",
+        runt_trust::TrustStatus::Untrusted => "untrusted",
+        runt_trust::TrustStatus::SignatureInvalid => "signature_invalid",
+        runt_trust::TrustStatus::NoDependencies => "no_dependencies",
+    }
+}
+
+fn trust_needs_approval(status: &runt_trust::TrustStatus) -> bool {
+    !matches!(
+        status,
+        runt_trust::TrustStatus::Trusted | runt_trust::TrustStatus::NoDependencies
+    )
+}
+
+pub(crate) fn write_trust_to_runtime_state(room: &NotebookRoom, trust: &TrustState) {
+    if let Err(e) = room.state.with_doc(|sd| {
+        sd.set_trust_with_approved(
+            trust_status_str(&trust.status),
+            trust_needs_approval(&trust.status),
+            &trust.info.approved_uv_dependencies,
+            &trust.info.approved_conda_dependencies,
+            &trust.info.approved_pixi_dependencies,
+            &trust.info.approved_pixi_pypi_dependencies,
+        )
+    }) {
+        warn!("[runtime-state] {}", e);
+    }
+}
+
 /// Check if a notebook's metadata snapshot has inline dependencies or Deno config.
 /// Returns the appropriate env_source if found ("uv:inline", "conda:inline", or "deno").
 ///
@@ -750,12 +790,38 @@ pub(crate) async fn check_and_update_trust_state(room: &NotebookRoom) {
         return;
     };
 
-    let new_trust = verify_trust_from_snapshot(&current_metadata);
+    let mut new_trust = verify_trust_from_snapshot(&current_metadata);
+    enrich_trust_info(room, &mut new_trust);
 
     let current_status = {
         let ts = room.trust_state.read().await;
         ts.status.clone()
     };
+
+    if matches!(new_trust.status, runt_trust::TrustStatus::Untrusted) {
+        match room
+            .trusted_packages
+            .all_dependencies_approved(&new_trust.info)
+        {
+            Ok(true) => match auto_approve_allowlisted_snapshot(room).await {
+                Ok(true) => return,
+                Ok(false) => {}
+                Err(e) => {
+                    warn!(
+                        "[trusted-packages] Failed to auto-approve allowlisted dependencies: {}",
+                        e
+                    );
+                }
+            },
+            Ok(false) => {}
+            Err(e) => {
+                warn!(
+                    "[trusted-packages] Failed to read package allowlist; trust remains untrusted: {}",
+                    e
+                );
+            }
+        }
+    }
 
     // Auto re-sign: if the user has already approved this notebook, deps
     // changes shouldn't flip it back to SignatureInvalid (which would kill
@@ -790,17 +856,6 @@ pub(crate) async fn check_and_update_trust_state(room: &NotebookRoom) {
             current_status, new_trust.status
         );
 
-        let needs_approval = !matches!(
-            new_trust.status,
-            runt_trust::TrustStatus::Trusted | runt_trust::TrustStatus::NoDependencies
-        );
-        let status_str = match &new_trust.status {
-            runt_trust::TrustStatus::Trusted => "trusted",
-            runt_trust::TrustStatus::Untrusted => "untrusted",
-            runt_trust::TrustStatus::SignatureInvalid => "signature_invalid",
-            runt_trust::TrustStatus::NoDependencies => "no_dependencies",
-        };
-
         // Update room.trust_state so auto-launch and reconnection use fresh state
         {
             let mut ts = room.trust_state.write().await;
@@ -808,13 +863,74 @@ pub(crate) async fn check_and_update_trust_state(room: &NotebookRoom) {
         }
 
         // Update RuntimeStateDoc so the frontend banner reacts immediately
-        if let Err(e) = room
-            .state
-            .with_doc(|sd| sd.set_trust(status_str, needs_approval))
+        let ts = room.trust_state.read().await;
+        write_trust_to_runtime_state(room, &ts);
+    } else {
+        let current_info = {
+            let ts = room.trust_state.read().await;
+            ts.info.clone()
+        };
+        if current_info.approved_uv_dependencies != new_trust.info.approved_uv_dependencies
+            || current_info.approved_conda_dependencies
+                != new_trust.info.approved_conda_dependencies
+            || current_info.approved_pixi_dependencies != new_trust.info.approved_pixi_dependencies
+            || current_info.approved_pixi_pypi_dependencies
+                != new_trust.info.approved_pixi_pypi_dependencies
         {
-            warn!("[runtime-state] {}", e);
+            {
+                let mut ts = room.trust_state.write().await;
+                *ts = new_trust;
+            }
+            let ts = room.trust_state.read().await;
+            write_trust_to_runtime_state(room, &ts);
         }
     }
+}
+
+async fn auto_approve_allowlisted_snapshot(room: &NotebookRoom) -> Result<bool, String> {
+    let persist_bytes = {
+        let mut doc = room.doc.write().await;
+        let Some(mut snapshot) = doc.get_metadata_snapshot() else {
+            return Ok(false);
+        };
+
+        let mut trust = verify_trust_from_snapshot(&snapshot);
+        enrich_trust_info(room, &mut trust);
+        if !matches!(trust.status, runt_trust::TrustStatus::Untrusted) {
+            return Ok(false);
+        }
+        match room.trusted_packages.all_dependencies_approved(&trust.info) {
+            Ok(true) => {}
+            Ok(false) => return Ok(false),
+            Err(e) => return Err(e.to_string()),
+        }
+
+        auto_sign_in_place(&mut snapshot)?;
+        doc.set_metadata_snapshot(&snapshot)
+            .map_err(|e| format!("Failed to write allowlist trust approval: {}", e))?;
+        doc.save()
+    };
+
+    let _ = room.broadcasts.changed_tx.send(());
+    if let Some(ref debouncer) = room.persistence.debouncer {
+        let _ = debouncer.persist_tx.send(Some(persist_bytes));
+    }
+
+    let mut updated = {
+        let doc = room.doc.read().await;
+        let Some(snapshot) = doc.get_metadata_snapshot() else {
+            return Ok(false);
+        };
+        verify_trust_from_snapshot(&snapshot)
+    };
+    enrich_trust_info(room, &mut updated);
+    {
+        let mut ts = room.trust_state.write().await;
+        *ts = updated;
+    }
+    let ts = room.trust_state.read().await;
+    write_trust_to_runtime_state(room, &ts);
+    Ok(true)
 }
 
 /// Sign the snapshot's runt dependency metadata with the daemon's trust key
@@ -1042,10 +1158,14 @@ pub(crate) fn verify_trust_from_file(notebook_path: &Path) -> TrustState {
             info: runt_trust::TrustInfo {
                 status: runt_trust::TrustStatus::Untrusted,
                 uv_dependencies: vec![],
+                approved_uv_dependencies: vec![],
                 conda_dependencies: vec![],
+                approved_conda_dependencies: vec![],
                 conda_channels: vec![],
                 pixi_dependencies: vec![],
+                approved_pixi_dependencies: vec![],
                 pixi_pypi_dependencies: vec![],
+                approved_pixi_pypi_dependencies: vec![],
                 pixi_channels: vec![],
             },
             pending_launch: false,
@@ -1083,10 +1203,14 @@ pub(crate) fn verify_trust_from_snapshot(snapshot: &NotebookMetadataSnapshot) ->
             info: runt_trust::TrustInfo {
                 status: runt_trust::TrustStatus::Untrusted,
                 uv_dependencies: vec![],
+                approved_uv_dependencies: vec![],
                 conda_dependencies: vec![],
+                approved_conda_dependencies: vec![],
                 conda_channels: vec![],
                 pixi_dependencies: vec![],
+                approved_pixi_dependencies: vec![],
                 pixi_pypi_dependencies: vec![],
+                approved_pixi_pypi_dependencies: vec![],
                 pixi_channels: vec![],
             },
             pending_launch: false,

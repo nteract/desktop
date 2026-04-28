@@ -101,13 +101,14 @@ jiter = { workspace = true }
 # pyproject.toml parsing for ProjectContext (handles PEP 508 specs with
 # commas inside bracket groups, which the prior line-scanner mangled).
 toml = "1"
+rusqlite = { version = "0.32", features = ["bundled"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 nix = { version = "0.31", features = ["signal", "process"] }
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.52", features = ["Win32_Storage_FileSystem", "Win32_Foundation"] }
+windows-sys = { version = "0.52", features = ["Win32_Storage_FileSystem", "Win32_Foundation", "Win32_Security", "Win32_Security_Authorization"] }
 
 [dev-dependencies]
 tempfile = "3"
