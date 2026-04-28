@@ -1971,6 +1971,47 @@ class TestKernelLifecycle:
         assert not await session.kernel_started()
 
 
+class TestWidgetRuntimeState:
+    """Widget comms are visible through the CRDT-backed runtime state."""
+
+    async def test_private_widget_snapshot_reads_runtime_state_comms(self, session):
+        """ipywidgets comm_open state lands in RuntimeStateDoc for Python inspection."""
+        await async_start_kernel_with_retry(session)
+
+        cell_id = await session.create_cell(
+            "from IPython.display import display\n"
+            "import ipywidgets as widgets\n"
+            "slider = widgets.IntSlider(value=7, description='probe')\n"
+            "display(slider)\n"
+        )
+
+        result = await session.execute_cell(cell_id)
+        assert result.success, result.stderr
+
+        notebook = runtimed.Notebook(session)
+
+        def has_slider_comm():
+            return any(
+                entry.model_name == "IntSliderModel"
+                and entry.model_module == "@jupyter-widgets/controls"
+                and entry.state.get("value") == 7
+                and entry.state.get("description") == "probe"
+                for entry in notebook._widgets.values()
+            )
+
+        await async_wait_for_sync(
+            has_slider_comm,
+            timeout=20.0,
+            interval=0.25,
+            description="widget comm state in RuntimeStateDoc",
+        )
+
+        slider = next(
+            entry for entry in notebook._widgets.values() if entry.model_name == "IntSliderModel"
+        )
+        assert slider.target_name == "jupyter.widget"
+
+
 class TestOutputTypes:
     """Test different output types from execution."""
 

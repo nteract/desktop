@@ -56,18 +56,16 @@ class Notebook:
         """Current runtime state read from the local replica.
 
         Returns a ``RuntimeState`` with ``.kernel``, ``.queue``, ``.env``,
-        ``.executions``, and ``.comms`` — useful for polling kernel status
-        or inspecting widget state.
+        ``.executions``, and ``.comms`` — useful for polling kernel status.
         """
         return self._session.get_runtime_state_sync()
 
     @property
-    def widgets(self) -> dict:
-        """Active ipywidgets keyed by comm_id.
+    def _widgets(self) -> dict:
+        """Private snapshot of active ipywidget comms keyed by comm_id.
 
-        Each value is a ``CommDocEntry`` with ``.model_name``, ``.state``
-        (dict), ``.model_module``, etc. Filters ``runtime.comms`` to entries
-        with ``target_name == "jupyter.widget"``.
+        This reads from RuntimeStateDoc via the local CRDT replica. It is for
+        tests and diagnostics, not a stable Python widget API.
         """
         return {
             cid: entry
