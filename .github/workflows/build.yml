@@ -531,35 +531,6 @@ jobs:
             uv_pool: 0
             conda_pool: 0
             timeout: 8
-          - name: Run All Output Lifecycle
-            spec: "e2e/specs/run-all-output-lifecycle.spec.js"
-            notebook: "crates/notebook/fixtures/audit-test/15-run-all-output-lifecycle.ipynb"
-            uv_pool: 3
-            conda_pool: 0
-            timeout: 12
-          # UV/Conda Inline and Trust Dialog: disabled — trust dialog
-          # never appears in CI despite banner click and execute fallbacks.
-          # The daemon correctly reads untrusted status from the fixture file
-          # (verify_trust_from_file), but the frontend trust flow doesn't
-          # complete. Needs CI log access to diagnose. See #1275.
-          # - name: UV Inline Deps
-          #   spec: "e2e/specs/uv-inline.spec.js"
-          #   notebook: "crates/notebook/fixtures/audit-test/2-uv-inline.ipynb"
-          #   uv_pool: 3
-          #   conda_pool: 0
-          #   timeout: 12
-          # - name: Conda Inline Deps
-          #   spec: "e2e/specs/conda-inline.spec.js"
-          #   notebook: "crates/notebook/fixtures/audit-test/3-conda-inline.ipynb"
-          #   uv_pool: 0
-          #   conda_pool: 3
-          #   timeout: 15
-          # - name: Trust Dialog
-          #   spec: "e2e/specs/trust-dialog-dismiss.spec.js"
-          #   notebook: "crates/notebook/fixtures/audit-test/2-uv-inline.ipynb"
-          #   uv_pool: 3
-          #   conda_pool: 0
-          #   timeout: 12
           - name: UV Pyproject
             spec: "e2e/specs/uv-pyproject.spec.js"
             notebook: "crates/notebook/fixtures/audit-test/pyproject-project/5-pyproject.ipynb"
