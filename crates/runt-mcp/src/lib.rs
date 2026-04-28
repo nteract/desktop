@@ -122,6 +122,29 @@ impl NteractMcp {
     pub fn last_session_drop(&self) -> &Arc<RwLock<Option<SessionDropInfo>>> {
         &self.last_session_drop
     }
+
+    /// Disconnect this MCP process's peer from the active notebook session.
+    ///
+    /// This only drops **our** peer connection — it does NOT shut down the
+    /// kernel or evict the room. The daemon tracks `active_peers` per room
+    /// and only schedules eviction when the count hits zero. If other peers
+    /// (humans, other agents) are still connected, they are unaffected and
+    /// the room stays alive.
+    ///
+    /// Call this before the process exits so the daemon sees a clean TCP
+    /// close immediately rather than waiting for the OS to reclaim the
+    /// socket (which delays the eviction timer start when we are the last
+    /// peer).
+    pub async fn shutdown(&self) {
+        let old = self.session.write().await.take();
+        if let Some(session) = old {
+            tracing::info!(
+                "[mcp] Shutdown: disconnecting our peer from session {}",
+                session.notebook_id
+            );
+            drop(session);
+        }
+    }
 }
 
 impl ServerHandler for NteractMcp {

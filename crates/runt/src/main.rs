@@ -849,6 +849,7 @@ async fn run_mcp_server(no_show: bool) -> Result<()> {
 
     // Grab shared state handles before serving (serve consumes the server)
     let session = server.session().clone();
+    let session_for_shutdown = session.clone();
     let peer_label = server.peer_label_shared().clone();
     let last_session_drop = server.last_session_drop().clone();
 
@@ -882,6 +883,34 @@ async fn run_mcp_server(no_show: bool) -> Result<()> {
         runtimed_client::telemetry::heartbeat_loop("mcp", "telemetry_last_mcp_ping_at").await;
     });
 
+    // Listen for SIGTERM so we can drop the session cleanly before exit.
+    // Without this, SIGTERM from the gremlin harness (or systemd, or the
+    // proxy) terminates the process immediately — the daemon only learns
+    // the peer is gone when the OS reclaims the TCP socket, which delays
+    // the eviction timer start.
+    let sigterm = async {
+        #[cfg(unix)]
+        {
+            match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+                Ok(mut sig) => {
+                    sig.recv().await;
+                }
+                Err(e) => {
+                    tracing::warn!("[mcp] Failed to register SIGTERM handler: {e}");
+                    // Fall back to never resolving — the other select arms
+                    // handle shutdown, and SIGTERM will use the default
+                    // handler (immediate process termination).
+                    std::future::pending::<()>().await;
+                }
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            // On non-Unix, never resolve — the other select arms handle shutdown.
+            std::future::pending::<()>().await;
+        }
+    };
+
     tokio::select! {
         result = handle.waiting() => {
             // MCP client disconnected — normal shutdown
@@ -898,6 +927,34 @@ async fn run_mcp_server(no_show: bool) -> Result<()> {
             tokio::time::sleep(std::time::Duration::from_millis(200)).await;
             std::process::exit(code);
         }
+        _ = sigterm => {
+            tracing::info!("[mcp] Received SIGTERM, shutting down gracefully");
+        }
+    }
+
+    // Disconnect our peer from the notebook session before the process exits.
+    //
+    // This only drops OUR peer connection to the daemon — it does NOT shut
+    // down the kernel or evict the room. The daemon tracks `active_peers`
+    // per room and only starts the eviction timer when the count hits zero.
+    // If other peers (humans, other MCP agents) are still connected, the
+    // room and kernel stay alive.
+    //
+    // Why bother? Without an explicit drop, the OS reclaims the TCP socket
+    // on process exit, but the timing is non-deterministic (especially
+    // under SIGTERM where tokio runtime teardown order is unreliable). A
+    // clean disconnect lets the daemon decrement the peer count immediately.
+    //
+    // Runs on both normal exit (MCP client disconnect) and SIGTERM. On
+    // daemon upgrade the std::process::exit() path skips this — the proxy
+    // will re-establish the session on the new child anyway.
+    let old = session_for_shutdown.write().await.take();
+    if let Some(session) = old {
+        tracing::info!(
+            "[mcp] Disconnecting our peer from session {} before exit",
+            session.notebook_id
+        );
+        drop(session);
     }
 
     Ok(())
