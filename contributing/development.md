@@ -20,19 +20,17 @@
 | Lint (check mode) | `cargo xtask lint` |
 | Lint (auto-fix) | `cargo xtask lint --fix` |
 
-## Build Cache (sccache)
+## Build Cache
 
-Install [sccache](https://github.com/mozilla/sccache) to share compiled
-artifacts across worktrees. Without it, each worktree rebuilds ~788 crates from
-scratch.
+Local dev relies on cargo's built-in incremental compilation — tight edit-check
+loops reuse rustc's per-function artifacts and finish in seconds.
 
-```bash
-brew install sccache   # macOS
-```
-
-The xtask commands auto-detect sccache and set `RUSTC_WRAPPER` when it's
-available — no configuration needed. You'll see "Using sccache for compilation
-cache" in the build output when it's active.
+**sccache is not recommended.** It can't cache incremental builds, so enabling
+it forces `CARGO_INCREMENTAL=0` and loses the edit-loop speedup. It also breaks
+WASM builds: sccache wraps `clang` for C compilation, but its clang doesn't
+support `wasm32-unknown-unknown`, causing `zstd-sys` (and similar C deps) to
+fail. If you have `RUSTC_WRAPPER=sccache` in your shell profile, remove it or
+xtask will strip it automatically for `wasm-pack` invocations.
 
 ## Windows Target Checks From macOS
 

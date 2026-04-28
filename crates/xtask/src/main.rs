@@ -6,7 +6,6 @@ use std::fs;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{exit, Child, Command, ExitStatus, Stdio};
-use std::sync::OnceLock;
 use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 
@@ -477,7 +476,6 @@ fn run_notebook_dev_app(notebook: Option<&str>, attach: bool, force_dev_mode: bo
 
     let vite_port = resolve_vite_port(force_dev_mode);
     let mut command = Command::new("cargo");
-    apply_sccache_env(&mut command);
 
     if attach {
         println!("Attaching to existing Vite server...");
@@ -2378,7 +2376,6 @@ fn run_cmd_ok(cmd: &str, args: &[&str]) -> bool {
     command.args(args);
     if cmd == "cargo" {
         apply_build_channel_env(&mut command);
-        apply_sccache_env(&mut command);
     }
 
     command.status().map(|s| s.success()).unwrap_or_else(|e| {
@@ -2474,7 +2471,9 @@ fn run_cmd(cmd: &str, args: &[&str]) {
     command.args(args);
     if cmd == "cargo" {
         apply_build_channel_env(&mut command);
-        apply_sccache_env(&mut command);
+    }
+    if cmd == "wasm-pack" {
+        strip_rustc_wrapper_for_wasm(&mut command);
     }
 
     let status = command.status().unwrap_or_else(|e| {
@@ -2640,63 +2639,13 @@ fn run_frontend_build(debug_bundle: bool) {
     }
 }
 
-/// Set `RUSTC_WRAPPER=sccache` for CI runs. Off for local dev by default.
-///
-/// sccache can't cache incremental builds, so turning it on forces
-/// `CARGO_INCREMENTAL=0` and loses cargo's per-function incremental
-/// speedup. That's fine in CI (fresh target dir every run) and bad
-/// locally (the incremental cache is already warm).
-///
-/// Enabled when `CI=1`/`CI=true` is set. Overridable in either
-/// direction:
-///
-/// - `NTERACT_SCCACHE=1` forces sccache on even for local runs.
-/// - `NTERACT_SCCACHE=0` forces it off even in CI.
-/// - An existing `RUSTC_WRAPPER` is always respected.
-fn apply_sccache_env(command: &mut Command) {
+fn strip_rustc_wrapper_for_wasm(command: &mut Command) {
     if env::var_os("RUSTC_WRAPPER").is_some() {
-        return;
-    }
-
-    let want_sccache = match env::var("NTERACT_SCCACHE").as_deref() {
-        Ok("1") | Ok("true") => true,
-        Ok("0") | Ok("false") => false,
-        _ => matches!(env::var("CI").as_deref(), Ok("1") | Ok("true")),
-    };
-    if !want_sccache {
-        return;
-    }
-
-    static AVAILABLE: OnceLock<bool> = OnceLock::new();
-    let available = *AVAILABLE.get_or_init(|| {
-        let found = Command::new("sccache")
-            .arg("--version")
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false);
-        if found {
-            println!("Using sccache for compilation cache");
-        }
-        found
-    });
-    if available {
-        command.env("RUSTC_WRAPPER", "sccache");
-        // sccache can't cache incremental builds. Disable it so every
-        // crate is cacheable. Respect an explicit user override.
-        if env::var_os("CARGO_INCREMENTAL").is_none() {
-            command.env("CARGO_INCREMENTAL", "0");
-        }
-        // Cap the on-disk cache generously. Multiple worktrees, lld
-        // rustflag rotations, and maturin vs. workspace builds each
-        // occupy their own cache keys; 10 GiB evicts hot entries.
-        // An explicit user override wins. `sccache/config` on disk
-        // wins over this env var when sccache-server is already
-        // running; this is the floor for first-start setups.
-        if env::var_os("SCCACHE_CACHE_SIZE").is_none() {
-            command.env("SCCACHE_CACHE_SIZE", "200G");
-        }
+        eprintln!(
+            "Note: stripping RUSTC_WRAPPER for wasm-pack \
+             (sccache/mold/etc. break wasm32 C builds)"
+        );
+        command.env_remove("RUSTC_WRAPPER");
     }
 }
 
