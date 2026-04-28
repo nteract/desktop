@@ -14,9 +14,10 @@
 import { browser } from "@wdio/globals";
 import {
   setCellSource,
-  waitForCellOutput,
+  waitForCellOutputMatching,
   waitForKernelReady,
   waitForNotebookSynced,
+  waitForOutputContaining,
 } from "../helpers.js";
 
 describe("UV pyproject.toml Detection", () => {
@@ -67,7 +68,7 @@ describe("UV pyproject.toml Detection", () => {
     console.log("[uv-pyproject] Clicked execute button.");
 
     // Wait for output
-    const output = await waitForCellOutput(codeCell, 30000);
+    const output = await waitForOutputContaining(codeCell, "python", 30000);
     console.log(`[uv-pyproject] Cell output: ${output}`);
 
     // Should show a Python path
@@ -93,7 +94,11 @@ describe("UV pyproject.toml Detection", () => {
     console.log("[uv-pyproject] Clicked execute button.");
 
     // Wait for version output
-    const output = await waitForCellOutput(cell, 60000);
+    const output = await waitForCellOutputMatching(
+      cell,
+      (text) => /^\d+\.\d+/.test(text),
+      60000,
+    );
     console.log(`[uv-pyproject] httpx version output: ${output}`);
 
     // Should show httpx version (e.g., "0.27.0")

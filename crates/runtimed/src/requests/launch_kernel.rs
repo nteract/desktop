@@ -17,12 +17,13 @@ use crate::daemon::Daemon;
 use crate::notebook_sync_server::{
     acquire_prewarmed_env_with_capture, build_launched_config, captured_env_for_runtime,
     captured_env_source_override, check_and_broadcast_sync_state, check_inline_deps,
-    extract_pixi_toml_deps, get_inline_conda_channels, get_inline_conda_deps, get_inline_uv_deps,
-    get_inline_uv_prerelease, missing_conda_env_yml_name, promote_inline_deps_to_project,
-    publish_kernel_state_presence, reset_starting_state, reset_starting_state_with_outcome,
-    resolve_metadata_snapshot, send_runtime_agent_request, try_conda_pool_for_inline_deps,
-    try_uv_pool_for_inline_deps, unified_env_on_disk, CapturedEnvRuntime, NotebookRoom,
-    ResetOutcome,
+    extract_pixi_toml_deps, format_conda_env_yml_build_details, get_inline_conda_channels,
+    get_inline_conda_deps, get_inline_uv_deps, get_inline_uv_prerelease,
+    missing_conda_env_yml_decision, project_environment_build_approved,
+    promote_inline_deps_to_project, publish_kernel_state_presence, reset_starting_state,
+    reset_starting_state_with_outcome, resolve_metadata_snapshot, send_runtime_agent_request,
+    try_conda_pool_for_inline_deps, try_uv_pool_for_inline_deps, unified_env_on_disk,
+    CapturedEnvRuntime, NotebookRoom, ResetOutcome,
 };
 use crate::protocol::NotebookResponse;
 use crate::requests::guarded;
@@ -877,23 +878,26 @@ pub(crate) async fn handle(
                         path: yml.clone(),
                         kind: crate::project_file::ProjectFileKind::EnvironmentYml,
                     };
-                    if let Some(env_name) = missing_conda_env_yml_name(&detected_yml) {
-                        let details = format!(
-                            "environment.yml declares conda env '{}', which is not built on this machine. Run: conda env create -f {}",
-                            env_name,
-                            yml.display()
-                        );
-                        warn!("[notebook-sync] {}", details);
-                        if let Err(e) = room.state.with_doc(|sd| {
-                            sd.set_lifecycle_with_error_details(
-                                &RuntimeLifecycle::AwaitingEnvBuild,
-                                Some(KernelErrorReason::CondaEnvYmlMissing),
-                                Some(&details),
-                            )
-                        }) {
-                            warn!("[runtime-state] {}", e);
+                    if let Some(decision) = missing_conda_env_yml_decision(&detected_yml) {
+                        if project_environment_build_approved(room, &detected_yml) {
+                            info!(
+                                "[notebook-sync] Approved environment.yml build for {:?}; continuing launch",
+                                detected_yml.path
+                            );
+                        } else {
+                            let details = format_conda_env_yml_build_details(&decision);
+                            warn!("[notebook-sync] {}", details);
+                            if let Err(e) = room.state.with_doc(|sd| {
+                                sd.set_lifecycle_with_error_details(
+                                    &RuntimeLifecycle::AwaitingEnvBuild,
+                                    Some(KernelErrorReason::CondaEnvYmlMissing),
+                                    Some(&details),
+                                )
+                            }) {
+                                warn!("[runtime-state] {}", e);
+                            }
+                            return NotebookResponse::Error { error: details };
                         }
-                        return NotebookResponse::Error { error: details };
                     }
 
                     // Resolve the conda prefix: prefix: → direct path,

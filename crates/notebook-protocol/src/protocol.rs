@@ -440,6 +440,15 @@ pub enum NotebookRequest {
         dependency_fingerprint: Option<String>,
     },
 
+    /// Approve creating/syncing a project-file environment for the current
+    /// project file snapshot. This is intentionally separate from
+    /// `ApproveTrust`: it records local project setup approval and does not
+    /// sign notebook dependency metadata.
+    ApproveProjectEnvironment {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        project_file_path: Option<String>,
+    },
+
     /// Get the full Automerge document bytes from the daemon's canonical doc.
     /// Used by the frontend to bootstrap its WASM Automerge peer.
     GetDocBytes {},
@@ -893,6 +902,9 @@ mod tests {
             NotebookRequest::ApproveTrust {
                 dependency_fingerprint: Some("{\"uv\":{\"dependencies\":[\"numpy\"]}}".into()),
             },
+            NotebookRequest::ApproveProjectEnvironment {
+                project_file_path: Some("/tmp/project/environment.yml".into()),
+            },
         ];
 
         for request in cases {
@@ -990,6 +1002,13 @@ mod tests {
                 serde_json::json!({
                     "action": "approve_trust",
                     "dependency_fingerprint": "{}",
+                }),
+            ),
+            (
+                "approve_project_environment",
+                serde_json::json!({
+                    "action": "approve_project_environment",
+                    "project_file_path": "/tmp/project/environment.yml",
                 }),
             ),
             (

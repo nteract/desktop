@@ -867,7 +867,15 @@ where
                 let mut save_succeeded = false;
                 if let Some(ref launched) = launched_snapshot {
                     let has_saved_path = room_for_eviction.identity.path.read().await.is_some();
-                    if has_saved_path {
+                    let env_source = room_for_eviction
+                        .state
+                        .read(|sd| sd.read_state().kernel.env_source.clone())
+                        .unwrap_or_default();
+                    let project_backed = matches!(
+                        env_source.as_str(),
+                        "pixi:toml" | "uv:pyproject" | "conda:env_yml"
+                    );
+                    if has_saved_path && !project_backed {
                         for runtime in [CapturedEnvRuntime::Uv, CapturedEnvRuntime::Conda] {
                             if flush_launched_deps_to_metadata(
                                 &room_for_eviction,
@@ -895,6 +903,11 @@ where
                                 ),
                             }
                         }
+                    } else if project_backed {
+                        debug!(
+                            "[notebook-sync] Skipping launched dep metadata flush for project-backed env {}",
+                            env_source
+                        );
                     }
                 }
 

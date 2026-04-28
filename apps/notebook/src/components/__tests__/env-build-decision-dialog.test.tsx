@@ -13,6 +13,14 @@ describe("extractCondaEnvCreateCommand", () => {
     );
   });
 
+  it("extracts explicit prefix create commands", () => {
+    expect(
+      extractCondaEnvCreateCommand(
+        "environment.yml declares conda env '/tmp/envs/hash', which is not built on this machine. Run: conda env create -p /tmp/envs/hash -f /tmp/project/environment.yml",
+      ),
+    ).toBe("conda env create -p /tmp/envs/hash -f /tmp/project/environment.yml");
+  });
+
   it("returns null when no command is present", () => {
     expect(extractCondaEnvCreateCommand("environment missing")).toBeNull();
   });
@@ -31,7 +39,7 @@ describe("EnvBuildDecisionDialog", () => {
         open
         onOpenChange={() => {}}
         errorDetails={DETAILS}
-        onRetry={() => {}}
+        onCreate={() => {}}
       />,
     );
 
@@ -53,7 +61,7 @@ describe("EnvBuildDecisionDialog", () => {
         open
         onOpenChange={() => {}}
         errorDetails={DETAILS}
-        onRetry={() => {}}
+        onCreate={() => {}}
       />,
     );
 
@@ -62,25 +70,25 @@ describe("EnvBuildDecisionDialog", () => {
     expect(screen.getByText("Copied")).toBeInTheDocument();
   });
 
-  it("invokes cancel and retry actions", async () => {
+  it("invokes cancel and create actions", async () => {
     const user = userEvent.setup();
     const onOpenChange = vi.fn();
-    const onRetry = vi.fn();
+    const onCreate = vi.fn();
 
     render(
       <EnvBuildDecisionDialog
         open
         onOpenChange={onOpenChange}
         errorDetails={DETAILS}
-        onRetry={onRetry}
+        onCreate={onCreate}
       />,
     );
 
     await user.click(screen.getByTestId("env-build-cancel-button"));
     expect(onOpenChange).toHaveBeenCalledWith(false);
 
-    await user.click(screen.getByTestId("env-build-retry-button"));
-    expect(onRetry).toHaveBeenCalledTimes(1);
+    await user.click(screen.getByTestId("env-build-create-button"));
+    expect(onCreate).toHaveBeenCalledTimes(1);
   });
 
   it("disables copy when details do not include a command", () => {
@@ -89,7 +97,7 @@ describe("EnvBuildDecisionDialog", () => {
         open
         onOpenChange={() => {}}
         errorDetails="environment.yml is missing a named env"
-        onRetry={() => {}}
+        onCreate={() => {}}
       />,
     );
 

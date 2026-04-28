@@ -297,6 +297,12 @@ export function useDaemonKernel({
     [client],
   );
 
+  const approveProjectEnvironment = useCallback(
+    (projectFilePath?: string) =>
+      client.approveProjectEnvironment(projectFilePath) as Promise<NotebookResponse>,
+    [client],
+  );
+
   const runAllCells = useCallback(
     () => client.runAllCells() as Promise<NotebookResponse>,
     [client],
@@ -336,6 +342,7 @@ export function useDaemonKernel({
     interruptKernel,
     shutdownKernel,
     syncEnvironment,
+    approveProjectEnvironment,
     runAllCells,
     runAllCellsGuarded,
     sendCommMessage,

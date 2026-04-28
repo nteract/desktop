@@ -39,4 +39,15 @@ describe("NotebookClient", () => {
       },
     });
   });
+
+  it("emits project environment approval requests", async () => {
+    const { client, sendRequest } = stubClient();
+
+    await client.approveProjectEnvironment("/tmp/project/environment.yml");
+
+    expect(sendRequest).toHaveBeenCalledWith({
+      type: "approve_project_environment",
+      project_file_path: "/tmp/project/environment.yml",
+    });
+  });
 });

@@ -194,6 +194,39 @@ export async function waitForCellOutput(cell, timeout = 120000) {
 }
 
 /**
+ * Wait for a cell output to satisfy a predicate.
+ * Returns the matching output text.
+ */
+export async function waitForCellOutputMatching(
+  cell,
+  predicate,
+  timeout = 120000,
+) {
+  let matched = "";
+  await browser.waitUntil(
+    async () => {
+      let text = "";
+      try {
+        text = await waitForCellOutput(cell, 1000);
+      } catch {
+        return false;
+      }
+      if (predicate(text)) {
+        matched = text;
+        return true;
+      }
+      return false;
+    },
+    {
+      timeout,
+      timeoutMsg: `Matching output did not appear within ${timeout / 1000}s`,
+      interval: 500,
+    },
+  );
+  return matched;
+}
+
+/**
  * Wait for stream output containing specific text.
  * Returns the full output text.
  */

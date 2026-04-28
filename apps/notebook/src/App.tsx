@@ -223,6 +223,7 @@ function AppContent() {
   const [trustDialogOpen, setTrustDialogOpen] = useState(false);
   const [envBuildDialogOpen, setEnvBuildDialogOpen] = useState(false);
   const [dismissedEnvBuildDetails, setDismissedEnvBuildDetails] = useState<string | null>(null);
+  const [envBuildCreating, setEnvBuildCreating] = useState(false);
   const [pendingTrustAction, setPendingTrustAction] = useState<PendingTrustAction | null>(null);
   const pendingTrustActionRef = useRef<PendingTrustAction | null>(null);
   const [trustActionNotice, setTrustActionNotice] = useState<string | null>(null);
@@ -376,6 +377,7 @@ function AppContent() {
     interruptKernel,
     shutdownKernel,
     syncEnvironment,
+    approveProjectEnvironment,
     runAllCells: daemonRunAllCells,
     runAllCellsGuarded,
     sendCommMessage,
@@ -1060,13 +1062,29 @@ function AppContent() {
     [errorDetails],
   );
 
-  const handleEnvBuildRetry = useCallback(async () => {
+  const handleEnvBuildCreate = useCallback(async () => {
     setDismissedEnvBuildDetails(null);
-    const started = await tryStartKernel();
-    if (!started) {
-      setEnvBuildDialogOpen(true);
+    setEnvBuildCreating(true);
+    try {
+      const projectFilePath =
+        runtimeState.project_context.state === "Detected" &&
+        runtimeState.project_context.project_file.kind === "EnvironmentYml"
+          ? runtimeState.project_context.project_file.absolute_path
+          : undefined;
+      const approval = await approveProjectEnvironment(projectFilePath);
+      if (approval.result === "error") {
+        logger.error("[App] approveProjectEnvironment failed", approval.error);
+        setEnvBuildDialogOpen(true);
+        return;
+      }
+      const started = await tryStartKernel();
+      if (!started) {
+        setEnvBuildDialogOpen(true);
+      }
+    } finally {
+      setEnvBuildCreating(false);
     }
-  }, [tryStartKernel]);
+  }, [approveProjectEnvironment, runtimeState.project_context, tryStartKernel]);
 
   // Start kernel explicitly with pyproject.toml (user action from DependencyHeader)
   const handleStartKernelWithPyproject = useCallback(async () => {
@@ -1762,7 +1780,8 @@ function AppContent() {
           open={envBuildDialogOpen}
           onOpenChange={handleEnvBuildDialogOpenChange}
           errorDetails={errorDetails}
-          onRetry={handleEnvBuildRetry}
+          onCreate={handleEnvBuildCreate}
+          creating={envBuildCreating}
         />
         <CrdtBridgeProvider
           getHandle={getHandle}
