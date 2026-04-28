@@ -582,8 +582,19 @@ pub async fn create_notebook(
             let peer_label = server.get_peer_label().await;
             crate::presence::announce(&result.handle, &peer_label).await;
 
-            let pkg_manager: notebook_protocol::connection::PackageManager = explicit_pkg_manager
-                .unwrap_or_else(|| super::deps::detect_package_manager(&result.handle));
+            // For Deno notebooks, there's no Python package manager — deps use
+            // Deno-native imports (npm: specifiers, URL imports). We skip
+            // detect_package_manager() which would fall back to "uv" since the
+            // Deno env_source hasn't propagated to the CRDT yet at this point.
+            let is_deno = runtime.eq_ignore_ascii_case("deno");
+            let pkg_manager: Option<notebook_protocol::connection::PackageManager> = if is_deno {
+                None
+            } else {
+                Some(
+                    explicit_pkg_manager
+                        .unwrap_or_else(|| super::deps::detect_package_manager(&result.handle)),
+                )
+            };
 
             let session = NotebookSession {
                 handle: result.handle,
@@ -605,7 +616,11 @@ pub async fn create_notebook(
             let all_deps = {
                 let guard = server.session.read().await;
                 guard.as_ref().map_or_else(Vec::new, |s| {
-                    super::deps::get_deps_for_manager_pub(&s.handle, &pkg_manager)
+                    if let Some(ref pm) = pkg_manager {
+                        super::deps::get_deps_for_manager_pub(&s.handle, pm)
+                    } else {
+                        Vec::new() // Deno: no Python deps
+                    }
                 })
             };
 
@@ -621,7 +636,10 @@ pub async fn create_notebook(
                 "runtime": runtime_info,
                 "dependencies": all_deps,
                 "added_dependencies": deps,
-                "package_manager": pkg_manager.as_str(),
+                "package_manager": match pkg_manager {
+                    Some(ref pm) => pm.as_str(),
+                    None => "deno",
+                },
                 "ephemeral": ephemeral,
                 "project_context": project_context,
             });
