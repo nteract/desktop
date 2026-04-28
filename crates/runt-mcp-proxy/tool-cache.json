@@ -570,66 +570,56 @@
       "idempotentHint": true,
       "openWorldHint": false
     },
-    "description": "Add a package. Use after='sync' or 'restart' to apply.",
+    "description": "Review or update notebook dependencies. With no parameters, returns current dependencies, dependency fingerprint, and trust state. Use add/remove arrays for edits; set trust=true to approve the resulting dependency metadata; set apply='sync' or 'restart' to apply.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "properties": {
-        "after": {
-          "default": null,
-          "description": "Action after adding: \"none\" (just record, default), \"sync\" (hot-install, UV only),\nor \"restart\" (restart kernel with new deps).",
+        "add": {
+          "default": [],
+          "description": "Packages to add to the notebook's current dependency manager.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "apply": {
+          "description": "Action after dependency edits: \"none\" (default), \"sync\" (hot-install,\nUV only), or \"restart\" (restart kernel with new deps).",
+          "examples": [
+            "none",
+            "sync",
+            "restart"
+          ],
           "type": [
             "string",
             "null"
           ]
         },
-        "package": {
-          "description": "Package to add (e.g. \"pandas>=2.0\").",
-          "type": "string"
+        "dependency_fingerprint": {
+          "default": null,
+          "description": "Optional fingerprint from a prior manage_dependencies or get_dependencies\nresponse. With add/remove, this must match the pre-change dependency\nfingerprint. Without add/remove, this must match the approved fingerprint.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "remove": {
+          "default": [],
+          "description": "Packages to remove from the notebook's current dependency manager.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "trust": {
+          "default": false,
+          "description": "Approve and sign the resulting dependency metadata. With add/remove this\ntrusts the post-change dependency set. Without add/remove this approves\nthe current dependency set.",
+          "type": "boolean"
         }
       },
-      "required": [
-        "package"
-      ],
-      "title": "AddDependencyParams",
+      "title": "ManageDependenciesParams",
       "type": "object"
     },
-    "name": "add_dependency"
-  },
-  {
-    "annotations": {
-      "destructiveHint": true,
-      "idempotentHint": true,
-      "openWorldHint": false
-    },
-    "description": "Remove a package. Requires kernel restart to take effect.",
-    "inputSchema": {
-      "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "properties": {
-        "package": {
-          "description": "Package to remove.",
-          "type": "string"
-        }
-      },
-      "required": [
-        "package"
-      ],
-      "title": "RemoveDependencyParams",
-      "type": "object"
-    },
-    "name": "remove_dependency"
-  },
-  {
-    "annotations": {
-      "openWorldHint": false,
-      "readOnlyHint": true
-    },
-    "description": "Get the notebook's declared dependencies.",
-    "inputSchema": {
-      "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "title": "GetDependenciesParams",
-      "type": "object"
-    },
-    "name": "get_dependencies"
+    "name": "manage_dependencies"
   },
   {
     "_meta": {

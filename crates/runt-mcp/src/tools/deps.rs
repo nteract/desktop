@@ -1,10 +1,11 @@
-//! Dependency management tools: add_dependency, remove_dependency, get_dependencies,
-//! approve_trust, sync_environment.
+//! Dependency management tools.
+
+use std::borrow::Cow;
 
 use rmcp::model::{CallToolRequestParams, CallToolResult};
 use rmcp::ErrorData as McpError;
-use schemars::JsonSchema;
-use serde::Deserialize;
+use schemars::{json_schema, JsonSchema, Schema, SchemaGenerator};
+use serde::{Deserialize, Deserializer};
 
 use notebook_protocol::protocol::{NotebookRequest, NotebookResponse};
 use notebook_sync::handle::DocHandle;
@@ -87,9 +88,98 @@ pub struct ApproveTrustParams {
     pub dependency_fingerprint: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DependencyApply {
+    None,
+    Sync,
+    Restart,
+    Other(String),
+}
+
+impl DependencyApply {
+    fn as_str(&self) -> &str {
+        match self {
+            Self::None => "none",
+            Self::Sync => "sync",
+            Self::Restart => "restart",
+            Self::Other(value) => value.as_str(),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for DependencyApply {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        Ok(match value.as_str() {
+            "none" => Self::None,
+            "sync" => Self::Sync,
+            "restart" => Self::Restart,
+            _ => Self::Other(value),
+        })
+    }
+}
+
+impl JsonSchema for DependencyApply {
+    fn inline_schema() -> bool {
+        true
+    }
+
+    fn schema_name() -> Cow<'static, str> {
+        "DependencyApply".into()
+    }
+
+    fn json_schema(_generator: &mut SchemaGenerator) -> Schema {
+        json_schema!({
+            "type": "string",
+            "description": "Dependency apply mode. Known values are 'none', 'sync', and 'restart'. Unknown strings are rejected with a targeted error.",
+            "examples": ["none", "sync", "restart"]
+        })
+    }
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Default, Deserialize, JsonSchema)]
+pub struct ManageDependenciesParams {
+    /// Packages to add to the notebook's current dependency manager.
+    #[serde(default)]
+    pub add: Vec<String>,
+    /// Packages to remove from the notebook's current dependency manager.
+    #[serde(default)]
+    pub remove: Vec<String>,
+    /// Approve and sign the resulting dependency metadata. With add/remove this
+    /// trusts the post-change dependency set. Without add/remove this approves
+    /// the current dependency set.
+    #[serde(default)]
+    pub trust: bool,
+    /// Optional fingerprint from a prior manage_dependencies or get_dependencies
+    /// response. With add/remove, this must match the pre-change dependency
+    /// fingerprint. Without add/remove, this must match the approved fingerprint.
+    #[serde(default)]
+    pub dependency_fingerprint: Option<String>,
+    /// Action after dependency edits: "none" (default), "sync" (hot-install,
+    /// UV only), or "restart" (restart kernel with new deps).
+    #[serde(default)]
+    pub apply: Option<DependencyApply>,
+}
+
 #[allow(dead_code)]
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct SyncEnvironmentParams {}
+
+fn parse_manage_dependencies_params(
+    request: &CallToolRequestParams,
+) -> Result<ManageDependenciesParams, McpError> {
+    let value = request
+        .arguments
+        .clone()
+        .map(serde_json::Value::Object)
+        .unwrap_or_else(|| serde_json::json!({}));
+    serde_json::from_value(value)
+        .map_err(|e| McpError::invalid_params(format!("Invalid parameters: {e}"), None))
+}
 
 /// Detect the active package manager for a notebook from its metadata or env_source.
 /// Each notebook has exactly one env manager type.
@@ -218,6 +308,186 @@ async fn approve_current_trust(
     }
 }
 
+fn dependency_mode(env_source: Option<&str>) -> &'static str {
+    use notebook_protocol::connection::EnvSource;
+    match env_source.map(EnvSource::parse) {
+        Some(EnvSource::PixiToml | EnvSource::Pyproject | EnvSource::EnvYml) => "project",
+        _ => "inline",
+    }
+}
+
+fn dependency_state_json(
+    handle: &DocHandle,
+    manager: &notebook_protocol::connection::PackageManager,
+) -> serde_json::Value {
+    let deps = get_deps_for_manager(handle, manager);
+    let dependency_fingerprint = dependency_fingerprint_for_handle(handle);
+    let runtime_state = handle.get_runtime_state().ok();
+    let env_source = runtime_state
+        .as_ref()
+        .map(|s| s.kernel.env_source.clone())
+        .filter(|s| !s.is_empty());
+    let prewarmed = runtime_state
+        .as_ref()
+        .map(|s| s.env.prewarmed_packages.clone())
+        .unwrap_or_default();
+
+    let mut result = serde_json::json!({
+        "dependencies": deps,
+        "package_manager": manager.as_str(),
+        "mode": dependency_mode(env_source.as_deref()),
+        "dependency_fingerprint": dependency_fingerprint,
+    });
+    if let Some(source) = env_source {
+        result["env_source"] = serde_json::json!(source);
+    }
+    if let Some(trust) = runtime_state.map(|s| s.trust) {
+        result["trust"] = serde_json::json!({
+            "status": trust.status,
+            "needs_approval": trust.needs_approval,
+        });
+    }
+    if !prewarmed.is_empty() {
+        result["available_packages"] = serde_json::json!(prewarmed);
+    }
+    result
+}
+
+async fn apply_dependency_changes(
+    handle: &DocHandle,
+    notebook_id: &str,
+    apply: &str,
+    result: &mut serde_json::Value,
+) {
+    match apply {
+        "sync" => {
+            match handle
+                .send_request(NotebookRequest::SyncEnvironment { guard: None })
+                .await
+            {
+                Ok(NotebookResponse::SyncEnvironmentComplete {
+                    synced_packages, ..
+                }) => {
+                    result["apply"] = serde_json::json!({
+                        "mode": "sync",
+                        "success": true,
+                        "synced_packages": synced_packages,
+                    });
+                }
+                Ok(NotebookResponse::GuardRejected { reason }) => {
+                    result["apply"] = serde_json::json!({
+                        "mode": "sync",
+                        "success": false,
+                        "error": reason,
+                        "needs_restart": false,
+                    });
+                }
+                Ok(NotebookResponse::SyncEnvironmentFailed {
+                    error,
+                    needs_restart,
+                }) => {
+                    result["apply"] = serde_json::json!({
+                        "mode": "sync",
+                        "success": false,
+                        "error": error,
+                        "needs_restart": needs_restart,
+                    });
+                }
+                Ok(NotebookResponse::Error { error }) => {
+                    result["apply"] = serde_json::json!({
+                        "mode": "sync",
+                        "success": false,
+                        "error": error,
+                        "needs_restart": true,
+                    });
+                }
+                Ok(_) => {
+                    result["apply"] = serde_json::json!({
+                        "mode": "sync",
+                        "success": true,
+                    });
+                }
+                Err(e) => {
+                    result["apply"] = serde_json::json!({
+                        "mode": "sync",
+                        "success": false,
+                        "error": format!("Failed to sync: {e}"),
+                        "needs_restart": true,
+                    });
+                }
+            }
+        }
+        "restart" => {
+            // Shutdown + relaunch with scoped auto-detect to preserve the
+            // package manager family (auto:uv, auto:conda, auto:pixi).
+            use notebook_protocol::connection::{EnvSource, PackageManager};
+            let prev_env = handle
+                .get_runtime_state()
+                .ok()
+                .map(|s| s.kernel.env_source.clone())
+                .unwrap_or_default();
+            let restart_env_source = if prev_env.is_empty() {
+                "auto".to_string()
+            } else {
+                match EnvSource::parse(&prev_env) {
+                    EnvSource::Prewarmed(PackageManager::Uv) => "auto:uv".to_string(),
+                    EnvSource::Prewarmed(PackageManager::Conda) => "auto:conda".to_string(),
+                    EnvSource::Prewarmed(PackageManager::Pixi) => "auto:pixi".to_string(),
+                    other => other.as_str().to_string(),
+                }
+            };
+            let notebook_path = if notebook_id.contains('/') || notebook_id.contains('\\') {
+                Some(notebook_id.to_string())
+            } else {
+                None
+            };
+            let _ = handle
+                .send_request(NotebookRequest::ShutdownKernel {})
+                .await;
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+            match handle
+                .send_request(NotebookRequest::LaunchKernel {
+                    kernel_type: "python".to_string(),
+                    env_source: restart_env_source,
+                    notebook_path,
+                })
+                .await
+            {
+                Ok(NotebookResponse::KernelLaunched { env_source, .. }) => {
+                    result["apply"] = serde_json::json!({
+                        "mode": "restart",
+                        "success": true,
+                        "env_source": env_source,
+                    });
+                }
+                Ok(NotebookResponse::Error { error }) => {
+                    result["apply"] = serde_json::json!({
+                        "mode": "restart",
+                        "success": false,
+                        "error": error,
+                    });
+                }
+                Ok(NotebookResponse::GuardRejected { reason }) => {
+                    result["apply"] = serde_json::json!({
+                        "mode": "restart",
+                        "success": false,
+                        "error": reason,
+                    });
+                }
+                Err(e) => {
+                    result["apply"] = serde_json::json!({
+                        "mode": "restart",
+                        "success": false,
+                        "error": format!("Failed to restart: {e}"),
+                    });
+                }
+                _ => {}
+            }
+        }
+        _ => {}
+    }
+}
+
 /// Add a package dependency. Auto-detects the notebook's package manager (uv, conda, or pixi).
 ///
 /// Tolerates agents passing a list-like string (e.g. `"['pandas','numpy']"` or
@@ -273,121 +543,131 @@ pub async fn add_dependency(
     }
 
     match after {
-        "sync" => {
-            // Attempt hot-install (UV only; conda/pixi will report needs_restart)
-            match handle
-                .send_request(NotebookRequest::SyncEnvironment { guard: None })
-                .await
-            {
-                Ok(NotebookResponse::SyncEnvironmentComplete {
-                    synced_packages, ..
-                }) => {
-                    result["sync"] = serde_json::json!({
-                        "success": true,
-                        "synced_packages": synced_packages,
-                    });
-                }
-                Ok(NotebookResponse::GuardRejected { reason }) => {
-                    result["sync"] = serde_json::json!({
-                        "success": false,
-                        "error": reason,
-                        "needs_restart": false,
-                    });
-                }
-                Ok(NotebookResponse::SyncEnvironmentFailed {
-                    error,
-                    needs_restart,
-                }) => {
-                    result["sync"] = serde_json::json!({
-                        "success": false,
-                        "error": error,
-                        "needs_restart": needs_restart,
-                    });
-                }
-                Ok(NotebookResponse::Error { error }) => {
-                    result["sync"] = serde_json::json!({
-                        "success": false,
-                        "error": error,
-                        "needs_restart": true,
-                    });
-                }
-                Ok(_) => {
-                    result["sync"] = serde_json::json!({ "success": true });
-                }
-                Err(e) => {
-                    result["sync"] = serde_json::json!({
-                        "success": false,
-                        "error": format!("Failed to sync: {e}"),
-                        "needs_restart": true,
-                    });
-                }
-            }
-        }
-        "restart" => {
-            // Shutdown + relaunch with scoped auto-detect to preserve the
-            // package manager family (auto:uv, auto:conda, auto:pixi).
-            use notebook_protocol::connection::{EnvSource, PackageManager};
-            let prev_env = handle
-                .get_runtime_state()
-                .ok()
-                .map(|s| s.kernel.env_source.clone())
-                .unwrap_or_default();
-            let restart_env_source = if prev_env.is_empty() {
-                "auto".to_string()
-            } else {
-                match EnvSource::parse(&prev_env) {
-                    EnvSource::Prewarmed(PackageManager::Uv) => "auto:uv".to_string(),
-                    EnvSource::Prewarmed(PackageManager::Conda) => "auto:conda".to_string(),
-                    EnvSource::Prewarmed(PackageManager::Pixi) => "auto:pixi".to_string(),
-                    other => other.as_str().to_string(),
-                }
-            };
-            // Derive notebook_path for project-file-backed envs (uv:pyproject, pixi:toml, etc.)
-            let notebook_path = if notebook_id.contains('/') || notebook_id.contains('\\') {
-                Some(notebook_id.clone())
-            } else {
-                None
-            };
-            let _ = handle
-                .send_request(NotebookRequest::ShutdownKernel {})
-                .await;
-            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-            match handle
-                .send_request(NotebookRequest::LaunchKernel {
-                    kernel_type: "python".to_string(),
-                    env_source: restart_env_source,
-                    notebook_path,
-                })
-                .await
-            {
-                Ok(NotebookResponse::KernelLaunched { env_source, .. }) => {
-                    result["restart"] = serde_json::json!({
-                        "success": true,
-                        "env_source": env_source,
-                    });
-                }
-                Ok(NotebookResponse::Error { error }) => {
-                    result["restart"] = serde_json::json!({
-                        "success": false,
-                        "error": error,
-                    });
-                }
-                Ok(NotebookResponse::GuardRejected { reason }) => {
-                    result["restart"] = serde_json::json!({
-                        "success": false,
-                        "error": reason,
-                    });
-                }
-                Err(e) => {
-                    result["restart"] = serde_json::json!({
-                        "success": false,
-                        "error": format!("Failed to restart: {e}"),
-                    });
-                }
-                _ => {}
+        "sync" | "restart" => {
+            apply_dependency_changes(&handle, &notebook_id, after, &mut result).await;
+            if let Some(apply) = result.as_object_mut().and_then(|obj| obj.remove("apply")) {
+                result[after] = apply;
             }
         }
         _ => {} // "none" — just record the dep
+    }
+
+    tool_success(&serde_json::to_string_pretty(&result).unwrap_or_default())
+}
+
+/// Apply dependency edits, optional trust approval, and optional environment action.
+///
+/// With no parameters, this returns the current dependency state. With add/remove,
+/// the optional `dependency_fingerprint` is treated as a reviewed pre-change
+/// fingerprint. With `trust: true`, the daemon signs the resulting dependency set.
+pub async fn manage_dependencies(
+    server: &NteractMcp,
+    request: &CallToolRequestParams,
+) -> Result<CallToolResult, McpError> {
+    let params = parse_manage_dependencies_params(request)?;
+    let apply = params.apply.clone().unwrap_or(DependencyApply::None);
+    if let DependencyApply::Other(value) = &apply {
+        return tool_error(&format!(
+            "Invalid apply value {value:?}. Expected one of: none, sync, restart."
+        ));
+    }
+    let apply_str = apply.as_str();
+
+    let (handle, notebook_id) = {
+        let guard = server.session.read().await;
+        match guard.as_ref() {
+            Some(s) => (s.handle.clone(), s.notebook_id.clone()),
+            None => {
+                drop(guard);
+                return super::no_session_error(server).await;
+            }
+        }
+    };
+    let manager = detect_package_manager(&handle);
+    let before_fingerprint = dependency_fingerprint_for_handle(&handle);
+    let has_edits = !params.add.is_empty() || !params.remove.is_empty();
+
+    if !has_edits && !params.trust && apply == DependencyApply::None {
+        let result = dependency_state_json(&handle, &manager);
+        return tool_success(&serde_json::to_string_pretty(&result).unwrap_or_default());
+    }
+
+    if has_edits {
+        if let Some(expected) = params.dependency_fingerprint.as_deref() {
+            if before_fingerprint.as_deref() != Some(expected) {
+                return tool_error(
+                    "Dependencies changed since review. Inspect the current dependencies before applying edits.",
+                );
+            }
+        }
+    }
+
+    let before = dependency_state_json(&handle, &manager);
+
+    for package in &params.add {
+        if let Err(e) = add_dep_for_manager(&handle, package, &manager) {
+            return tool_error(&e);
+        }
+    }
+
+    let mut removed = Vec::new();
+    let mut not_found = Vec::new();
+    for package in &params.remove {
+        match remove_dep_for_manager(&handle, package, &manager) {
+            Ok(true) => removed.push(package.clone()),
+            Ok(false) => not_found.push(package.clone()),
+            Err(e) => return tool_error(&e),
+        }
+    }
+
+    let mut trust_approved = false;
+    let approved_fingerprint = if params.trust {
+        if has_edits {
+            dependency_fingerprint_for_handle(&handle)
+        } else {
+            params
+                .dependency_fingerprint
+                .clone()
+                .or_else(|| dependency_fingerprint_for_handle(&handle))
+        }
+    } else {
+        None
+    };
+
+    if params.trust {
+        if let Err(e) =
+            approve_current_trust(&handle, approved_fingerprint.clone(), "manage_dependencies")
+                .await
+        {
+            return tool_error(&e);
+        }
+        trust_approved = true;
+    } else if has_edits {
+        if let Err(e) = handle.confirm_sync().await {
+            tracing::warn!("confirm_sync failed after manage_dependencies edits: {e}");
+        }
+    }
+
+    let after = dependency_state_json(&handle, &manager);
+    let mut result = serde_json::json!({
+        "package_manager": manager.as_str(),
+        "before": before,
+        "after": after,
+        "add": params.add,
+        "remove": {
+            "requested": params.remove,
+            "removed": removed,
+            "not_found": not_found,
+        },
+        "trust": {
+            "requested": params.trust,
+            "approved": trust_approved,
+            "dependency_fingerprint": approved_fingerprint,
+        },
+    });
+
+    if matches!(apply, DependencyApply::Sync | DependencyApply::Restart) {
+        apply_dependency_changes(&handle, &notebook_id, apply_str, &mut result).await;
     }
 
     tool_success(&serde_json::to_string_pretty(&result).unwrap_or_default())
@@ -437,46 +717,7 @@ pub async fn get_dependencies(
     let handle = require_handle!(server);
 
     let manager = detect_package_manager(&handle);
-    let deps = get_deps_for_manager(&handle, &manager);
-    let dependency_fingerprint = dependency_fingerprint_for_handle(&handle);
-    let trust = handle.get_runtime_state().ok().map(|s| s.trust);
-
-    // Include prewarmed packages from RuntimeStateDoc when available
-    let prewarmed = handle
-        .get_runtime_state()
-        .ok()
-        .map(|s| s.env.prewarmed_packages)
-        .unwrap_or_default();
-
-    // Indicate whether deps come from a project file or notebook metadata
-    let env_source = handle
-        .get_runtime_state()
-        .ok()
-        .map(|s| s.kernel.env_source.clone());
-    use notebook_protocol::connection::EnvSource;
-    let mode = match env_source.as_deref().map(EnvSource::parse) {
-        Some(EnvSource::PixiToml | EnvSource::Pyproject | EnvSource::EnvYml) => "project",
-        _ => "inline",
-    };
-
-    let mut result = serde_json::json!({
-        "dependencies": deps,
-        "package_manager": manager.as_str(),
-        "mode": mode,
-        "dependency_fingerprint": dependency_fingerprint,
-    });
-    if let Some(trust) = trust {
-        result["trust"] = serde_json::json!({
-            "status": trust.status,
-            "needs_approval": trust.needs_approval,
-        });
-    }
-    if let Some(ref source) = env_source {
-        result["env_source"] = serde_json::json!(source);
-    }
-    if !prewarmed.is_empty() {
-        result["available_packages"] = serde_json::json!(prewarmed);
-    }
+    let result = dependency_state_json(&handle, &manager);
     tool_success(&serde_json::to_string_pretty(&result).unwrap_or_default())
 }
 
@@ -603,6 +844,14 @@ fn get_deps_for_manager(
 mod tests {
     use super::*;
 
+    fn make_request(args: serde_json::Value) -> CallToolRequestParams {
+        serde_json::from_value(serde_json::json!({
+            "name": "manage_dependencies",
+            "arguments": args,
+        }))
+        .unwrap()
+    }
+
     #[test]
     fn parse_single_package() {
         assert_eq!(parse_package_param("pandas>=2.0"), vec!["pandas>=2.0"]);
@@ -651,6 +900,17 @@ mod tests {
     }
 
     #[test]
+    fn manage_dependencies_params_default_to_inspect() {
+        let request = make_request(serde_json::json!({}));
+        let params = parse_manage_dependencies_params(&request).unwrap();
+        assert!(params.add.is_empty());
+        assert!(params.remove.is_empty());
+        assert!(!params.trust);
+        assert_eq!(params.apply, None);
+        assert_eq!(params.dependency_fingerprint, None);
+    }
+
+    #[test]
     fn approve_trust_params_accept_supplied_fingerprint() {
         let params: ApproveTrustParams =
             serde_json::from_value(serde_json::json!({"dependency_fingerprint": "sha256:abc"}))
@@ -659,6 +919,38 @@ mod tests {
         assert_eq!(
             params.dependency_fingerprint,
             Some("sha256:abc".to_string())
+        );
+    }
+
+    #[test]
+    fn manage_dependencies_params_parse_intent() {
+        let request = make_request(serde_json::json!({
+            "add": ["pandas", "matplotlib"],
+            "remove": ["seaborn"],
+            "trust": true,
+            "dependency_fingerprint": "{\"uv\":{\"dependencies\":[]}}",
+            "apply": "sync",
+        }));
+        let params = parse_manage_dependencies_params(&request).unwrap();
+        assert_eq!(params.add, vec!["pandas", "matplotlib"]);
+        assert_eq!(params.remove, vec!["seaborn"]);
+        assert!(params.trust);
+        assert_eq!(
+            params.dependency_fingerprint.as_deref(),
+            Some("{\"uv\":{\"dependencies\":[]}}")
+        );
+        assert_eq!(params.apply, Some(DependencyApply::Sync));
+    }
+
+    #[test]
+    fn manage_dependencies_params_preserve_unknown_apply() {
+        let request = make_request(serde_json::json!({
+            "apply": "future-mode",
+        }));
+        let params = parse_manage_dependencies_params(&request).unwrap();
+        assert_eq!(
+            params.apply,
+            Some(DependencyApply::Other("future-mode".to_string()))
         );
     }
 }

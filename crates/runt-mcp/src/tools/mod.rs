@@ -217,38 +217,11 @@ pub fn all_tools() -> Vec<Tool> {
         .annotate(ToolAnnotations::new().destructive(true).open_world(false)),
         // -- Dependencies --
         Tool::new(
-            "add_dependency",
-            "Add a package. Use after='sync' or 'restart' to apply.",
-            schema_for::<deps::AddDependencyParams>(),
-        )
-        .annotate(
-            ToolAnnotations::new()
-                .destructive(false)
-                .idempotent(true)
-                .open_world(false),
-        ),
-        Tool::new(
-            "remove_dependency",
-            "Remove a package. Requires kernel restart to take effect.",
-            schema_for::<deps::RemoveDependencyParams>(),
-        )
-        .annotate(
-            ToolAnnotations::new()
-                .destructive(true)
-                .idempotent(true)
-                .open_world(false),
-        ),
-        Tool::new(
-            "get_dependencies",
-            "Get the notebook's declared dependencies, dependency fingerprint, and trust state.",
-            schema_for::<deps::GetDependenciesParams>(),
-        )
-        .annotate(ToolAnnotations::new().read_only(true).open_world(false)),
-        Tool::new(
-            "approve_trust",
-            "Approve and sign the current dependency metadata for headless use. \
-             Pass dependency_fingerprint from get_dependencies to reject stale approvals.",
-            schema_for::<deps::ApproveTrustParams>(),
+            "manage_dependencies",
+            "Review or update notebook dependencies. With no parameters, returns current dependencies, \
+             dependency fingerprint, and trust state. Use add/remove arrays for edits; set trust=true \
+             to approve the resulting dependency metadata; set apply='sync' or 'restart' to apply.",
+            schema_for::<deps::ManageDependenciesParams>(),
         )
         .annotate(
             ToolAnnotations::new()
@@ -318,6 +291,7 @@ pub async fn dispatch(
         "interrupt_kernel" => kernel::interrupt_kernel(server, request).await,
         "restart_kernel" => kernel::restart_kernel(server, request).await,
         // Dependencies
+        "manage_dependencies" => deps::manage_dependencies(server, request).await,
         "add_dependency" => deps::add_dependency(server, request).await,
         "remove_dependency" => deps::remove_dependency(server, request).await,
         "get_dependencies" => deps::get_dependencies(server, request).await,
@@ -582,15 +556,19 @@ mod tests {
     }
 
     #[test]
-    fn approve_trust_tool_exposes_optional_fingerprint_schema() {
-        let tool = registered_tool("approve_trust");
+    fn manage_dependencies_tool_exposes_trust_and_fingerprint_schema() {
+        let tool = registered_tool("manage_dependencies");
         let properties = tool
             .input_schema
             .get("properties")
             .and_then(serde_json::Value::as_object)
-            .expect("approve_trust schema should expose properties");
+            .expect("manage_dependencies schema should expose properties");
 
+        assert!(properties.contains_key("add"));
+        assert!(properties.contains_key("remove"));
+        assert!(properties.contains_key("trust"));
         assert!(properties.contains_key("dependency_fingerprint"));
+        assert!(properties.contains_key("apply"));
         let fingerprint_is_required = tool
             .input_schema
             .get("required")
@@ -605,24 +583,6 @@ mod tests {
             .description
             .as_deref()
             .unwrap_or_default()
-            .contains("dependency_fingerprint"));
-
-        let annotations = tool
-            .annotations
-            .expect("approve_trust should advertise safe mutation hints");
-        assert_eq!(annotations.destructive_hint, Some(false));
-        assert_eq!(annotations.idempotent_hint, Some(true));
-        assert_eq!(annotations.open_world_hint, Some(false));
-    }
-
-    #[test]
-    fn get_dependencies_tool_advertises_trust_metadata() {
-        let tool = registered_tool("get_dependencies");
-
-        assert!(tool
-            .description
-            .as_deref()
-            .unwrap_or_default()
             .contains("dependency fingerprint"));
         assert!(tool
             .description
@@ -632,8 +592,32 @@ mod tests {
 
         let annotations = tool
             .annotations
-            .expect("get_dependencies should advertise read-only hints");
-        assert_eq!(annotations.read_only_hint, Some(true));
+            .expect("manage_dependencies should advertise safe mutation hints");
+        assert_eq!(annotations.destructive_hint, Some(false));
+        assert_eq!(annotations.idempotent_hint, Some(true));
+        assert_eq!(annotations.open_world_hint, Some(false));
+    }
+
+    #[test]
+    fn manage_dependencies_tool_advertises_apply_modes() {
+        let tool = registered_tool("manage_dependencies");
+
+        assert!(tool
+            .description
+            .as_deref()
+            .unwrap_or_default()
+            .contains("apply='sync'"));
+        assert!(tool
+            .description
+            .as_deref()
+            .unwrap_or_default()
+            .contains("restart"));
+
+        let annotations = tool
+            .annotations
+            .expect("manage_dependencies should advertise mutation hints");
+        assert_eq!(annotations.destructive_hint, Some(false));
+        assert_eq!(annotations.idempotent_hint, Some(true));
         assert_eq!(annotations.open_world_hint, Some(false));
     }
 
@@ -746,5 +730,18 @@ mod tests {
     fn arg_string_array_wrong_type_returns_empty() {
         let req = make_request(serde_json::json!({"deps": 42}));
         assert_eq!(arg_string_array(&req, "deps"), Some(vec![]));
+    }
+
+    #[test]
+    fn dependency_tool_listing_prefers_manage_dependencies() {
+        let names = all_tools()
+            .into_iter()
+            .map(|tool| tool.name.to_string())
+            .collect::<Vec<_>>();
+        assert!(names.contains(&"manage_dependencies".to_string()));
+        assert!(!names.contains(&"add_dependency".to_string()));
+        assert!(!names.contains(&"remove_dependency".to_string()));
+        assert!(!names.contains(&"get_dependencies".to_string()));
+        assert!(!names.contains(&"approve_trust".to_string()));
     }
 }
