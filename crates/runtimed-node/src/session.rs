@@ -169,8 +169,33 @@ impl Session {
                 .clone()
         };
         handle.add_uv_dependency(&pkg).map_err(to_napi_err)?;
-        handle.confirm_sync().await.map_err(to_napi_err)?;
-        Ok(())
+        approve_current_trust(&handle, dependency_fingerprint_for_handle(&handle)).await
+    }
+
+    /// Get the current dependency fingerprint used for guarded trust approval.
+    #[napi]
+    pub async fn dependency_fingerprint(&self) -> Result<Option<String>> {
+        let handle = {
+            let st = self.state.lock().await;
+            st.handle
+                .as_ref()
+                .ok_or_else(|| Error::from_reason("Not connected"))?
+                .clone()
+        };
+        Ok(dependency_fingerprint_for_handle(&handle))
+    }
+
+    /// Approve and sign the current dependency metadata.
+    #[napi]
+    pub async fn approve_trust(&self, dependency_fingerprint: Option<String>) -> Result<()> {
+        let handle = {
+            let st = self.state.lock().await;
+            st.handle
+                .as_ref()
+                .ok_or_else(|| Error::from_reason("Not connected"))?
+                .clone()
+        };
+        approve_current_trust(&handle, dependency_fingerprint).await
     }
 
     /// Ask the daemon to hot-install any pending dependency changes into
@@ -402,6 +427,34 @@ async fn resolve_blob_paths(socket_path: &std::path::Path) -> (Option<String>, O
         (base_url, store_path)
     } else {
         (None, None)
+    }
+}
+
+fn dependency_fingerprint_for_handle(handle: &DocHandle) -> Option<String> {
+    handle
+        .get_notebook_metadata()
+        .map(|snapshot| snapshot.dependency_fingerprint())
+}
+
+async fn approve_current_trust(
+    handle: &DocHandle,
+    dependency_fingerprint: Option<String>,
+) -> Result<()> {
+    handle.confirm_sync().await.map_err(to_napi_err)?;
+    let response = handle
+        .send_request(NotebookRequest::ApproveTrust {
+            dependency_fingerprint,
+        })
+        .await
+        .map_err(to_napi_err)?;
+
+    match response {
+        NotebookResponse::Ok {} => Ok(()),
+        NotebookResponse::GuardRejected { reason } => Err(Error::from_reason(reason)),
+        NotebookResponse::Error { error } => Err(Error::from_reason(error)),
+        other => Err(Error::from_reason(format!(
+            "Unexpected response: {other:?}"
+        ))),
     }
 }
 

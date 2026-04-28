@@ -198,6 +198,14 @@ class Notebook:
         else:
             return await self._session.get_uv_dependencies()
 
+    async def dependency_fingerprint(self) -> str | None:
+        """Get the current dependency fingerprint for trust approval."""
+        return await self._session.dependency_fingerprint()
+
+    async def approve_trust(self, dependency_fingerprint: str | None = None) -> None:
+        """Approve and sign the current dependency metadata."""
+        await self._session.approve_trust(dependency_fingerprint)
+
     async def sync_environment(self) -> SyncEnvironmentResult:
         """Install pending dependency changes into the running kernel."""
         return await self._session.sync_environment()

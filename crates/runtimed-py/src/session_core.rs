@@ -2168,6 +2168,53 @@ pub(crate) async fn set_notebook_metadata(
     Ok(())
 }
 
+/// Return the current dependency fingerprint, if notebook metadata exists.
+pub(crate) async fn dependency_fingerprint(
+    state: &Arc<Mutex<SessionState>>,
+) -> PyResult<Option<String>> {
+    let snapshot = get_notebook_metadata(state).await?;
+    Ok(Some(snapshot.dependency_fingerprint()))
+}
+
+/// Ask the daemon to approve/sign the current dependency metadata.
+pub(crate) async fn approve_trust(
+    state: &Arc<Mutex<SessionState>>,
+    dependency_fingerprint: Option<String>,
+) -> PyResult<()> {
+    let handle = {
+        let st = state.lock().await;
+        st.handle
+            .as_ref()
+            .ok_or_else(|| to_py_err("Not connected"))?
+            .clone()
+    };
+
+    handle.confirm_sync().await.map_err(to_py_err)?;
+    let response = handle
+        .send_request(NotebookRequest::ApproveTrust {
+            dependency_fingerprint,
+        })
+        .await
+        .map_err(to_py_err)?;
+
+    match response {
+        NotebookResponse::Ok {} => Ok(()),
+        NotebookResponse::GuardRejected { reason } => Err(to_py_err(reason)),
+        NotebookResponse::Error { error } => Err(to_py_err(error)),
+        other => Err(to_py_err(format!("Unexpected response: {:?}", other))),
+    }
+}
+
+/// Set dependency metadata and immediately approve the resulting fingerprint.
+pub(crate) async fn set_notebook_metadata_and_approve(
+    state: &Arc<Mutex<SessionState>>,
+    snapshot: &NotebookMetadataSnapshot,
+) -> PyResult<()> {
+    let fingerprint = snapshot.dependency_fingerprint();
+    set_notebook_metadata(state, snapshot).await?;
+    approve_trust(state, Some(fingerprint)).await
+}
+
 /// Sync environment with current metadata and poll for completion.
 pub(crate) async fn sync_environment_impl(
     state: &Arc<Mutex<SessionState>>,
