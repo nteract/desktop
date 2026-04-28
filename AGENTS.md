@@ -59,7 +59,7 @@ which runt                      # Should be repo/bin/runt (not /usr/local/bin/ru
 
 Local dev uses cargo's incremental cache. Tight edit-check loops on one crate reuse rustc's per-function incremental artifacts and run in seconds. No extra setup required.
 
-sccache is not wired on by default locally. It can't cache incremental builds, so turning it on forces `CARGO_INCREMENTAL=0` and loses the edit-loop speedup. It's still useful for CI (fresh target dir every run) and for the rare cross-worktree case. If you want it locally, opt in with `NTERACT_SCCACHE=1` and install with `brew install sccache`.
+sccache is not used. It can't cache incremental builds, so turning it on forces `CARGO_INCREMENTAL=0` and loses the edit-loop speedup. It also breaks WASM builds (sccache's clang doesn't support `wasm32-unknown-unknown`). If a developer has `RUSTC_WRAPPER=sccache` in their environment, xtask strips it for wasm-pack invocations.
 
 ### lld linker (macOS arm64)
 
@@ -399,7 +399,7 @@ The supervisor does not watch source files. Rebuild on demand:
 - **Only the MCP server itself changed** (`crates/runt-mcp/src/`) → `up rebuild=true` covers this too.
 - **Daemon source changed** → `up rebuild=true`, optionally with `daemon=true` to bounce the daemon as well.
 
-If you want the old always-on file watcher, set `NTERACT_DEV_WATCH=1` in the supervisor's environment. It's off by default because every source touch kicked `cargo build` + `maturin develop`, which churned sccache keys across the workspace and put the Rust cache-hit rate near zero during normal edits.
+If you want the old always-on file watcher, set `NTERACT_DEV_WATCH=1` in the supervisor's environment. It's off by default because every source touch kicked `cargo build` + `maturin develop`, which churned cache keys and put the Rust cache-hit rate near zero during normal edits.
 
 `SKIP_MATURIN=1` (already set in `.mcp.json`) tells `up rebuild=true` to skip the maturin step. Pair it with `NTERACT_DEV_AUTOMATURIN=1` only if you want the startup-probe reintroduced; by default the supervisor starts without touching Python bindings.
 
