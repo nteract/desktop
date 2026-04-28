@@ -502,7 +502,13 @@ jobs:
       matrix:
         include:
           - name: Smoke
-            spec: ""
+            spec: "e2e/specs/smoke.spec.js"
+            notebook: ""
+            uv_pool: 3
+            conda_pool: 0
+            timeout: 12
+          - name: Tab Completion
+            spec: "e2e/specs/tab-completion.spec.js"
             notebook: ""
             uv_pool: 3
             conda_pool: 0
@@ -525,6 +531,18 @@ jobs:
             uv_pool: 0
             conda_pool: 0
             timeout: 8
+          - name: Run All Output Lifecycle
+            spec: "e2e/specs/run-all-output-lifecycle.spec.js"
+            notebook: "crates/notebook/fixtures/audit-test/15-run-all-output-lifecycle.ipynb"
+            uv_pool: 3
+            conda_pool: 0
+            timeout: 12
+          - name: Widget Slider Stall
+            spec: "e2e/specs/widget-slider-stall.spec.js"
+            notebook: "crates/notebook/fixtures/audit-test/16-widget-slider.ipynb"
+            uv_pool: 3
+            conda_pool: 0
+            timeout: 12
           # UV/Conda Inline and Trust Dialog: disabled — trust dialog
           # never appears in CI despite banner click and execute fallbacks.
           # The daemon correctly reads untrusted status from the fixture file
@@ -551,6 +569,13 @@ jobs:
           - name: UV Pyproject
             spec: "e2e/specs/uv-pyproject.spec.js"
             notebook: "crates/notebook/fixtures/audit-test/pyproject-project/5-pyproject.ipynb"
+            uv_pool: 3
+            conda_pool: 0
+            timeout: 12
+          - name: Untitled Pyproject
+            spec: "e2e/specs/untitled-pyproject.spec.js"
+            notebook: ""
+            app_workdir: "crates/notebook/fixtures/audit-test/pyproject-project"
             uv_pool: 3
             conda_pool: 0
             timeout: 12
@@ -639,16 +664,25 @@ jobs:
           fi
 
           # Start the app (with notebook if specified)
+          APP_WORKDIR="${{ matrix.app_workdir }}"
+          APP_WORKDIR="${APP_WORKDIR:-.}"
           if [ -n "${{ matrix.notebook }}" ]; then
-            env -u UV_CACHE_DIR -u UV_PYTHON_INSTALL_DIR \
-              RUNTIMED_WORKSPACE_PATH="${GITHUB_WORKSPACE}" \
-              RUST_LOG=info,notebook=debug \
-              ./target/release/notebook "${{ matrix.notebook }}" > e2e-logs/app.log 2>&1 &
+            (
+              cd "${APP_WORKDIR}"
+              env -u UV_CACHE_DIR -u UV_PYTHON_INSTALL_DIR \
+                RUNTIMED_WORKSPACE_PATH="${GITHUB_WORKSPACE}" \
+                RUST_LOG=info,notebook=debug \
+                "${GITHUB_WORKSPACE}/target/release/notebook" \
+                  "${GITHUB_WORKSPACE}/${{ matrix.notebook }}"
+            ) > e2e-logs/app.log 2>&1 &
           else
-            env -u UV_CACHE_DIR -u UV_PYTHON_INSTALL_DIR \
-              RUNTIMED_WORKSPACE_PATH="${GITHUB_WORKSPACE}" \
-              RUST_LOG=info,notebook=debug \
-              ./target/release/notebook > e2e-logs/app.log 2>&1 &
+            (
+              cd "${APP_WORKDIR}"
+              env -u UV_CACHE_DIR -u UV_PYTHON_INSTALL_DIR \
+                RUNTIMED_WORKSPACE_PATH="${GITHUB_WORKSPACE}" \
+                RUST_LOG=info,notebook=debug \
+                "${GITHUB_WORKSPACE}/target/release/notebook"
+            ) > e2e-logs/app.log 2>&1 &
           fi
           APP_PID=$!
 
