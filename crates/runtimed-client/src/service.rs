@@ -767,28 +767,70 @@ Set WshShell = Nothing
 
     #[cfg(target_os = "windows")]
     fn start_windows(&self) -> ServiceResult<()> {
-        use std::os::windows::process::CommandExt;
-        use std::process::Stdio;
+        use std::os::windows::ffi::OsStrExt;
+        use windows_sys::Win32::Foundation::CloseHandle;
+        use windows_sys::Win32::System::Threading::{
+            CreateProcessW, CREATE_NO_WINDOW, DETACHED_PROCESS, PROCESS_INFORMATION, STARTUPINFOW,
+        };
 
-        // The daemon runs forever. If we let it inherit the spawning process's
-        // stdio, any caller that captures our output via a pipe (NSIS
-        // `nsExec::ExecToStack` during installer post-install, parent shells
-        // running `runt daemon doctor --fix`, CI runners with stdout
-        // redirected) will hang waiting for EOF on a pipe the daemon is still
-        // holding open. Detach: redirect stdio to NUL and use
-        // DETACHED_PROCESS|CREATE_NO_WINDOW so the child never gets a console
-        // either. Daemon logs already go to a file (see runtimed::main),
-        // so killing stderr here doesn't lose anything.
-        const DETACHED_PROCESS: u32 = 0x0000_0008;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        // The daemon runs forever. The standard `Command::new(...).spawn()`
+        // path on Windows calls `CreateProcessW` with `bInheritHandles=TRUE`
+        // (Rust's default), which duplicates *every* inheritable handle in
+        // this process's table into the child - not just stdio. That bites
+        // when this process was launched by NSIS's `nsExec::ExecToStack` to
+        // run `runt daemon doctor --fix`: NSIS hands the child stdout/stderr
+        // pipes that are marked inheritable so they propagate through stdio.
+        // When `runt` then spawns the daemon with `bInheritHandles=TRUE`,
+        // those pipes get duplicated *again* into the daemon's handle table.
+        // `runt` exits, releasing its copies, but the daemon keeps the
+        // duplicates open forever, so `nsExec::ExecToStack` never sees EOF
+        // on the read pipe and the silent installer hangs at `Install
+        // silently` until the runner times out (see runs 25025820384 and
+        // 25025909072).
+        //
+        // Redirecting stdio to NUL via `Stdio::null()` does not fix this:
+        // the *original* pipe handles in this process are still inheritable
+        // and `bInheritHandles=TRUE` still duplicates them.
+        //
+        // Bypass `std::process::Command` and call `CreateProcessW` directly
+        // with `bInheritHandles=FALSE`. The daemon needs no inherited
+        // handles - logging goes to a file (see runtimed::main), and stdio
+        // is unused.
+        let mut cmd_line: Vec<u16> = std::iter::once(b'"' as u16)
+            .chain(self.config.binary_path.as_os_str().encode_wide())
+            .chain(std::iter::once(b'"' as u16))
+            .chain(std::iter::once(0))
+            .collect();
 
-        std::process::Command::new(&self.config.binary_path)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .creation_flags(DETACHED_PROCESS | CREATE_NO_WINDOW)
-            .spawn()
-            .map_err(|e| ServiceError::StartFailed(e.to_string()))?;
+        let mut si: STARTUPINFOW = unsafe { std::mem::zeroed() };
+        si.cb = std::mem::size_of::<STARTUPINFOW>() as u32;
+
+        let mut pi: PROCESS_INFORMATION = unsafe { std::mem::zeroed() };
+
+        let ok = unsafe {
+            CreateProcessW(
+                std::ptr::null(),
+                cmd_line.as_mut_ptr(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                0, // bInheritHandles = FALSE
+                DETACHED_PROCESS | CREATE_NO_WINDOW,
+                std::ptr::null_mut(),
+                std::ptr::null(),
+                &si,
+                &mut pi,
+            )
+        };
+
+        if ok == 0 {
+            let err = std::io::Error::last_os_error();
+            return Err(ServiceError::StartFailed(err.to_string()));
+        }
+
+        unsafe {
+            CloseHandle(pi.hProcess);
+            CloseHandle(pi.hThread);
+        }
 
         info!("[service] Started daemon process");
         Ok(())
