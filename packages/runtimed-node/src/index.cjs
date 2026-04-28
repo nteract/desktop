@@ -1,8 +1,8 @@
 /**
- * @nteract/runtimed-node — thin JS wrapper over the N-API binding.
+ * @runtimed/node — thin JS wrapper over the N-API binding.
  *
  * The native binding lives in `binding.cjs` + `runtimed-node.<triple>.node`.
- * This file exists so consumers can `require('@nteract/runtimed-node')`
+ * This file exists so consumers can `require('@runtimed/node')`
  * without thinking about platform suffixes.
  */
 "use strict";

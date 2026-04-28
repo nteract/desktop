@@ -39,6 +39,7 @@ jobs:
               - "scripts/**"
               - "src/**"
               - "packages/**"
+              - "plugins/**"
               - "Cargo.toml"
               - "Cargo.lock"
               - "rust-toolchain.toml"
@@ -396,6 +397,12 @@ jobs:
 
       - name: Smoke test runtimed-node package
         run: pnpm --dir packages/runtimed-node smoke
+
+      - name: Check runtimed-node package tarball
+        run: pnpm --dir packages/runtimed-node pack:dry-run
+
+      - name: Check nteract pi package tarball
+        run: pnpm --dir plugins/nteract/pi pack:dry-run
 
   build:
     name: ${{ matrix.platform.name }}
