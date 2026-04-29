@@ -698,9 +698,29 @@ mod tests {
         outputs: &[serde_json::Value],
         execution_count: Option<i64>,
     ) {
+        set_execution_with_seq(
+            shared,
+            execution_id,
+            cell_id,
+            status,
+            outputs,
+            execution_count,
+            0,
+        );
+    }
+
+    fn set_execution_with_seq(
+        shared: &Arc<Mutex<SharedDocState>>,
+        execution_id: &str,
+        cell_id: &str,
+        status: &str,
+        outputs: &[serde_json::Value],
+        execution_count: Option<i64>,
+        seq: u64,
+    ) {
         let mut st = shared.lock().unwrap();
         st.state_doc
-            .create_execution_with_source(execution_id, cell_id, "x = 1", 0)
+            .create_execution_with_source(execution_id, cell_id, "x = 1", seq)
             .unwrap();
         st.state_doc.set_execution_running(execution_id).unwrap();
         if let Some(count) = execution_count {
@@ -756,6 +776,19 @@ mod tests {
         assert_eq!(
             handle.get_cell_execution_count("cell-1").as_deref(),
             Some("9")
+        );
+    }
+
+    #[test]
+    fn get_cell_execution_count_prefers_latest_runtime_sequence() {
+        let (handle, shared, _rx, _cmd_rx) = test_handle_with_shared();
+
+        set_execution_with_seq(&shared, "exec-old", "cell-1", "done", &[], Some(12), 1);
+        set_execution_with_seq(&shared, "exec-new", "cell-1", "done", &[], Some(1), 2);
+
+        assert_eq!(
+            handle.get_cell_execution_count("cell-1").as_deref(),
+            Some("1")
         );
     }
 

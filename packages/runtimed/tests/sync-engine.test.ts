@@ -99,7 +99,13 @@ function interactiveStatus(): SessionStatus {
 function makeRuntimeState(
   executions: Record<
     string,
-    { cell_id: string; status: string; execution_count: number | null; success: boolean | null }
+    {
+      cell_id: string;
+      status: string;
+      execution_count: number | null;
+      success: boolean | null;
+      seq?: number | null;
+    }
   >,
 ): RuntimeState {
   return {
@@ -2094,16 +2100,95 @@ describe("getExecutionCountForCell", () => {
     expect(getExecutionCountForCell(state, "c1")).toBe(3);
   });
 
-  it("returns the highest count when multiple executions exist", () => {
+  it("returns the latest count by sequence when multiple executions exist", () => {
+    const state = {
+      ...baseState,
+      executions: {
+        e1: {
+          cell_id: "c1",
+          status: "done" as const,
+          execution_count: 12,
+          success: true,
+          seq: 1,
+        },
+        e2: {
+          cell_id: "c1",
+          status: "done" as const,
+          execution_count: 1,
+          success: true,
+          seq: 2,
+        },
+        e3: {
+          cell_id: "c1",
+          status: "running" as const,
+          execution_count: null,
+          success: null,
+          seq: 3,
+        },
+      },
+    };
+    expect(getExecutionCountForCell(state, "c1")).toBe(1);
+  });
+
+  it("falls back to the highest count for legacy executions without sequence", () => {
     const state = {
       ...baseState,
       executions: {
         e1: { cell_id: "c1", status: "done" as const, execution_count: 2, success: true },
         e2: { cell_id: "c1", status: "done" as const, execution_count: 5, success: true },
-        e3: { cell_id: "c1", status: "running" as const, execution_count: null, success: null },
       },
     };
     expect(getExecutionCountForCell(state, "c1")).toBe(5);
+  });
+
+  it("prefers seq zero over a legacy execution without sequence", () => {
+    const state = {
+      ...baseState,
+      executions: {
+        legacy: { cell_id: "c1", status: "done" as const, execution_count: 12, success: true },
+        current: {
+          cell_id: "c1",
+          status: "done" as const,
+          execution_count: 1,
+          success: true,
+          seq: 0,
+        },
+      },
+    };
+    expect(getExecutionCountForCell(state, "c1")).toBe(1);
+  });
+
+  it("prefers any sequence over a legacy execution without sequence", () => {
+    const state = {
+      ...baseState,
+      executions: {
+        legacy: { cell_id: "c1", status: "done" as const, execution_count: 100, success: true },
+        current: {
+          cell_id: "c1",
+          status: "done" as const,
+          execution_count: 1,
+          success: true,
+          seq: 5,
+        },
+      },
+    };
+    expect(getExecutionCountForCell(state, "c1")).toBe(1);
+  });
+
+  it("returns null when matching executions have no counts yet", () => {
+    const state = {
+      ...baseState,
+      executions: {
+        e1: {
+          cell_id: "c1",
+          status: "running" as const,
+          execution_count: null,
+          success: null,
+          seq: 1,
+        },
+      },
+    };
+    expect(getExecutionCountForCell(state, "c1")).toBeNull();
   });
 
   it("ignores executions for other cells", () => {

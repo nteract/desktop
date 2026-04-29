@@ -865,11 +865,7 @@ impl NotebookHandle {
     pub fn get_cell_execution_count(&self, cell_id: &str) -> Option<String> {
         self.state_doc
             .read_state()
-            .executions
-            .values()
-            .filter(|exec| exec.cell_id == cell_id)
-            .filter_map(|exec| exec.execution_count)
-            .max()
+            .execution_count_for_cell(cell_id)
             .map(|count| count.to_string())
             .or_else(|| self.doc.get_cell_execution_count(cell_id))
     }

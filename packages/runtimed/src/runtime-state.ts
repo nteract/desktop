@@ -126,6 +126,8 @@ export interface ExecutionState {
   status: "queued" | "running" | "done" | "error";
   execution_count: number | null;
   success: boolean | null;
+  /** Queue sequence number from RuntimeStateDoc; used as execution recency. */
+  seq?: number | null;
   /**
    * Output manifests in emission order, as the WASM runtime-state snapshot
    * exposes them. Each entry is the raw on-the-wire manifest (un-narrowed,
@@ -353,13 +355,22 @@ export function diffExecutions(
  * the most recent execution for the cell that has a count set.
  */
 export function getExecutionCountForCell(state: RuntimeState, cellId: string): number | null {
-  let best: number | null = null;
+  let best: { count: number; seq: number | null } | null = null;
   for (const exec of Object.values(state.executions)) {
     if (exec.cell_id === cellId && exec.execution_count != null) {
-      if (best === null || exec.execution_count > best) {
-        best = exec.execution_count;
+      const seq = exec.seq ?? null;
+      // Keep in sync with RuntimeState::execution_count_for_cell in runtime-doc.
+      if (
+        best === null ||
+        (seq !== null &&
+          (best.seq === null ||
+            seq > best.seq ||
+            (seq === best.seq && exec.execution_count > best.count))) ||
+        (seq === null && best.seq === null && exec.execution_count > best.count)
+      ) {
+        best = { count: exec.execution_count, seq };
       }
     }
   }
-  return best;
+  return best?.count ?? null;
 }
