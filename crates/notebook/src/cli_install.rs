@@ -15,9 +15,7 @@ use std::os::unix::fs::symlink;
 use std::os::unix::fs::PermissionsExt;
 #[cfg(target_os = "windows")]
 use std::os::windows::ffi::OsStrExt;
-#[cfg(any(target_os = "windows", test))]
-use std::path::Path;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tauri::Manager;
 
 #[cfg(any(target_os = "windows", test))]
@@ -86,48 +84,40 @@ fn is_owned_windows_cmd_shim(contents: &str) -> bool {
         || contents.starts_with(&format!("@echo off\nrem {WINDOWS_CMD_SHIM_MARKER}\n"))
 }
 
-/// Get the path to the bundled runt binary.
-pub fn get_bundled_runt_path(app: &tauri::AppHandle) -> Option<PathBuf> {
+fn bundled_runt_candidates(
+    resource_dir: Option<&Path>,
+    current_exe: Option<&Path>,
+) -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+
     #[cfg(target_os = "macos")]
     {
-        if let Ok(exe_dir) = app.path().resource_dir() {
-            // resource_dir on macOS points to Contents/Resources
-            // The binary is in Contents/MacOS, which is ../MacOS from Resources
-            let macos_dir = exe_dir.parent()?.join("MacOS");
-            let bundled_path = macos_dir.join("runt");
-            if bundled_path.exists() {
-                log::debug!("[cli_install] Found bundled runt at {:?}", bundled_path);
-                return Some(bundled_path);
+        if let Some(resource_dir) = resource_dir {
+            if let Some(contents_dir) = resource_dir.parent() {
+                candidates.push(contents_dir.join("MacOS").join("runt"));
             }
-            log::debug!("[cli_install] Bundled runt not found at {:?}", bundled_path);
         }
     }
 
     #[cfg(target_os = "linux")]
     {
-        if let Ok(resource_dir) = app.path().resource_dir() {
-            let bundled_path = resource_dir.join("runt");
-            if bundled_path.exists() {
-                log::debug!("[cli_install] Found bundled runt at {:?}", bundled_path);
-                return Some(bundled_path);
+        if let Some(resource_dir) = resource_dir {
+            candidates.push(resource_dir.join("runt"));
+        }
+        if let Some(exe_path) = current_exe {
+            if let Some(exe_dir) = exe_path.parent() {
+                candidates.push(exe_dir.join("runt"));
             }
-            log::debug!("[cli_install] Bundled runt not found at {:?}", bundled_path);
         }
     }
 
     #[cfg(target_os = "windows")]
     {
-        if let Ok(resource_dir) = app.path().resource_dir() {
-            let bundled_path = resource_dir.join("runt.exe");
-            if bundled_path.exists() {
-                log::debug!("[cli_install] Found bundled runt at {:?}", bundled_path);
-                return Some(bundled_path);
-            }
-            log::debug!("[cli_install] Bundled runt not found at {:?}", bundled_path);
+        if let Some(resource_dir) = resource_dir {
+            candidates.push(resource_dir.join("runt.exe"));
         }
     }
 
-    // Fallback: try the development path (target/*/binaries/runt-{target})
     let target = if cfg!(target_os = "macos") {
         if cfg!(target_arch = "aarch64") {
             "aarch64-apple-darwin"
@@ -150,16 +140,26 @@ pub fn get_bundled_runt_path(app: &tauri::AppHandle) -> Option<PathBuf> {
         format!("runt-{}", target)
     };
 
-    // Try to find it relative to the executable (for no-bundle dev builds)
-    if let Ok(exe_path) = std::env::current_exe() {
+    if let Some(exe_path) = current_exe {
         if let Some(exe_dir) = exe_path.parent() {
-            let dev_path = exe_dir.join("binaries").join(&binary_name);
-            if dev_path.exists() {
-                log::debug!("[cli_install] Found dev runt at {:?}", dev_path);
-                return Some(dev_path);
-            }
-            log::debug!("[cli_install] Dev runt not found at {:?}", dev_path);
+            candidates.push(exe_dir.join("binaries").join(binary_name));
         }
+    }
+
+    candidates
+}
+
+/// Get the path to the bundled runt binary.
+pub fn get_bundled_runt_path(app: &tauri::AppHandle) -> Option<PathBuf> {
+    let resource_dir = app.path().resource_dir().ok();
+    let current_exe = std::env::current_exe().ok();
+
+    for candidate in bundled_runt_candidates(resource_dir.as_deref(), current_exe.as_deref()) {
+        if candidate.exists() {
+            log::debug!("[cli_install] Found bundled runt at {:?}", candidate);
+            return Some(candidate);
+        }
+        log::debug!("[cli_install] Bundled runt not found at {:?}", candidate);
     }
 
     None
@@ -724,6 +724,24 @@ pub fn clear_windows_update_flag() {}
 /// - Linux AppImage mounts (`/tmp/.mount_*`)
 /// - General temp directories (`/tmp/`, `/var/folders/`)
 #[cfg(unix)]
+fn is_ephemeral_runt_path(path: &Path) -> bool {
+    let path_str = path.to_string_lossy();
+    path_str.contains("/private/var/folders/")
+        || path_str.contains("/AppTranslocation/")
+        || path_str.starts_with("/tmp/")
+        || path_str.starts_with("/var/folders/")
+        || path_str.contains("/tmp/.mount_")
+        || path_str.contains("/Downloads/")
+        || path_str.starts_with("/Volumes/")
+}
+
+#[cfg(target_os = "linux")]
+fn is_temporary_linux_runt_path(path: &Path) -> bool {
+    let path_str = path.to_string_lossy();
+    path_str.starts_with("/tmp/")
+}
+
+#[cfg(unix)]
 fn is_ephemeral_path(app: &tauri::AppHandle) -> bool {
     let bundled = match get_bundled_runt_path(app) {
         Some(p) => p,
@@ -731,14 +749,7 @@ fn is_ephemeral_path(app: &tauri::AppHandle) -> bool {
     };
 
     let path_str = bundled.to_string_lossy();
-
-    let ephemeral = path_str.contains("/private/var/folders/")
-        || path_str.contains("/AppTranslocation/")
-        || path_str.starts_with("/tmp/")
-        || path_str.starts_with("/var/folders/")
-        || path_str.contains("/tmp/.mount_")
-        || path_str.contains("/Downloads/")
-        || path_str.starts_with("/Volumes/");
+    let ephemeral = is_ephemeral_runt_path(&bundled);
 
     if ephemeral {
         log::info!(
@@ -957,6 +968,14 @@ pub fn is_cli_installed_legacy() -> bool {
 pub fn install_cli(app: &tauri::AppHandle) -> Result<(), String> {
     let bundled_runt = get_bundled_runt_path(app)
         .ok_or_else(|| "Could not find bundled runt binary".to_string())?;
+
+    #[cfg(target_os = "linux")]
+    if is_temporary_linux_runt_path(&bundled_runt) {
+        return Err(format!(
+            "Cannot install CLI from ephemeral AppImage path {}. Install the DEB/APT package or a standalone runt binary instead.",
+            bundled_runt.display()
+        ));
+    }
 
     let dir = install_dir();
 
@@ -1386,6 +1405,52 @@ fn escalate_shell_command(shell_cmd: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn appimage_mount_paths_are_ephemeral() {
+        let path = PathBuf::from("/tmp/.mount_nteracLoPFjM/usr/bin/runt");
+        assert!(is_ephemeral_runt_path(&path));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn persistent_local_paths_are_not_ephemeral() {
+        let path = PathBuf::from("/home/alice/.local/share/runt-nightly/bin/runt");
+        assert!(!is_ephemeral_runt_path(&path));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_appimage_mount_paths_are_temporary_runt_paths() {
+        let path = PathBuf::from("/tmp/.mount_nteracLoPFjM/usr/bin/runt");
+        assert!(is_temporary_linux_runt_path(&path));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_download_paths_are_not_temporary_runt_paths() {
+        let path = PathBuf::from("/home/alice/Downloads/nteract/usr/bin/runt");
+        assert!(!is_temporary_linux_runt_path(&path));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_bundled_runt_candidates_include_sidecar_sibling() {
+        let resource_dir = Path::new("/tmp/.mount_nteracLoPFjM/usr/lib/nteract Nightly");
+        let current_exe = Path::new("/tmp/.mount_nteracLoPFjM/usr/bin/nteract");
+        let candidates = bundled_runt_candidates(Some(resource_dir), Some(current_exe));
+        let target = if cfg!(target_arch = "aarch64") {
+            "aarch64-unknown-linux-gnu"
+        } else {
+            "x86_64-unknown-linux-gnu"
+        };
+
+        assert!(candidates.contains(&PathBuf::from("/tmp/.mount_nteracLoPFjM/usr/bin/runt")));
+        assert!(candidates.contains(&PathBuf::from(format!(
+            "/tmp/.mount_nteracLoPFjM/usr/bin/binaries/runt-{target}"
+        ))));
+    }
 
     #[cfg(unix)]
     #[test]

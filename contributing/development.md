@@ -57,6 +57,45 @@ The first run downloads the MSVC CRT and Windows SDK into cargo-xwin's cache.
 `nasm` is required by `aws-lc-sys`, and Homebrew's LLVM provides the
 `clang-cl`/`lld-link` toolchain used by the cross build.
 
+## Linux Target Checks From macOS
+
+Use this for Linux-only `cfg` and type-check validation from macOS. It is a
+`cargo check` workflow, not a substitute for building release Linux artifacts on
+Linux: Homebrew OpenSSL gives `openssl-sys` the metadata and headers needed for
+checking, but the final link should still happen on a Linux host or CI image.
+
+Install the local tools:
+
+```bash
+brew tap messense/macos-cross-toolchains
+brew install x86_64-unknown-linux-gnu openssl@3 pkgconf
+rustup target add x86_64-unknown-linux-gnu
+```
+
+Then point Cargo and `pkg-config` at the target compiler and local OpenSSL
+metadata:
+
+```bash
+export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=x86_64-linux-gnu-gcc
+export CC_x86_64_unknown_linux_gnu=x86_64-linux-gnu-gcc
+export CXX_x86_64_unknown_linux_gnu=x86_64-linux-gnu-g++
+export AR_x86_64_unknown_linux_gnu=x86_64-linux-gnu-ar
+export PKG_CONFIG_ALLOW_CROSS=1
+export PKG_CONFIG_PATH="$(brew --prefix openssl@3)/lib/pkgconfig"
+```
+
+Example check:
+
+```bash
+cargo check -p runtimed-client --target x86_64-unknown-linux-gnu
+```
+
+If the check reports `x86_64-linux-gnu-gcc: No such file or directory`, the
+cross compiler is missing or not on `PATH`. If `openssl-sys` reports that
+`pkg-config has not been configured to support cross-compilation`, confirm
+`PKG_CONFIG_ALLOW_CROSS` and `PKG_CONFIG_PATH` are exported in the same shell as
+the `cargo check` command.
+
 ## Choosing a Workflow
 
 ### `cargo xtask dev` — One Command Setup + Dev

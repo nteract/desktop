@@ -24,6 +24,8 @@
 //! `~/Library/LaunchAgents/` and using `launchctl` directly.
 
 use std::path::{Path, PathBuf};
+#[cfg(target_os = "linux")]
+use std::process::Command;
 
 use log::info;
 use runt_workspace::cache_namespace;
@@ -141,6 +143,45 @@ pub enum ServiceError {
 /// Service manager for runtimed.
 pub struct ServiceManager {
     config: ServiceConfig,
+}
+
+#[cfg(target_os = "linux")]
+const APPIMAGE_HOST_ENV_VARS: &[&str] = &[
+    "APPDIR",
+    "APPIMAGE",
+    "ARGV0",
+    "LD_AUDIT",
+    "LD_DEBUG",
+    "LD_LIBRARY_PATH",
+    "LD_ORIGIN_PATH",
+    "LD_PRELOAD",
+    "OWD",
+];
+
+#[cfg(target_os = "linux")]
+fn systemctl_binary() -> &'static str {
+    // Prefer host systemctl so AppImage PATH entries cannot shadow it.
+    if Path::new("/usr/bin/systemctl").exists() {
+        "/usr/bin/systemctl"
+    } else if Path::new("/bin/systemctl").exists() {
+        "/bin/systemctl"
+    } else {
+        "systemctl"
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn strip_appimage_host_env(command: &mut Command) {
+    for var in APPIMAGE_HOST_ENV_VARS {
+        command.env_remove(var);
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn systemctl_command() -> Command {
+    let mut command = Command::new(systemctl_binary());
+    strip_appimage_host_env(&mut command);
+    command
 }
 
 impl Default for ServiceManager {
@@ -542,7 +583,7 @@ impl ServiceManager {
                 std::fs::remove_file(&path)?;
                 info!("[service] Removed {:?}", path);
                 // Reload systemd
-                std::process::Command::new("systemctl")
+                systemctl_command()
                     .args(["--user", "daemon-reload"])
                     .output()
                     .ok();
@@ -709,12 +750,12 @@ WantedBy=default.target
         info!("[service] Created {:?}", service_file_path);
 
         // Reload systemd
-        std::process::Command::new("systemctl")
+        systemctl_command()
             .args(["--user", "daemon-reload"])
             .output()?;
 
         // Enable the service
-        std::process::Command::new("systemctl")
+        systemctl_command()
             .args(["--user", "enable"])
             .arg(systemd_service_unit_name())
             .output()?;
@@ -724,7 +765,7 @@ WantedBy=default.target
 
     #[cfg(target_os = "linux")]
     fn start_linux(&self) -> ServiceResult<()> {
-        let output = std::process::Command::new("systemctl")
+        let output = systemctl_command()
             .args(["--user", "start"])
             .arg(systemd_service_unit_name())
             .output()?;
@@ -740,7 +781,7 @@ WantedBy=default.target
 
     #[cfg(target_os = "linux")]
     fn stop_linux(&self) -> ServiceResult<()> {
-        let output = std::process::Command::new("systemctl")
+        let output = systemctl_command()
             .args(["--user", "stop"])
             .arg(systemd_service_unit_name())
             .output()?;
@@ -1147,6 +1188,20 @@ mod tests {
                 content.contains("Environment=HOME="),
                 "Installed systemd service should contain HOME env var"
             );
+        }
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn systemctl_command_strips_appimage_linker_env() {
+        let command = systemctl_command();
+        let env_overrides = command.get_envs().collect::<Vec<_>>();
+
+        for var in APPIMAGE_HOST_ENV_VARS {
+            let removed = env_overrides
+                .iter()
+                .any(|(key, value)| *key == std::ffi::OsStr::new(var) && value.is_none());
+            assert!(removed, "{var} should be removed for host systemctl");
         }
     }
 }
