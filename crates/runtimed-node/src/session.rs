@@ -633,7 +633,7 @@ async fn ensure_kernel_started(state: &Arc<Mutex<SessionState>>) -> Result<()> {
     let response = handle
         .send_request(NotebookRequest::LaunchKernel {
             kernel_type: runtime.clone(),
-            env_source: "auto".to_string(),
+            env_source: notebook_protocol::connection::LaunchSpec::Auto,
             notebook_path,
         })
         .await

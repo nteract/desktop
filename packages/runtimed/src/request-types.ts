@@ -17,6 +17,20 @@ export interface DependencyGuard {
   dependency_fingerprint: string;
 }
 
+export type PackageManager = "uv" | "conda" | "pixi" | (string & {});
+
+export type EnvSource =
+  | `${PackageManager}:prewarmed`
+  | `${PackageManager}:inline`
+  | "uv:pyproject"
+  | "pixi:toml"
+  | "conda:env_yml"
+  | `${PackageManager}:pep723`
+  | "deno"
+  | (string & {});
+
+export type LaunchSpec = "auto" | "" | "prewarmed" | `auto:${PackageManager}` | EnvSource;
+
 export interface FeatureFlags {
   bootstrap_dx?: boolean;
 }
@@ -49,7 +63,7 @@ export type NotebookRequest =
   | {
       type: "launch_kernel";
       kernel_type: string;
-      env_source: string;
+      env_source: LaunchSpec;
       notebook_path?: string;
     }
   | { type: "execute_cell"; cell_id: string }
@@ -114,13 +128,13 @@ export type NotebookResponse =
   | {
       result: "kernel_launched";
       kernel_type: string;
-      env_source: string;
+      env_source: EnvSource;
       launched_config: LaunchedEnvConfig;
     }
   | {
       result: "kernel_already_running";
       kernel_type: string;
-      env_source: string;
+      env_source: EnvSource;
       launched_config: LaunchedEnvConfig;
     }
   | { result: "cell_queued"; cell_id: string; execution_id: string }

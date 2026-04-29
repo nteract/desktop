@@ -7,6 +7,7 @@
 
 use std::time::Duration;
 
+use notebook_protocol::connection::LaunchSpec;
 use notebook_sync::connect;
 use runtime_doc::RuntimeLifecycle;
 use runtimed::client::PoolClient;
@@ -801,7 +802,7 @@ async fn test_untrusted_launch_and_sync_environment_are_daemon_rejected() {
     let launch = handle
         .send_request(NotebookRequest::LaunchKernel {
             kernel_type: "python".to_string(),
-            env_source: "auto".to_string(),
+            env_source: LaunchSpec::Auto,
             notebook_path: None,
         })
         .await

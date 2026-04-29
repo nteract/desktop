@@ -126,7 +126,7 @@ pub async fn restart_kernel(
     let launch_result = handle
         .send_request(NotebookRequest::LaunchKernel {
             kernel_type: kernel_type.clone(),
-            env_source: env_source.clone(),
+            env_source: notebook_protocol::connection::LaunchSpec::parse(&env_source),
             notebook_path: notebook_path.clone(),
         })
         .await;
@@ -150,7 +150,9 @@ pub async fn restart_kernel(
                     fresh_handle
                         .send_request(NotebookRequest::LaunchKernel {
                             kernel_type: kernel_type.clone(),
-                            env_source: env_source.clone(),
+                            env_source: notebook_protocol::connection::LaunchSpec::parse(
+                                &env_source,
+                            ),
                             notebook_path,
                         })
                         .await

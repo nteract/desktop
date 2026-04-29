@@ -913,6 +913,7 @@ mod integration_tests {
     use std::path::PathBuf;
     use std::time::Duration;
 
+    use notebook_protocol::connection::LaunchSpec;
     use notebook_protocol::protocol::{NotebookRequest, NotebookResponse};
 
     /// Get the daemon socket path for the current worktree.
@@ -1000,7 +1001,7 @@ mod integration_tests {
         let response = handle
             .send_request(NotebookRequest::LaunchKernel {
                 kernel_type: "python".into(),
-                env_source: "auto".into(),
+                env_source: LaunchSpec::Auto,
                 notebook_path: None,
             })
             .await

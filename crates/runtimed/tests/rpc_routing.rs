@@ -14,6 +14,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use notebook_protocol::connection::EnvSource;
 use notebook_protocol::protocol::{
     RuntimeAgentRequest, RuntimeAgentRequestEnvelope, RuntimeAgentResponse,
 };
@@ -360,7 +361,7 @@ async fn shutdown_then_launch_serialized() {
         &tx,
         RuntimeAgentRequest::LaunchKernel {
             kernel_type: "python".into(),
-            env_source: "conda:inline".into(),
+            env_source: EnvSource::parse("conda:inline"),
             notebook_path: None,
             launched_config: Default::default(),
             env_vars: Default::default(),

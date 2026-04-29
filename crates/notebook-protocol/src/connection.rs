@@ -890,6 +890,28 @@ mod tests {
         assert_eq!(LaunchSpec::Concrete(EnvSource::Deno).auto_scope(), None);
     }
 
+    #[test]
+    fn launch_spec_serde_is_string() {
+        assert_eq!(
+            serde_json::to_value(LaunchSpec::AutoScoped(PackageManager::Pixi)).unwrap(),
+            serde_json::json!("auto:pixi")
+        );
+        assert_eq!(
+            serde_json::to_value(LaunchSpec::Concrete(EnvSource::Inline(PackageManager::Uv)))
+                .unwrap(),
+            serde_json::json!("uv:inline")
+        );
+
+        let auto: LaunchSpec = serde_json::from_value(serde_json::json!("auto")).unwrap();
+        assert_eq!(auto, LaunchSpec::Auto);
+        let concrete: LaunchSpec =
+            serde_json::from_value(serde_json::json!("conda:inline")).unwrap();
+        assert_eq!(
+            concrete,
+            LaunchSpec::Concrete(EnvSource::Inline(PackageManager::Conda))
+        );
+    }
+
     /// `recv_typed_frame` is built on `read_exact`, which is NOT cancel-
     /// safe: dropping the future mid-read silently discards bytes
     /// already pulled off the underlying reader.
