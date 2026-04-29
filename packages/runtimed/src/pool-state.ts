@@ -5,7 +5,7 @@
  * represent the deserialized snapshot from the WASM `PoolDoc::read_state()`.
  */
 
-/** State of a single runtime pool (UV or Conda). */
+/** State of a single runtime pool (UV, Conda, or Pixi). */
 export interface RuntimePoolState {
   available: number;
   warming: number;
@@ -26,6 +26,7 @@ export interface RuntimePoolState {
 export interface PoolState {
   uv: RuntimePoolState;
   conda: RuntimePoolState;
+  pixi: RuntimePoolState;
 }
 
 const DEFAULT_RUNTIME_POOL: RuntimePoolState = {
@@ -39,4 +40,5 @@ const DEFAULT_RUNTIME_POOL: RuntimePoolState = {
 export const DEFAULT_POOL_STATE: PoolState = {
   uv: { ...DEFAULT_RUNTIME_POOL },
   conda: { ...DEFAULT_RUNTIME_POOL },
+  pixi: { ...DEFAULT_RUNTIME_POOL },
 };

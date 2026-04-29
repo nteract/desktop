@@ -8,31 +8,11 @@
  */
 
 import { useSyncExternalStore } from "react";
+import { DEFAULT_POOL_STATE, type PoolState } from "runtimed";
 
 // ── Types ────────────────────────────────────────────────────────────
 
-/** State of a single runtime pool (UV or Conda). */
-export interface RuntimePoolState {
-  available: number;
-  warming: number;
-  pool_size: number;
-  /** Human-readable error message (undefined if healthy). */
-  error?: string;
-  /** Package that failed to install (undefined if not identified). */
-  failed_package?: string;
-  /** Error classification: "timeout", "invalid_package", "import_error", "setup_failed". */
-  error_kind?: string;
-  /** Number of consecutive failures (0 if healthy). */
-  consecutive_failures: number;
-  /** Seconds until next retry (0 if retry is imminent or healthy). */
-  retry_in_secs: number;
-}
-
-/** Full pool state snapshot from the PoolDoc. */
-export interface PoolState {
-  uv: RuntimePoolState;
-  conda: RuntimePoolState;
-}
+export { DEFAULT_POOL_STATE, type PoolState, type RuntimePoolState } from "runtimed";
 
 /** Pool error info with timestamp, used by PoolErrorBanner. */
 export interface PoolErrorWithTimestamp {
@@ -45,23 +25,22 @@ export interface PoolErrorWithTimestamp {
   receivedAt: number;
 }
 
-const DEFAULT_RUNTIME_POOL: RuntimePoolState = {
-  available: 0,
-  warming: 0,
-  pool_size: 0,
-  consecutive_failures: 0,
-  retry_in_secs: 0,
-};
-
-export const DEFAULT_POOL_STATE: PoolState = {
-  uv: { ...DEFAULT_RUNTIME_POOL },
-  conda: { ...DEFAULT_RUNTIME_POOL },
-};
-
 // ── Store ────────────────────────────────────────────────────────────
 
 let currentState: PoolState = DEFAULT_POOL_STATE;
 const subscribers = new Set<() => void>();
+
+function normalizePoolState(state: PoolState): PoolState {
+  const partial = state as Partial<PoolState>;
+  if (partial.uv && partial.conda && partial.pixi) {
+    return state;
+  }
+  return {
+    uv: partial.uv ?? DEFAULT_POOL_STATE.uv,
+    conda: partial.conda ?? DEFAULT_POOL_STATE.conda,
+    pixi: partial.pixi ?? DEFAULT_POOL_STATE.pixi,
+  };
+}
 
 function notifySubscribers(): void {
   for (const cb of subscribers) {
@@ -75,7 +54,7 @@ function notifySubscribers(): void {
 
 /** Update the pool state snapshot. Called by the frame pipeline. */
 export function setPoolState(state: PoolState): void {
-  currentState = state;
+  currentState = normalizePoolState(state);
   notifySubscribers();
 }
 

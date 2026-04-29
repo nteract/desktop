@@ -34,6 +34,10 @@ export interface CellChangeset {
   order_changed: boolean;
 }
 
+export type CellChangesetMaterialization =
+  | { kind: "full"; reason: "missing_changeset" | "structural" | "resolved_assets" }
+  | { kind: "incremental" };
+
 // ── Utilities ────────────────────────────────────────────────────────
 
 /**
@@ -61,4 +65,27 @@ export function mergeChangesets(a: CellChangeset, b: CellChangeset): CellChanges
     removed: [...new Set([...a.removed, ...b.removed])],
     order_changed: a.order_changed || b.order_changed,
   };
+}
+
+/**
+ * Classify how a frontend projection should consume a coalesced changeset.
+ *
+ * Structural changes and `resolved_assets` updates require a full notebook
+ * materialization because per-cell WASM accessors do not expose every value the
+ * app-level cell snapshot needs. Pure cell chrome/output updates can use the
+ * incremental projection path.
+ */
+export function classifyCellChangesetMaterialization(
+  changeset: CellChangeset | null,
+): CellChangesetMaterialization {
+  if (!changeset) {
+    return { kind: "full", reason: "missing_changeset" };
+  }
+  if (changeset.added.length > 0 || changeset.removed.length > 0 || changeset.order_changed) {
+    return { kind: "full", reason: "structural" };
+  }
+  if (changeset.changed.some((c) => c.fields.resolved_assets)) {
+    return { kind: "full", reason: "resolved_assets" };
+  }
+  return { kind: "incremental" };
 }

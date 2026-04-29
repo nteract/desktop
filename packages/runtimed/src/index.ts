@@ -42,7 +42,9 @@ export type {
 
 // Cell changeset
 export {
+  classifyCellChangesetMaterialization,
   type CellChangeset,
+  type CellChangesetMaterialization,
   type ChangedCell,
   type ChangedFields,
   mergeChangesets,

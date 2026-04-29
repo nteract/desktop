@@ -5,7 +5,9 @@
  * app imports (`../lib/cell-changeset`) continue to work without changes.
  */
 export {
+  classifyCellChangesetMaterialization,
   type CellChangeset,
+  type CellChangesetMaterialization,
   type ChangedCell,
   type ChangedFields,
   mergeChangesets,
