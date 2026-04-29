@@ -59,7 +59,9 @@ which runt                      # Should be repo/bin/runt (not /usr/local/bin/ru
 
 Local dev uses cargo's incremental cache. Tight edit-check loops on one crate reuse rustc's per-function incremental artifacts and run in seconds. No extra setup required.
 
-sccache is not used. It can't cache incremental builds, so turning it on forces `CARGO_INCREMENTAL=0` and loses the edit-loop speedup. It also breaks WASM builds (sccache's clang doesn't support `wasm32-unknown-unknown`). If a developer has `RUSTC_WRAPPER=sccache` in their environment, xtask strips it for wasm-pack invocations.
+Local dev does not use sccache. It can't cache incremental builds, so turning it on forces `CARGO_INCREMENTAL=0` and loses the edit-loop speedup. It also breaks WASM builds (sccache's clang doesn't support `wasm32-unknown-unknown`). If a developer has `RUSTC_WRAPPER=sccache` in their environment, xtask strips it for wasm-pack invocations.
+
+CI release jobs do route Rust compiles through sccache, backed by the GitHub Actions cache. The local-dev concerns don't apply: the release profile already disables incremental, and the release jobs that still build wasm (`build-wasm`) don't run with sccache wired in. Every other Rust job in `release-common.yml` (build-linux, build-macos, build-notebook-*, the pre-maturin step in build-python-wheels, and maturin itself via `sccache: true`) shares one sccache cache, which is what lets `runtimed` compile once and be reused across jobs that need it as both a binary sidecar and a Rust library dep.
 
 ### lld linker (macOS arm64)
 
