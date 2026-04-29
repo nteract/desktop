@@ -53,6 +53,14 @@ pub struct KernelClient {
 impl KernelClient {
     #[allow(clippy::expect_used)] // petname only returns None when word count is 0
     pub async fn start_from_kernelspec(kernelspec: KernelspecDir) -> Result<Self> {
+        Self::start_from_kernelspec_in_runtime_dir(kernelspec, runtime_dir()).await
+    }
+
+    #[allow(clippy::expect_used)] // petname only returns None when word count is 0
+    async fn start_from_kernelspec_in_runtime_dir(
+        kernelspec: KernelspecDir,
+        runtime_dir: PathBuf,
+    ) -> Result<Self> {
         let kernel_id = petname(2, "-").expect("failed to generate petname");
         let session_id = Uuid::new_v4().to_string();
         let key = Uuid::new_v4().to_string();
@@ -72,19 +80,17 @@ impl KernelClient {
             kernel_name: Some(kernelspec.kernel_name.clone()),
         };
 
-        let runtime_dir = runtime_dir();
         tokio::fs::create_dir_all(&runtime_dir).await?;
 
         let connection_file = runtime_dir.join(format!("runt-kernel-{}.json", kernel_id));
+        let content = serde_json::to_string(&connection_info)?;
+        tokio::fs::write(&connection_file, &content).await?;
 
         let mut command = kernelspec.clone().command(&connection_file, None, None)?;
         command.current_dir(default_kernel_cwd());
 
         let child = command.spawn()?;
         drop(listeners);
-
-        let content = serde_json::to_string(&connection_info)?;
-        tokio::fs::write(&connection_file, &content).await?;
 
         Ok(Self {
             kernel_id,
@@ -386,4 +392,54 @@ fn extract_kernel_id(path: &Path) -> Option<String> {
     let file_stem = path.file_stem()?.to_string_lossy();
     let id_str = file_stem.strip_prefix("runt-kernel-")?;
     Some(id_str.to_string())
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn start_from_kernelspec_writes_connection_file_before_spawn() -> Result<()> {
+        let runtime_dir = tempfile::tempdir()?;
+        let marker_dir = tempfile::tempdir()?;
+        let marker_path = marker_dir.path().join("saw-connection-file");
+
+        let kernelspec = KernelspecDir {
+            kernel_name: "connection-order-test".to_string(),
+            path: marker_dir.path().to_path_buf(),
+            kernelspec: jupyter_protocol::JupyterKernelspec {
+                argv: vec![
+                    "sh".to_string(),
+                    "-c".to_string(),
+                    "if [ -s \"$1\" ]; then echo present > \"$2\"; else echo missing > \"$2\"; fi"
+                        .to_string(),
+                    "connection-order-test".to_string(),
+                    "{connection_file}".to_string(),
+                    marker_path.display().to_string(),
+                ],
+                display_name: "Connection Order Test".to_string(),
+                language: "sh".to_string(),
+                metadata: None,
+                interrupt_mode: None,
+                env: None,
+            },
+        };
+
+        let mut client = KernelClient::start_from_kernelspec_in_runtime_dir(
+            kernelspec,
+            runtime_dir.path().to_path_buf(),
+        )
+        .await?;
+
+        if let Some(child) = client.child.as_mut() {
+            let status = child.wait().await?;
+            assert!(status.success());
+        }
+
+        let marker = tokio::fs::read_to_string(&marker_path).await?;
+        assert_eq!(marker.trim(), "present");
+
+        tokio::fs::remove_file(client.connection_file()).await?;
+        Ok(())
+    }
 }
