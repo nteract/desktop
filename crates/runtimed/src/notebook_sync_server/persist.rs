@@ -686,8 +686,22 @@ pub(crate) async fn install_autosave_shutdown_tx(
         .replace(shutdown_tx);
 
     if let Some(previous_tx) = previous_tx {
-        let (ack_tx, _ack_rx) = oneshot::channel::<bool>();
-        let _ = previous_tx.send(ack_tx);
+        let (ack_tx, ack_rx) = oneshot::channel::<bool>();
+        if previous_tx.send(ack_tx).is_err() {
+            return;
+        }
+        match tokio::time::timeout(std::time::Duration::from_secs(5), ack_rx).await {
+            Ok(Ok(true)) => {}
+            Ok(Ok(false)) => {
+                warn!("[autosave] Replaced autosave task reported failed shutdown");
+            }
+            Ok(Err(_)) => {
+                warn!("[autosave] Replaced autosave task dropped shutdown ack");
+            }
+            Err(_) => {
+                warn!("[autosave] Timed out waiting for replaced autosave task shutdown");
+            }
+        }
     }
 }
 

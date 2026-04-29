@@ -7290,13 +7290,15 @@ async fn test_install_autosave_shutdown_tx_signals_replaced_handle() {
     install_autosave_shutdown_tx(&room, old_tx).await;
 
     let (new_tx, mut new_rx) = mpsc::unbounded_channel::<AutosaveShutdownRequest>();
+    let replaced_ack_task = tokio::spawn(async move {
+        let ack_tx = old_rx
+            .recv()
+            .await
+            .expect("replacing the handle should signal the old task");
+        let _ = ack_tx.send(true);
+    });
     install_autosave_shutdown_tx(&room, new_tx).await;
-
-    let replaced_ack = tokio::time::timeout(Duration::from_millis(500), old_rx.recv()).await;
-    assert!(
-        matches!(replaced_ack, Ok(Some(_))),
-        "replacing the autosave shutdown handle should signal the old task: {replaced_ack:?}"
-    );
+    replaced_ack_task.await.unwrap();
     assert!(
         new_rx.try_recv().is_err(),
         "new shutdown handle should remain installed until explicit shutdown"
@@ -7314,4 +7316,64 @@ async fn test_install_autosave_shutdown_tx_signals_replaced_handle() {
         "explicit shutdown should receive ack from the new handle"
     );
     ack_task.await.unwrap();
+}
+
+#[tokio::test]
+async fn test_autosave_shutdown_during_loading_returns_false_without_write() {
+    use std::time::Duration;
+
+    let tmp = tempfile::TempDir::new().unwrap();
+    let blob_store = test_blob_store(&tmp);
+    let docs_dir = tmp.path().join("docs");
+    std::fs::create_dir_all(&docs_dir).unwrap();
+
+    let room = Arc::new(NotebookRoom::new_fresh(
+        Uuid::new_v4(),
+        None,
+        &docs_dir,
+        blob_store,
+        false,
+    ));
+
+    {
+        let mut doc = room.doc.write().await;
+        doc.add_cell(0, "cell-1", "code").unwrap();
+        doc.update_source("cell-1", "before = 1").unwrap();
+    }
+
+    let save_path = tmp.path().join("loading.ipynb");
+    let written = save_notebook_to_disk(&room, Some(save_path.to_str().unwrap()))
+        .await
+        .unwrap();
+    let canonical = tokio::fs::canonicalize(&written)
+        .await
+        .unwrap_or_else(|_| PathBuf::from(&written));
+    *room.identity.path.write().await = Some(canonical.clone());
+    let shutdown_tx =
+        spawn_autosave_debouncer(canonical.to_string_lossy().into_owned(), Arc::clone(&room));
+    install_autosave_shutdown_tx(&room, shutdown_tx).await;
+
+    {
+        let mut doc = room.doc.write().await;
+        doc.add_cell(1, "cell-2", "code").unwrap();
+        doc.update_source("cell-2", "after = 2").unwrap();
+    }
+    let _ = room.broadcasts.changed_tx.send(());
+
+    assert!(room.try_start_loading(), "test should mark room as loading");
+    assert!(
+        !shutdown_autosave_debouncer(&room, &canonical.to_string_lossy(), Duration::from_secs(5))
+            .await,
+        "shutdown while loading should report that no final save happened"
+    );
+    room.finish_loading();
+
+    let content = tokio::fs::read_to_string(&save_path).await.unwrap();
+    let nb: serde_json::Value = serde_json::from_str(&content).unwrap();
+    let cells = nb["cells"].as_array().expect("cells array");
+    assert_eq!(
+        cells.len(),
+        1,
+        "shutdown while loading should not write pending edits to disk"
+    );
 }
