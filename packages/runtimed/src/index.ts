@@ -131,11 +131,14 @@ export type {
   CompletionItem,
   DependencyGuard,
   DenoLaunchedConfig,
+  EnvSource,
   GuardedNotebookProvenance,
   HistoryEntry,
   LaunchedEnvConfig,
+  LaunchSpec,
   NotebookRequest,
   NotebookResponse,
+  PackageManager,
   SaveErrorKind,
 } from "./request-types";
 

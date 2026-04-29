@@ -301,3 +301,29 @@ impl LaunchSpec {
         }
     }
 }
+
+impl fmt::Display for LaunchSpec {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Auto => f.write_str("auto"),
+            Self::AutoScoped(PackageManager::Uv) => f.write_str("auto:uv"),
+            Self::AutoScoped(PackageManager::Conda) => f.write_str("auto:conda"),
+            Self::AutoScoped(PackageManager::Pixi) => f.write_str("auto:pixi"),
+            Self::AutoScoped(PackageManager::Unknown(s)) => write!(f, "auto:{s}"),
+            Self::Concrete(source) => f.write_str(source.as_str()),
+        }
+    }
+}
+
+impl Serialize for LaunchSpec {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(&self.to_string())
+    }
+}
+
+impl<'de> Deserialize<'de> for LaunchSpec {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let raw = String::deserialize(d)?;
+        Ok(Self::parse(&raw))
+    }
+}

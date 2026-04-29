@@ -3510,7 +3510,7 @@ pub(crate) async fn auto_launch_kernel(
                 let launch_request =
                     notebook_protocol::protocol::RuntimeAgentRequest::LaunchKernel {
                         kernel_type: kernel_type.to_string(),
-                        env_source: env_source.as_str().to_string(),
+                        env_source: env_source.clone(),
                         notebook_path: notebook_path_opt
                             .as_deref()
                             .map(|p| p.to_str().unwrap_or("").to_string()),
@@ -3530,14 +3530,19 @@ pub(crate) async fn auto_launch_kernel(
                             *lc = Some(launched_config.clone());
                         }
 
-                        publish_kernel_state_presence(room, presence::KernelStatus::Idle, &es)
-                            .await;
+                        let es_label = es.as_str().to_string();
+                        publish_kernel_state_presence(
+                            room,
+                            presence::KernelStatus::Idle,
+                            &es_label,
+                        )
+                        .await;
 
                         // Write Running(Idle) + kernel info to RuntimeStateDoc
                         // so frontends see "idle" via CRDT sync.
                         if let Err(e) = room.state.with_doc(|sd| {
                             sd.set_lifecycle(&RuntimeLifecycle::Running(KernelActivity::Idle))?;
-                            sd.set_kernel_info(kernel_type, kernel_type, &es)?;
+                            sd.set_kernel_info(kernel_type, kernel_type, &es_label)?;
                             sd.set_runtime_agent_id(&runtime_agent_id)?;
                             // Fresh kernel is in sync with its launched config
                             sd.set_env_sync(true, &[], &[], false, false)?;
@@ -3548,7 +3553,7 @@ pub(crate) async fn auto_launch_kernel(
 
                         info!(
                             "[notebook-sync] Auto-launch via runtime agent succeeded: {} kernel with {} environment",
-                            kernel_type, es
+                            kernel_type, es_label
                         );
                     }
                     Ok(notebook_protocol::protocol::RuntimeAgentResponse::Error { error }) => {

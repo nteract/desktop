@@ -256,11 +256,16 @@ Requests are one-shot JSON messages sent from the client to the daemon. Each req
 | `GetKernelInfo` | Query current kernel status |
 | `GetQueueState` | Query the execution queue |
 
+`LaunchKernel.env_source` is a request-time `LaunchSpec` string on the wire:
+`"auto"`, `"auto:uv"`, `"auto:conda"`, `"auto:pixi"`, or a concrete
+environment source such as `"uv:inline"`. The daemon resolves that spec before
+launch and downstream protocol responses carry a concrete `EnvSource`.
+
 ### Key response types
 
 | Response | Meaning |
 |----------|---------|
-| `KernelLaunched { env_source, ... }` | Kernel started, includes environment origin label |
+| `KernelLaunched { env_source, ... }` | Kernel started, includes resolved concrete environment origin label |
 | `CellQueued` | Cell added to execution queue |
 | `NotebookSaved` | File written to disk |
 | `CompletionResult { items, cursor_start, cursor_end }` | Code completion results (`items: Vec<CompletionItem>`) |

@@ -5,6 +5,7 @@
 
 use std::path::PathBuf;
 
+use crate::connection::{EnvSource, LaunchSpec};
 use serde::{Deserialize, Serialize};
 
 // ── Data structs referenced by protocol enums ───────────────────────────────
@@ -326,8 +327,8 @@ pub enum NotebookRequest {
     LaunchKernel {
         /// Kernel type: "python" or "deno"
         kernel_type: String,
-        /// Environment source: "uv:inline", "conda:prewarmed", etc.
-        env_source: String,
+        /// Request-time launch source: "auto", "auto:uv", "uv:inline", etc.
+        env_source: LaunchSpec,
         /// Path to the notebook file (for working directory)
         notebook_path: Option<String>,
     },
@@ -461,7 +462,7 @@ pub enum NotebookResponse {
     /// Kernel launched successfully.
     KernelLaunched {
         kernel_type: String,
-        env_source: String,
+        env_source: EnvSource,
         /// Environment config used at launch (for sync detection).
         launched_config: LaunchedEnvConfig,
     },
@@ -469,7 +470,7 @@ pub enum NotebookResponse {
     /// Kernel was already running (returned existing info).
     KernelAlreadyRunning {
         kernel_type: String,
-        env_source: String,
+        env_source: EnvSource,
         /// Environment config used at launch (for sync detection).
         launched_config: LaunchedEnvConfig,
     },
@@ -613,7 +614,7 @@ pub enum RuntimeAgentRequest {
     /// Environment is already prepared by the coordinator.
     LaunchKernel {
         kernel_type: String,
-        env_source: String,
+        env_source: EnvSource,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         notebook_path: Option<String>,
         launched_config: LaunchedEnvConfig,
@@ -634,7 +635,7 @@ pub enum RuntimeAgentRequest {
     /// one is already connected.
     RestartKernel {
         kernel_type: String,
-        env_source: String,
+        env_source: EnvSource,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         notebook_path: Option<String>,
         launched_config: LaunchedEnvConfig,
@@ -665,10 +666,10 @@ pub enum RuntimeAgentRequest {
 #[serde(tag = "result", rename_all = "snake_case")]
 pub enum RuntimeAgentResponse {
     /// Kernel launched successfully.
-    KernelLaunched { env_source: String },
+    KernelLaunched { env_source: EnvSource },
 
     /// Kernel restarted successfully (same runtime agent, new kernel).
-    KernelRestarted { env_source: String },
+    KernelRestarted { env_source: EnvSource },
 
     /// Code completion result.
     CompletionResult {
@@ -1334,7 +1335,7 @@ mod tests {
         assert!(!RuntimeAgentRequest::ShutdownKernel.is_command());
         assert!(!RuntimeAgentRequest::LaunchKernel {
             kernel_type: "python".into(),
-            env_source: "uv:prewarmed".into(),
+            env_source: EnvSource::Prewarmed(crate::connection::PackageManager::Uv),
             notebook_path: None,
             launched_config: Default::default(),
             env_vars: Default::default(),
@@ -1342,7 +1343,7 @@ mod tests {
         .is_command());
         assert!(!RuntimeAgentRequest::RestartKernel {
             kernel_type: "python".into(),
-            env_source: "conda:inline".into(),
+            env_source: EnvSource::Inline(crate::connection::PackageManager::Conda),
             notebook_path: None,
             launched_config: Default::default(),
             env_vars: Default::default(),

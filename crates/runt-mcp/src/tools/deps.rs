@@ -448,7 +448,9 @@ async fn apply_dependency_changes(
             match handle
                 .send_request(NotebookRequest::LaunchKernel {
                     kernel_type: "python".to_string(),
-                    env_source: restart_env_source,
+                    env_source: notebook_protocol::connection::LaunchSpec::parse(
+                        &restart_env_source,
+                    ),
                     notebook_path,
                 })
                 .await

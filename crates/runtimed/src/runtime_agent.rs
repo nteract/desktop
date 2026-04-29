@@ -36,6 +36,7 @@ use std::sync::Arc;
 use notebook_doc::presence::PresenceState;
 use notebook_protocol::connection::{
     send_json_frame, send_preamble, send_typed_frame, FramedReader, Handshake, NotebookFrameType,
+    PackageManager,
 };
 use notebook_protocol::protocol::{RuntimeAgentRequest, RuntimeAgentResponse};
 use runtime_doc::RuntimeStateHandle;
@@ -539,7 +540,7 @@ async fn handle_runtime_agent_request(
                     .python_path
                     .as_ref()
                     .map(|python| runtimed_client::PooledEnv {
-                        env_type: if env_source.starts_with("conda") {
+                        env_type: if env_source.package_manager() == Some(PackageManager::Conda) {
                             runtimed_client::EnvType::Conda
                         } else {
                             runtimed_client::EnvType::Uv
@@ -559,7 +560,7 @@ async fn handle_runtime_agent_request(
             };
             let config = KernelLaunchConfig {
                 kernel_type,
-                env_source: env_source.clone(),
+                env_source: env_source.as_str().to_string(),
                 notebook_path: notebook_path.as_deref().map(PathBuf::from),
                 launched_config,
                 env_vars: vec![],
@@ -573,7 +574,9 @@ async fn handle_runtime_agent_request(
                     state.reset();
                     state.set_idle();
                     (
-                        RuntimeAgentResponse::KernelLaunched { env_source: es },
+                        RuntimeAgentResponse::KernelLaunched {
+                            env_source: notebook_protocol::connection::EnvSource::parse(&es),
+                        },
                         Some(rx),
                     )
                 }
@@ -621,7 +624,7 @@ async fn handle_runtime_agent_request(
                     .python_path
                     .as_ref()
                     .map(|python| runtimed_client::PooledEnv {
-                        env_type: if env_source.starts_with("conda") {
+                        env_type: if env_source.package_manager() == Some(PackageManager::Conda) {
                             runtimed_client::EnvType::Conda
                         } else {
                             runtimed_client::EnvType::Uv
@@ -641,7 +644,7 @@ async fn handle_runtime_agent_request(
             };
             let config = KernelLaunchConfig {
                 kernel_type,
-                env_source: env_source.clone(),
+                env_source: env_source.as_str().to_string(),
                 notebook_path: notebook_path.as_deref().map(PathBuf::from),
                 launched_config,
                 env_vars: vec![],
@@ -685,7 +688,9 @@ async fn handle_runtime_agent_request(
                     state.reset();
                     state.set_idle();
                     (
-                        RuntimeAgentResponse::KernelRestarted { env_source: es },
+                        RuntimeAgentResponse::KernelRestarted {
+                            env_source: notebook_protocol::connection::EnvSource::parse(&es),
+                        },
                         Some(rx),
                     )
                 }
