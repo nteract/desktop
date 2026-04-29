@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 import type { EnvProgressEvent } from "runtimed";
-import { getStatusText, projectEnvProgress } from "../useEnvProgress";
+import { getStatusText, progressKey, projectEnvProgress } from "../useEnvProgress";
 
 describe("getStatusText", () => {
   it("keeps error status concise for inline toolbar display", () => {
@@ -47,5 +47,32 @@ describe("getStatusText", () => {
       bytesPerSecond: 512,
       currentPackage: "numpy",
     });
+  });
+
+  it("uses a stable dismissal key across object field order", () => {
+    const eventA = {
+      env_type: "uv",
+      phase: "download_progress",
+      completed: 1,
+      total: 3,
+      current_package: "numpy",
+      bytes_downloaded: 1024,
+      bytes_total: 4096,
+      bytes_per_second: 512,
+    } satisfies EnvProgressEvent;
+
+    const eventB = {
+      phase: "download_progress",
+      bytes_per_second: 512,
+      bytes_total: 4096,
+      bytes_downloaded: 1024,
+      current_package: "numpy",
+      total: 3,
+      completed: 1,
+      env_type: "uv",
+    } satisfies EnvProgressEvent;
+
+    expect(JSON.stringify(eventA)).not.toBe(JSON.stringify(eventB));
+    expect(progressKey(eventA)).toBe(progressKey(eventB));
   });
 });

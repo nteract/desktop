@@ -95,7 +95,11 @@ impl ProgressHandler for BroadcastProgressHandler {
         kernel_env::LogHandler.on_progress(env_type, phase.clone());
 
         if let Some(state) = &self.state {
-            if self.should_write_crdt_progress(&phase) {
+            let should_write = self.should_write_crdt_progress(&phase)
+                || state
+                    .read(|sd| sd.read_state().env.progress.is_none())
+                    .unwrap_or(true);
+            if should_write {
                 match serde_json::to_value(&phase) {
                     Ok(value) => {
                         if let Err(e) = state.with_doc(|sd| sd.set_env_progress(env_type, &value)) {
@@ -816,6 +820,56 @@ mod tests {
                 "phase": "ready",
                 "env_path": "/tmp/env",
                 "python_path": "/tmp/env/bin/python",
+            }))
+        );
+    }
+
+    #[test]
+    fn broadcast_progress_handler_writes_after_external_progress_clear() {
+        let (tx, _rx) = tokio::sync::broadcast::channel(8);
+        let state = runtime_state_handle();
+        let handler = BroadcastProgressHandler::with_state(tx, state.clone());
+
+        handler.on_progress(
+            "conda",
+            EnvProgressPhase::DownloadProgress {
+                completed: 1,
+                total: 10,
+                current_package: "numpy".to_string(),
+                bytes_downloaded: 100,
+                bytes_total: Some(1000),
+                bytes_per_second: 50.0,
+            },
+        );
+        state
+            .with_doc(|sd| sd.clear_env_progress())
+            .expect("clear env progress");
+        handler.on_progress(
+            "conda",
+            EnvProgressPhase::DownloadProgress {
+                completed: 2,
+                total: 10,
+                current_package: "numpy".to_string(),
+                bytes_downloaded: 200,
+                bytes_total: Some(1000),
+                bytes_per_second: 60.0,
+            },
+        );
+
+        let progress = state
+            .read(|sd| sd.read_state().env.progress)
+            .expect("read runtime state");
+        assert_eq!(
+            progress,
+            Some(serde_json::json!({
+                "env_type": "conda",
+                "phase": "download_progress",
+                "completed": 2,
+                "total": 10,
+                "current_package": "numpy",
+                "bytes_downloaded": 200,
+                "bytes_total": 1000,
+                "bytes_per_second": 60.0,
             }))
         );
     }

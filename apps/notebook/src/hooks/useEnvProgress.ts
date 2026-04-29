@@ -165,8 +165,23 @@ export function projectEnvProgress(event: EnvProgressEvent | null): EnvProgressS
   };
 }
 
-function progressKey(event: EnvProgressEvent | null): string | null {
-  return event ? JSON.stringify(event) : null;
+function stableStringify(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `[${value.map((item) => stableStringify(item)).join(",")}]`;
+  }
+  if (value && typeof value === "object") {
+    const entries = Object.entries(value as Record<string, unknown>).sort(([a], [b]) =>
+      a.localeCompare(b),
+    );
+    return `{${entries
+      .map(([key, nestedValue]) => `${JSON.stringify(key)}:${stableStringify(nestedValue)}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value) ?? "undefined";
+}
+
+export function progressKey(event: EnvProgressEvent | null): string | null {
+  return event ? stableStringify(event) : null;
 }
 
 export function useEnvProgress() {
