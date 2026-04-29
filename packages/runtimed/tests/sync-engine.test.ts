@@ -846,6 +846,41 @@ describe("SyncEngine", () => {
 
     it.each([
       {
+        name: "runtime state",
+        frameType: FrameType.RUNTIME_STATE_SYNC,
+        flush: () =>
+          (handle.flush_runtime_state_sync as ReturnType<typeof vi.fn>).mockReturnValue(
+            new Uint8Array([4, 5, 6]),
+          ),
+        cancel: () => handle.cancel_last_runtime_state_flush,
+      },
+      {
+        name: "pool state",
+        frameType: FrameType.POOL_STATE_SYNC,
+        flush: () =>
+          (handle.flush_pool_state_sync as ReturnType<typeof vi.fn>).mockReturnValue(
+            new Uint8Array([7, 8, 9]),
+          ),
+        cancel: () => handle.cancel_last_pool_state_flush,
+      },
+    ])("flush() times out stuck $name frame delivery", async ({ frameType, flush, cancel }) => {
+      flush();
+      vi.spyOn(transport, "sendFrame").mockImplementation((actualFrameType) => {
+        if (actualFrameType === frameType) return new Promise(() => {});
+        return Promise.resolve();
+      });
+
+      const engine = createEngine({ flushDeliveryTimeoutMs: 5 });
+      engine.start();
+      engine.flush();
+
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(cancel()).toHaveBeenCalled();
+      engine.stop();
+    });
+
+    it.each([
+      {
         name: "notebook doc",
         frameType: FrameType.AUTOMERGE_SYNC,
         flush: () =>
@@ -894,6 +929,30 @@ describe("SyncEngine", () => {
         engine.stop();
       },
     );
+
+    it("flushAndWait() consumes delivery rejections that arrive after timeout", async () => {
+      const syncMsg = new Uint8Array([1, 2, 3]);
+      (handle.flush_local_changes as ReturnType<typeof vi.fn>).mockReturnValue(syncMsg);
+      let rejectDelivery: (reason?: unknown) => void = () => {};
+      vi.spyOn(transport, "sendFrame").mockReturnValue(
+        new Promise((_, reject) => {
+          rejectDelivery = reject;
+        }),
+      );
+
+      const engine = createEngine({ flushDeliveryTimeoutMs: 5 });
+      engine.start();
+      const result = await engine.flushAndWait();
+
+      expect(result).toBe(false);
+      expect(handle.cancel_last_flush).toHaveBeenCalledTimes(1);
+
+      rejectDelivery(new Error("late send failure"));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      expect(handle.cancel_last_flush).toHaveBeenCalledTimes(1);
+      engine.stop();
+    });
 
     it("scheduleFlush() debounces at 20ms", () => {
       const syncMsg = new Uint8Array([1]);
