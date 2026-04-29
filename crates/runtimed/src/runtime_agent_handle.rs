@@ -1,10 +1,12 @@
 //! Coordinator-side management of a runtime agent subprocess.
 //!
 //! `RuntimeAgentHandle` spawns a `runtimed runtime-agent` child process in its
-//! own process group. The PGID is registered in `agents.json` for orphan
-//! reaping. The handle monitors the child lifecycle and sends SIGKILL to the
-//! entire process group on drop.
+//! own ownership group. The ownership record is persisted as a per-agent
+//! manifest for orphan reaping. The handle monitors the child lifecycle and
+//! tears down the ownership group on drop.
 
+#[cfg(windows)]
+use std::os::windows::io::RawHandle;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -12,19 +14,25 @@ use std::sync::Arc;
 use anyhow::Result;
 use tracing::{info, warn};
 
+use crate::runtime_agent_manifest::RuntimeAgentManifest;
 use crate::task_supervisor::spawn_supervised;
 
 /// Handle to a running runtime agent subprocess.
 ///
-/// The runtime agent connects back to the daemon's Unix socket as a peer.
-/// On drop, sends SIGKILL to the agent's process group (agent + kernel).
+/// The runtime agent connects back to the daemon socket as a peer. On drop,
+/// tears down the agent's ownership group (agent + kernel).
 pub struct RuntimeAgentHandle {
     alive: Arc<AtomicBool>,
-    /// Notebook ID used as the registry key for orphan tracking.
+    /// Runtime agent ID used as the durable manifest key.
+    runtime_agent_id: String,
+    /// Notebook ID for logging/context.
     notebook_id: String,
     /// Process group ID (== agent PID on Unix, since we use process_group(0)).
     #[cfg(unix)]
     pgid: Option<i32>,
+    /// Windows Job Object with KILL_ON_JOB_CLOSE for this runtime agent.
+    #[cfg(windows)]
+    job: Option<crate::runtime_agent_manifest::WindowsJob>,
 }
 
 impl RuntimeAgentHandle {
@@ -70,16 +78,61 @@ impl RuntimeAgentHandle {
         #[cfg(unix)]
         let pgid = child.id().map(|pid| pid as i32);
 
-        // Register PGID for orphan reaping on unclean daemon exit
         #[cfg(unix)]
-        if let Some(pgid) = pgid {
-            crate::process_groups::register_agent(&notebook_id, pgid);
+        let manifest = match pgid {
+            Some(pgid) => {
+                RuntimeAgentManifest::unix(runtime_agent_id.clone(), notebook_id.clone(), pgid)
+            }
+            None => {
+                let _ = child.kill().await;
+                anyhow::bail!("runtime agent spawned without a process id");
+            }
+        };
+
+        #[cfg(windows)]
+        let (manifest, job) = {
+            let pid = match child.id() {
+                Some(pid) => pid,
+                None => {
+                    let _ = child.kill().await;
+                    anyhow::bail!("runtime agent spawned without a process id");
+                }
+            };
+            let process_handle = match child.raw_handle() {
+                Some(handle) => handle as RawHandle,
+                None => {
+                    let _ = child.kill().await;
+                    anyhow::bail!("runtime agent spawned without a process handle");
+                }
+            };
+            let (job_name, job) = crate::runtime_agent_manifest::create_windows_job_for_process(
+                &runtime_agent_id,
+                process_handle,
+            )
+            .inspect_err(|_| {
+                let _ = child.start_kill();
+            })?;
+            (
+                RuntimeAgentManifest::windows(
+                    runtime_agent_id.clone(),
+                    notebook_id.clone(),
+                    pid,
+                    job_name,
+                ),
+                job,
+            )
+        };
+
+        if let Err(e) = crate::runtime_agent_manifest::write_manifest(&manifest) {
+            let _ = child.kill().await;
+            return Err(e.context("failed to persist runtime-agent ownership manifest"));
         }
 
         info!(
-            "[runtime-agent-handle] Runtime agent spawned (pid={:?}, notebook_id={})",
+            "[runtime-agent-handle] Runtime agent spawned (pid={:?}, notebook_id={}, runtime_agent_id={})",
             child.id(),
             notebook_id,
+            runtime_agent_id,
         );
 
         let alive = Arc::new(AtomicBool::new(true));
@@ -114,9 +167,12 @@ impl RuntimeAgentHandle {
 
         Ok(Self {
             alive,
+            runtime_agent_id,
             notebook_id,
             #[cfg(unix)]
             pgid,
+            #[cfg(windows)]
+            job: Some(job),
         })
     }
 
@@ -124,31 +180,49 @@ impl RuntimeAgentHandle {
     pub fn is_alive(&self) -> bool {
         self.alive.load(Ordering::Relaxed)
     }
-
-    /// Unregister this agent from the process group registry.
-    ///
-    /// Called during graceful shutdown and room eviction, before
-    /// the handle is dropped.
-    pub fn unregister(&self) {
-        crate::process_groups::unregister_agent(&self.notebook_id);
-    }
 }
 
 impl Drop for RuntimeAgentHandle {
     fn drop(&mut self) {
+        #[cfg(not(unix))]
+        let remove_manifest = true;
+
         // SIGKILL the entire process group (agent + kernel)
         #[cfg(unix)]
-        if let Some(pgid) = self.pgid.take() {
-            if pgid > 0 {
+        let remove_manifest = {
+            let mut remove_manifest = true;
+            if let Some(pgid) = self.pgid.take() {
+                use crate::runtime_agent_manifest::CleanupDecision;
                 use nix::sys::signal::{killpg, Signal};
                 use nix::unistd::Pid;
-                let _ = killpg(Pid::from_raw(pgid), Signal::SIGKILL);
+
+                let decision = if pgid > 0 {
+                    crate::runtime_agent_manifest::unix_cleanup_decision(
+                        &self.runtime_agent_id,
+                        pgid,
+                        killpg(Pid::from_raw(pgid), Signal::SIGKILL),
+                    )
+                } else {
+                    CleanupDecision::RetainForRetry
+                };
+                remove_manifest =
+                    matches!(decision, CleanupDecision::Reaped | CleanupDecision::Missing);
             }
+            remove_manifest
+        };
+
+        #[cfg(windows)]
+        {
+            self.job.take();
+        }
+
+        if remove_manifest {
+            crate::runtime_agent_manifest::remove_manifest(&self.runtime_agent_id);
         }
 
         info!(
-            "[runtime-agent-handle] RuntimeAgentHandle dropped for notebook {}",
-            self.notebook_id
+            "[runtime-agent-handle] RuntimeAgentHandle dropped for notebook {} runtime_agent {}",
+            self.notebook_id, self.runtime_agent_id
         );
     }
 }

@@ -800,12 +800,10 @@ where
                                 );
                             }
                         }
-                        // Unregister from process group registry and drop handle
+                        // Drop the handle so it tears down the runtime-agent ownership group
+                        // and removes the matching manifest only after cleanup succeeds.
                         {
                             let mut guard = room_for_eviction.runtime_agent_handle.lock().await;
-                            if let Some(ref handle) = *guard {
-                                handle.unregister();
-                            }
                             *guard = None;
                         }
                         {
