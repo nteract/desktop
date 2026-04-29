@@ -22,7 +22,7 @@ use crate::blob_store::BlobStore;
 use crate::output_prep::QueueCommand;
 use crate::protocol::{CompletionItem, HistoryEntry, NotebookBroadcast};
 use crate::PooledEnv;
-use notebook_protocol::protocol::LaunchedEnvConfig;
+use notebook_protocol::protocol::{KernelPorts, LaunchedEnvConfig};
 
 /// Configuration for launching a kernel.
 ///
@@ -38,6 +38,8 @@ pub struct KernelLaunchConfig {
     pub notebook_path: Option<PathBuf>,
     /// Environment configuration snapshot at launch time.
     pub launched_config: LaunchedEnvConfig,
+    /// Daemon-reserved TCP ports for the Jupyter kernel ZMQ sockets.
+    pub kernel_ports: KernelPorts,
     /// Extra environment variables to set in the kernel process.
     pub env_vars: Vec<(String, String)>,
     /// Prewarmed pool environment, if one was claimed.

@@ -528,6 +528,7 @@ async fn handle_runtime_agent_request(
             env_source,
             notebook_path,
             launched_config,
+            kernel_ports,
             env_vars: _,
         } => {
             info!(
@@ -563,6 +564,7 @@ async fn handle_runtime_agent_request(
                 env_source: env_source.as_str().to_string(),
                 notebook_path: notebook_path.as_deref().map(PathBuf::from),
                 launched_config,
+                kernel_ports,
                 env_vars: vec![],
                 pooled_env,
             };
@@ -594,6 +596,7 @@ async fn handle_runtime_agent_request(
             env_source,
             notebook_path,
             launched_config,
+            kernel_ports,
             env_vars: _,
         } => {
             info!(
@@ -647,6 +650,7 @@ async fn handle_runtime_agent_request(
                 env_source: env_source.as_str().to_string(),
                 notebook_path: notebook_path.as_deref().map(PathBuf::from),
                 launched_config,
+                kernel_ports,
                 env_vars: vec![],
                 pooled_env,
             };

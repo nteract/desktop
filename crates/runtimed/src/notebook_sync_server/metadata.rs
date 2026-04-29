@@ -3507,7 +3507,7 @@ pub(crate) async fn auto_launch_kernel(
                 }
 
                 // Send LaunchKernel RPC via the runtime agent's sync connection
-                let launch_request =
+                match send_runtime_agent_request_with_kernel_ports(room, |kernel_ports| {
                     notebook_protocol::protocol::RuntimeAgentRequest::LaunchKernel {
                         kernel_type: kernel_type.to_string(),
                         env_source: env_source.clone(),
@@ -3515,10 +3515,12 @@ pub(crate) async fn auto_launch_kernel(
                             .as_deref()
                             .map(|p| p.to_str().unwrap_or("").to_string()),
                         launched_config: launched_config.clone(),
+                        kernel_ports,
                         env_vars: Default::default(),
-                    };
-
-                match send_runtime_agent_request(room, launch_request).await {
+                    }
+                })
+                .await
+                {
                     Ok(notebook_protocol::protocol::RuntimeAgentResponse::KernelLaunched {
                         env_source: es,
                     }) => {

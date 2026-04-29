@@ -606,6 +606,15 @@ pub enum NotebookBroadcast {
 /// The coordinator mediates between frontend requests and the runtime agent.
 /// Environment preparation happens in the coordinator; the runtime agent
 /// receives a ready-to-launch configuration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KernelPorts {
+    pub stdin: u16,
+    pub control: u16,
+    pub hb: u16,
+    pub shell: u16,
+    pub iopub: u16,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "action", rename_all = "snake_case")]
 #[allow(clippy::large_enum_variant)]
@@ -618,6 +627,7 @@ pub enum RuntimeAgentRequest {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         notebook_path: Option<String>,
         launched_config: LaunchedEnvConfig,
+        kernel_ports: KernelPorts,
         /// Environment variables to set for the kernel process.
         #[serde(default)]
         env_vars: std::collections::HashMap<String, String>,
@@ -639,6 +649,7 @@ pub enum RuntimeAgentRequest {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         notebook_path: Option<String>,
         launched_config: LaunchedEnvConfig,
+        kernel_ports: KernelPorts,
         #[serde(default)]
         env_vars: std::collections::HashMap<String, String>,
     },
@@ -1306,6 +1317,58 @@ mod tests {
     }
 
     #[test]
+    fn runtime_agent_launch_and_restart_include_kernel_ports() {
+        let ports = KernelPorts {
+            stdin: 9000,
+            control: 9001,
+            hb: 9002,
+            shell: 9003,
+            iopub: 9004,
+        };
+        let launch = RuntimeAgentRequest::LaunchKernel {
+            kernel_type: "python".into(),
+            env_source: EnvSource::Prewarmed(crate::connection::PackageManager::Uv),
+            notebook_path: None,
+            launched_config: Default::default(),
+            kernel_ports: ports,
+            env_vars: Default::default(),
+        };
+        let json = serde_json::to_value(&launch).unwrap();
+        assert_eq!(json["kernel_ports"]["stdin"], 9000);
+        assert_eq!(json["kernel_ports"]["control"], 9001);
+        assert_eq!(json["kernel_ports"]["hb"], 9002);
+        assert_eq!(json["kernel_ports"]["shell"], 9003);
+        assert_eq!(json["kernel_ports"]["iopub"], 9004);
+
+        let parsed: RuntimeAgentRequest = serde_json::from_value(json).unwrap();
+        assert!(matches!(
+            parsed,
+            RuntimeAgentRequest::LaunchKernel {
+                kernel_ports,
+                ..
+            } if kernel_ports == ports
+        ));
+
+        let restart = RuntimeAgentRequest::RestartKernel {
+            kernel_type: "python".into(),
+            env_source: EnvSource::Inline(crate::connection::PackageManager::Conda),
+            notebook_path: None,
+            launched_config: Default::default(),
+            kernel_ports: ports,
+            env_vars: Default::default(),
+        };
+        let json = serde_json::to_value(&restart).unwrap();
+        let parsed: RuntimeAgentRequest = serde_json::from_value(json).unwrap();
+        assert!(matches!(
+            parsed,
+            RuntimeAgentRequest::RestartKernel {
+                kernel_ports,
+                ..
+            } if kernel_ports == ports
+        ));
+    }
+
+    #[test]
     fn runtime_agent_is_command() {
         assert!(RuntimeAgentRequest::InterruptExecution.is_command());
         assert!(!RuntimeAgentRequest::ShutdownKernel.is_command());
@@ -1338,6 +1401,13 @@ mod tests {
             env_source: EnvSource::Prewarmed(crate::connection::PackageManager::Uv),
             notebook_path: None,
             launched_config: Default::default(),
+            kernel_ports: KernelPorts {
+                stdin: 9000,
+                control: 9001,
+                hb: 9002,
+                shell: 9003,
+                iopub: 9004,
+            },
             env_vars: Default::default(),
         }
         .is_command());
@@ -1346,6 +1416,13 @@ mod tests {
             env_source: EnvSource::Inline(crate::connection::PackageManager::Conda),
             notebook_path: None,
             launched_config: Default::default(),
+            kernel_ports: KernelPorts {
+                stdin: 9005,
+                control: 9006,
+                hb: 9007,
+                shell: 9008,
+                iopub: 9009,
+            },
             env_vars: Default::default(),
         }
         .is_command());

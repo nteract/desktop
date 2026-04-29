@@ -22,9 +22,10 @@ use crate::notebook_sync_server::{
     get_inline_conda_deps, get_inline_uv_deps, get_inline_uv_prerelease,
     missing_conda_env_yml_decision, project_environment_build_approved,
     promote_inline_deps_to_project, publish_kernel_state_presence, reset_starting_state,
-    reset_starting_state_with_outcome, resolve_metadata_snapshot, send_runtime_agent_request,
-    try_conda_pool_for_inline_deps, try_uv_pool_for_inline_deps, unified_env_on_disk,
-    CapturedEnvRuntime, NotebookRoom, ResetOutcome,
+    reset_starting_state_with_outcome, resolve_metadata_snapshot,
+    send_runtime_agent_request_with_kernel_ports, try_conda_pool_for_inline_deps,
+    try_uv_pool_for_inline_deps, unified_env_on_disk, CapturedEnvRuntime, NotebookRoom,
+    ResetOutcome,
 };
 use crate::protocol::NotebookResponse;
 use crate::requests::guarded;
@@ -1237,16 +1238,20 @@ pub(crate) async fn handle(
         let has_runtime_agent = room.runtime_agent_request_tx.lock().await.is_some();
         if has_runtime_agent {
             info!("[notebook-sync] Agent connected — sending RestartKernel");
-            let restart_request = notebook_protocol::protocol::RuntimeAgentRequest::RestartKernel {
-                kernel_type: resolved_kernel_type.clone(),
-                env_source: resolved_env_source.clone(),
-                notebook_path: notebook_path
-                    .as_deref()
-                    .map(|p| p.to_str().unwrap_or("").to_string()),
-                launched_config: launched_config.clone(),
-                env_vars: Default::default(),
-            };
-            match send_runtime_agent_request(room, restart_request).await {
+            match send_runtime_agent_request_with_kernel_ports(room, |kernel_ports| {
+                notebook_protocol::protocol::RuntimeAgentRequest::RestartKernel {
+                    kernel_type: resolved_kernel_type.clone(),
+                    env_source: resolved_env_source.clone(),
+                    notebook_path: notebook_path
+                        .as_deref()
+                        .map(|p| p.to_str().unwrap_or("").to_string()),
+                    launched_config: launched_config.clone(),
+                    kernel_ports,
+                    env_vars: Default::default(),
+                }
+            })
+            .await
+            {
                 Ok(notebook_protocol::protocol::RuntimeAgentResponse::KernelRestarted {
                     env_source: es,
                 }) => {
@@ -1379,7 +1384,7 @@ pub(crate) async fn handle(
                 }
 
                 // Send LaunchKernel RPC
-                let launch_request =
+                match send_runtime_agent_request_with_kernel_ports(room, |kernel_ports| {
                     notebook_protocol::protocol::RuntimeAgentRequest::LaunchKernel {
                         kernel_type: resolved_kernel_type.clone(),
                         env_source: resolved_env_source.clone(),
@@ -1387,10 +1392,12 @@ pub(crate) async fn handle(
                             .as_deref()
                             .map(|p| p.to_str().unwrap_or("").to_string()),
                         launched_config: launched_config.clone(),
+                        kernel_ports,
                         env_vars: Default::default(),
-                    };
-
-                match send_runtime_agent_request(room, launch_request).await {
+                    }
+                })
+                .await
+                {
                     Ok(notebook_protocol::protocol::RuntimeAgentResponse::KernelLaunched {
                         env_source: es,
                     }) => {

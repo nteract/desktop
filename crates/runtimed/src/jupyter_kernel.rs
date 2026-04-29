@@ -40,98 +40,21 @@ use crate::stream_terminal::{StreamOutputState, StreamTerminals};
 use crate::task_supervisor::{spawn_best_effort, spawn_supervised};
 use crate::terminal_size::{TERMINAL_COLUMNS_STR, TERMINAL_LINES_STR};
 use crate::EnvType;
-use notebook_protocol::protocol::LaunchedEnvConfig;
+use notebook_protocol::protocol::{KernelPorts, LaunchedEnvConfig};
 
-/// Reserved port range for Jupyter kernel ZMQ sockets.
-///
-/// Outside the Windows dynamic ephemeral range (49152-65535) and the IANA
-/// registered range (the conventional ceiling for system ports on Linux is
-/// also `ip_local_port_range` start, typically 32768). 9000-9999 is in the
-/// IANA user-port range, far from any default ephemeral pool, and unlikely
-/// to clash with common services on a developer machine.
-const DEFAULT_KERNEL_PORT_RANGE: std::ops::RangeInclusive<u16> = 9000..=9999;
-const TEST_KERNEL_PORT_RANGE_SIZE: u16 = 100;
-static NEXT_KERNEL_PORT_OFFSET: AtomicU64 = AtomicU64::new(0);
-
-fn kernel_port_range() -> std::ops::RangeInclusive<u16> {
-    match std::env::var("RUNTIMED_TEST_KERNEL_PORT_RANGE_START") {
-        Ok(raw) => match raw.parse::<u16>() {
-            Ok(start) => {
-                let end = start.saturating_add(TEST_KERNEL_PORT_RANGE_SIZE - 1);
-                start..=end
-            }
-            Err(e) => {
-                warn!(
-                    "[jupyter-kernel] Ignoring invalid RUNTIMED_TEST_KERNEL_PORT_RANGE_START={raw:?}: {e}"
-                );
-                DEFAULT_KERNEL_PORT_RANGE
-            }
-        },
-        Err(_) => DEFAULT_KERNEL_PORT_RANGE,
+async fn bind_kernel_port_listeners(ip: IpAddr, ports: KernelPorts) -> Result<Vec<TcpListener>> {
+    let port_numbers = [
+        ports.stdin,
+        ports.control,
+        ports.hb,
+        ports.shell,
+        ports.iopub,
+    ];
+    let mut listeners = Vec::with_capacity(port_numbers.len());
+    for port in port_numbers {
+        listeners.push(TcpListener::bind(SocketAddr::new(ip, port)).await?);
     }
-}
-
-fn kernel_port_candidates(num: usize) -> Vec<u16> {
-    let range = kernel_port_range();
-    let start = u32::from(*range.start());
-    let end = u32::from(*range.end());
-    let len = (end - start + 1) as usize;
-    let offset = NEXT_KERNEL_PORT_OFFSET.fetch_add(num as u64, Ordering::Relaxed) as usize % len;
-
-    (0..len)
-        .map(|i| start + ((offset + i) % len) as u32)
-        .filter_map(|port| u16::try_from(port).ok())
-        .collect()
-}
-
-/// Reserve `num` TCP ports for a kernel's ZMQ sockets.
-///
-/// Wraps `runtimelib::peek_ports_with_listeners` to address a TOCTOU race
-/// observed on Windows: that function binds to port 0, asks the OS for a
-/// port (in the dynamic ephemeral range on Windows: 49152-65535), then
-/// drops the listener and tells the kernel to bind that same port. The
-/// 100-200ms window between drop and the kernel's bind is long enough on
-/// Windows for the OS to hand the port to another process as an outbound
-/// ephemeral source - the kernel's bind() then fails with EADDRINUSE and
-/// the daemon sees it as `Codec Error: WSAECONNRESET (10054)`.
-///
-/// We try the reserved range 9000-9999 first. If we can't fill `num` from
-/// the reserved range, fall back to the OS-assigned ports - the race is
-/// rarer on Linux/macOS and the reserved range is small enough that we
-/// might collide with something, so the fallback keeps developer machines
-/// working.
-async fn reserve_kernel_ports(ip: IpAddr, num: usize) -> Result<(Vec<u16>, Vec<TcpListener>)> {
-    let mut ports: Vec<u16> = Vec::with_capacity(num);
-    let mut listeners: Vec<TcpListener> = Vec::with_capacity(num);
-
-    for port in kernel_port_candidates(num) {
-        if ports.len() == num {
-            break;
-        }
-        let addr = SocketAddr::new(ip, port);
-        if let Ok(listener) = TcpListener::bind(addr).await {
-            ports.push(port);
-            listeners.push(listener);
-        }
-    }
-
-    if ports.len() == num {
-        debug!(
-            "[jupyter-kernel] Reserved {} ports from configured range: {:?}",
-            num, ports
-        );
-        return Ok((ports, listeners));
-    }
-
-    warn!(
-        "[jupyter-kernel] Reserved range exhausted ({}/{} filled); falling back to OS-assigned",
-        ports.len(),
-        num
-    );
-    drop(listeners);
-    runtimelib::peek_ports_with_listeners(ip, num)
-        .await
-        .map_err(Into::into)
+    Ok(listeners)
 }
 
 /// Type alias for pending completion response channels.
@@ -725,203 +648,141 @@ impl KernelConnection for JupyterKernel {
         // only "exit status: 1" with no clue why the kernel died.
         const STDERR_BUFFER_LINES: usize = 50;
 
-        // Spawn loop with retry on the Windows port-allocation race. The
-        // reserved 9000-9999 range from `reserve_kernel_ports` is outside
-        // the *default* Windows dynamic ephemeral range, but the dynamic
-        // range is `netsh`-configurable and at least the GitHub-hosted
-        // windows-latest runners overlap our reserved range. When that
-        // happens the kernel's bind() races the OS allocator and exits
-        // with `Address in use`. Retry up to a few times with fresh ports
-        // so a single unlucky pick doesn't sink the launch.
-        const MAX_LAUNCH_ATTEMPTS: usize = 4;
-        type LaunchedKernel = (
-            tokio::process::Child,
-            Arc<StdMutex<VecDeque<String>>>,
-            ConnectionInfo,
-        );
-        let (mut process, _stderr_buffer, connection_info) = {
-            let mut accepted: Option<LaunchedKernel> = None;
-            let mut last_failure: Option<anyhow::Error> = None;
-            for attempt in 1..=MAX_LAUNCH_ATTEMPTS {
-                let (ports, listeners) = reserve_kernel_ports(ip, 5).await?;
-                let connection_info = ConnectionInfo {
-                    transport: jupyter_protocol::connection_info::Transport::TCP,
-                    ip: ip.to_string(),
-                    stdin_port: ports[0],
-                    control_port: ports[1],
-                    hb_port: ports[2],
-                    shell_port: ports[3],
-                    iopub_port: ports[4],
-                    signature_scheme: "hmac-sha256".to_string(),
-                    key: Uuid::new_v4().to_string(),
-                    kernel_name: Some(kernelspec_name.to_string()),
-                };
-                tokio::fs::write(
-                    &connection_file_path,
-                    serde_json::to_string_pretty(&connection_info)?,
-                )
-                .await?;
+        let kernel_ports = config.kernel_ports;
+        let ports = [
+            kernel_ports.stdin,
+            kernel_ports.control,
+            kernel_ports.hb,
+            kernel_ports.shell,
+            kernel_ports.iopub,
+        ];
+        let connection_info = ConnectionInfo {
+            transport: jupyter_protocol::connection_info::Transport::TCP,
+            ip: ip.to_string(),
+            stdin_port: kernel_ports.stdin,
+            control_port: kernel_ports.control,
+            hb_port: kernel_ports.hb,
+            shell_port: kernel_ports.shell,
+            iopub_port: kernel_ports.iopub,
+            signature_scheme: "hmac-sha256".to_string(),
+            key: Uuid::new_v4().to_string(),
+            kernel_name: Some(kernelspec_name.to_string()),
+        };
+        tokio::fs::write(
+            &connection_file_path,
+            serde_json::to_string_pretty(&connection_info)?,
+        )
+        .await?;
 
-                // Order the listener drop relative to spawn per platform.
-                //
-                // Windows: child processes inherit the parent's socket handles
-                // by default. If `cmd.spawn()` ran while the listeners were
-                // alive, the kernel would inherit handles for ports 9000-9004
-                // and ipykernel's first `s.bind('tcp://...:9003')` would fail
-                // with EADDRINUSE - the kernel itself already owns a listener
-                // on that port via inheritance. The 9000-9999 reserved range
-                // is outside the dynamic ephemeral pool, so the OS allocator
-                // can't reclaim a freed port between drop and the kernel's
-                // bind. Drop early.
-                //
-                // Linux/macOS: FD_CLOEXEC is the default, so the child can't
-                // inherit the listener. The risk is the opposite - on the
-                // fallback path where ports come from the OS ephemeral
-                // allocator, the OS could re-hand a freed port to some other
-                // process between drop and the kernel's bind. Hold the
-                // listeners across spawn so that window stays closed.
-                #[cfg(windows)]
-                drop(listeners);
-                let mut process = cmd.spawn()?;
-                #[cfg(not(windows))]
-                drop(listeners);
+        let listeners = bind_kernel_port_listeners(ip, kernel_ports).await?;
 
-                let stderr_buffer: Arc<StdMutex<VecDeque<String>>> =
-                    Arc::new(StdMutex::new(VecDeque::with_capacity(STDERR_BUFFER_LINES)));
-                let stderr_drain: Option<JoinHandle<()>> =
-                    if let Some(stderr) = process.stderr.take() {
-                        let kid = kernel_id.clone();
-                        let buffer = stderr_buffer.clone();
-                        Some(spawn_best_effort("kernel-stderr", async move {
-                            use tokio::io::{AsyncBufReadExt, BufReader};
-                            let mut lines = BufReader::new(stderr).lines();
-                            while let Ok(Some(line)) = lines.next_line().await {
-                                let lower = line.to_ascii_lowercase();
-                                if lower.contains("error") || lower.contains("traceback") {
-                                    warn!("[kernel-stderr:{}] {}", kid, line);
-                                } else {
-                                    debug!("[kernel-stderr:{}] {}", kid, line);
-                                }
-                                let mut queue = buffer.lock().unwrap();
-                                if queue.len() == STDERR_BUFFER_LINES {
-                                    queue.pop_front();
-                                }
-                                queue.push_back(line);
-                            }
-                        }))
+        // Keep the previous listener handoff behavior, but bind only the
+        // daemon-assigned ports. Windows child processes can inherit socket
+        // handles, so listeners must be dropped before spawn there. Unix
+        // descriptors are close-on-exec by default, so keep them through spawn
+        // to narrow the handoff window.
+        #[cfg(windows)]
+        drop(listeners);
+        let mut process = cmd.spawn()?;
+        #[cfg(not(windows))]
+        drop(listeners);
+
+        let stderr_buffer: Arc<StdMutex<VecDeque<String>>> =
+            Arc::new(StdMutex::new(VecDeque::with_capacity(STDERR_BUFFER_LINES)));
+        let stderr_drain: Option<JoinHandle<()>> = if let Some(stderr) = process.stderr.take() {
+            let kid = kernel_id.clone();
+            let buffer = stderr_buffer.clone();
+            Some(spawn_best_effort("kernel-stderr", async move {
+                use tokio::io::{AsyncBufReadExt, BufReader};
+                let mut lines = BufReader::new(stderr).lines();
+                while let Ok(Some(line)) = lines.next_line().await {
+                    let lower = line.to_ascii_lowercase();
+                    if lower.contains("error") || lower.contains("traceback") {
+                        warn!("[kernel-stderr:{}] {}", kid, line);
                     } else {
-                        None
-                    };
-
-                info!(
-                    "[jupyter-kernel] Spawned kernel process (pid={:?}, kernel_id={}, attempt={}/{}, ports={:?})",
-                    process.id(),
-                    kernel_id,
-                    attempt,
-                    MAX_LAUNCH_ATTEMPTS,
-                    ports
-                );
-
-                // Wait for kernel startup. ipykernel spends 1-3s on Windows
-                // (and macOS cold path) importing pyzmq/ipykernel and binding
-                // ZMQ sockets. Polling try_wait every 100ms inside the
-                // window catches an early exit (the EADDRINUSE case we're
-                // retrying for) without paying the full ceiling on success.
-                const STARTUP_CEILING: std::time::Duration = std::time::Duration::from_millis(3000);
-                let startup_deadline = std::time::Instant::now() + STARTUP_CEILING;
-                let mut early_exit: Option<std::process::ExitStatus> = None;
-                let mut wait_err: Option<std::io::Error> = None;
-                loop {
-                    match process.try_wait() {
-                        Ok(Some(status)) => {
-                            early_exit = Some(status);
-                            break;
-                        }
-                        Ok(None) => {
-                            if std::time::Instant::now() >= startup_deadline {
-                                break;
-                            }
-                            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-                        }
-                        Err(e) => {
-                            wait_err = Some(e);
-                            break;
-                        }
+                        debug!("[kernel-stderr:{}] {}", kid, line);
                     }
+                    let mut queue = buffer.lock().unwrap();
+                    if queue.len() == STDERR_BUFFER_LINES {
+                        queue.pop_front();
+                    }
+                    queue.push_back(line);
                 }
+            }))
+        } else {
+            None
+        };
 
-                let outcome = match (early_exit, wait_err) {
-                    (Some(s), _) => Ok(Some(s)),
-                    (None, Some(e)) => Err(e),
-                    (None, None) => Ok(None),
-                };
+        info!(
+            "[jupyter-kernel] Spawned kernel process (pid={:?}, kernel_id={}, ports={:?})",
+            process.id(),
+            kernel_id,
+            ports
+        );
 
-                // Early crash detection: did the process exit during startup?
-                match outcome {
-                    Ok(Some(exit_status)) => {
-                        // Wait for stderr EOF (the child is gone, the reader
-                        // task should finish promptly) so we read a complete
-                        // tail. Bound it so a stuck pipe can't hang launch.
-                        if let Some(handle) = stderr_drain {
-                            let _ =
-                                tokio::time::timeout(std::time::Duration::from_millis(500), handle)
-                                    .await;
-                        }
-                        let captured = {
-                            let queue = stderr_buffer.lock().unwrap();
-                            queue.iter().cloned().collect::<Vec<_>>().join("\n")
-                        };
-                        let port_race = captured.contains("Address in use")
-                            || captured.contains("Address already in use");
-                        if port_race && attempt < MAX_LAUNCH_ATTEMPTS {
-                            warn!(
-                                "[jupyter-kernel] Kernel hit port-allocation race on attempt {}/{}; retrying with fresh ports (kernel_id={}, exit={})",
-                                attempt, MAX_LAUNCH_ATTEMPTS, kernel_id, exit_status
-                            );
-                            last_failure = Some(anyhow::anyhow!(
-                                "kernel exited with port race: {}",
-                                exit_status
-                            ));
-                            continue;
-                        }
-                        let stderr_tail = if captured.is_empty() {
-                            "(no stderr captured before exit)".to_string()
-                        } else {
-                            format!("stderr tail:\n{}", captured)
-                        };
-                        error!(
-                            "[jupyter-kernel] Kernel process exited immediately: {} (kernel_id={}, attempts={})\n{}",
-                            exit_status, kernel_id, attempt, stderr_tail
-                        );
-                        return Err(anyhow::anyhow!(
-                            "Kernel process exited immediately: {}\n{}",
-                            exit_status,
-                            stderr_tail
-                        ));
-                    }
-                    Ok(None) => {
-                        // Process still running — good
-                        accepted = Some((process, stderr_buffer, connection_info));
+        // Wait for kernel startup. ipykernel spends 1-3s on Windows
+        // (and macOS cold path) importing pyzmq/ipykernel and binding
+        // ZMQ sockets. Polling try_wait every 100ms inside the window catches
+        // an early exit without paying the full ceiling on success.
+        const STARTUP_CEILING: std::time::Duration = std::time::Duration::from_millis(3000);
+        let startup_deadline = std::time::Instant::now() + STARTUP_CEILING;
+        let mut early_exit: Option<std::process::ExitStatus> = None;
+        let mut wait_err: Option<std::io::Error> = None;
+        loop {
+            match process.try_wait() {
+                Ok(Some(status)) => {
+                    early_exit = Some(status);
+                    break;
+                }
+                Ok(None) => {
+                    if std::time::Instant::now() >= startup_deadline {
                         break;
                     }
-                    Err(e) => {
-                        warn!(
-                            "[jupyter-kernel] Could not check kernel process status: {}",
-                            e
-                        );
-                        accepted = Some((process, stderr_buffer, connection_info));
-                        break;
-                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                }
+                Err(e) => {
+                    wait_err = Some(e);
+                    break;
                 }
             }
-            accepted.ok_or_else(|| {
-                last_failure.unwrap_or_else(|| {
-                    anyhow::anyhow!(
-                        "Kernel launch retry loop exhausted without success or recorded error"
-                    )
-                })
-            })?
-        };
+        }
+
+        match (early_exit, wait_err) {
+            (Some(exit_status), _) => {
+                // Wait for stderr EOF (the child is gone, the reader task
+                // should finish promptly) so we read a complete tail. Bound it
+                // so a stuck pipe can't hang launch.
+                if let Some(handle) = stderr_drain {
+                    let _ =
+                        tokio::time::timeout(std::time::Duration::from_millis(500), handle).await;
+                }
+                let captured = {
+                    let queue = stderr_buffer.lock().unwrap();
+                    queue.iter().cloned().collect::<Vec<_>>().join("\n")
+                };
+                let stderr_tail = if captured.is_empty() {
+                    "(no stderr captured before exit)".to_string()
+                } else {
+                    format!("stderr tail:\n{}", captured)
+                };
+                error!(
+                    "[jupyter-kernel] Kernel process exited immediately: {} (kernel_id={})\n{}",
+                    exit_status, kernel_id, stderr_tail
+                );
+                return Err(anyhow::anyhow!(
+                    "Kernel process exited immediately: {}\n{}",
+                    exit_status,
+                    stderr_tail
+                ));
+            }
+            (None, Some(e)) => {
+                warn!(
+                    "[jupyter-kernel] Could not check kernel process status: {}",
+                    e
+                );
+            }
+            (None, None) => {}
+        }
 
         #[cfg(unix)]
         let kernel_pid = process.id().map(|pid| pid as i32);
@@ -2870,5 +2731,31 @@ fn prepend_to_path(dir: &std::path::Path) -> String {
     match std::env::var("PATH") {
         Ok(existing) => format!("{}:{}", dir_str, existing),
         Err(_) => dir_str.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn bind_kernel_port_listeners_uses_provided_ports() {
+        let ports = KernelPorts {
+            stdin: 19100,
+            control: 19101,
+            hb: 19102,
+            shell: 19103,
+            iopub: 19104,
+        };
+
+        let listeners = bind_kernel_port_listeners(IpAddr::V4(Ipv4Addr::LOCALHOST), ports)
+            .await
+            .expect("bind provided ports");
+        let bound_ports: Vec<_> = listeners
+            .iter()
+            .map(|listener| listener.local_addr().expect("local addr").port())
+            .collect();
+
+        assert_eq!(bound_ports, vec![19100, 19101, 19102, 19103, 19104]);
     }
 }

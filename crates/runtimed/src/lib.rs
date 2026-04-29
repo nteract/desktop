@@ -30,6 +30,7 @@ pub mod embedded_plugins;
 pub mod inline_env;
 pub mod jupyter_kernel;
 pub mod kernel_connection;
+pub(crate) mod kernel_ports;
 pub mod kernel_state;
 pub mod launcher_cache;
 pub mod markdown_assets;

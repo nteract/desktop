@@ -16,7 +16,7 @@ use std::time::Duration;
 
 use notebook_protocol::connection::EnvSource;
 use notebook_protocol::protocol::{
-    RuntimeAgentRequest, RuntimeAgentRequestEnvelope, RuntimeAgentResponse,
+    KernelPorts, RuntimeAgentRequest, RuntimeAgentRequestEnvelope, RuntimeAgentResponse,
 };
 use tokio::sync::{mpsc, oneshot};
 
@@ -364,6 +364,13 @@ async fn shutdown_then_launch_serialized() {
             env_source: EnvSource::parse("conda:inline"),
             notebook_path: None,
             launched_config: Default::default(),
+            kernel_ports: KernelPorts {
+                stdin: 9000,
+                control: 9001,
+                hb: 9002,
+                shell: 9003,
+                iopub: 9004,
+            },
             env_vars: Default::default(),
         },
     )
