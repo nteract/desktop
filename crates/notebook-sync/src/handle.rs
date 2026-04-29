@@ -490,11 +490,7 @@ impl DocHandle {
             if let Some(count) = state
                 .state_doc
                 .read_state()
-                .executions
-                .values()
-                .filter(|exec| exec.cell_id == cell_id)
-                .filter_map(|exec| exec.execution_count)
-                .max()
+                .execution_count_for_cell(cell_id)
             {
                 return Some(count.to_string());
             }

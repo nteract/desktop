@@ -301,6 +301,29 @@ pub struct RuntimeState {
     pub project_context: ProjectContext,
 }
 
+impl RuntimeState {
+    /// Resolve the latest execution count for a cell from runtime state.
+    ///
+    /// `execution_count` is kernel-local and may reset after restart, so
+    /// numeric max is not a valid recency signal. Prefer the coordinator's
+    /// queue sequence number, falling back to the highest count only when
+    /// comparing legacy entries without sequence metadata.
+    pub fn execution_count_for_cell(&self, cell_id: &str) -> Option<i64> {
+        self.executions
+            .values()
+            .filter(|exec| exec.cell_id == cell_id)
+            .filter_map(|exec| Some((exec.seq, exec.execution_count?)))
+            // Keep in sync with packages/runtimed/src/runtime-state.ts.
+            .max_by(|(a_seq, a_count), (b_seq, b_count)| match (a_seq, b_seq) {
+                (Some(a), Some(b)) => a.cmp(b).then_with(|| a_count.cmp(b_count)),
+                (Some(_), None) => std::cmp::Ordering::Greater,
+                (None, Some(_)) => std::cmp::Ordering::Less,
+                (None, None) => a_count.cmp(b_count),
+            })
+            .map(|(_, count)| count)
+    }
+}
+
 use crate::RuntimeStateError;
 
 // ── RuntimeStateDoc ─────────────────────────────────────────────────
@@ -3370,6 +3393,68 @@ mod tests {
         let e2 = &state.executions["exec-2"];
         assert_eq!(e2.cell_id, "cell-2");
         assert_eq!(e2.status, "queued");
+    }
+
+    #[test]
+    fn test_execution_count_for_cell_uses_latest_sequence() {
+        let mut doc = RuntimeStateDoc::new();
+        doc.create_execution_with_source("exec-old", "cell-1", "x = 1", 1)
+            .unwrap();
+        doc.set_execution_count("exec-old", 12).unwrap();
+        doc.create_execution_with_source("exec-new", "cell-1", "x = 1", 2)
+            .unwrap();
+        doc.set_execution_count("exec-new", 1).unwrap();
+
+        let state = doc.read_state();
+        assert_eq!(state.execution_count_for_cell("cell-1"), Some(1));
+    }
+
+    #[test]
+    fn test_execution_count_for_cell_falls_back_to_highest_count_without_sequence() {
+        let mut doc = RuntimeStateDoc::new();
+        doc.create_execution("exec-1", "cell-1").unwrap();
+        doc.set_execution_count("exec-1", 2).unwrap();
+        doc.create_execution("exec-2", "cell-1").unwrap();
+        doc.set_execution_count("exec-2", 5).unwrap();
+
+        let state = doc.read_state();
+        assert_eq!(state.execution_count_for_cell("cell-1"), Some(5));
+    }
+
+    #[test]
+    fn test_execution_count_for_cell_prefers_zero_sequence_over_legacy() {
+        let mut doc = RuntimeStateDoc::new();
+        doc.create_execution("exec-legacy", "cell-1").unwrap();
+        doc.set_execution_count("exec-legacy", 12).unwrap();
+        doc.create_execution_with_source("exec-current", "cell-1", "x = 1", 0)
+            .unwrap();
+        doc.set_execution_count("exec-current", 1).unwrap();
+
+        let state = doc.read_state();
+        assert_eq!(state.execution_count_for_cell("cell-1"), Some(1));
+    }
+
+    #[test]
+    fn test_execution_count_for_cell_prefers_any_sequence_over_legacy() {
+        let mut doc = RuntimeStateDoc::new();
+        doc.create_execution("exec-legacy", "cell-1").unwrap();
+        doc.set_execution_count("exec-legacy", 100).unwrap();
+        doc.create_execution_with_source("exec-current", "cell-1", "x = 1", 5)
+            .unwrap();
+        doc.set_execution_count("exec-current", 1).unwrap();
+
+        let state = doc.read_state();
+        assert_eq!(state.execution_count_for_cell("cell-1"), Some(1));
+    }
+
+    #[test]
+    fn test_execution_count_for_cell_ignores_missing_counts() {
+        let mut doc = RuntimeStateDoc::new();
+        doc.create_execution_with_source("exec-1", "cell-1", "x = 1", 1)
+            .unwrap();
+
+        let state = doc.read_state();
+        assert_eq!(state.execution_count_for_cell("cell-1"), None);
     }
 
     #[test]
