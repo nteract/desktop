@@ -13,7 +13,7 @@ use super::peer_presence::{
 use super::peer_runtime_sync::{forward_runtime_state_broadcast, handle_runtime_state_frame};
 use super::peer_session::{
     send_initial_notebook_doc_sync, send_initial_runtime_state_sync, send_session_status,
-    InitialSyncState,
+    stream_initial_load, InitialSyncState,
 };
 use super::peer_writer::{
     enqueue_notebook_request, queue_session_status, spawn_peer_request_worker, spawn_peer_writer,
@@ -347,69 +347,19 @@ where
         .await?;
     }
 
-    // Streaming load: add cells in batches and sync after each batch so the
-    // frontend can observe progressive notebook-doc updates.
-    if let Some(load_path) = needs_load {
-        if room.try_start_loading() {
-            let execution_store = runtimed_client::execution_store::ExecutionStore::new(
-                daemon.config.execution_store_dir.clone(),
-            );
-            match streaming_load_cells(
-                &mut reader,
-                &mut writer,
-                room,
-                load_path,
-                Some(&execution_store),
-                &mut peer_state,
-            )
-            .await
-            {
-                Ok(count) => {
-                    room.finish_loading();
-                    info!(
-                        "[notebook-sync] Streaming load complete: {} cells from {}",
-                        count,
-                        load_path.display()
-                    );
-                    initial_load_phase = notebook_protocol::protocol::InitialLoadPhaseWire::Ready;
-                    if client_protocol_version >= 3 {
-                        send_session_status(
-                            &mut writer,
-                            notebook_doc_phase,
-                            runtime_state_phase,
-                            initial_load_phase.clone(),
-                        )
-                        .await?;
-                    }
-                }
-                Err(e) => {
-                    room.finish_loading();
-                    {
-                        let mut doc = room.doc.write().await;
-                        let _ = doc.clear_all_cells();
-                    }
-                    let _ = room.broadcasts.changed_tx.send(());
-                    warn!(
-                        "[notebook-sync] Streaming load failed for {}: {}",
-                        load_path.display(),
-                        e
-                    );
-                    if client_protocol_version >= 3 {
-                        send_session_status(
-                            &mut writer,
-                            notebook_doc_phase,
-                            runtime_state_phase,
-                            notebook_protocol::protocol::InitialLoadPhaseWire::Failed {
-                                reason: e.clone(),
-                            },
-                        )
-                        .await?;
-                    }
-                    return Err(anyhow::anyhow!("Streaming load failed: {}", e));
-                }
-            }
-        }
-    }
+    initial_load_phase = stream_initial_load(
+        &mut reader,
+        &mut writer,
+        room,
+        needs_load,
+        &daemon.config.execution_store_dir,
+        &mut peer_state,
+        notebook_doc_phase,
+        runtime_state_phase,
+        initial_load_phase,
+        client_protocol_version,
+    )
+    .await?;
 
     send_initial_pool_sync(&mut writer, &daemon, &mut pool_peer_state).await?;
 
