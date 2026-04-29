@@ -41,6 +41,11 @@ impl RoomIdentity {
 pub struct RoomBroadcasts {
     /// Broadcast channel to notify all peers in this room of doc changes.
     pub changed_tx: broadcast::Sender<()>,
+    /// Broadcast channel to notify autosave that runtime state changed data
+    /// serialized into the `.ipynb` file, such as cell outputs or execution
+    /// counts. This deliberately excludes generic RuntimeStateDoc updates like
+    /// lifecycle, project context, path, and last_saved.
+    pub file_dirty_tx: broadcast::Sender<()>,
     /// Broadcast channel for kernel events: EnvProgress and Comm (widget messages).
     pub kernel_broadcast_tx: broadcast::Sender<NotebookBroadcast>,
     /// Broadcast channel for presence frames (cursor, selection, kernel state).
@@ -54,10 +59,12 @@ pub struct RoomBroadcasts {
 impl Default for RoomBroadcasts {
     fn default() -> Self {
         let (changed_tx, _) = broadcast::channel(16);
+        let (file_dirty_tx, _) = broadcast::channel(16);
         let (kernel_broadcast_tx, _) = broadcast::channel(KERNEL_BROADCAST_CAPACITY);
         let (presence_tx, _) = broadcast::channel(64);
         Self {
             changed_tx,
+            file_dirty_tx,
             kernel_broadcast_tx,
             presence_tx,
             presence: Arc::new(RwLock::new(PresenceState::new())),

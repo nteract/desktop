@@ -6970,3 +6970,230 @@ async fn reset_starting_state_error_variant_writes_details() {
     // but present so readers can skip typed-reason branches cleanly.
     assert_eq!(state.kernel.error_reason.as_deref(), Some(""));
 }
+
+// ── Regression tests for #2351: outputs not serialized to notebook ───
+
+/// When a cell is re-queued for execution, `set_execution_id` rewrites the
+/// cell's pointer to the NEW execution_id before the kernel produces any
+/// outputs. If save fires in this window, the previous outputs must not be
+/// clobbered with empty `[]`. Save falls back to the most recent terminal
+/// execution for the cell.
+#[tokio::test]
+async fn test_save_preserves_outputs_when_execution_in_flight() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (room, notebook_path) = test_room_with_path(&tmp, "in_flight.ipynb");
+
+    let old_eid = "exec-old-done";
+    let new_eid = "exec-new-queued";
+
+    {
+        let mut doc = room.doc.write().await;
+        doc.add_cell(0, "cell1", "code").unwrap();
+        doc.update_source("cell1", "print('hello')").unwrap();
+    }
+    room.state
+        .with_doc(|sd| {
+            let output = serde_json::json!({
+                "output_type": "stream",
+                "name": "stdout",
+                "text": ["hello\n"]
+            });
+            sd.create_execution_with_source(old_eid, "cell1", "print('hello')", 1)?;
+            sd.set_outputs(old_eid, &[output])?;
+            sd.set_execution_count(old_eid, 1)?;
+            sd.set_execution_done(old_eid, true)?;
+            Ok(())
+        })
+        .unwrap();
+    {
+        let mut doc = room.doc.write().await;
+        doc.set_execution_id("cell1", Some(old_eid)).unwrap();
+    }
+
+    // Simulate `queue_cell_if_current`: rewrite cell.execution_id to a new
+    // queued execution that has not produced outputs yet.
+    room.state
+        .with_doc(|sd| {
+            sd.create_execution_with_source(new_eid, "cell1", "print('hello')", 2)?;
+            Ok(())
+        })
+        .unwrap();
+    {
+        let mut doc = room.doc.write().await;
+        doc.set_execution_id("cell1", Some(new_eid)).unwrap();
+    }
+
+    save_notebook_to_disk(&room, None).await.unwrap();
+
+    let content = std::fs::read_to_string(&notebook_path).unwrap();
+    let nb: serde_json::Value = serde_json::from_str(&content).unwrap();
+    let cell = &nb["cells"][0];
+    let outputs = cell["outputs"].as_array().expect("outputs array");
+    assert_eq!(
+        outputs.len(),
+        1,
+        "previous outputs must be preserved during in-flight execution; got: {}",
+        serde_json::to_string_pretty(cell).unwrap()
+    );
+    assert_eq!(outputs[0]["name"], "stdout");
+    assert_eq!(
+        cell["execution_count"], 1,
+        "previous execution_count preserved when current execution has no count yet"
+    );
+}
+
+/// When a cell's `execution_id` is `None` (cleared via ClearOutputs), save
+/// must write empty outputs. The clear is intentional - we don't fall back
+/// to historical executions.
+#[tokio::test]
+async fn test_save_writes_empty_outputs_when_cell_execution_id_cleared() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (room, notebook_path) = test_room_with_path(&tmp, "cleared.ipynb");
+
+    let eid = "exec-done";
+    {
+        let mut doc = room.doc.write().await;
+        doc.add_cell(0, "cell1", "code").unwrap();
+        doc.update_source("cell1", "print('hello')").unwrap();
+    }
+    room.state
+        .with_doc(|sd| {
+            let output = serde_json::json!({
+                "output_type": "stream",
+                "name": "stdout",
+                "text": ["hello\n"]
+            });
+            sd.create_execution_with_source(eid, "cell1", "print('hello')", 1)?;
+            sd.set_outputs(eid, &[output])?;
+            sd.set_execution_count(eid, 1)?;
+            sd.set_execution_done(eid, true)?;
+            Ok(())
+        })
+        .unwrap();
+    {
+        let mut doc = room.doc.write().await;
+        doc.set_execution_id("cell1", Some(eid)).unwrap();
+        doc.set_execution_id("cell1", None).unwrap();
+    }
+
+    save_notebook_to_disk(&room, None).await.unwrap();
+
+    let content = std::fs::read_to_string(&notebook_path).unwrap();
+    let nb: serde_json::Value = serde_json::from_str(&content).unwrap();
+    let outputs = nb["cells"][0]["outputs"].as_array().expect("outputs array");
+    assert!(
+        outputs.is_empty(),
+        "cleared cell must have empty outputs; got: {}",
+        serde_json::to_string_pretty(&nb["cells"][0]).unwrap()
+    );
+}
+
+/// RuntimeStateDoc mutations only wake autosave through the explicit
+/// file-dirty channel. Autosave's own `last_saved` write must not trigger a
+/// follow-on autosave loop.
+#[tokio::test(start_paused = true)]
+async fn test_autosave_fires_on_runtime_file_dirty_without_self_loop() {
+    use std::time::Duration;
+
+    let tmp = tempfile::TempDir::new().unwrap();
+    let blob_store = test_blob_store(&tmp);
+    let docs_dir = tmp.path().join("docs");
+    std::fs::create_dir_all(&docs_dir).unwrap();
+
+    let room = Arc::new(NotebookRoom::new_fresh(
+        Uuid::new_v4(),
+        None,
+        &docs_dir,
+        blob_store,
+        false,
+    ));
+
+    let eid = "exec-1";
+    {
+        let mut doc = room.doc.write().await;
+        doc.add_cell(0, "cell1", "code").unwrap();
+        doc.update_source("cell1", "print('hi')").unwrap();
+        doc.set_execution_id("cell1", Some(eid)).unwrap();
+    }
+    room.state
+        .with_doc(|sd| {
+            sd.create_execution_with_source(eid, "cell1", "print('hi')", 1)?;
+            Ok(())
+        })
+        .unwrap();
+
+    let save_path = tmp.path().join("auto.ipynb");
+    let written = save_notebook_to_disk(&room, Some(save_path.to_str().unwrap()))
+        .await
+        .unwrap();
+    let canonical = tokio::fs::canonicalize(&written)
+        .await
+        .unwrap_or_else(|_| PathBuf::from(&written));
+    let path_index = Arc::new(tokio::sync::Mutex::new(PathIndex::new()));
+    try_claim_path(&path_index, &canonical, room.id)
+        .await
+        .expect("path claim should succeed");
+    finalize_untitled_promotion(&room, canonical).await;
+
+    let initial = tokio::fs::read_to_string(&save_path).await.unwrap();
+    let initial_nb: serde_json::Value = serde_json::from_str(&initial).unwrap();
+    assert!(
+        initial_nb["cells"][0]["outputs"]
+            .as_array()
+            .map(|o| o.is_empty())
+            .unwrap_or(true),
+        "baseline file must start with empty outputs"
+    );
+
+    room.state
+        .with_doc(|sd| {
+            let output = serde_json::json!({
+                "output_type": "stream",
+                "name": "stdout",
+                "text": ["hi\n"]
+            });
+            sd.append_output(eid, &output)?;
+            sd.set_execution_count(eid, 1)?;
+            sd.set_execution_done(eid, true)?;
+            Ok(())
+        })
+        .unwrap();
+
+    let _ = room.broadcasts.file_dirty_tx.send(());
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+    let first_last_saved = loop {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let content = tokio::fs::read_to_string(&save_path).await.unwrap();
+        let nb: serde_json::Value = serde_json::from_str(&content).unwrap();
+        let outputs_saved = nb["cells"][0]["outputs"]
+            .as_array()
+            .is_some_and(|outputs| !outputs.is_empty());
+        let last_saved = room
+            .state
+            .read(|sd| sd.read_state().last_saved)
+            .unwrap_or_default();
+        if outputs_saved {
+            assert_eq!(nb["cells"][0]["outputs"][0]["name"], "stdout");
+            if let Some(last_saved) = last_saved {
+                break last_saved;
+            }
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "Timed out waiting for autosave to flush state-change outputs; got: {}",
+            serde_json::to_string_pretty(&nb).unwrap()
+        );
+    };
+
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    let second_last_saved = room
+        .state
+        .read(|sd| sd.read_state().last_saved)
+        .unwrap_or_default()
+        .expect("autosave should have stamped last_saved");
+    assert_eq!(
+        first_last_saved, second_last_saved,
+        "last_saved changed without a new file-dirty or NotebookDoc signal"
+    );
+}

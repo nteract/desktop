@@ -12,6 +12,60 @@ use super::NotebookRoom;
 
 type PersistedExecutionRecords = HashMap<String, runtimed_client::execution_store::ExecutionRecord>;
 
+#[derive(Debug, Clone, PartialEq)]
+pub(super) struct RuntimeFileSaveFingerprint {
+    executions: Vec<RuntimeExecutionSaveFingerprint>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct RuntimeExecutionSaveFingerprint {
+    execution_id: String,
+    cell_id: String,
+    phase: RuntimeExecutionSavePhase,
+    execution_count: Option<i64>,
+    seq: Option<u64>,
+    outputs: Vec<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RuntimeExecutionSavePhase {
+    InFlightEmpty,
+    TerminalEmpty,
+    HasOutputs,
+    Other,
+}
+
+pub(super) fn runtime_file_save_fingerprint(
+    state_doc: &runtime_doc::RuntimeStateDoc,
+) -> RuntimeFileSaveFingerprint {
+    let mut executions = state_doc
+        .read_state()
+        .executions
+        .into_iter()
+        .map(|(execution_id, exec)| {
+            let phase = if !exec.outputs.is_empty() {
+                RuntimeExecutionSavePhase::HasOutputs
+            } else if exec.status == "queued" || exec.status == "running" {
+                RuntimeExecutionSavePhase::InFlightEmpty
+            } else if exec.status == "done" || exec.status == "error" {
+                RuntimeExecutionSavePhase::TerminalEmpty
+            } else {
+                RuntimeExecutionSavePhase::Other
+            };
+            RuntimeExecutionSaveFingerprint {
+                execution_id,
+                cell_id: exec.cell_id,
+                phase,
+                execution_count: exec.execution_count,
+                seq: exec.seq,
+                outputs: exec.outputs,
+            }
+        })
+        .collect::<Vec<_>>();
+    executions.sort_by(|a, b| a.execution_id.cmp(&b.execution_id));
+    RuntimeFileSaveFingerprint { executions }
+}
+
 pub(super) async fn handle_runtime_state_frame(
     room: &NotebookRoom,
     state_peer_state: &mut sync::State,
@@ -22,10 +76,12 @@ pub(super) async fn handle_runtime_state_frame(
 ) -> anyhow::Result<bool> {
     let message =
         sync::Message::decode(payload).map_err(|e| anyhow::anyhow!("decode state sync: {}", e))?;
+    let mut runtime_file_dirty = false;
 
     let reply_encoded: Option<Option<Vec<u8>>> = room
         .state
         .with_doc(|state_doc| {
+            let before = runtime_file_save_fingerprint(state_doc);
             let recv_result = catch_automerge_panic("state-receive-sync", || {
                 state_doc.receive_sync_message_with_changes(state_peer_state, message)
             });
@@ -45,7 +101,9 @@ pub(super) async fn handle_runtime_state_frame(
 
             // If the client sent changes, notification is automatic via the
             // heads comparison in RuntimeStateDoc::with_doc.
-            let _ = had_changes;
+            if had_changes && runtime_file_save_fingerprint(state_doc) != before {
+                runtime_file_dirty = true;
+            }
 
             Ok(Some(generate_runtime_state_sync_message(
                 state_doc,
@@ -62,6 +120,9 @@ pub(super) async fn handle_runtime_state_frame(
     };
     if let Some(encoded) = reply_encoded {
         writer.send_frame(NotebookFrameType::RuntimeStateSync, encoded)?;
+    }
+    if runtime_file_dirty {
+        let _ = room.broadcasts.file_dirty_tx.send(());
     }
 
     persist_terminal_execution_records(room, store, persisted_records).await;
