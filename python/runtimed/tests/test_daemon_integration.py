@@ -462,7 +462,7 @@ def daemon_process(request):
             env = os.environ.copy()
             env["RUST_LOG"] = log_level
             env["RUNTIMED_WORKSPACE_PATH"] = str(workspace_dir)
-            env["RUNTIMED_TEST_KERNEL_PORT_RANGE_START"] = str(9000 + xdist_worker_index * 100)
+            env["RUNTIMED_TEST_KERNEL_PORT_RANGE_START"] = str(9000 + xdist_worker_index * 1000)
 
             proc = subprocess.Popen(
                 cmd,

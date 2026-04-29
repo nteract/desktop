@@ -8,12 +8,14 @@
 //! task handles, request/response infrastructure, process lifecycle.  Does
 //! **not** hold queue, executing cell, or status — those live in `KernelState`.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::fs::File;
+use std::io::Write;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex as StdMutex};
+use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 
 use anyhow::Result;
 use bytes::Bytes;
@@ -46,12 +48,170 @@ use notebook_protocol::protocol::LaunchedEnvConfig;
 ///
 /// Outside the Windows dynamic ephemeral range (49152-65535) and the IANA
 /// registered range (the conventional ceiling for system ports on Linux is
-/// also `ip_local_port_range` start, typically 32768). 9000-9999 is in the
+/// also `ip_local_port_range` start, typically 32768). 9000-29999 is in the
 /// IANA user-port range, far from any default ephemeral pool, and unlikely
 /// to clash with common services on a developer machine.
-const DEFAULT_KERNEL_PORT_RANGE: std::ops::RangeInclusive<u16> = 9000..=9999;
-const TEST_KERNEL_PORT_RANGE_SIZE: u16 = 100;
+const DEFAULT_KERNEL_PORT_RANGE: std::ops::RangeInclusive<u16> = 9000..=29999;
+const TEST_KERNEL_PORT_RANGE_SIZE: u16 = 1000;
 static NEXT_KERNEL_PORT_OFFSET: AtomicU64 = AtomicU64::new(0);
+static RESERVED_KERNEL_PORTS: OnceLock<StdMutex<HashSet<u16>>> = OnceLock::new();
+
+fn reserved_kernel_ports() -> &'static StdMutex<HashSet<u16>> {
+    RESERVED_KERNEL_PORTS.get_or_init(|| StdMutex::new(HashSet::new()))
+}
+
+fn kernel_port_lock_dir() -> PathBuf {
+    runt_workspace::daemon_base_dir().join("kernel-port-reservations")
+}
+
+fn kernel_port_lock_path(port: u16) -> PathBuf {
+    kernel_port_lock_dir().join(format!("{port}.lock"))
+}
+
+struct KernelPortClaim {
+    port: u16,
+    path: PathBuf,
+    _file: File,
+}
+
+struct KernelPortReservation {
+    claims: Vec<KernelPortClaim>,
+}
+
+impl KernelPortReservation {
+    fn try_claim(ports: Vec<u16>) -> Option<Self> {
+        let mut claims = Vec::with_capacity(ports.len());
+        for port in ports {
+            match Self::try_claim_one(port) {
+                Some(claim) => claims.push(claim),
+                None => return None,
+            }
+        }
+        Some(Self { claims })
+    }
+
+    fn try_claim_one(port: u16) -> Option<KernelPortClaim> {
+        let mut reserved = reserved_kernel_ports().lock().unwrap();
+        if !reserved.insert(port) {
+            return None;
+        }
+        drop(reserved);
+
+        match try_create_kernel_port_lock(port) {
+            Some(claim) => Some(claim),
+            None => {
+                reserved_kernel_ports().lock().unwrap().remove(&port);
+                None
+            }
+        }
+    }
+}
+
+impl Drop for KernelPortReservation {
+    fn drop(&mut self) {
+        let mut reserved = reserved_kernel_ports().lock().unwrap();
+        for claim in &self.claims {
+            reserved.remove(&claim.port);
+            if let Err(e) = std::fs::remove_file(&claim.path) {
+                if e.kind() != std::io::ErrorKind::NotFound {
+                    debug!(
+                        "[jupyter-kernel] Failed to remove port reservation {}: {}",
+                        claim.path.display(),
+                        e
+                    );
+                }
+            }
+        }
+    }
+}
+
+fn try_create_kernel_port_lock(port: u16) -> Option<KernelPortClaim> {
+    let dir = kernel_port_lock_dir();
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        warn!(
+            "[jupyter-kernel] Could not create kernel port reservation dir {}: {}",
+            dir.display(),
+            e
+        );
+        return None;
+    }
+
+    let path = kernel_port_lock_path(port);
+    for _ in 0..2 {
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+        {
+            Ok(mut file) => {
+                if let Err(e) = writeln!(file, "{}", std::process::id()) {
+                    debug!(
+                        "[jupyter-kernel] Could not write port reservation {}: {}",
+                        path.display(),
+                        e
+                    );
+                }
+                return Some(KernelPortClaim {
+                    port,
+                    path,
+                    _file: file,
+                });
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                if remove_stale_kernel_port_lock(&path) {
+                    continue;
+                }
+                return None;
+            }
+            Err(e) => {
+                debug!(
+                    "[jupyter-kernel] Could not reserve port {} via {}: {}",
+                    port,
+                    path.display(),
+                    e
+                );
+                return None;
+            }
+        }
+    }
+
+    None
+}
+
+fn remove_stale_kernel_port_lock(path: &std::path::Path) -> bool {
+    if let Ok(raw) = std::fs::read_to_string(path) {
+        if let Ok(pid) = raw.trim().parse::<u32>() {
+            if !process_is_running(pid) {
+                return std::fs::remove_file(path).is_ok();
+            }
+        }
+    }
+
+    const STALE_AFTER: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+    let stale_by_age = std::fs::metadata(path)
+        .and_then(|metadata| metadata.modified())
+        .ok()
+        .and_then(|modified| modified.elapsed().ok())
+        .is_some_and(|age| age > STALE_AFTER);
+    stale_by_age && std::fs::remove_file(path).is_ok()
+}
+
+#[cfg(unix)]
+fn process_is_running(pid: u32) -> bool {
+    use nix::sys::signal::kill;
+    use nix::unistd::Pid;
+
+    match kill(Pid::from_raw(pid as i32), None) {
+        Ok(()) => true,
+        Err(nix::errno::Errno::ESRCH) => false,
+        Err(_) => true,
+    }
+}
+
+#[cfg(not(unix))]
+fn process_is_running(_pid: u32) -> bool {
+    true
+}
 
 fn kernel_port_range() -> std::ops::RangeInclusive<u16> {
     match std::env::var("RUNTIMED_TEST_KERNEL_PORT_RANGE_START") {
@@ -95,23 +255,42 @@ fn kernel_port_candidates(num: usize) -> Vec<u16> {
 /// ephemeral source - the kernel's bind() then fails with EADDRINUSE and
 /// the daemon sees it as `Codec Error: WSAECONNRESET (10054)`.
 ///
-/// We try the reserved range 9000-9999 first. If we can't fill `num` from
-/// the reserved range, fall back to the OS-assigned ports - the race is
-/// rarer on Linux/macOS and the reserved range is small enough that we
-/// might collide with something, so the fallback keeps developer machines
-/// working.
-async fn reserve_kernel_ports(ip: IpAddr, num: usize) -> Result<(Vec<u16>, Vec<TcpListener>)> {
+/// We try the reserved range 9000-29999 first. The returned
+/// `KernelPortReservation` keeps a daemon-local claim on those port numbers
+/// after the listeners are dropped for kernel startup, preventing concurrent
+/// launches in this daemon from reusing the same connection file window. If we
+/// can't fill `num` from the reserved range, fall back to OS-assigned ports
+/// while still recording the daemon-local claim.
+async fn reserve_kernel_ports(
+    ip: IpAddr,
+    num: usize,
+) -> Result<(Vec<u16>, Vec<TcpListener>, KernelPortReservation)> {
+    reserve_kernel_ports_from_candidates(ip, num, kernel_port_candidates(num)).await
+}
+
+async fn reserve_kernel_ports_from_candidates(
+    ip: IpAddr,
+    num: usize,
+    candidates: Vec<u16>,
+) -> Result<(Vec<u16>, Vec<TcpListener>, KernelPortReservation)> {
     let mut ports: Vec<u16> = Vec::with_capacity(num);
     let mut listeners: Vec<TcpListener> = Vec::with_capacity(num);
+    let mut claims: Vec<KernelPortClaim> = Vec::with_capacity(num);
 
-    for port in kernel_port_candidates(num) {
+    for port in candidates {
         if ports.len() == num {
             break;
         }
+        let Some(claim) = KernelPortReservation::try_claim_one(port) else {
+            continue;
+        };
         let addr = SocketAddr::new(ip, port);
         if let Ok(listener) = TcpListener::bind(addr).await {
             ports.push(port);
             listeners.push(listener);
+            claims.push(claim);
+        } else {
+            drop(claim);
         }
     }
 
@@ -120,7 +299,8 @@ async fn reserve_kernel_ports(ip: IpAddr, num: usize) -> Result<(Vec<u16>, Vec<T
             "[jupyter-kernel] Reserved {} ports from configured range: {:?}",
             num, ports
         );
-        return Ok((ports, listeners));
+        let reservation = KernelPortReservation { claims };
+        return Ok((ports, listeners, reservation));
     }
 
     warn!(
@@ -128,10 +308,20 @@ async fn reserve_kernel_ports(ip: IpAddr, num: usize) -> Result<(Vec<u16>, Vec<T
         ports.len(),
         num
     );
+    drop(claims);
     drop(listeners);
-    runtimelib::peek_ports_with_listeners(ip, num)
-        .await
-        .map_err(Into::into)
+
+    for _ in 0..8 {
+        let (ports, listeners) = runtimelib::peek_ports_with_listeners(ip, num).await?;
+        if let Some(reservation) = KernelPortReservation::try_claim(ports.clone()) {
+            return Ok((ports, listeners, reservation));
+        }
+        drop(listeners);
+    }
+
+    Err(anyhow::anyhow!(
+        "could not reserve daemon-local kernel ports after fallback collisions"
+    ))
 }
 
 /// Type alias for pending completion response channels.
@@ -725,25 +915,24 @@ impl KernelConnection for JupyterKernel {
         // only "exit status: 1" with no clue why the kernel died.
         const STDERR_BUFFER_LINES: usize = 50;
 
-        // Spawn loop with retry on the Windows port-allocation race. The
-        // reserved 9000-9999 range from `reserve_kernel_ports` is outside
-        // the *default* Windows dynamic ephemeral range, but the dynamic
-        // range is `netsh`-configurable and at least the GitHub-hosted
-        // windows-latest runners overlap our reserved range. When that
-        // happens the kernel's bind() races the OS allocator and exits
-        // with `Address in use`. Retry up to a few times with fresh ports
-        // so a single unlucky pick doesn't sink the launch.
+        // Spawn loop with retry on the port-allocation race. The configured
+        // range from `reserve_kernel_ports` stays out of the common dynamic
+        // ephemeral ranges, but the daemon still has to drop listeners before
+        // the kernel binds its ZMQ sockets. Keep a daemon-local reservation
+        // alive through that handoff and retry with fresh ports if another
+        // process wins anyway.
         const MAX_LAUNCH_ATTEMPTS: usize = 4;
         type LaunchedKernel = (
             tokio::process::Child,
             Arc<StdMutex<VecDeque<String>>>,
             ConnectionInfo,
+            KernelPortReservation,
         );
-        let (mut process, _stderr_buffer, connection_info) = {
+        let (mut process, _stderr_buffer, connection_info, _port_reservation) = {
             let mut accepted: Option<LaunchedKernel> = None;
             let mut last_failure: Option<anyhow::Error> = None;
             for attempt in 1..=MAX_LAUNCH_ATTEMPTS {
-                let (ports, listeners) = reserve_kernel_ports(ip, 5).await?;
+                let (ports, listeners, port_reservation) = reserve_kernel_ports(ip, 5).await?;
                 let connection_info = ConnectionInfo {
                     transport: jupyter_protocol::connection_info::Transport::TCP,
                     ip: ip.to_string(),
@@ -766,10 +955,10 @@ impl KernelConnection for JupyterKernel {
                 //
                 // Windows: child processes inherit the parent's socket handles
                 // by default. If `cmd.spawn()` ran while the listeners were
-                // alive, the kernel would inherit handles for ports 9000-9004
+                // alive, the kernel would inherit handles for these ports
                 // and ipykernel's first `s.bind('tcp://...:9003')` would fail
                 // with EADDRINUSE - the kernel itself already owns a listener
-                // on that port via inheritance. The 9000-9999 reserved range
+                // on that port via inheritance. The configured reserved range
                 // is outside the dynamic ephemeral pool, so the OS allocator
                 // can't reclaim a freed port between drop and the kernel's
                 // bind. Drop early.
@@ -901,7 +1090,8 @@ impl KernelConnection for JupyterKernel {
                     }
                     Ok(None) => {
                         // Process still running — good
-                        accepted = Some((process, stderr_buffer, connection_info));
+                        accepted =
+                            Some((process, stderr_buffer, connection_info, port_reservation));
                         break;
                     }
                     Err(e) => {
@@ -909,7 +1099,8 @@ impl KernelConnection for JupyterKernel {
                             "[jupyter-kernel] Could not check kernel process status: {}",
                             e
                         );
-                        accepted = Some((process, stderr_buffer, connection_info));
+                        accepted =
+                            Some((process, stderr_buffer, connection_info, port_reservation));
                         break;
                     }
                 }
@@ -2870,5 +3061,96 @@ fn prepend_to_path(dir: &std::path::Path) -> String {
     match std::env::var("PATH") {
         Ok(existing) => format!("{}:{}", dir_str, existing),
         Err(_) => dir_str.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn daemon_port_reservation_claims_and_releases_ports() {
+        let ports = vec![65535];
+
+        let reservation = KernelPortReservation::try_claim(ports.clone())
+            .expect("first reservation should claim an unused port");
+        assert!(
+            KernelPortReservation::try_claim(ports.clone()).is_none(),
+            "second reservation should not claim a daemon-reserved port"
+        );
+
+        drop(reservation);
+
+        let reservation = KernelPortReservation::try_claim(ports)
+            .expect("dropping a reservation should release its ports");
+        drop(reservation);
+    }
+
+    #[test]
+    fn daemon_port_reservation_respects_existing_lock_file() {
+        let port = 65534;
+        let path = kernel_port_lock_path(port);
+        std::fs::create_dir_all(kernel_port_lock_dir()).unwrap();
+        std::fs::write(&path, std::process::id().to_string()).unwrap();
+
+        assert!(
+            KernelPortReservation::try_claim(vec![port]).is_none(),
+            "existing lock file should block another runtime-agent process"
+        );
+
+        std::fs::remove_file(path).ok();
+        reserved_kernel_ports().lock().unwrap().remove(&port);
+    }
+
+    #[tokio::test]
+    async fn reserve_kernel_ports_tracks_ports_after_listeners_drop() {
+        let (ports, listeners, reservation) =
+            reserve_kernel_ports(IpAddr::V4(Ipv4Addr::LOCALHOST), 5)
+                .await
+                .expect("kernel ports should be reservable");
+
+        drop(listeners);
+
+        let reserved = reserved_kernel_ports().lock().unwrap();
+        assert!(
+            ports.iter().all(|port| reserved.contains(port)),
+            "daemon reservation should survive the listener handoff window"
+        );
+        drop(reserved);
+
+        drop(reservation);
+
+        let reserved = reserved_kernel_ports().lock().unwrap();
+        assert!(
+            ports.iter().all(|port| !reserved.contains(port)),
+            "dropping the reservation should release daemon-local claims"
+        );
+    }
+
+    #[tokio::test]
+    async fn reserve_kernel_ports_falls_back_when_candidates_are_exhausted() {
+        let (ports, listeners, reservation) =
+            reserve_kernel_ports_from_candidates(IpAddr::V4(Ipv4Addr::LOCALHOST), 5, Vec::new())
+                .await
+                .expect("fallback ports should be reservable");
+
+        assert_eq!(ports.len(), 5);
+        assert_eq!(listeners.len(), 5);
+
+        let reserved = reserved_kernel_ports().lock().unwrap();
+        assert!(
+            ports.iter().all(|port| reserved.contains(port)),
+            "fallback ports should also get daemon-local claims"
+        );
+        drop(reserved);
+
+        drop(listeners);
+        drop(reservation);
+
+        let reserved = reserved_kernel_ports().lock().unwrap();
+        assert!(
+            ports.iter().all(|port| !reserved.contains(port)),
+            "fallback reservation should release daemon-local claims"
+        );
     }
 }
