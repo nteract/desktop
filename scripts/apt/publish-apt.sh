@@ -129,6 +129,13 @@ if [[ -z "$VERSION" ]]; then
 fi
 echo "    Version: $VERSION"
 
+INSTALL_PACKAGE="nteract"
+APT_LIST_NAME="nteract"
+if [[ "$CHANNEL" == "nightly" ]]; then
+  INSTALL_PACKAGE="nteract-nightly"
+  APT_LIST_NAME="nteract-nightly"
+fi
+
 # ---------------------------------------------------------------------------
 # Step 4: Derive the versioned pool filename
 # ---------------------------------------------------------------------------
@@ -341,15 +348,15 @@ fi
 # Step 19: Print user setup instructions
 # ---------------------------------------------------------------------------
 echo ""
-echo "Done! Published nteract-${CHANNEL} ${VERSION}"
+echo "Done! Published ${INSTALL_PACKAGE} ${VERSION}"
 echo ""
 echo "Users can install with:"
 echo ""
 echo "  curl -fsSL ${R2_PUBLIC_URL}/nteract-keyring.gpg \\"
-echo "    | sudo gpg --dearmor -o /usr/share/keyrings/nteract-keyring.gpg"
+echo "    | sudo gpg --dearmor --yes -o /usr/share/keyrings/nteract-keyring.gpg"
 echo ""
 echo "  echo \"deb [arch=amd64 signed-by=/usr/share/keyrings/nteract-keyring.gpg] \\"
 echo "    ${R2_PUBLIC_URL} ${CHANNEL} main\" \\"
-echo "    | sudo tee /etc/apt/sources.list.d/nteract.list"
+echo "    | sudo tee /etc/apt/sources.list.d/${APT_LIST_NAME}.list"
 echo ""
-echo "  sudo apt update && sudo apt install nteract-${CHANNEL}"
+echo "  sudo apt update && sudo apt install ${INSTALL_PACKAGE}"

@@ -1,6 +1,8 @@
 # APT Repository Publisher
 
-Publishes nteract `.deb` packages to a Cloudflare R2-backed APT repository at `apt.nteract.io`. Supports `nightly` and `stable` channels in the same bucket using standard Debian repository layout.
+Publishes nteract `.deb` packages to the Cloudflare R2-backed APT repository at
+`https://apt.runtimed.com`. Supports `nightly` and `stable` channels in the
+same bucket using standard Debian repository layout.
 
 ## Files
 
@@ -74,7 +76,7 @@ AWS_ACCESS_KEY_ID=your-r2-access-key-id
 AWS_SECRET_ACCESS_KEY=your-r2-secret-access-key
 AWS_DEFAULT_REGION=auto
 R2_BUCKET_NAME=your-bucket-name
-R2_PUBLIC_URL=https://apt.nteract.io
+R2_PUBLIC_URL=https://apt.runtimed.com
 GPG_KEY_ID=YOUR_FINGERPRINT
 GPG_PRIVATE_KEY=<output of the base64 export command above>
 ```
@@ -142,12 +144,40 @@ apt install nteract
 
 Note: the app requires a display (GTK) and will crash with a GTK error if you try to run it inside the container — that's expected. A clean `apt install` with no errors is sufficient to confirm the repository is working.
 
+## User install commands
+
+Stable:
+
+```bash
+curl -fsSL https://apt.runtimed.com/nteract-keyring.gpg \
+  | sudo gpg --dearmor --yes -o /usr/share/keyrings/nteract-keyring.gpg
+
+echo "deb [arch=amd64 signed-by=/usr/share/keyrings/nteract-keyring.gpg] https://apt.runtimed.com stable main" \
+  | sudo tee /etc/apt/sources.list.d/nteract.list
+
+sudo apt update
+sudo apt install nteract
+```
+
+Nightly:
+
+```bash
+curl -fsSL https://apt.runtimed.com/nteract-keyring.gpg \
+  | sudo gpg --dearmor --yes -o /usr/share/keyrings/nteract-keyring.gpg
+
+echo "deb [arch=amd64 signed-by=/usr/share/keyrings/nteract-keyring.gpg] https://apt.runtimed.com nightly main" \
+  | sudo tee /etc/apt/sources.list.d/nteract-nightly.list
+
+sudo apt update
+sudo apt install nteract-nightly
+```
+
 ---
 
 ## Repository layout in R2
 
 ```
-bucket root  (https://apt.nteract.io)
+bucket root  (https://apt.runtimed.com)
 │
 ├── nteract-keyring.gpg
 │
@@ -168,4 +198,3 @@ bucket root  (https://apt.nteract.io)
     └── stable/
         └── ...
 ```
-

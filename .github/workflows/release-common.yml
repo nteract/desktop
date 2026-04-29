@@ -1414,10 +1414,14 @@ jobs:
           CLI_NAME="runt"
           DAEMON_NAME="runtimed"
           MCP_NAME="nteract-mcp"
+          APT_PACKAGE="nteract"
+          APT_LIST_NAME="nteract"
           if [ "$VERSION_SUFFIX" = "nightly" ]; then
             CLI_NAME="runt-nightly"
             DAEMON_NAME="runtimed-nightly"
             MCP_NAME="nteract-mcp-nightly"
+            APT_PACKAGE="nteract-nightly"
+            APT_LIST_NAME="nteract-nightly"
           fi
           {
             echo "$RELEASE_INTRO"
@@ -1449,13 +1453,13 @@ jobs:
             echo '```bash'
             echo '# Add the nteract signing key'
             echo "curl -fsSL https://apt.runtimed.com/nteract-keyring.gpg \\"
-            echo '  | sudo gpg --dearmor -o /usr/share/keyrings/nteract-keyring.gpg'
+            echo '  | sudo gpg --dearmor --yes -o /usr/share/keyrings/nteract-keyring.gpg'
             echo ''
             echo '# Add the repository'
             echo "echo \"deb [arch=amd64 signed-by=/usr/share/keyrings/nteract-keyring.gpg] https://apt.runtimed.com ${VERSION_SUFFIX} main\" \\"
-            echo '  | sudo tee /etc/apt/sources.list.d/nteract.list'
+            echo "  | sudo tee /etc/apt/sources.list.d/${APT_LIST_NAME}.list"
             echo ''
-            echo "sudo apt update && sudo apt install nteract-${VERSION_SUFFIX}"
+            echo "sudo apt update && sudo apt install ${APT_PACKAGE}"
             echo '```'
             echo ''
             echo "## ${CLI_NAME} (CLI)"
