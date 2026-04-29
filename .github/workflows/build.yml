@@ -417,7 +417,7 @@ jobs:
       matrix:
         platform:
           - name: macOS
-            runner: macos-latest
+            runner: macos-14-xlarge
             setup: echo "No extra deps needed on macOS"
             run_on_pr: false
             non_blocking: false
