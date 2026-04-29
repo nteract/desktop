@@ -240,6 +240,26 @@ pub fn default_notebook_docs_dir() -> PathBuf {
     daemon_base_dir().join("notebook-docs")
 }
 
+/// Base directory for kernel IPC (Unix domain) socket files.
+///
+/// Uses `/tmp/` to stay within the macOS 104-byte `sun_path` limit —
+/// paths under `~/.cache/` can exceed it with long usernames. In dev
+/// mode each worktree gets its own subdirectory so concurrent worktree
+/// daemons never collide.
+///
+/// Layout: `/tmp/{cache_namespace}/` (e.g. `/tmp/runt-nightly/`).
+/// Kernel socket files are `kernel-{id}-ipc-{1..5}` inside this dir.
+#[cfg(unix)]
+pub fn ipc_socket_dir() -> PathBuf {
+    let base = PathBuf::from("/tmp").join(cache_namespace());
+    if is_dev_mode() {
+        if let Some(worktree) = get_workspace_path() {
+            return base.join(format!("wt-{}", worktree_hash(&worktree)));
+        }
+    }
+    base
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -1009,6 +1009,36 @@ impl Daemon {
             }
         }
 
+        // Sweep stale IPC socket files from a previous daemon session.
+        // The singleton lock guarantees no live kernels exist at this
+        // point, so any `kernel-*-ipc-*` files are leftovers from a
+        // crash and can be safely removed.
+        #[cfg(unix)]
+        {
+            let ipc_dir = runtimed_client::ipc_socket_dir();
+            if ipc_dir.is_dir() {
+                let mut swept = 0usize;
+                if let Ok(entries) = std::fs::read_dir(&ipc_dir) {
+                    for entry in entries.flatten() {
+                        if let Some(name) = entry.file_name().to_str() {
+                            if name.starts_with("kernel-")
+                                && name.contains("-ipc-")
+                                && std::fs::remove_file(entry.path()).is_ok()
+                            {
+                                swept += 1;
+                            }
+                        }
+                    }
+                }
+                if swept > 0 {
+                    info!(
+                        "[runtimed] Swept {} stale IPC socket file(s) from {:?}",
+                        swept, ipc_dir
+                    );
+                }
+            }
+        }
+
         // Register global shutdown trigger for notebook_sync_server debouncers.
         {
             let shutdown_daemon = self.clone();

@@ -3728,6 +3728,20 @@ dependencies = [
 [[package]]
 name = "jupyter-protocol"
 version = "2.0.0"
+dependencies = [
+ "async-trait",
+ "bytes",
+ "chrono",
+ "futures",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "uuid",
+]
+
+[[package]]
+name = "jupyter-protocol"
+version = "2.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "67c8c5887974082be34e2bdac6b9b9dd8ad89951cae918b197959035b0673f6f"
 dependencies = [
@@ -4377,7 +4391,7 @@ checksum = "b2c06543f305caee515923b125a737c4d58079c063e25701f93f45077bb8d622"
 dependencies = [
  "anyhow",
  "chrono",
- "jupyter-protocol",
+ "jupyter-protocol 2.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "serde",
  "serde_json",
  "thiserror 1.0.69",
@@ -6914,7 +6928,7 @@ dependencies = [
  "dirs",
  "flate2",
  "futures",
- "jupyter-protocol",
+ "jupyter-protocol 2.0.0",
  "kernel-env",
  "libc",
  "notebook-doc",
@@ -7033,7 +7047,7 @@ dependencies = [
  "hyper",
  "hyper-util",
  "jiter",
- "jupyter-protocol",
+ "jupyter-protocol 2.0.0",
  "kernel-env",
  "kernel-launch",
  "libc",
@@ -7167,8 +7181,6 @@ dependencies = [
 [[package]]
 name = "runtimelib"
 version = "2.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8a95a93931b98c47a6201d5edd6e5b3545758fb475703bc797ba866b089ee6dd"
 dependencies = [
  "aws-lc-rs",
  "base64 0.22.1",
@@ -7178,7 +7190,7 @@ dependencies = [
  "dirs",
  "futures",
  "glob",
- "jupyter-protocol",
+ "jupyter-protocol 2.0.0",
  "serde",
  "serde_json",
  "shellexpand",

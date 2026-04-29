@@ -9,8 +9,9 @@
 //! **not** hold queue, executing cell, or status — those live in `KernelState`.
 
 use std::collections::{HashMap, VecDeque};
+#[cfg(windows)]
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
@@ -22,6 +23,7 @@ use jupyter_protocol::{
     JupyterMessage, JupyterMessageContent, KernelInfoRequest, ShutdownRequest,
 };
 use runtime_doc::{KernelActivity, RuntimeLifecycle};
+#[cfg(windows)]
 use tokio::net::TcpListener;
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
@@ -41,6 +43,27 @@ use crate::task_supervisor::{spawn_best_effort, spawn_supervised};
 use crate::terminal_size::{TERMINAL_COLUMNS_STR, TERMINAL_LINES_STR};
 use crate::EnvType;
 use notebook_protocol::protocol::LaunchedEnvConfig;
+
+/// IPC socket path prefix for a kernel.
+///
+/// Produces e.g. `/tmp/runt-nightly/kernel-fluffy-panther-ipc` which, with
+/// integer suffixes 1-5, yields unique collision-free socket files per
+/// kernel launch. The kernel_id is a petname or UUID, so paths never
+/// collide across concurrent launches.
+#[cfg(unix)]
+fn ipc_path_prefix(kernel_id: &str) -> PathBuf {
+    crate::ipc_socket_dir().join(format!("kernel-{}-ipc", kernel_id))
+}
+
+/// Remove IPC socket files for the 5 Jupyter ZMQ channels.
+///
+/// Best-effort: ignores errors (files may already be gone after kernel exit).
+#[cfg(unix)]
+pub(crate) fn cleanup_ipc_sockets(prefix: &Path) {
+    for port in 1..=5u16 {
+        let _ = std::fs::remove_file(format!("{}-{}", prefix.display(), port));
+    }
+}
 
 /// Reserved port range for Jupyter kernel ZMQ sockets.
 ///
@@ -100,6 +123,7 @@ fn kernel_port_candidates(num: usize) -> Vec<u16> {
 /// rarer on Linux/macOS and the reserved range is small enough that we
 /// might collide with something, so the fallback keeps developer machines
 /// working.
+#[cfg(windows)]
 async fn reserve_kernel_ports(ip: IpAddr, num: usize) -> Result<(Vec<u16>, Vec<TcpListener>)> {
     let mut ports: Vec<u16> = Vec::with_capacity(num);
     let mut listeners: Vec<TcpListener> = Vec::with_capacity(num);
@@ -216,6 +240,11 @@ pub struct JupyterKernel {
     connection_file: Option<PathBuf>,
     /// Shell writer for sending execute requests.
     shell_writer: Option<runtimelib::DealerSendConnection>,
+    /// IPC socket path prefix for cleanup (Unix only).
+    /// When set, the 5 socket files `{prefix}-{1..5}` are removed on
+    /// shutdown and Drop.
+    #[cfg(unix)]
+    ipc_prefix: Option<PathBuf>,
     /// Kernel process PID for signal-based cleanup (Unix only).
     #[cfg(unix)]
     kernel_pid: Option<i32>,
@@ -270,11 +299,11 @@ impl KernelConnection for JupyterKernel {
             _ => &kernel_type,
         };
 
-        // Per-launch IP and stable connection-file path. Ports are
-        // (re-)reserved inside the spawn loop below so the file's contents
-        // can be rewritten with fresh port numbers on retry; the path itself
-        // is what the kernel command-line points at, so keeping it stable
-        // means we don't have to rebuild `cmd` between attempts.
+        // Per-launch connection-file path. On Unix (IPC transport) there
+        // are no ports to reserve — the kernel_id uniqueness guarantees
+        // collision-free socket paths. On Windows (TCP) ports are reserved
+        // inside the spawn loop and the file is rewritten per attempt.
+        #[cfg(windows)]
         let ip = std::net::IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
         let conn_dir = crate::connections_dir();
         tokio::fs::create_dir_all(&conn_dir).await?;
@@ -725,33 +754,47 @@ impl KernelConnection for JupyterKernel {
         // only "exit status: 1" with no clue why the kernel died.
         const STDERR_BUFFER_LINES: usize = 50;
 
-        // Spawn loop with retry on the Windows port-allocation race. The
-        // reserved 9000-9999 range from `reserve_kernel_ports` is outside
-        // the *default* Windows dynamic ephemeral range, but the dynamic
-        // range is `netsh`-configurable and at least the GitHub-hosted
-        // windows-latest runners overlap our reserved range. When that
-        // happens the kernel's bind() races the OS allocator and exits
-        // with `Address in use`. Retry up to a few times with fresh ports
-        // so a single unlucky pick doesn't sink the launch.
-        const MAX_LAUNCH_ATTEMPTS: usize = 4;
+        // ── Platform-specific kernel spawn ──────────────────────────────
+        //
+        // Unix: IPC transport. No port allocation, no TOCTOU race, no retry
+        // loop. The kernel_id (petname/UUID) is unique per launch, so the
+        // socket path `ipc:///tmp/runt-nightly/kernel-{id}-ipc-{1..5}` can
+        // never collide with another kernel.
+        //
+        // Windows: TCP transport with a retry loop. The reserved 9000-9999
+        // port range avoids most ephemeral conflicts, but the range is
+        // `netsh`-configurable and GitHub-hosted runners overlap it. Retry
+        // up to 4 times with fresh ports so a single unlucky pick doesn't
+        // sink the launch.
+
         type LaunchedKernel = (
             tokio::process::Child,
             Arc<StdMutex<VecDeque<String>>>,
             ConnectionInfo,
         );
+
+        #[cfg(unix)]
+        let ipc_prefix = {
+            let prefix = ipc_path_prefix(&kernel_id);
+            if let Some(parent) = prefix.parent() {
+                tokio::fs::create_dir_all(parent).await?;
+            }
+            Some(prefix)
+        };
+
         let (mut process, _stderr_buffer, connection_info) = {
-            let mut accepted: Option<LaunchedKernel> = None;
-            let mut last_failure: Option<anyhow::Error> = None;
-            for attempt in 1..=MAX_LAUNCH_ATTEMPTS {
-                let (ports, listeners) = reserve_kernel_ports(ip, 5).await?;
+            // ── Unix: IPC transport (single attempt, no port race) ───────
+            #[cfg(unix)]
+            {
+                let prefix = ipc_prefix.as_ref().unwrap();
                 let connection_info = ConnectionInfo {
-                    transport: jupyter_protocol::connection_info::Transport::TCP,
-                    ip: ip.to_string(),
-                    stdin_port: ports[0],
-                    control_port: ports[1],
-                    hb_port: ports[2],
-                    shell_port: ports[3],
-                    iopub_port: ports[4],
+                    transport: jupyter_protocol::connection_info::Transport::IPC,
+                    ip: prefix.display().to_string(),
+                    shell_port: 1,
+                    iopub_port: 2,
+                    stdin_port: 3,
+                    control_port: 4,
+                    hb_port: 5,
                     signature_scheme: "hmac-sha256".to_string(),
                     key: Uuid::new_v4().to_string(),
                     kernel_name: Some(kernelspec_name.to_string()),
@@ -762,29 +805,7 @@ impl KernelConnection for JupyterKernel {
                 )
                 .await?;
 
-                // Order the listener drop relative to spawn per platform.
-                //
-                // Windows: child processes inherit the parent's socket handles
-                // by default. If `cmd.spawn()` ran while the listeners were
-                // alive, the kernel would inherit handles for ports 9000-9004
-                // and ipykernel's first `s.bind('tcp://...:9003')` would fail
-                // with EADDRINUSE - the kernel itself already owns a listener
-                // on that port via inheritance. The 9000-9999 reserved range
-                // is outside the dynamic ephemeral pool, so the OS allocator
-                // can't reclaim a freed port between drop and the kernel's
-                // bind. Drop early.
-                //
-                // Linux/macOS: FD_CLOEXEC is the default, so the child can't
-                // inherit the listener. The risk is the opposite - on the
-                // fallback path where ports come from the OS ephemeral
-                // allocator, the OS could re-hand a freed port to some other
-                // process between drop and the kernel's bind. Hold the
-                // listeners across spawn so that window stays closed.
-                #[cfg(windows)]
-                drop(listeners);
                 let mut process = cmd.spawn()?;
-                #[cfg(not(windows))]
-                drop(listeners);
 
                 let stderr_buffer: Arc<StdMutex<VecDeque<String>>> =
                     Arc::new(StdMutex::new(VecDeque::with_capacity(STDERR_BUFFER_LINES)));
@@ -814,19 +835,13 @@ impl KernelConnection for JupyterKernel {
                     };
 
                 info!(
-                    "[jupyter-kernel] Spawned kernel process (pid={:?}, kernel_id={}, attempt={}/{}, ports={:?})",
+                    "[jupyter-kernel] Spawned kernel process (pid={:?}, kernel_id={}, transport=ipc, prefix={})",
                     process.id(),
                     kernel_id,
-                    attempt,
-                    MAX_LAUNCH_ATTEMPTS,
-                    ports
+                    prefix.display(),
                 );
 
-                // Wait for kernel startup. ipykernel spends 1-3s on Windows
-                // (and macOS cold path) importing pyzmq/ipykernel and binding
-                // ZMQ sockets. Polling try_wait every 100ms inside the
-                // window catches an early exit (the EADDRINUSE case we're
-                // retrying for) without paying the full ceiling on success.
+                // Brief startup check — detect early crashes.
                 const STARTUP_CEILING: std::time::Duration = std::time::Duration::from_millis(3000);
                 let startup_deadline = std::time::Instant::now() + STARTUP_CEILING;
                 let mut early_exit: Option<std::process::ExitStatus> = None;
@@ -850,18 +865,8 @@ impl KernelConnection for JupyterKernel {
                     }
                 }
 
-                let outcome = match (early_exit, wait_err) {
-                    (Some(s), _) => Ok(Some(s)),
-                    (None, Some(e)) => Err(e),
-                    (None, None) => Ok(None),
-                };
-
-                // Early crash detection: did the process exit during startup?
-                match outcome {
-                    Ok(Some(exit_status)) => {
-                        // Wait for stderr EOF (the child is gone, the reader
-                        // task should finish promptly) so we read a complete
-                        // tail. Bound it so a stuck pipe can't hang launch.
+                match (early_exit, wait_err) {
+                    (Some(exit_status), _) => {
                         if let Some(handle) = stderr_drain {
                             let _ =
                                 tokio::time::timeout(std::time::Duration::from_millis(500), handle)
@@ -871,27 +876,16 @@ impl KernelConnection for JupyterKernel {
                             let queue = stderr_buffer.lock().unwrap();
                             queue.iter().cloned().collect::<Vec<_>>().join("\n")
                         };
-                        let port_race = captured.contains("Address in use")
-                            || captured.contains("Address already in use");
-                        if port_race && attempt < MAX_LAUNCH_ATTEMPTS {
-                            warn!(
-                                "[jupyter-kernel] Kernel hit port-allocation race on attempt {}/{}; retrying with fresh ports (kernel_id={}, exit={})",
-                                attempt, MAX_LAUNCH_ATTEMPTS, kernel_id, exit_status
-                            );
-                            last_failure = Some(anyhow::anyhow!(
-                                "kernel exited with port race: {}",
-                                exit_status
-                            ));
-                            continue;
-                        }
                         let stderr_tail = if captured.is_empty() {
                             "(no stderr captured before exit)".to_string()
                         } else {
                             format!("stderr tail:\n{}", captured)
                         };
+                        // Clean up socket files since the kernel never started.
+                        cleanup_ipc_sockets(prefix);
                         error!(
-                            "[jupyter-kernel] Kernel process exited immediately: {} (kernel_id={}, attempts={})\n{}",
-                            exit_status, kernel_id, attempt, stderr_tail
+                            "[jupyter-kernel] Kernel process exited immediately: {} (kernel_id={})\n{}",
+                            exit_status, kernel_id, stderr_tail
                         );
                         return Err(anyhow::anyhow!(
                             "Kernel process exited immediately: {}\n{}",
@@ -899,28 +893,181 @@ impl KernelConnection for JupyterKernel {
                             stderr_tail
                         ));
                     }
-                    Ok(None) => {
-                        // Process still running — good
-                        accepted = Some((process, stderr_buffer, connection_info));
-                        break;
-                    }
-                    Err(e) => {
+                    (None, Some(e)) => {
                         warn!(
                             "[jupyter-kernel] Could not check kernel process status: {}",
                             e
                         );
-                        accepted = Some((process, stderr_buffer, connection_info));
-                        break;
+                        (process, stderr_buffer, connection_info) as LaunchedKernel
+                    }
+                    (None, None) => {
+                        // Process still running — good
+                        (process, stderr_buffer, connection_info) as LaunchedKernel
                     }
                 }
             }
-            accepted.ok_or_else(|| {
-                last_failure.unwrap_or_else(|| {
-                    anyhow::anyhow!(
-                        "Kernel launch retry loop exhausted without success or recorded error"
+
+            // ── Windows: TCP transport with retry loop ───────────────────
+            #[cfg(windows)]
+            {
+                const MAX_LAUNCH_ATTEMPTS: usize = 4;
+                let mut accepted: Option<LaunchedKernel> = None;
+                let mut last_failure: Option<anyhow::Error> = None;
+                for attempt in 1..=MAX_LAUNCH_ATTEMPTS {
+                    let (ports, listeners) = reserve_kernel_ports(ip, 5).await?;
+                    let connection_info = ConnectionInfo {
+                        transport: jupyter_protocol::connection_info::Transport::TCP,
+                        ip: ip.to_string(),
+                        stdin_port: ports[0],
+                        control_port: ports[1],
+                        hb_port: ports[2],
+                        shell_port: ports[3],
+                        iopub_port: ports[4],
+                        signature_scheme: "hmac-sha256".to_string(),
+                        key: Uuid::new_v4().to_string(),
+                        kernel_name: Some(kernelspec_name.to_string()),
+                    };
+                    tokio::fs::write(
+                        &connection_file_path,
+                        serde_json::to_string_pretty(&connection_info)?,
                     )
-                })
-            })?
+                    .await?;
+
+                    // Windows: drop listeners before spawn so the child doesn't
+                    // inherit socket handles (which would cause EADDRINUSE on
+                    // the kernel's bind).
+                    drop(listeners);
+                    let mut process = cmd.spawn()?;
+
+                    let stderr_buffer: Arc<StdMutex<VecDeque<String>>> =
+                        Arc::new(StdMutex::new(VecDeque::with_capacity(STDERR_BUFFER_LINES)));
+                    let stderr_drain: Option<JoinHandle<()>> =
+                        if let Some(stderr) = process.stderr.take() {
+                            let kid = kernel_id.clone();
+                            let buffer = stderr_buffer.clone();
+                            Some(spawn_best_effort("kernel-stderr", async move {
+                                use tokio::io::{AsyncBufReadExt, BufReader};
+                                let mut lines = BufReader::new(stderr).lines();
+                                while let Ok(Some(line)) = lines.next_line().await {
+                                    let lower = line.to_ascii_lowercase();
+                                    if lower.contains("error") || lower.contains("traceback") {
+                                        warn!("[kernel-stderr:{}] {}", kid, line);
+                                    } else {
+                                        debug!("[kernel-stderr:{}] {}", kid, line);
+                                    }
+                                    let mut queue = buffer.lock().unwrap();
+                                    if queue.len() == STDERR_BUFFER_LINES {
+                                        queue.pop_front();
+                                    }
+                                    queue.push_back(line);
+                                }
+                            }))
+                        } else {
+                            None
+                        };
+
+                    info!(
+                        "[jupyter-kernel] Spawned kernel process (pid={:?}, kernel_id={}, attempt={}/{}, ports={:?})",
+                        process.id(),
+                        kernel_id,
+                        attempt,
+                        MAX_LAUNCH_ATTEMPTS,
+                        ports
+                    );
+
+                    const STARTUP_CEILING: std::time::Duration =
+                        std::time::Duration::from_millis(3000);
+                    let startup_deadline = std::time::Instant::now() + STARTUP_CEILING;
+                    let mut early_exit: Option<std::process::ExitStatus> = None;
+                    let mut wait_err: Option<std::io::Error> = None;
+                    loop {
+                        match process.try_wait() {
+                            Ok(Some(status)) => {
+                                early_exit = Some(status);
+                                break;
+                            }
+                            Ok(None) => {
+                                if std::time::Instant::now() >= startup_deadline {
+                                    break;
+                                }
+                                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                            }
+                            Err(e) => {
+                                wait_err = Some(e);
+                                break;
+                            }
+                        }
+                    }
+
+                    let outcome = match (early_exit, wait_err) {
+                        (Some(s), _) => Ok(Some(s)),
+                        (None, Some(e)) => Err(e),
+                        (None, None) => Ok(None),
+                    };
+
+                    match outcome {
+                        Ok(Some(exit_status)) => {
+                            if let Some(handle) = stderr_drain {
+                                let _ = tokio::time::timeout(
+                                    std::time::Duration::from_millis(500),
+                                    handle,
+                                )
+                                .await;
+                            }
+                            let captured = {
+                                let queue = stderr_buffer.lock().unwrap();
+                                queue.iter().cloned().collect::<Vec<_>>().join("\n")
+                            };
+                            let port_race = captured.contains("Address in use")
+                                || captured.contains("Address already in use");
+                            if port_race && attempt < MAX_LAUNCH_ATTEMPTS {
+                                warn!(
+                                    "[jupyter-kernel] Kernel hit port-allocation race on attempt {}/{}; retrying with fresh ports (kernel_id={}, exit={})",
+                                    attempt, MAX_LAUNCH_ATTEMPTS, kernel_id, exit_status
+                                );
+                                last_failure = Some(anyhow::anyhow!(
+                                    "kernel exited with port race: {}",
+                                    exit_status
+                                ));
+                                continue;
+                            }
+                            let stderr_tail = if captured.is_empty() {
+                                "(no stderr captured before exit)".to_string()
+                            } else {
+                                format!("stderr tail:\n{}", captured)
+                            };
+                            error!(
+                                "[jupyter-kernel] Kernel process exited immediately: {} (kernel_id={}, attempts={})\n{}",
+                                exit_status, kernel_id, attempt, stderr_tail
+                            );
+                            return Err(anyhow::anyhow!(
+                                "Kernel process exited immediately: {}\n{}",
+                                exit_status,
+                                stderr_tail
+                            ));
+                        }
+                        Ok(None) => {
+                            accepted = Some((process, stderr_buffer, connection_info));
+                            break;
+                        }
+                        Err(e) => {
+                            warn!(
+                                "[jupyter-kernel] Could not check kernel process status: {}",
+                                e
+                            );
+                            accepted = Some((process, stderr_buffer, connection_info));
+                            break;
+                        }
+                    }
+                }
+                accepted.ok_or_else(|| {
+                    last_failure.unwrap_or_else(|| {
+                        anyhow::anyhow!(
+                            "Kernel launch retry loop exhausted without success or recorded error"
+                        )
+                    })
+                })?
+            }
         };
 
         #[cfg(unix)]
@@ -2402,6 +2549,8 @@ impl KernelConnection for JupyterKernel {
             connection_file: Some(connection_file_path),
             shell_writer: Some(shell_writer),
             #[cfg(unix)]
+            ipc_prefix,
+            #[cfg(unix)]
             kernel_pid,
             iopub_task: Some(iopub_task),
             shell_reader_task: Some(shell_reader_task),
@@ -2557,6 +2706,12 @@ impl KernelConnection for JupyterKernel {
 
         if let Some(ref path) = self.connection_file {
             let _ = std::fs::remove_file(path);
+        }
+
+        // Clean up IPC socket files (Unix only).
+        #[cfg(unix)]
+        if let Some(ref prefix) = self.ipc_prefix {
+            cleanup_ipc_sockets(prefix);
         }
 
         self.connection_info = None;
@@ -2838,6 +2993,12 @@ impl Drop for JupyterKernel {
         // Clean up connection file
         if let Some(ref path) = self.connection_file {
             let _ = std::fs::remove_file(path);
+        }
+
+        // Clean up IPC socket files (Unix only).
+        #[cfg(unix)]
+        if let Some(ref prefix) = self.ipc_prefix {
+            cleanup_ipc_sockets(prefix);
         }
 
         info!("[jupyter-kernel] JupyterKernel dropped - resources cleaned up");
