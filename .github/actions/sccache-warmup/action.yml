@@ -1,0 +1,34 @@
+name: Warm up sccache
+description: >-
+  Probe sccache startup with retry to absorb transient GHA cache flakes.
+  Runs `sccache rustc --version` (the same path cargo takes when first wrapping
+  rustc), retrying up to 3 times with a 10s backoff. Once the daemon is up it
+  serves the rest of the job, so downstream cargo steps never see the startup
+  flake. Caller must have installed the Rust toolchain and sccache already.
+runs:
+  using: composite
+  steps:
+    - name: Probe sccache startup
+      shell: bash
+      run: |
+        set +e
+        max_attempts=3
+        delay=10
+        attempt=1
+        while [ "$attempt" -le "$max_attempts" ]; do
+          echo "::group::sccache startup probe (attempt $attempt/$max_attempts)"
+          sccache rustc --version
+          rc=$?
+          echo "::endgroup::"
+          if [ "$rc" -eq 0 ]; then
+            sccache --show-stats || true
+            exit 0
+          fi
+          if [ "$attempt" -lt "$max_attempts" ]; then
+            echo "Probe failed (rc=$rc), retrying in ${delay}s..."
+            sleep "$delay"
+          fi
+          attempt=$((attempt + 1))
+        done
+        echo "::error::sccache startup probe failed after $max_attempts attempts"
+        exit 1
