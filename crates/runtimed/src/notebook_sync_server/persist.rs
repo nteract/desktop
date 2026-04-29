@@ -96,23 +96,32 @@ pub(crate) async fn save_notebook_to_disk(
     };
 
     // Read outputs and execution_count from RuntimeStateDoc keyed by execution_id.
+    //
+    // When a cell is re-queued, `set_execution_id` rewrites the cell's pointer
+    // to the new execution before the kernel produces outputs. Saving with the
+    // queued/running eid would clobber the previous outputs with an empty list.
+    // Fall back to the most recent terminal execution for the cell so an
+    // explicit Cmd+S during a run (or a racing autosave) preserves what's on
+    // disk until the live run completes. Cleared cells (`execution_id = None`)
+    // skip the fall-back and write empty outputs.
     let (cell_outputs, cell_execution_counts): (
         HashMap<String, Vec<serde_json::Value>>,
         HashMap<String, Option<i64>>,
     ) = room
         .state
         .read(|sd| {
+            let snapshot = sd.read_state();
             let mut outputs_map = HashMap::new();
             let mut ec_map = HashMap::new();
             for (cell_id, eid) in &cell_execution_ids {
-                if let Some(eid) = eid.as_ref() {
-                    let outputs = sd.get_outputs(eid);
-                    if !outputs.is_empty() {
-                        outputs_map.insert(cell_id.clone(), outputs);
-                    }
-                    if let Some(exec) = sd.get_execution(eid) {
-                        ec_map.insert(cell_id.clone(), exec.execution_count);
-                    }
+                let Some(eid) = eid.as_ref() else { continue };
+                let resolved_eid = resolve_save_execution_id(&snapshot, cell_id, eid);
+                let outputs = sd.get_outputs(&resolved_eid);
+                if !outputs.is_empty() {
+                    outputs_map.insert(cell_id.clone(), outputs);
+                }
+                if let Some(exec) = snapshot.executions.get(&resolved_eid) {
+                    ec_map.insert(cell_id.clone(), exec.execution_count);
                 }
             }
             (outputs_map, ec_map)
@@ -378,6 +387,40 @@ pub(crate) async fn finalize_untitled_promotion(room: &Arc<NotebookRoom>, canoni
     );
 }
 
+/// Pick which execution_id save should read outputs from.
+///
+/// If the cell's current execution is queued or running with no outputs yet,
+/// fall back to the most recent done/error execution for the same cell. The
+/// fall-back applies only when the in-flight execution would yield empty
+/// outputs; once any output lands at the new id we use it (partial-but-live
+/// is preferred over stale-but-complete the moment the kernel speaks).
+fn resolve_save_execution_id(
+    snapshot: &runtime_doc::RuntimeState,
+    cell_id: &str,
+    current_eid: &str,
+) -> String {
+    let current = snapshot.executions.get(current_eid);
+    let in_flight_with_no_outputs = current
+        .map(|exec| {
+            (exec.status == "queued" || exec.status == "running") && exec.outputs.is_empty()
+        })
+        .unwrap_or(false);
+    if !in_flight_with_no_outputs {
+        return current_eid.to_string();
+    }
+    snapshot
+        .executions
+        .iter()
+        .filter(|(eid, exec)| {
+            eid.as_str() != current_eid
+                && exec.cell_id == cell_id
+                && (exec.status == "done" || exec.status == "error")
+        })
+        .max_by_key(|(_, exec)| exec.seq.unwrap_or(0))
+        .map(|(eid, _)| eid.clone())
+        .unwrap_or_else(|| current_eid.to_string())
+}
+
 /// Resolve a single cell output — handles both manifest hashes and raw JSON.
 async fn resolve_cell_output(
     output: &serde_json::Value,
@@ -614,6 +657,12 @@ impl Default for AutosaveDebouncerConfig {
 /// Spawn a debounced autosave task that writes the `.ipynb` file to disk
 /// whenever the Automerge document changes. Only for saved (non-untitled)
 /// notebooks. Does NOT format cells — formatting is reserved for explicit saves.
+///
+/// Subscribes to both `room.broadcasts.changed_tx` (NotebookDoc edits) and
+/// `room.state.subscribe()` (RuntimeStateDoc edits) so output arrivals from
+/// the kernel drive a re-save. Without the state subscription, outputs that
+/// land after the cell's NotebookDoc edit window would never reach disk and
+/// the .ipynb would carry stale `outputs: []` for the lifetime of the room.
 pub(crate) fn spawn_autosave_debouncer(notebook_id: String, room: Arc<NotebookRoom>) {
     spawn_autosave_debouncer_with_config(notebook_id, room, AutosaveDebouncerConfig::default());
 }
@@ -625,6 +674,7 @@ fn spawn_autosave_debouncer_with_config(
     config: AutosaveDebouncerConfig,
 ) {
     let mut changed_rx = room.broadcasts.changed_tx.subscribe();
+    let mut state_changed_rx = room.state.subscribe();
     spawn_supervised(
         "autosave-debouncer",
         async move {
@@ -667,6 +717,22 @@ fn spawn_autosave_debouncer_with_config(
                                 // Missed some updates, treat as a change
                                 debug!("[autosave] Lagged {} messages", n);
                                 last_receive = Some(Instant::now());
+                            }
+                        }
+                    }
+                    state_result = state_changed_rx.recv() => {
+                        match state_result {
+                            Ok(()) | Err(broadcast::error::RecvError::Lagged(_)) => {
+                                last_receive = Some(Instant::now());
+                            }
+                            Err(broadcast::error::RecvError::Closed) => {
+                                // RuntimeStateHandle dropped before the room.
+                                // Stop watching state but keep serving NotebookDoc
+                                // edits via changed_rx. Replace the receiver with
+                                // a never-ready one so the select! arm still
+                                // compiles but never fires.
+                                let (_tx, rx) = broadcast::channel(1);
+                                state_changed_rx = rx;
                             }
                         }
                     }
