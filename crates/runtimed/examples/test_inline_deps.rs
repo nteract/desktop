@@ -10,6 +10,7 @@ use std::time::Duration;
 use tempfile::TempDir;
 use tokio::time::sleep;
 
+use notebook_protocol::connection::{EnvSource, LaunchSpec, PackageManager};
 use runtimed::client::PoolClient;
 use runtimed::daemon::{Daemon, DaemonConfig};
 use runtimed::protocol::{NotebookRequest, NotebookResponse};
@@ -99,7 +100,7 @@ async fn main() -> anyhow::Result<()> {
 
     let request = NotebookRequest::LaunchKernel {
         kernel_type: "python".to_string(),
-        env_source: "auto".to_string(),
+        env_source: LaunchSpec::Auto,
         notebook_path: Some(notebook_path.to_string_lossy().to_string()),
     };
 
@@ -114,7 +115,7 @@ async fn main() -> anyhow::Result<()> {
             println!("✅ Kernel launched!");
             println!("   kernel_type: {}", kernel_type);
             println!("   env_source: {}", env_source);
-            if env_source == "uv:inline" {
+            if env_source == EnvSource::Inline(PackageManager::Uv) {
                 println!("\n🎉 SUCCESS: Inline deps detected correctly!");
             } else {
                 println!(

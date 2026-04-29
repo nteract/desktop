@@ -14,6 +14,7 @@ use std::path::PathBuf;
 use crate::{EnvType, PoolState, PooledEnv};
 
 // Re-export all notebook protocol types from the shared crate.
+pub use notebook_protocol::connection::{EnvSource, LaunchSpec};
 pub use notebook_protocol::protocol::{
     CompletionItem, DenoLaunchedConfig, DependencyGuard, EnvSyncDiff, GuardedNotebookProvenance,
     HistoryEntry, LaunchedEnvConfig, NotebookBroadcast, NotebookRequest, NotebookResponse,
@@ -486,7 +487,7 @@ mod tests {
     fn test_notebook_request_launch_kernel() {
         let req = NotebookRequest::LaunchKernel {
             kernel_type: "python".into(),
-            env_source: "uv:prewarmed".into(),
+            env_source: LaunchSpec::Concrete(EnvSource::parse("uv:prewarmed")),
             notebook_path: Some("/tmp/test.ipynb".into()),
         };
         let json = serde_json::to_string(&req).unwrap();
@@ -519,7 +520,7 @@ mod tests {
     fn test_notebook_response_kernel_launched() {
         let resp = NotebookResponse::KernelLaunched {
             kernel_type: "python".into(),
-            env_source: "conda:inline".into(),
+            env_source: EnvSource::parse("conda:inline"),
             launched_config: LaunchedEnvConfig {
                 conda_deps: Some(vec!["numpy".into(), "pandas".into()]),
                 ..Default::default()

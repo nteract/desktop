@@ -283,9 +283,7 @@ pub(crate) async fn handle(
                             .as_ref()
                             .filter(|p| !p.dependencies.is_empty())
                             .map(|_| EnvSource::Inline(PackageManager::Pixi)),
-                        _ => check_inline_deps(snap)
-                            .filter(|s| !matches!(s, EnvSource::Deno))
-                            .map(|s| s),
+                        _ => check_inline_deps(snap).filter(|s| !matches!(s, EnvSource::Deno)),
                     }
                 })
         {
