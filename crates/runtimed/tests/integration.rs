@@ -474,6 +474,68 @@ async fn test_external_settings_json_edit_survives_settings_sync_ack() {
 }
 
 #[tokio::test]
+async fn test_settings_json_mirror_write_does_not_feedback_loop() {
+    use runtimed::settings_doc::{SyncedSettings, ThemeMode};
+    use runtimed::sync_client::SyncClient;
+
+    let temp_dir = TempDir::new().unwrap();
+    let mut config = test_config(&temp_dir);
+    let socket_path = config.socket_path.clone();
+    let settings_dir = temp_dir.path().canonicalize().unwrap();
+    let settings_doc_path = settings_dir.join("settings.automerge");
+    let settings_json_path = settings_dir.join("settings.json");
+    config.settings_doc_path = Some(settings_doc_path);
+    config.settings_json_path = Some(settings_json_path.clone());
+
+    let initial = serde_json::to_string_pretty(&SyncedSettings::default()).unwrap();
+    std::fs::write(&settings_json_path, initial).unwrap();
+
+    let daemon = Daemon::new(config).unwrap();
+    let daemon_handle = tokio::spawn(async move {
+        daemon.run().await.ok();
+    });
+
+    let pool_client = PoolClient::new(socket_path.clone());
+    assert!(wait_for_daemon(&pool_client).await);
+
+    let mut writer = SyncClient::connect_with_timeout(socket_path.clone(), Duration::from_secs(2))
+        .await
+        .expect("writer SyncClient should connect");
+    let mut observer = SyncClient::connect_with_timeout(socket_path, Duration::from_secs(2))
+        .await
+        .expect("observer SyncClient should connect");
+
+    writer
+        .put_value("theme", &serde_json::Value::String("dark".into()))
+        .await
+        .expect("theme update should sync");
+
+    let observed = tokio::time::timeout(Duration::from_secs(5), observer.recv_changes())
+        .await
+        .expect("observer should receive the writer update")
+        .expect("observer sync should remain connected");
+    assert_eq!(observed.theme, ThemeMode::Dark);
+
+    // The daemon persists the JSON mirror for the writer's Automerge change.
+    // The settings.json watcher will see that filesystem event; it must
+    // recognize the mirror already matches the doc and avoid broadcasting
+    // another settings change back to peers.
+    sleep(Duration::from_secs(1)).await;
+    let extra = tokio::time::timeout(Duration::from_millis(300), observer.recv_changes()).await;
+    assert!(
+        extra.is_err(),
+        "daemon-generated settings.json mirror writes must not feedback-loop into another settings broadcast"
+    );
+
+    let saved_json = std::fs::read_to_string(&settings_json_path).unwrap();
+    let saved: SyncedSettings = serde_json::from_str(&saved_json).unwrap();
+    assert_eq!(saved.theme, ThemeMode::Dark);
+
+    pool_client.shutdown().await.ok();
+    let _ = tokio::time::timeout(Duration::from_secs(2), daemon_handle).await;
+}
+
+#[tokio::test]
 async fn test_blob_server_health() {
     let temp_dir = TempDir::new().unwrap();
     let config = test_config(&temp_dir);

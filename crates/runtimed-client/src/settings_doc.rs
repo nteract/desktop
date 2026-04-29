@@ -494,6 +494,11 @@ impl SettingsDoc {
                                 if let Ok(json) = serde_json::from_str(&contents) {
                                     if settings.apply_json_changes(&json) {
                                         info!("[settings] Reconciled Automerge doc with settings.json");
+                                        if let Err(e) = settings.save_to_file(automerge_path) {
+                                            log::warn!(
+                                                "[settings] Failed to persist reconciled Automerge doc: {e}"
+                                            );
+                                        }
                                     }
                                 }
                             }
@@ -1464,6 +1469,37 @@ mod tests {
 
         assert_eq!(settings.uv.default_packages, vec!["numpy", "pandas"]);
         assert_eq!(settings.conda.default_packages, vec!["scipy"]);
+    }
+
+    #[test]
+    fn test_load_or_create_persists_json_reconcile_into_existing_automerge_doc() {
+        let tmp = TempDir::new().unwrap();
+        let automerge_path = tmp.path().join("settings.automerge");
+        let json_path = tmp.path().join("settings.json");
+
+        let mut stale_doc = SettingsDoc::new();
+        stale_doc.put("default_python_env", "uv");
+        stale_doc.save_to_file(&automerge_path).unwrap();
+
+        std::fs::write(
+            &json_path,
+            r#"{"default_python_env":"conda","uv":{"default_packages":["numpy"]}}"#,
+        )
+        .unwrap();
+
+        let reconciled = SettingsDoc::load_or_create(&automerge_path, Some(&json_path));
+        assert_eq!(
+            reconciled.get("default_python_env").as_deref(),
+            Some("conda")
+        );
+
+        let persisted = SettingsDoc::load_or_create(&automerge_path, None);
+        assert_eq!(
+            persisted.get("default_python_env").as_deref(),
+            Some("conda"),
+            "settings.json edits made while the daemon was stopped must persist into settings.automerge"
+        );
+        assert_eq!(persisted.get_list("uv.default_packages"), vec!["numpy"]);
     }
 
     #[test]
