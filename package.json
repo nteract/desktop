@@ -1,6 +1,7 @@
 {
   "name": "nteract-desktop",
   "private": true,
+  "type": "module",
   "packageManager": "pnpm@10.30.0",
   "scripts": {
     "build": "pnpm --dir apps/notebook build",
