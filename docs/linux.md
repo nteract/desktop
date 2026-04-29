@@ -46,12 +46,20 @@ GitHub Releases include:
 
 - `.deb` packages for direct Debian/Ubuntu installs when you do not want to add
   the APT repository.
+- `.rpm` packages for direct Fedora/RHEL/openSUSE-family installs while we
+  evaluate whether to add a signed RPM repository.
 - AppImage builds for desktop Linux systems outside the Debian/Ubuntu family.
 
 For direct `.deb` installs:
 
 ```bash
 sudo apt install ./nteract-stable-linux-x64.deb
+```
+
+For direct `.rpm` installs:
+
+```bash
+sudo dnf install ./nteract-stable-linux-x64.rpm
 ```
 
 For AppImage:
