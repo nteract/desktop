@@ -173,6 +173,22 @@ After the handshake, frames are typed by their first byte:
 requests must include an `id`, and clients must route responses by id because
 broadcasts, state sync, and out-of-order responses may interleave freely.
 
+The TypeScript protocol surface in `packages/runtimed` is checked against
+these Rust wire discriminants:
+
+- `packages/runtimed/src/transport.ts` owns the exported `FrameType` constants.
+- `packages/runtimed/src/request-types.ts` owns the frontend-visible
+  `NotebookRequest` and `NotebookResponse` unions.
+- `packages/runtimed/src/protocol-contract.ts` exports the request, response,
+  and session-control discriminant lists with TypeScript exhaustiveness checks.
+- `crates/notebook-protocol/src/protocol.rs` includes a contract test that
+  compares those TypeScript lists and frame bytes to the Rust protocol.
+
+When adding or renaming a request, response, frame type, or session-control
+phase, update the Rust protocol and `packages/runtimed` contract in the same
+patch, then run `cargo test -p notebook-protocol` and the focused
+`packages/runtimed` tests.
+
 ## Automerge Sync
 
 The notebook document is a CRDT shared between two peers:
@@ -375,6 +391,8 @@ Widget state now lives in `doc.comms/` in RuntimeStateDoc. The daemon writes com
 | `crates/notebook-protocol/src/connection/handshake.rs` | Protocol version, handshake, capabilities, connection info |
 | `crates/notebook-protocol/src/connection/env.rs` | Launch spec, package manager, and environment source wire types |
 | `crates/notebook-protocol/src/protocol.rs` | Canonical wire types: `NotebookRequest`, `NotebookResponse`, `NotebookBroadcast` |
+| `packages/runtimed/src/request-types.ts` | TypeScript request/response protocol unions consumed by JS clients |
+| `packages/runtimed/src/protocol-contract.ts` | Checked TypeScript discriminant lists for frame/session/request/response drift tests |
 | `crates/runtimed-client/src/protocol.rs` | Daemon-internal types (`Request`, `Response`, `BlobRequest`), re-exports from `notebook-protocol` |
 | `crates/notebook-sync/src/relay.rs` | Relay handle for notebook sync connections |
 | `crates/notebook-sync/src/connect.rs` | Connection setup (`connect_open_relay`, `connect_create_relay`) |

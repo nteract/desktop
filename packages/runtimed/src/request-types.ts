@@ -1,9 +1,10 @@
 /**
- * Frontend client subset of NotebookRequest/NotebookResponse from
- * crates/notebook-protocol/src/protocol.rs. This intentionally includes only
- * variants currently used by the frontend client.
+ * Frontend-visible NotebookRequest/NotebookResponse wire types from
+ * crates/notebook-protocol/src/protocol.rs.
  * These are transport-agnostic — callers encode them as needed.
  */
+
+import type { QueueEntry } from "./runtime-state";
 
 // ── Requests ────────────────────────────────────────────────────────
 
@@ -14,6 +15,34 @@ export interface GuardedNotebookProvenance {
 export interface DependencyGuard {
   observed_heads: string[];
   dependency_fingerprint: string;
+}
+
+export interface FeatureFlags {
+  bootstrap_dx?: boolean;
+}
+
+export interface DenoLaunchedConfig {
+  permissions: string[];
+  import_map?: string | null;
+  config?: string | null;
+  flexible_npm_imports: boolean;
+}
+
+export interface LaunchedEnvConfig extends FeatureFlags {
+  uv_deps?: string[] | null;
+  conda_deps?: string[] | null;
+  conda_channels?: string[] | null;
+  pixi_deps?: string[] | null;
+  pixi_toml_deps?: string[] | null;
+  pixi_toml_path?: string | null;
+  pyproject_path?: string | null;
+  environment_yml_path?: string | null;
+  environment_yml_deps?: string[] | null;
+  deno_config?: DenoLaunchedConfig | null;
+  venv_path?: string | null;
+  python_path?: string | null;
+  launch_id?: string | null;
+  prewarmed_packages?: string[];
 }
 
 export type NotebookRequest =
@@ -50,7 +79,9 @@ export type NotebookRequest =
       format_cells: boolean;
       /** Target path. Omit to save in place. */
       path?: string;
-    };
+    }
+  | { type: "clone_as_ephemeral"; source_notebook_id: string }
+  | { type: "get_doc_bytes" };
 
 /** One entry returned by `get_history`. */
 export interface HistoryEntry {
@@ -63,6 +94,8 @@ export interface HistoryEntry {
 export interface CompletionItem {
   label: string;
   kind?: string | null;
+  detail?: string | null;
+  source?: string | null;
 }
 
 /** Message shape for send_comm requests. */
@@ -78,11 +111,17 @@ export interface CommRequestMessage {
 // ── Responses ───────────────────────────────────────────────────────
 
 export type NotebookResponse =
-  | { result: "kernel_launched"; kernel_type: string; env_source: string }
+  | {
+      result: "kernel_launched";
+      kernel_type: string;
+      env_source: string;
+      launched_config: LaunchedEnvConfig;
+    }
   | {
       result: "kernel_already_running";
       kernel_type: string;
       env_source: string;
+      launched_config: LaunchedEnvConfig;
     }
   | { result: "cell_queued"; cell_id: string; execution_id: string }
   | { result: "outputs_cleared"; cell_id: string }
@@ -92,7 +131,7 @@ export type NotebookResponse =
   | { result: "guard_rejected"; reason: string }
   | {
       result: "all_cells_queued";
-      queued: { cell_id: string; execution_id: string }[];
+      queued: QueueEntry[];
     }
   | { result: "ok" }
   | { result: "error"; error: string }
@@ -110,7 +149,13 @@ export type NotebookResponse =
       cursor_end: number;
     }
   | { result: "notebook_saved"; path: string }
-  | { result: "save_error"; error: SaveErrorKind };
+  | { result: "save_error"; error: SaveErrorKind }
+  | {
+      result: "notebook_cloned";
+      notebook_id: string;
+      working_dir?: string | null;
+    }
+  | { result: "doc_bytes"; bytes: number[] };
 
 /**
  * Structured save failures returned in `NotebookResponse::SaveError`.

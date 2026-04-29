@@ -1,0 +1,114 @@
+import type {
+  InitialLoadPhase,
+  NotebookDocPhase,
+  RuntimeStatePhase,
+  SessionStatus,
+} from "./handle";
+import type { NotebookRequest, NotebookResponse } from "./request-types";
+
+type MissingUnionMember<Union extends string, Values extends readonly string[]> = Exclude<
+  Union,
+  Values[number]
+>;
+
+export const NOTEBOOK_REQUEST_TYPES = [
+  "launch_kernel",
+  "execute_cell",
+  "execute_cell_guarded",
+  "clear_outputs",
+  "interrupt_execution",
+  "shutdown_kernel",
+  "run_all_cells",
+  "run_all_cells_guarded",
+  "send_comm",
+  "get_history",
+  "complete",
+  "save_notebook",
+  "clone_as_ephemeral",
+  "sync_environment",
+  "approve_trust",
+  "approve_project_environment",
+  "get_doc_bytes",
+] as const satisfies readonly NotebookRequest["type"][];
+
+export const NOTEBOOK_REQUEST_TYPES_EXHAUSTIVE: MissingUnionMember<
+  NotebookRequest["type"],
+  typeof NOTEBOOK_REQUEST_TYPES
+> extends never
+  ? true
+  : never = true;
+
+export const NOTEBOOK_RESPONSE_RESULTS = [
+  "kernel_launched",
+  "kernel_already_running",
+  "cell_queued",
+  "outputs_cleared",
+  "interrupt_sent",
+  "kernel_shutting_down",
+  "no_kernel",
+  "guard_rejected",
+  "all_cells_queued",
+  "notebook_saved",
+  "save_error",
+  "notebook_cloned",
+  "ok",
+  "error",
+  "history_result",
+  "completion_result",
+  "sync_environment_complete",
+  "sync_environment_failed",
+  "doc_bytes",
+] as const satisfies readonly NotebookResponse["result"][];
+
+export const NOTEBOOK_RESPONSE_RESULTS_EXHAUSTIVE: MissingUnionMember<
+  NotebookResponse["result"],
+  typeof NOTEBOOK_RESPONSE_RESULTS
+> extends never
+  ? true
+  : never = true;
+
+export type SessionControlMessage = { type: "sync_status" } & SessionStatus;
+
+export const SESSION_CONTROL_TYPES = [
+  "sync_status",
+] as const satisfies readonly SessionControlMessage["type"][];
+
+export const NOTEBOOK_DOC_PHASES = [
+  "pending",
+  "syncing",
+  "interactive",
+] as const satisfies readonly NotebookDocPhase[];
+
+export const NOTEBOOK_DOC_PHASES_EXHAUSTIVE: MissingUnionMember<
+  NotebookDocPhase,
+  typeof NOTEBOOK_DOC_PHASES
+> extends never
+  ? true
+  : never = true;
+
+export const RUNTIME_STATE_PHASES = [
+  "pending",
+  "syncing",
+  "ready",
+] as const satisfies readonly RuntimeStatePhase[];
+
+export const RUNTIME_STATE_PHASES_EXHAUSTIVE: MissingUnionMember<
+  RuntimeStatePhase,
+  typeof RUNTIME_STATE_PHASES
+> extends never
+  ? true
+  : never = true;
+
+export const INITIAL_LOAD_PHASES = [
+  "not_needed",
+  "streaming",
+  "ready",
+  "failed",
+] as const satisfies readonly InitialLoadPhase["phase"][];
+
+export const INITIAL_LOAD_PHASES_EXHAUSTIVE: MissingUnionMember<
+  InitialLoadPhase["phase"],
+  typeof INITIAL_LOAD_PHASES
+> extends never
+  ? true
+  : never = true;

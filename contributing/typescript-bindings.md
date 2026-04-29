@@ -8,6 +8,18 @@ The `ts-rs` crate generates TypeScript type definitions from Rust types annotate
 
 **`ts-rs` is an optional dependency**, gated behind `features = ["ts-bindings"]` in `runtimed-client`. It pulls in ~159 transitive crates (dprint, SWC, deno_ast) that are only needed when regenerating bindings, not during normal development.
 
+Protocol wire types are handled separately. `packages/runtimed/src/request-types.ts`
+contains the TypeScript `NotebookRequest` / `NotebookResponse` unions used by
+JS clients, and `packages/runtimed/src/protocol-contract.ts` exports checked
+discriminant lists for request, response, and session-control shapes. The
+`notebook-protocol` test suite reads those TypeScript files and compares them
+to the Rust wire discriminants and frame bytes, so protocol drift is caught by:
+
+```bash
+cargo test -p notebook-protocol
+pnpm exec vp test run packages/runtimed/tests/protocol-contract.test.ts
+```
+
 ## Source Files
 
 | Rust File | Generated Types |

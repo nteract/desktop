@@ -18,6 +18,17 @@ export {
   type FrameTypeValue,
 } from "./transport";
 
+// Protocol contract
+export {
+  INITIAL_LOAD_PHASES,
+  NOTEBOOK_DOC_PHASES,
+  NOTEBOOK_REQUEST_TYPES,
+  NOTEBOOK_RESPONSE_RESULTS,
+  RUNTIME_STATE_PHASES,
+  SESSION_CONTROL_TYPES,
+  type SessionControlMessage,
+} from "./protocol-contract";
+
 // Handle
 export type {
   SyncableHandle,
@@ -119,8 +130,10 @@ export type {
   CommRequestMessage,
   CompletionItem,
   DependencyGuard,
+  DenoLaunchedConfig,
   GuardedNotebookProvenance,
   HistoryEntry,
+  LaunchedEnvConfig,
   NotebookRequest,
   NotebookResponse,
   SaveErrorKind,
