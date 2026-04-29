@@ -13,6 +13,7 @@ pub mod typosquat;
 extern crate runtimed_client as runtimed;
 pub use runtimed::runtime::Runtime;
 
+use notebook_protocol::connection::LaunchSpec;
 use notebook_protocol::protocol::{NotebookRequest, NotebookResponse, SaveErrorKind};
 use notebook_sync::RelayHandle;
 
@@ -1870,7 +1871,7 @@ async fn save_notebook_as(
                     match handle
                         .send_request(NotebookRequest::LaunchKernel {
                             kernel_type: "auto".to_string(),
-                            env_source: "auto".to_string(),
+                            env_source: LaunchSpec::Auto,
                             notebook_path: Some(saved_path_str),
                         })
                         .await
