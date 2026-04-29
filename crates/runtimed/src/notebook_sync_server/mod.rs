@@ -55,6 +55,7 @@ mod metadata;
 mod nbformat_convert;
 mod path_index;
 mod peer;
+mod peer_presence;
 mod peer_writer;
 mod persist;
 mod project_context;
@@ -69,6 +70,8 @@ pub(crate) use metadata::*;
 pub(crate) use nbformat_convert::*;
 pub use path_index::{PathIndex, PathIndexError};
 pub(crate) use peer::*;
+#[cfg(test)]
+pub(crate) use peer_presence::sanitize_peer_label;
 pub(crate) use persist::*;
 pub(crate) use project_context::refresh_project_context_on_save_as;
 pub(crate) use room::*;
