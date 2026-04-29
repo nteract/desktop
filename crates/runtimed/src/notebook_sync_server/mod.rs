@@ -57,6 +57,7 @@ mod path_index;
 mod peer;
 mod peer_pool_sync;
 mod peer_presence;
+mod peer_runtime_sync;
 mod peer_writer;
 mod persist;
 mod project_context;
@@ -73,6 +74,7 @@ pub use path_index::{PathIndex, PathIndexError};
 pub(crate) use peer::*;
 #[cfg(test)]
 pub(crate) use peer_presence::sanitize_peer_label;
+pub(crate) use peer_runtime_sync::notebook_execution_context_id;
 pub(crate) use persist::*;
 pub(crate) use project_context::refresh_project_context_on_save_as;
 pub(crate) use room::*;
