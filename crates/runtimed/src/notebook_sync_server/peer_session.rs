@@ -2,11 +2,11 @@ use std::sync::Arc;
 
 use automerge::sync;
 use tokio::io::AsyncWrite;
-use tracing::warn;
+use tracing::{info, warn};
 
 use crate::connection::{self, NotebookFrameType};
 
-use super::{catch_automerge_panic, NotebookRoom};
+use super::{catch_automerge_panic, NotebookRoom, STATE_SYNC_COMPACT_THRESHOLD};
 
 pub(crate) async fn send_session_status<W>(
     writer: &mut W,
@@ -91,4 +91,53 @@ where
     }
 
     Ok(sync_state)
+}
+
+/// Generate and send the initial RuntimeStateDoc sync frame.
+///
+/// The caller owns `state_peer_state` because the steady-state peer loop uses
+/// the same sync state to compute later RuntimeStateDoc deltas.
+pub(crate) async fn send_initial_runtime_state_sync<W>(
+    writer: &mut W,
+    room: &Arc<NotebookRoom>,
+    state_peer_state: &mut sync::State,
+) -> anyhow::Result<()>
+where
+    W: AsyncWrite + Unpin,
+{
+    // Encode inside the RuntimeStateDoc lock, then send outside it to avoid
+    // holding state while awaiting socket I/O.
+    let initial_state_encoded = room
+        .state
+        .with_doc(|state_doc| {
+            // Safety net: compact before initial sync if the doc grew too large.
+            // 80 MiB leaves headroom under the 100 MiB frame limit.
+            const COMPACTION_THRESHOLD: usize = 80 * 1024 * 1024;
+            if state_doc.compact_if_oversized(COMPACTION_THRESHOLD) {
+                info!("[notebook-sync] Compacted oversized RuntimeStateDoc before initial sync");
+            }
+            match catch_automerge_panic("initial-state-sync", || {
+                state_doc.generate_sync_message_bounded_encoded(
+                    state_peer_state,
+                    STATE_SYNC_COMPACT_THRESHOLD,
+                )
+            }) {
+                Ok(encoded) => Ok(encoded),
+                Err(e) => {
+                    warn!("{}", e);
+                    state_doc.rebuild_from_save();
+                    *state_peer_state = sync::State::new();
+                    Ok(state_doc
+                        .generate_sync_message(state_peer_state)
+                        .map(|msg| msg.encode()))
+                }
+            }
+        })
+        .ok()
+        .flatten();
+    if let Some(encoded) = initial_state_encoded {
+        connection::send_typed_frame(writer, NotebookFrameType::RuntimeStateSync, &encoded).await?;
+    }
+
+    Ok(())
 }
