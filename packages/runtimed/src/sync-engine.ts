@@ -1002,19 +1002,21 @@ export class SyncEngine {
     // stuck on "not_started" (#runtime-state-race).
     const stateMsg = handle.flush_runtime_state_sync();
     if (stateMsg) {
-      this.opts.transport.sendFrame(FrameType.RUNTIME_STATE_SYNC, stateMsg).catch((e: unknown) => {
-        handle.cancel_last_runtime_state_flush();
-        this.opts.logger.warn("[sync-engine] runtime state sync to relay failed:", e);
-      });
+      void this.awaitFrameDelivery(
+        this.opts.transport.sendFrame(FrameType.RUNTIME_STATE_SYNC, stateMsg),
+        "runtime state sync to relay",
+        () => handle.cancel_last_runtime_state_flush(),
+      );
     }
 
     // Also flush PoolDoc sync so the daemon sends pool state.
     const poolMsg = handle.flush_pool_state_sync();
     if (poolMsg) {
-      this.opts.transport.sendFrame(FrameType.POOL_STATE_SYNC, poolMsg).catch((e: unknown) => {
-        handle.cancel_last_pool_state_flush();
-        this.opts.logger.warn("[sync-engine] pool state sync to relay failed:", e);
-      });
+      void this.awaitFrameDelivery(
+        this.opts.transport.sendFrame(FrameType.POOL_STATE_SYNC, poolMsg),
+        "pool state sync to relay",
+        () => handle.cancel_last_pool_state_flush(),
+      );
     }
   }
 
@@ -1098,16 +1100,27 @@ export class SyncEngine {
     let timeoutId: ReturnType<typeof setTimeout> | null = null;
     try {
       const result = await Promise.race([
-        delivery.then(() => "ok" as const),
-        new Promise<"timeout">((resolve) => {
-          timeoutId = setTimeout(() => resolve("timeout"), this.flushDeliveryTimeoutMs);
+        delivery.then(
+          () => ({ status: "ok" as const }),
+          (error: unknown) => ({ status: "error" as const, error }),
+        ),
+        new Promise<{ status: "timeout" }>((resolve) => {
+          timeoutId = setTimeout(() => resolve({ status: "timeout" }), this.flushDeliveryTimeoutMs);
         }),
       ]);
 
-      if (result === "timeout") {
+      if (result.status === "timeout") {
         onFailure();
         this.opts.logger.warn(
           `[sync-engine] ${label} timed out after ${this.flushDeliveryTimeoutMs}ms; rolled back sync state`,
+        );
+        return false;
+      }
+      if (result.status === "error") {
+        onFailure();
+        this.opts.logger.warn(
+          `[sync-engine] ${label} failed; rolled back sync state:`,
+          result.error,
         );
         return false;
       }
