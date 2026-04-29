@@ -1,7 +1,6 @@
 import { useMemo, useSyncExternalStore } from "react";
-import type { NotebookTransport } from "runtimed";
+import { sendAutomergeSyncFrame, type NotebookTransport } from "runtimed";
 import type { NotebookHandle } from "../wasm/runtimed-wasm/runtimed_wasm.js";
-import { frame_types } from "./frame-types";
 import { logger } from "./logger";
 
 // ---------------------------------------------------------------------------
@@ -318,7 +317,7 @@ async function syncToRelay(): Promise<void> {
   const msg = _handle.flush_local_changes();
   if (msg) {
     try {
-      await _transport.sendFrame(frame_types.AUTOMERGE_SYNC, msg);
+      await sendAutomergeSyncFrame(_transport, msg);
     } catch {
       _handle.cancel_last_flush();
     }

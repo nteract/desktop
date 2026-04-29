@@ -37,6 +37,20 @@ export const FrameType = {
 
 export type FrameTypeValue = (typeof FrameType)[keyof typeof FrameType];
 
+export function sendAutomergeSyncFrame(
+  transport: Pick<NotebookTransport, "sendFrame">,
+  payload: Uint8Array,
+): Promise<void> {
+  return transport.sendFrame(FrameType.AUTOMERGE_SYNC, payload);
+}
+
+export function sendPresenceFrame(
+  transport: Pick<NotebookTransport, "sendFrame">,
+  payload: Uint8Array,
+): Promise<void> {
+  return transport.sendFrame(FrameType.PRESENCE, payload);
+}
+
 // ── Transport interface ──────────────────────────────────────────────
 
 /** Callback for receiving inbound frames from the daemon. */

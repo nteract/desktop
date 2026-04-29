@@ -1,6 +1,6 @@
 import { useNotebookHost } from "@nteract/notebook-host";
 import { useCallback } from "react";
-import { frame_types } from "../lib/frame-types";
+import { sendPresenceFrame } from "runtimed";
 import { logger } from "../lib/logger";
 import {
   encode_cursor_presence,
@@ -40,9 +40,9 @@ export function usePresence(
         logger.warn("[presence] encode cursor failed:", e);
         return;
       }
-      transport
-        .sendFrame(frame_types.PRESENCE, payload)
-        .catch((e: unknown) => logger.warn("[presence] send cursor failed:", e));
+      sendPresenceFrame(transport, payload).catch((e: unknown) =>
+        logger.warn("[presence] send cursor failed:", e),
+      );
     },
     [peerId, peerLabel, actorLabel, transport],
   );
@@ -66,9 +66,9 @@ export function usePresence(
         logger.warn("[presence] encode selection failed:", e);
         return;
       }
-      transport
-        .sendFrame(frame_types.PRESENCE, payload)
-        .catch((e: unknown) => logger.warn("[presence] send selection failed:", e));
+      sendPresenceFrame(transport, payload).catch((e: unknown) =>
+        logger.warn("[presence] send selection failed:", e),
+      );
     },
     [peerId, peerLabel, actorLabel, transport],
   );
@@ -83,9 +83,9 @@ export function usePresence(
         logger.warn("[presence] encode focus failed:", e);
         return;
       }
-      transport
-        .sendFrame(frame_types.PRESENCE, payload)
-        .catch((e: unknown) => logger.warn("[presence] send focus failed:", e));
+      sendPresenceFrame(transport, payload).catch((e: unknown) =>
+        logger.warn("[presence] send focus failed:", e),
+      );
     },
     [peerId, peerLabel, actorLabel, transport],
   );
