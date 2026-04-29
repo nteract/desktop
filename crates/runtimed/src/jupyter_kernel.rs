@@ -671,7 +671,6 @@ impl KernelConnection for JupyterKernel {
             ConnectionInfo,
         );
 
-        #[cfg(unix)]
         let use_ipc = kernel_type != "deno";
 
         #[cfg(unix)]

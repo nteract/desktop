@@ -243,21 +243,41 @@ pub fn default_notebook_docs_dir() -> PathBuf {
 /// Base directory for kernel IPC (Unix domain) socket files.
 ///
 /// Uses `/tmp/` to stay within the macOS 104-byte `sun_path` limit —
-/// paths under `~/.cache/` can exceed it with long usernames. In dev
-/// mode each worktree gets its own subdirectory so concurrent worktree
-/// daemons never collide.
+/// paths under `~/.cache/` can exceed it with long usernames. The UID
+/// is embedded in the directory name so that different OS users on the
+/// same machine get private, non-overlapping socket roots (the daemon
+/// singleton lock is per-user, but `/tmp/` is world-writable). The
+/// directory is created with mode `0o700` by `ensure_ipc_socket_dir`.
 ///
-/// Layout: `/tmp/{cache_namespace}/` (e.g. `/tmp/runt-nightly/`).
+/// Layout: `/tmp/{cache_namespace}-{uid}/` (e.g. `/tmp/runt-nightly-1000/`).
+/// In dev mode a worktree hash is appended so concurrent worktree
+/// daemons never collide.
 /// Kernel socket files are `kernel-{id}-ipc-{1..5}` inside this dir.
 #[cfg(unix)]
 pub fn ipc_socket_dir() -> PathBuf {
-    let base = PathBuf::from("/tmp").join(cache_namespace());
+    // SAFETY: getuid() is always safe — it's a read-only syscall with no
+    // preconditions.
+    let uid = unsafe { libc::getuid() };
+    let base = PathBuf::from("/tmp").join(format!("{}-{}", cache_namespace(), uid));
     if is_dev_mode() {
         if let Some(worktree) = get_workspace_path() {
             return base.join(format!("wt-{}", worktree_hash(&worktree)));
         }
     }
     base
+}
+
+/// Create the IPC socket directory with owner-only permissions (`0o700`).
+///
+/// Call this before writing kernel socket files. The restricted mode
+/// prevents other local users from creating or removing sockets in
+/// our directory.
+#[cfg(unix)]
+pub fn ensure_ipc_socket_dir() -> std::io::Result<()> {
+    let dir = ipc_socket_dir();
+    std::fs::create_dir_all(&dir)?;
+    std::fs::set_permissions(&dir, std::os::unix::fs::PermissionsExt::from_mode(0o700))?;
+    Ok(())
 }
 
 #[cfg(test)]
