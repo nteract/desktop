@@ -1,3 +1,7 @@
+use super::peer_notebook_sync::{
+    finish_notebook_doc_frame, forward_notebook_doc_broadcast, handle_notebook_doc_frame,
+    queue_doc_sync, NotebookDocFrameOutcome,
+};
 use super::peer_pool_sync::{
     forward_pool_state_broadcast, handle_pool_state_frame, send_initial_pool_sync,
 };
@@ -11,7 +15,6 @@ use super::peer_runtime_sync::{
 use super::peer_session::{send_initial_notebook_doc_sync, send_session_status, InitialSyncState};
 use super::peer_writer::{
     enqueue_notebook_request, queue_session_status, spawn_peer_request_worker, spawn_peer_writer,
-    PeerWriter,
 };
 use super::*;
 use runtime_doc::RuntimeLifecycle;
@@ -1291,75 +1294,17 @@ where
                 };
                 match frame.frame_type {
                             NotebookFrameType::AutomergeSync => {
-                                // Handle Automerge sync message
-                                let message = sync::Message::decode(&frame.payload)
-                                    .map_err(|e| anyhow::anyhow!("decode error: {}", e))?;
-
-                                // Complete all document mutations inside the lock, encode the
-                                // reply, then release the lock before performing async I/O.
-                                let (persist_bytes, reply_encoded, metadata_changed) = {
-                                    let mut doc = room.doc.write().await;
-
-                                    let heads_before = doc.get_heads();
-
-                                    // Guard receive_sync_message against automerge panics
-                                    let recv_result = catch_automerge_panic("doc-receive-sync", || {
-                                        doc.receive_sync_message(&mut peer_state, message)
-                                    });
-                                    match recv_result {
-                                        Ok(Ok(())) => {}
-                                        Ok(Err(e)) => {
-                                            warn!("[notebook-sync] receive_sync_message error: {}", e);
-                                            continue;
-                                        }
-                                        Err(e) => {
-                                            warn!("{}", e);
-                                            doc.rebuild_from_save();
-                                            peer_state = sync::State::new();
-                                            continue;
-                                        }
-                                    }
-
-                                    let heads_after = doc.get_heads();
-                                    let metadata_changed = diff_metadata_touched(
-                                        doc.doc_mut(),
-                                        &heads_before,
-                                        &heads_after,
-                                    );
-
-                                    let bytes = doc.save();
-
-                                    // Notify other peers in this room
-                                    let _ = room.broadcasts.changed_tx.send(());
-
-                                    let encoded = match catch_automerge_panic("doc-sync-reply", || {
-                                        doc.generate_sync_message(&mut peer_state)
-                                            .map(|reply| reply.encode())
-                                    }) {
-                                        Ok(encoded) => encoded,
-                                        Err(e) => {
-                                            warn!("{}", e);
-                                            peer_state = sync::State::new();
-                                            if doc.rebuild_from_save() {
-                                                doc.generate_sync_message(&mut peer_state)
-                                                    .map(|reply| reply.encode())
-                                            } else {
-                                                None
-                                            }
-                                        }
-                                    };
-
-                                    (bytes, encoded, metadata_changed)
+                                let notebook_doc_effects = match handle_notebook_doc_frame(
+                                    room,
+                                    &mut peer_state,
+                                    &peer_writer,
+                                    &frame.payload,
+                                )
+                                .await?
+                                {
+                                    NotebookDocFrameOutcome::Applied(effects) => effects,
+                                    NotebookDocFrameOutcome::Skipped => continue,
                                 };
-
-                                // Queue the reply outside the lock so other peers can
-                                // acquire it while the writer task drains the socket.
-                                if let Some(encoded) = reply_encoded {
-                                    peer_writer.send_frame(
-                                        NotebookFrameType::AutomergeSync,
-                                        encoded,
-                                    )?;
-                                }
 
                                 if notebook_doc_phase
                                     != notebook_protocol::protocol::NotebookDocPhaseWire::Interactive
@@ -1376,21 +1321,9 @@ where
                                     }
                                 }
 
-                                // Send to debounced persistence task
-                                if let Some(ref d) = room.persistence.debouncer {
-                                    let _ = d.persist_tx.send(Some(persist_bytes));
-                                }
-
-                                // Check if metadata changed and kernel is running - broadcast sync state
-                                if metadata_changed {
-                                    check_and_broadcast_sync_state(room).await;
-                                }
-
-                                // Re-verify trust from doc metadata (detects trust approval)
-                                check_and_update_trust_state(room).await;
-
-                                // Rebuild markdown asset refs after source sync.
-                                process_markdown_assets(room).await;
+                                // Keep session status queued before these awaits so the sync reply
+                                // and readiness transition remain adjacent on the peer writer.
+                                finish_notebook_doc_frame(room, notebook_doc_effects).await;
                             }
 
                             NotebookFrameType::Request => {
@@ -1465,30 +1398,7 @@ where
 
             // Another peer changed the document — push update to this client
             _ = changed_rx.recv() => {
-                // Encode inside the lock, send outside it to avoid holding the
-                // write lock across async I/O.
-                let encoded = {
-                    let mut doc = room.doc.write().await;
-                    match catch_automerge_panic("doc-broadcast", || {
-                        doc.generate_sync_message(&mut peer_state)
-                            .map(|msg| msg.encode())
-                    }) {
-                        Ok(encoded) => encoded,
-                        Err(e) => {
-                            warn!("{}", e);
-                            peer_state = sync::State::new();
-                            if doc.rebuild_from_save() {
-                                doc.generate_sync_message(&mut peer_state)
-                                    .map(|msg| msg.encode())
-                            } else {
-                                None
-                            }
-                        }
-                    }
-                };
-                if let Some(encoded) = encoded {
-                    peer_writer.send_frame(NotebookFrameType::AutomergeSync, encoded)?;
-                }
+                forward_notebook_doc_broadcast(room, &mut peer_state, &peer_writer).await?;
 
                 if matches!(
                     initial_load_phase,
@@ -1582,36 +1492,4 @@ where
             }
         }
     }
-}
-
-/// Queue a doc sync message to a peer if there are pending changes.
-///
-/// Generates an Automerge sync message from the room's doc and hands it to the
-/// ordered peer writer. Used before forwarding ExecutionDone (to ensure outputs
-/// are synced) and after broadcast lag recovery.
-async fn queue_doc_sync(
-    room: &NotebookRoom,
-    peer_state: &mut automerge::sync::State,
-    writer: &PeerWriter,
-) -> anyhow::Result<()> {
-    let encoded = {
-        let mut doc = room.doc.write().await;
-        match catch_automerge_panic("broadcast-doc-changes", || {
-            doc.generate_sync_message(peer_state)
-                .map(|msg| msg.encode())
-        }) {
-            Ok(encoded) => encoded,
-            Err(e) => {
-                warn!("{}", e);
-                doc.rebuild_from_save();
-                *peer_state = sync::State::new();
-                doc.generate_sync_message(peer_state)
-                    .map(|msg| msg.encode())
-            }
-        }
-    };
-    if let Some(encoded) = encoded {
-        writer.send_frame(NotebookFrameType::AutomergeSync, encoded)?;
-    }
-    Ok(())
 }

@@ -45,7 +45,6 @@ use crate::output_prep::{DenoLaunchedConfig, LaunchedEnvConfig};
 use crate::paths::notebook_doc_filename;
 use crate::protocol::{EnvSyncDiff, NotebookBroadcast, NotebookResponse};
 use crate::task_supervisor::{spawn_best_effort, spawn_supervised};
-use notebook_doc::diff::diff_metadata_touched;
 use notebook_doc::presence::{self, PresenceState};
 use runtime_doc::RuntimeStateDoc;
 
@@ -55,6 +54,7 @@ mod metadata;
 mod nbformat_convert;
 mod path_index;
 mod peer;
+mod peer_notebook_sync;
 mod peer_pool_sync;
 mod peer_presence;
 mod peer_runtime_sync;
