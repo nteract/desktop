@@ -914,7 +914,7 @@ jobs:
             target: x86_64-apple-darwin
           - runner: blacksmith-4vcpu-ubuntu-2404
             target: x86_64-unknown-linux-gnu
-          - runner: windows-latest
+          - runner: nteract-windows-xlarge
             target: x86_64-pc-windows-msvc
     steps:
       - uses: actions/checkout@v6
