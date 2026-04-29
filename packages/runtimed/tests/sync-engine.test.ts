@@ -170,11 +170,15 @@ describe("SyncEngine", () => {
   });
 
   /** Helper: create engine with the VirtualTimeScheduler injected */
-  function createEngine(opts?: { getHandle?: () => SyncableHandle | null }): SyncEngine {
+  function createEngine(opts?: {
+    getHandle?: () => SyncableHandle | null;
+    flushDeliveryTimeoutMs?: number;
+  }): SyncEngine {
     return new SyncEngine({
       getHandle: opts?.getHandle ?? (() => handle),
       transport,
       scheduler,
+      flushDeliveryTimeoutMs: opts?.flushDeliveryTimeoutMs,
     });
   }
 
@@ -835,10 +839,61 @@ describe("SyncEngine", () => {
       engine.start();
       engine.flush();
 
-      await Promise.resolve();
+      await new Promise((resolve) => setTimeout(resolve, 0));
       expect(handle.cancel_last_flush).toHaveBeenCalled();
       engine.stop();
     });
+
+    it.each([
+      {
+        name: "notebook doc",
+        frameType: FrameType.AUTOMERGE_SYNC,
+        flush: () =>
+          (handle.flush_local_changes as ReturnType<typeof vi.fn>).mockReturnValue(
+            new Uint8Array([1, 2, 3]),
+          ),
+        cancel: () => handle.cancel_last_flush,
+      },
+      {
+        name: "runtime state",
+        frameType: FrameType.RUNTIME_STATE_SYNC,
+        flush: () =>
+          (handle.flush_runtime_state_sync as ReturnType<typeof vi.fn>).mockReturnValue(
+            new Uint8Array([4, 5, 6]),
+          ),
+        cancel: () => handle.cancel_last_runtime_state_flush,
+      },
+      {
+        name: "pool state",
+        frameType: FrameType.POOL_STATE_SYNC,
+        flush: () =>
+          (handle.flush_pool_state_sync as ReturnType<typeof vi.fn>).mockReturnValue(
+            new Uint8Array([7, 8, 9]),
+          ),
+        cancel: () => handle.cancel_last_pool_state_flush,
+      },
+    ])(
+      "flushAndWait() times out stuck $name frame delivery",
+      async ({ frameType, flush, cancel }) => {
+        flush();
+        vi.spyOn(transport, "sendFrame").mockImplementation((actualFrameType) => {
+          if (actualFrameType === frameType) return new Promise(() => {});
+          return Promise.resolve();
+        });
+
+        const engine = createEngine({ flushDeliveryTimeoutMs: 5 });
+        engine.start();
+
+        const result = await Promise.race([
+          engine.flushAndWait(),
+          new Promise<"hung">((resolve) => setTimeout(() => resolve("hung"), 100)),
+        ]);
+
+        expect(result).toBe(false);
+        expect(cancel()).toHaveBeenCalled();
+        engine.stop();
+      },
+    );
 
     it("scheduleFlush() debounces at 20ms", () => {
       const syncMsg = new Uint8Array([1]);

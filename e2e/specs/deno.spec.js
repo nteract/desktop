@@ -15,6 +15,7 @@ import {
   waitForCellOutput,
   waitForKernelReady,
   waitForNotebookSynced,
+  waitForSessionReady,
 } from "../helpers.js";
 
 describe("Deno Kernel", () => {
@@ -31,6 +32,7 @@ describe("Deno Kernel", () => {
 
   it("should execute TypeScript and show output", async () => {
     await waitForNotebookSynced();
+    await waitForSessionReady();
 
     const codeCell = await $('[data-cell-type="code"]');
     await codeCell.waitForExist({ timeout: 10000 });

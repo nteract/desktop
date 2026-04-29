@@ -842,7 +842,10 @@ function AppContent() {
     // Reset any previous error state before attempting
     envProgress.reset();
 
-    await flushSync();
+    if (!(await flushSync())) {
+      logger.warn("[App] handleSyncDeps: source sync failed, skipping");
+      return false;
+    }
     const blockedAction = captureSyncTrustAction();
 
     // Check trust first - required before any package installation (hot-sync or restart)
@@ -884,7 +887,10 @@ function AppContent() {
     runAllInFlightRef.current = true;
     try {
       // Flush pending source sync so daemon has latest code
-      await flushSync();
+      if (!(await flushSync())) {
+        logger.warn("[App] restartAndRunAll: source sync failed, skipping");
+        return;
+      }
 
       // Shutdown existing kernel
       await shutdownKernel();
@@ -1126,7 +1132,10 @@ function AppContent() {
         // Flush pending source sync so daemon has latest code before executing.
         // flushAndWait() guarantees any in-flight debounced flush has landed,
         // then sends remaining changes and awaits delivery.
-        await flushSync();
+        if (!(await flushSync())) {
+          logger.warn("[App] handleExecuteCell: source sync failed, skipping");
+          return;
+        }
 
         // No explicit ClearOutputs IPC needed — the daemon clears outputs
         // on execute_input and the SyncEngine injects a clear changeset
@@ -1217,7 +1226,10 @@ function AppContent() {
     runAllInFlightRef.current = true;
     try {
       // Flush pending source sync so daemon has latest code
-      await flushSync();
+      if (!(await flushSync())) {
+        logger.warn("[App] handleRunAllCells: source sync failed, skipping");
+        return;
+      }
 
       // Start kernel via daemon if not running or awaiting trust
       if (
@@ -1793,6 +1805,7 @@ function AppContent() {
             isLoading={isLoading}
             loadError={loadError}
             runtime={runtime}
+            sessionRuntimeState={sessionStatus?.runtime_state ?? null}
             onFocusCell={setFocusedCellId}
             onExecuteCell={handleExecuteCell}
             onInterruptKernel={interruptKernel}

@@ -64,6 +64,9 @@ const COALESCE_MS = 32;
 /** Debounce interval for outbound source sync (ms). */
 const FLUSH_DEBOUNCE_MS = 20;
 
+/** Maximum wait for a host transport to accept an outbound sync frame. */
+const DEFAULT_FLUSH_DELIVERY_TIMEOUT_MS = 5000;
+
 // ── Logger interface ─────────────────────────────────────────────────
 
 export interface SyncEngineLogger {
@@ -219,6 +222,15 @@ export interface SyncEngineOptions {
 
   /** Optional RxJS scheduler for time-based operators (for testing). */
   scheduler?: SchedulerLike;
+
+  /**
+   * Maximum time to wait for outbound sync frame delivery.
+   *
+   * Cell execution calls flushAndWait() before sending ExecuteCell. Keeping
+   * this bounded prevents a stuck host transport from permanently consuming
+   * an execute click without ever sending the request.
+   */
+  flushDeliveryTimeoutMs?: number;
 }
 
 // ── SyncEngine ───────────────────────────────────────────────────────
@@ -226,6 +238,7 @@ export interface SyncEngineOptions {
 export class SyncEngine {
   private readonly opts: Required<Pick<SyncEngineOptions, "getHandle" | "transport" | "logger">> &
     Pick<SyncEngineOptions, "scheduler">;
+  private readonly flushDeliveryTimeoutMs: number;
   private subscription: Subscription | null = null;
   private latestSessionStatus: SessionStatus | null = null;
   private prevExecutions: Record<string, ExecutionState> = {};
@@ -247,7 +260,7 @@ export class SyncEngine {
   private readonly flushRequest$ = new Subject<void>();
 
   /** Promise for the most recent fire-and-forget flush (debounced path). */
-  private inflightFlush: Promise<void> | null = null;
+  private inflightFlush: Promise<boolean> | null = null;
 
   // ── Public observables ───────────────────────────────────────────
 
@@ -345,6 +358,7 @@ export class SyncEngine {
       logger: opts.logger ?? nullLogger,
       scheduler: opts.scheduler,
     };
+    this.flushDeliveryTimeoutMs = opts.flushDeliveryTimeoutMs ?? DEFAULT_FLUSH_DELIVERY_TIMEOUT_MS;
 
     // Expose as readonly Observable (hide Subject internals)
     this.cellChanges$ = this._cellChanges$.asObservable();
@@ -973,12 +987,11 @@ export class SyncEngine {
     const msg = handle.flush_local_changes();
     if (msg) {
       this.opts.logger.debug(`[sync-engine] flushing sync message (${msg.byteLength}B)`);
-      const done = this.opts.transport
-        .sendFrame(FrameType.AUTOMERGE_SYNC, msg)
-        .catch((e: unknown) => {
-          handle.cancel_last_flush();
-          this.opts.logger.warn("[sync-engine] sync to relay failed:", e);
-        });
+      const done = this.awaitFrameDelivery(
+        this.opts.transport.sendFrame(FrameType.AUTOMERGE_SYNC, msg),
+        "sync to relay",
+        () => handle.cancel_last_flush(),
+      );
       // Track the in-flight flush so flushAndWait() can await it.
       this.inflightFlush = done;
     }
@@ -1013,55 +1026,99 @@ export class SyncEngine {
    *    changes from `flush_local_changes()`.
    * 2. Flushes any remaining local changes and awaits delivery.
    *
-   * Use before execute/save to guarantee the daemon has the latest source.
+   * Returns false if source delivery failed or timed out. Use before
+   * execute/save to guarantee the daemon has the latest source.
    */
-  async flushAndWait(): Promise<void> {
+  async flushAndWait(): Promise<boolean> {
     // Drain all in-flight debounced flushes. A new debounced flush can
     // start while we're awaiting the current one (the 20ms timer fires
     // independently), so loop until stable.
     while (this.inflightFlush) {
       const current = this.inflightFlush;
-      await current;
+      const delivered = await current;
       // Only clear if no newer flush replaced it while we awaited.
       if (this.inflightFlush === current) {
         this.inflightFlush = null;
       }
+      if (!delivered) {
+        return false;
+      }
     }
 
     const handle = this.opts.getHandle();
-    if (!handle) return;
+    if (!handle) return true;
 
     // Flush any remaining notebook doc changes (may be none if debounce got them).
     const msg = handle.flush_local_changes();
     if (msg) {
       this.opts.logger.debug(`[sync-engine] flushAndWait: sending ${msg.byteLength}B sync message`);
-      try {
-        await this.opts.transport.sendFrame(FrameType.AUTOMERGE_SYNC, msg);
-      } catch (e) {
-        handle.cancel_last_flush();
-        this.opts.logger.warn("[sync-engine] flushAndWait: sync to relay failed:", e);
+      const delivered = await this.awaitFrameDelivery(
+        this.opts.transport.sendFrame(FrameType.AUTOMERGE_SYNC, msg),
+        "flushAndWait sync to relay",
+        () => handle.cancel_last_flush(),
+      );
+      if (!delivered) {
+        return false;
       }
     }
 
     // Also flush RuntimeStateDoc sync.
     const stateMsg = handle.flush_runtime_state_sync();
     if (stateMsg) {
-      try {
-        await this.opts.transport.sendFrame(FrameType.RUNTIME_STATE_SYNC, stateMsg);
-      } catch (e) {
-        handle.cancel_last_runtime_state_flush();
-        this.opts.logger.warn("[sync-engine] flushAndWait: runtime state sync failed:", e);
+      const delivered = await this.awaitFrameDelivery(
+        this.opts.transport.sendFrame(FrameType.RUNTIME_STATE_SYNC, stateMsg),
+        "flushAndWait runtime state sync",
+        () => handle.cancel_last_runtime_state_flush(),
+      );
+      if (!delivered) {
+        return false;
       }
     }
 
     // Also flush PoolDoc sync.
     const poolMsg = handle.flush_pool_state_sync();
     if (poolMsg) {
-      try {
-        await this.opts.transport.sendFrame(FrameType.POOL_STATE_SYNC, poolMsg);
-      } catch (e) {
-        handle.cancel_last_pool_state_flush();
-        this.opts.logger.warn("[sync-engine] flushAndWait: pool state sync failed:", e);
+      const delivered = await this.awaitFrameDelivery(
+        this.opts.transport.sendFrame(FrameType.POOL_STATE_SYNC, poolMsg),
+        "flushAndWait pool state sync",
+        () => handle.cancel_last_pool_state_flush(),
+      );
+      if (!delivered) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  private async awaitFrameDelivery(
+    delivery: Promise<void>,
+    label: string,
+    onFailure: () => void,
+  ): Promise<boolean> {
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
+    try {
+      const result = await Promise.race([
+        delivery.then(() => "ok" as const),
+        new Promise<"timeout">((resolve) => {
+          timeoutId = setTimeout(() => resolve("timeout"), this.flushDeliveryTimeoutMs);
+        }),
+      ]);
+
+      if (result === "timeout") {
+        onFailure();
+        this.opts.logger.warn(
+          `[sync-engine] ${label} timed out after ${this.flushDeliveryTimeoutMs}ms; rolled back sync state`,
+        );
+        return false;
+      }
+      return true;
+    } catch (e) {
+      onFailure();
+      this.opts.logger.warn(`[sync-engine] ${label} failed; rolled back sync state:`, e);
+      return false;
+    } finally {
+      if (timeoutId !== null) {
+        clearTimeout(timeoutId);
       }
     }
   }

@@ -57,6 +57,42 @@ export async function waitForNotebookSynced(timeout = 15000) {
 }
 
 /**
+ * Wait for the daemon session-control runtime gate to match the app's
+ * execution readiness check.
+ *
+ * Kernel toolbar state comes from RuntimeStateDoc; ExecuteCell is still
+ * fail-closed until SessionControl reports runtime_state=ready.
+ */
+export async function waitForSessionReady(timeout = 30000) {
+  await waitForNotebookSynced(timeout);
+  try {
+    await browser.waitUntil(
+      async () => {
+        return await browser.execute(() => {
+          const el = document.querySelector("[data-session-ready]");
+          return el?.getAttribute("data-session-ready") === "true";
+        });
+      },
+      {
+        timeout,
+        interval: 300,
+        timeoutMsg: `Session runtime not ready within ${timeout / 1000}s`,
+      },
+    );
+  } catch (error) {
+    const state = await browser.execute(() => {
+      const el = document.querySelector("[data-session-runtime-state]");
+      return el?.getAttribute("data-session-runtime-state") ?? "missing";
+    });
+    throw new Error(
+      error instanceof Error
+        ? `${error.message} (state=${state})`
+        : `Session runtime not ready within ${timeout / 1000}s (state=${state})`,
+    );
+  }
+}
+
+/**
  * Wait for a specific number of code cells to be loaded.
  * Use this in fixture tests where the notebook has pre-populated cells.
  */

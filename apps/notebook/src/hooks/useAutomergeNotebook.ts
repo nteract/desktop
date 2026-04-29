@@ -611,9 +611,9 @@ export function useAutomergeNotebook() {
     const engine = engineRef.current;
     if (!engine) {
       logger.debug("[flushSync] skipped: no engine");
-      return;
+      return true;
     }
-    await engine.flushAndWait();
+    return await engine.flushAndWait();
   }, []);
 
   // ── File operations ────────────────────────────────────────────────
