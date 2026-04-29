@@ -899,6 +899,33 @@ jobs:
               bash scripts/ci/fedora-appimage-smoke.sh "$1"
             ' bash "$APPIMAGE"
 
+  smoke-ubuntu-deb:
+    name: Smoke Ubuntu DEB
+    runs-on: blacksmith-4vcpu-ubuntu-2204
+    needs: [compute-version, build-notebook-linux-x64]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Download Linux DEB
+        uses: actions/download-artifact@v4
+        with:
+          name: nteract-linux-x64
+          path: artifacts
+
+      - name: Smoke DEB in Ubuntu
+        run: |
+          CHANNEL="${RUNT_BUILD_CHANNEL:-stable}"
+          DEB="artifacts/nteract-${CHANNEL}-linux-x64.deb"
+          docker run --rm \
+            -v "${PWD}:/workspace" \
+            -w /workspace \
+            ubuntu:24.04 \
+            bash -lc '
+              set -euo pipefail
+              bash scripts/ci/ubuntu-deb-smoke.sh local "$1" "$2" "$3"
+            ' bash "$DEB" "$CHANNEL" "${{ needs.compute-version.outputs.version }}"
+
   build-nteract-package:
     name: Build nteract Package
     runs-on: blacksmith-4vcpu-ubuntu-2404
@@ -1221,6 +1248,7 @@ jobs:
         build-notebook-windows-x64,
         build-notebook-linux-x64,
         smoke-fedora-appimage,
+        smoke-ubuntu-deb,
         build-python-wheels,
         build-nteract-package,
         build-dx-package,
@@ -1623,7 +1651,7 @@ jobs:
   publish-apt:
     name: Publish to APT Repository
     runs-on: blacksmith-4vcpu-ubuntu-2204
-    needs: [build-notebook-linux-x64]
+    needs: [build-notebook-linux-x64, smoke-ubuntu-deb]
     if: github.event_name != 'pull_request'
     concurrency:
       group: apt-publish-${{ inputs.version_suffix }}
@@ -1670,3 +1698,24 @@ jobs:
           fi
 
           publish-apt.sh --channel "$CHANNEL" "$DEB_FILE"
+
+  smoke-apt-repository:
+    name: Smoke APT Repository
+    runs-on: blacksmith-4vcpu-ubuntu-2204
+    needs: [compute-version, publish-apt]
+    if: github.event_name != 'pull_request'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Smoke live APT install in Ubuntu
+        run: |
+          CHANNEL="${RUNT_BUILD_CHANNEL:-stable}"
+          docker run --rm \
+            -v "${PWD}:/workspace" \
+            -w /workspace \
+            ubuntu:24.04 \
+            bash -lc '
+              set -euo pipefail
+              bash scripts/ci/ubuntu-deb-smoke.sh apt "$1" "$2"
+            ' bash "$CHANNEL" "${{ needs.compute-version.outputs.version }}"
