@@ -6093,7 +6093,7 @@ fn test_project_file_deps_match_trust_info_no_project_file() {
 /// Regression for #2150: a .ipynb on disk with deps that match a
 /// project file's but no signature (a notebook saved by the pre-fix
 /// build) must land on Trusted at room creation, so the auto-launch
-/// gate in peer.rs doesn't block.
+/// gate in peer_connection.rs doesn't block.
 #[tokio::test]
 #[serial]
 async fn test_new_fresh_promotes_untrusted_when_project_file_deps_match() {
