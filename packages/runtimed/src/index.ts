@@ -11,7 +11,12 @@ export type { SyncEngineOptions, SyncEngineLogger } from "./sync-engine";
 
 // Transport
 export type { NotebookTransport, FrameListener } from "./transport";
-export { FrameType, type FrameTypeValue } from "./transport";
+export {
+  FrameType,
+  sendAutomergeSyncFrame,
+  sendPresenceFrame,
+  type FrameTypeValue,
+} from "./transport";
 
 // Handle
 export type {
