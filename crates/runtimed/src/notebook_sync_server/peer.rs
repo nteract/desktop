@@ -11,7 +11,10 @@ use super::peer_presence::{
     prune_stale_presence, send_initial_presence_snapshot,
 };
 use super::peer_runtime_sync::{forward_runtime_state_broadcast, handle_runtime_state_frame};
-use super::peer_session::{send_initial_notebook_doc_sync, send_session_status, InitialSyncState};
+use super::peer_session::{
+    send_initial_notebook_doc_sync, send_initial_runtime_state_sync, send_session_status,
+    InitialSyncState,
+};
 use super::peer_writer::{
     enqueue_notebook_request, queue_session_status, spawn_peer_request_worker, spawn_peer_writer,
 };
@@ -332,41 +335,7 @@ where
         daemon.config.execution_store_dir.clone(),
     );
 
-    // Initial RuntimeStateDoc sync — encode inside lock, send outside.
-    // Uses bounded generation to compact atomically if the message would exceed
-    // the 100 MiB frame limit.
-    let initial_state_encoded = room
-        .state
-        .with_doc(|state_doc| {
-            // Safety net: compact before initial sync if the doc grew too large.
-            // 80 MiB leaves headroom under the 100 MiB frame limit.
-            const COMPACTION_THRESHOLD: usize = 80 * 1024 * 1024;
-            if state_doc.compact_if_oversized(COMPACTION_THRESHOLD) {
-                info!("[notebook-sync] Compacted oversized RuntimeStateDoc before initial sync");
-            }
-            match catch_automerge_panic("initial-state-sync", || {
-                state_doc.generate_sync_message_bounded_encoded(
-                    &mut state_peer_state,
-                    STATE_SYNC_COMPACT_THRESHOLD,
-                )
-            }) {
-                Ok(encoded) => Ok(encoded),
-                Err(e) => {
-                    warn!("{}", e);
-                    state_doc.rebuild_from_save();
-                    state_peer_state = sync::State::new();
-                    Ok(state_doc
-                        .generate_sync_message(&mut state_peer_state)
-                        .map(|msg| msg.encode()))
-                }
-            }
-        })
-        .ok()
-        .flatten();
-    if let Some(encoded) = initial_state_encoded {
-        connection::send_typed_frame(&mut writer, NotebookFrameType::RuntimeStateSync, &encoded)
-            .await?;
-    }
+    send_initial_runtime_state_sync(&mut writer, room, &mut state_peer_state).await?;
     runtime_state_phase = notebook_protocol::protocol::RuntimeStatePhaseWire::Syncing;
     if client_protocol_version >= 3 {
         send_session_status(
