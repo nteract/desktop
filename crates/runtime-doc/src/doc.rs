@@ -1918,16 +1918,14 @@ impl RuntimeStateDoc {
         phase: &serde_json::Value,
     ) -> Result<(), RuntimeStateError> {
         let env = self.scaffold_map("env")?;
-        let mut progress = match phase {
-            serde_json::Value::Object(map) => serde_json::Value::Object(map.clone()),
-            _ => serde_json::json!({ "phase": "unknown" }),
+        let serde_json::Value::Object(mut map) = phase.clone() else {
+            return Err(RuntimeStateError::InvalidProgressShape);
         };
-        if let serde_json::Value::Object(map) = &mut progress {
-            map.insert(
-                "env_type".to_string(),
-                serde_json::Value::String(env_type.to_string()),
-            );
-        }
+        map.insert(
+            "env_type".to_string(),
+            serde_json::Value::String(env_type.to_string()),
+        );
+        let progress = serde_json::Value::Object(map);
 
         if automunge::read_json_value(&self.doc, &env, "progress") == Some(progress.clone()) {
             return Ok(());
@@ -3100,6 +3098,16 @@ mod tests {
         assert!(doc.read_state().env.progress.is_some());
 
         doc.clear_env_progress().unwrap();
+        assert_eq!(doc.read_state().env.progress, None);
+    }
+
+    #[test]
+    fn test_set_env_progress_rejects_non_object_phase() {
+        let mut doc = RuntimeStateDoc::new();
+        let err = doc
+            .set_env_progress("uv", &serde_json::json!("offline_hit"))
+            .unwrap_err();
+        assert!(matches!(err, RuntimeStateError::InvalidProgressShape));
         assert_eq!(doc.read_state().env.progress, None);
     }
 

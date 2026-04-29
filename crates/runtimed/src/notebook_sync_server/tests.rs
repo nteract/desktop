@@ -4425,6 +4425,9 @@ async fn test_reset_starting_state_cleanup() {
         let mut guard = room.pending_runtime_agent_connect_tx.lock().await;
         *guard = Some(tx);
     }
+    room.state
+        .with_doc(|sd| sd.set_env_progress("uv", &serde_json::json!({ "phase": "offline_hit" })))
+        .unwrap();
 
     // Reset with matching agent — should clean up everything
     reset_starting_state(&room, Some("agent-A")).await;
@@ -4445,6 +4448,11 @@ async fn test_reset_starting_state_cleanup() {
     assert!(
         room.current_runtime_agent_id.read().await.is_none(),
         "provenance should be cleared"
+    );
+    assert_eq!(
+        room.state.read(|sd| sd.read_state().env.progress).unwrap(),
+        None,
+        "env progress should be cleared"
     );
 }
 

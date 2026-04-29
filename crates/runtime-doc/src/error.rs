@@ -3,6 +3,7 @@ use automerge::AutomergeError;
 #[derive(Debug)]
 pub enum RuntimeStateError {
     MissingScaffold(&'static str),
+    InvalidProgressShape,
     Automerge(AutomergeError),
     LockPoisoned,
 }
@@ -12,6 +13,9 @@ impl std::fmt::Display for RuntimeStateError {
         match self {
             Self::MissingScaffold(name) => {
                 write!(f, "scaffold map '{name}' missing — doc may be corrupt")
+            }
+            Self::InvalidProgressShape => {
+                write!(f, "env progress phase must serialize as an object")
             }
             Self::Automerge(e) => write!(f, "automerge: {e}"),
             Self::LockPoisoned => write!(f, "RuntimeStateDoc mutex poisoned"),

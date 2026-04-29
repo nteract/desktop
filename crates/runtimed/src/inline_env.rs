@@ -5,7 +5,8 @@
 //! RuntimeStateDoc and forwards compatibility broadcast events.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use kernel_env::progress::{EnvProgressPhase, ProgressHandler};
@@ -13,6 +14,14 @@ use tokio::sync::broadcast;
 
 use crate::protocol::NotebookBroadcast;
 use runtime_doc::RuntimeStateHandle;
+
+const CRDT_PROGRESS_MIN_INTERVAL: Duration = Duration::from_millis(250);
+
+#[derive(Default)]
+struct CrdtProgressWriteState {
+    last_phase: Option<&'static str>,
+    last_write: Option<Instant>,
+}
 
 // Re-export the PreparedEnv-equivalent types for callers that still
 // use the old `inline_env::PreparedEnv` pattern.
@@ -31,18 +40,52 @@ pub struct PreparedEnv {
 pub struct BroadcastProgressHandler {
     tx: broadcast::Sender<NotebookBroadcast>,
     state: Option<RuntimeStateHandle>,
+    crdt_write_state: Mutex<CrdtProgressWriteState>,
 }
 
 impl BroadcastProgressHandler {
     pub fn new(tx: broadcast::Sender<NotebookBroadcast>) -> Self {
-        Self { tx, state: None }
+        Self {
+            tx,
+            state: None,
+            crdt_write_state: Mutex::default(),
+        }
     }
 
     pub fn with_state(tx: broadcast::Sender<NotebookBroadcast>, state: RuntimeStateHandle) -> Self {
         Self {
             tx,
             state: Some(state),
+            crdt_write_state: Mutex::default(),
         }
+    }
+
+    fn should_write_crdt_progress(&self, phase: &EnvProgressPhase) -> bool {
+        let phase_name = env_progress_phase_name(phase);
+        let high_frequency = matches!(
+            phase,
+            EnvProgressPhase::DownloadProgress { .. } | EnvProgressPhase::LinkProgress { .. }
+        );
+
+        let Ok(mut state) = self.crdt_write_state.lock() else {
+            tracing::warn!("[runtime-state] failed to lock env progress throttle state");
+            return true;
+        };
+
+        let now = Instant::now();
+        let phase_changed = state.last_phase != Some(phase_name);
+        let interval_elapsed = state
+            .last_write
+            .map(|last| now.duration_since(last) >= CRDT_PROGRESS_MIN_INTERVAL)
+            .unwrap_or(true);
+
+        if !high_frequency || phase_changed || interval_elapsed {
+            state.last_phase = Some(phase_name);
+            state.last_write = Some(now);
+            return true;
+        }
+
+        false
     }
 }
 
@@ -52,14 +95,16 @@ impl ProgressHandler for BroadcastProgressHandler {
         kernel_env::LogHandler.on_progress(env_type, phase.clone());
 
         if let Some(state) = &self.state {
-            match serde_json::to_value(&phase) {
-                Ok(value) => {
-                    if let Err(e) = state.with_doc(|sd| sd.set_env_progress(env_type, &value)) {
-                        tracing::warn!("[runtime-state] failed to write env progress: {}", e);
+            if self.should_write_crdt_progress(&phase) {
+                match serde_json::to_value(&phase) {
+                    Ok(value) => {
+                        if let Err(e) = state.with_doc(|sd| sd.set_env_progress(env_type, &value)) {
+                            tracing::warn!("[runtime-state] failed to write env progress: {}", e);
+                        }
                     }
-                }
-                Err(e) => {
-                    tracing::warn!("[runtime-state] failed to serialize env progress: {}", e);
+                    Err(e) => {
+                        tracing::warn!("[runtime-state] failed to serialize env progress: {}", e);
+                    }
                 }
             }
         }
@@ -69,6 +114,27 @@ impl ProgressHandler for BroadcastProgressHandler {
             env_type: env_type.to_string(),
             phase,
         });
+    }
+}
+
+fn env_progress_phase_name(phase: &EnvProgressPhase) -> &'static str {
+    match phase {
+        EnvProgressPhase::Starting { .. } => "starting",
+        EnvProgressPhase::CacheHit { .. } => "cache_hit",
+        EnvProgressPhase::LockFileHit => "lock_file_hit",
+        EnvProgressPhase::OfflineHit => "offline_hit",
+        EnvProgressPhase::FetchingRepodata { .. } => "fetching_repodata",
+        EnvProgressPhase::RepodataComplete { .. } => "repodata_complete",
+        EnvProgressPhase::Solving { .. } => "solving",
+        EnvProgressPhase::SolveComplete { .. } => "solve_complete",
+        EnvProgressPhase::Installing { .. } => "installing",
+        EnvProgressPhase::DownloadProgress { .. } => "download_progress",
+        EnvProgressPhase::LinkProgress { .. } => "link_progress",
+        EnvProgressPhase::InstallComplete { .. } => "install_complete",
+        EnvProgressPhase::CreatingVenv => "creating_venv",
+        EnvProgressPhase::InstallingPackages { .. } => "installing_packages",
+        EnvProgressPhase::Ready { .. } => "ready",
+        EnvProgressPhase::Error { .. } => "error",
     }
 }
 
@@ -641,6 +707,135 @@ fn conda_meta_package_names(env_path: &std::path::Path) -> HashSet<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use runtime_doc::RuntimeStateDoc;
+
+    fn runtime_state_handle() -> RuntimeStateHandle {
+        let (changed_tx, _) = tokio::sync::broadcast::channel(8);
+        RuntimeStateHandle::new(RuntimeStateDoc::new(), changed_tx)
+    }
+
+    #[test]
+    fn broadcast_progress_handler_writes_state_from_serialized_phase() {
+        let (tx, mut rx) = tokio::sync::broadcast::channel(8);
+        let state = runtime_state_handle();
+        let handler = BroadcastProgressHandler::with_state(tx, state.clone());
+
+        handler.on_progress("uv", EnvProgressPhase::OfflineHit);
+
+        let progress = state
+            .read(|sd| sd.read_state().env.progress)
+            .expect("read runtime state");
+        assert_eq!(
+            progress,
+            Some(serde_json::json!({
+                "env_type": "uv",
+                "phase": "offline_hit",
+            }))
+        );
+
+        let broadcast = rx.try_recv().expect("progress broadcast");
+        assert!(matches!(
+            broadcast,
+            NotebookBroadcast::EnvProgress {
+                env_type,
+                phase: EnvProgressPhase::OfflineHit,
+            } if env_type == "uv"
+        ));
+    }
+
+    #[test]
+    fn broadcast_progress_handler_throttles_high_frequency_crdt_writes_only() {
+        let (tx, mut rx) = tokio::sync::broadcast::channel(8);
+        let state = runtime_state_handle();
+        let handler = BroadcastProgressHandler::with_state(tx, state.clone());
+
+        handler.on_progress(
+            "conda",
+            EnvProgressPhase::DownloadProgress {
+                completed: 1,
+                total: 10,
+                current_package: "numpy".to_string(),
+                bytes_downloaded: 100,
+                bytes_total: Some(1000),
+                bytes_per_second: 50.0,
+            },
+        );
+        handler.on_progress(
+            "conda",
+            EnvProgressPhase::DownloadProgress {
+                completed: 2,
+                total: 10,
+                current_package: "numpy".to_string(),
+                bytes_downloaded: 200,
+                bytes_total: Some(1000),
+                bytes_per_second: 60.0,
+            },
+        );
+
+        let progress = state
+            .read(|sd| sd.read_state().env.progress)
+            .expect("read runtime state");
+        assert_eq!(
+            progress,
+            Some(serde_json::json!({
+                "env_type": "conda",
+                "phase": "download_progress",
+                "completed": 1,
+                "total": 10,
+                "current_package": "numpy",
+                "bytes_downloaded": 100,
+                "bytes_total": 1000,
+                "bytes_per_second": 50.0,
+            }))
+        );
+
+        assert!(matches!(
+            rx.try_recv().expect("first broadcast"),
+            NotebookBroadcast::EnvProgress { .. }
+        ));
+        assert!(matches!(
+            rx.try_recv().expect("second broadcast"),
+            NotebookBroadcast::EnvProgress { .. }
+        ));
+
+        handler.on_progress(
+            "conda",
+            EnvProgressPhase::Ready {
+                env_path: "/tmp/env".to_string(),
+                python_path: "/tmp/env/bin/python".to_string(),
+            },
+        );
+
+        let progress = state
+            .read(|sd| sd.read_state().env.progress)
+            .expect("read runtime state");
+        assert_eq!(
+            progress,
+            Some(serde_json::json!({
+                "env_type": "conda",
+                "phase": "ready",
+                "env_path": "/tmp/env",
+                "python_path": "/tmp/env/bin/python",
+            }))
+        );
+    }
+
+    #[test]
+    fn broadcast_progress_handler_without_state_still_broadcasts() {
+        let (tx, mut rx) = tokio::sync::broadcast::channel(8);
+        let handler = BroadcastProgressHandler::new(tx);
+
+        handler.on_progress("pixi", EnvProgressPhase::OfflineHit);
+
+        let broadcast = rx.try_recv().expect("progress broadcast");
+        assert!(matches!(
+            broadcast,
+            NotebookBroadcast::EnvProgress {
+                env_type,
+                phase: EnvProgressPhase::OfflineHit,
+            } if env_type == "pixi"
+        ));
+    }
 
     // Helper: take the bare name returned by split_bare_and_constraint.
     fn bare_of(dep: &str) -> Option<String> {
