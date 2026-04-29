@@ -39,6 +39,7 @@ interface NotebookViewProps {
   isLoading?: boolean;
   loadError?: string | null;
   runtime?: Runtime | null;
+  sessionRuntimeState?: string | null;
   onFocusCell: (cellId: string) => void;
   onExecuteCell: (cellId: string) => void;
   onInterruptKernel: () => void;
@@ -345,6 +346,7 @@ function NotebookViewContent({
   isLoading = false,
   loadError = null,
   runtime = "python",
+  sessionRuntimeState = null,
   onFocusCell,
   onExecuteCell,
   onInterruptKernel,
@@ -757,6 +759,8 @@ function NotebookViewContent({
       className="flex-1 overflow-y-auto overflow-x-clip overscroll-x-contain py-4 pl-8 pr-2"
       style={{ contain: "paint", overflowAnchor: "none" }}
       data-notebook-synced={!isLoading && cellIds.length > 0}
+      data-session-runtime-state={sessionRuntimeState ?? "unknown"}
+      data-session-ready={sessionRuntimeState === "ready"}
       data-cell-count={cellIds.length}
     >
       {loadError ? (

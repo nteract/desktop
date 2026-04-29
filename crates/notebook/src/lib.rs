@@ -2642,9 +2642,11 @@ async fn send_frame_bytes(
         return Err("Empty frame".to_string());
     }
 
-    let notebook_sync = notebook_sync_for_window(window, registry.inner())?;
-    let guard = notebook_sync.lock().await;
-    let handle = guard.as_ref().ok_or("Not connected to daemon")?;
+    let handle = {
+        let notebook_sync = notebook_sync_for_window(window, registry.inner())?;
+        let guard = notebook_sync.lock().await;
+        guard.as_ref().cloned().ok_or("Not connected to daemon")?
+    };
 
     use notebook_doc::frame_types;
 

@@ -32,11 +32,12 @@ const IPYNB_FILTER = { name: "Jupyter Notebook", extensions: ["ipynb"] };
  */
 export async function saveNotebook(
   host: NotebookHost,
-  flushSync: () => Promise<void>,
+  flushSync: () => Promise<boolean | void>,
   hasPath: boolean,
 ): Promise<boolean> {
   try {
-    await flushSync();
+    const flushed = await flushSync();
+    if (flushed === false) return false;
 
     if (hasPath) {
       const client = new NotebookClient({ transport: host.transport });
