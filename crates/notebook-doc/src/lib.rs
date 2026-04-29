@@ -2943,8 +2943,8 @@ mod tests {
             10,
         );
 
-        // execution_count is now in RuntimeStateDoc, not NotebookDoc
-        // The sync test for execution_count is covered by RuntimeStateDoc tests
+        // Live execution_count is covered by RuntimeStateDoc tests. NotebookDoc
+        // keeps only the persisted nbformat-history fallback.
     }
 
     /// Tests three-peer sync: daemon + two clients.
