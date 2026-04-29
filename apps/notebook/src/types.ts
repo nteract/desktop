@@ -104,68 +104,10 @@ export interface JupyterMessage {
   cell_id?: string;
 }
 
-// Environment preparation progress events
-export type EnvProgressPhase =
-  | { phase: "starting"; env_hash: string }
-  | { phase: "cache_hit"; env_path: string }
-  | { phase: "lock_file_hit" }
-  | { phase: "fetching_repodata"; channels: string[] }
-  | { phase: "repodata_complete"; record_count: number; elapsed_ms: number }
-  | { phase: "solving"; spec_count: number }
-  | { phase: "solve_complete"; package_count: number; elapsed_ms: number }
-  | { phase: "installing"; total: number }
-  | {
-      phase: "download_progress";
-      completed: number;
-      total: number;
-      current_package: string;
-      bytes_downloaded: number;
-      bytes_total: number | null;
-      bytes_per_second: number;
-    }
-  | {
-      phase: "link_progress";
-      completed: number;
-      total: number;
-      current_package: string;
-    }
-  | { phase: "install_complete"; elapsed_ms: number }
-  | { phase: "creating_venv" }
-  | { phase: "installing_packages"; packages: string[] }
-  | { phase: "ready"; env_path: string; python_path: string }
-  | { phase: "error"; message: string };
-
-export type EnvProgressEvent = EnvProgressPhase & {
-  env_type: "conda" | "uv";
-};
-
 // pixi.toml / environment.yml detection types now live in their
 // respective hooks (`hooks/usePixiDetection.ts`,
 // `hooks/useCondaDependencies.ts`). Both are derived from
 // `RuntimeState.project_context` rather than Tauri commands.
-
-// =============================================================================
-// Daemon Broadcast Types (Phase 8: Daemon-owned kernel execution)
-// =============================================================================
-
-/** Broadcast events from daemon.
- *
- * Ephemeral, room-wide events that don't fit the request/response or
- * CRDT-sync model. Kernel state, execution lifecycle, queue, outputs,
- * the notebook's `path`, and the `last_saved` timestamp all live in
- * `RuntimeStateDoc` (frame `0x05`) — read them via `useRuntimeState()`.
- */
-export type DaemonBroadcast =
-  | {
-      event: "comm";
-      msg_type: string; // "comm_open" | "comm_msg" | "comm_close"
-      content: Record<string, unknown>;
-      buffers: number[][]; // Binary buffers as byte arrays
-    }
-  | ({
-      event: "env_progress";
-      env_type: "conda" | "uv";
-    } & EnvProgressPhase);
 
 // Pool state types removed — pool state now syncs via PoolDoc (Automerge).
 // See apps/notebook/src/lib/pool-state.ts for the new types.

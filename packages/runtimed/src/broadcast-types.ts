@@ -20,14 +20,46 @@ export interface CommBroadcast {
   buffers: number[][];
 }
 
-export interface EnvProgressBroadcast {
+export type EnvProgressEnvType = "conda" | "uv" | "pixi" | (string & {});
+
+export type EnvProgressPhase =
+  | { phase: "starting"; env_hash: string }
+  | { phase: "cache_hit"; env_path: string }
+  | { phase: "lock_file_hit" }
+  | { phase: "offline_hit" }
+  | { phase: "fetching_repodata"; channels: string[] }
+  | { phase: "repodata_complete"; record_count: number; elapsed_ms: number }
+  | { phase: "solving"; spec_count: number }
+  | { phase: "solve_complete"; package_count: number; elapsed_ms: number }
+  | { phase: "installing"; total: number }
+  | {
+      phase: "download_progress";
+      completed: number;
+      total: number;
+      current_package: string;
+      bytes_downloaded: number;
+      bytes_total: number | null;
+      bytes_per_second: number;
+    }
+  | {
+      phase: "link_progress";
+      completed: number;
+      total: number;
+      current_package: string;
+    }
+  | { phase: "install_complete"; elapsed_ms: number }
+  | { phase: "creating_venv" }
+  | { phase: "installing_packages"; packages: string[] }
+  | { phase: "ready"; env_path: string; python_path: string }
+  | { phase: "error"; message: string };
+
+export type EnvProgressEvent = EnvProgressPhase & {
+  env_type: EnvProgressEnvType;
+};
+
+export type EnvProgressBroadcast = EnvProgressEvent & {
   event: "env_progress";
-  env_type: string;
-  // Phase-specific fields are flattened on the wire; carry them through
-  // as a permissive index so the daemon can extend the shape without
-  // breaking subscribers.
-  [key: string]: unknown;
-}
+};
 
 /** Union of all known broadcast types with an `event` field. */
 export type KnownBroadcast = CommBroadcast | EnvProgressBroadcast;

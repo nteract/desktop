@@ -83,6 +83,9 @@ export { type PoolState, type RuntimePoolState, DEFAULT_POOL_STATE } from "./poo
 export {
   type CommBroadcast,
   type EnvProgressBroadcast,
+  type EnvProgressEnvType,
+  type EnvProgressEvent,
+  type EnvProgressPhase,
   isCommBroadcast,
   isEnvProgressBroadcast,
   type KnownBroadcast,

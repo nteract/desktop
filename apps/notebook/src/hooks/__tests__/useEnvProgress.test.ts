@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vite-plus/test";
-import type { EnvProgressEvent } from "../../types";
+import type { EnvProgressEvent } from "runtimed";
 import { getStatusText } from "../useEnvProgress";
 
 describe("getStatusText", () => {
@@ -11,5 +11,14 @@ describe("getStatusText", () => {
     };
 
     expect(getStatusText(event)).toBe("Environment error");
+  });
+
+  it("labels offline cache hits from the shared env progress phase union", () => {
+    const event: EnvProgressEvent = {
+      env_type: "pixi",
+      phase: "offline_hit",
+    };
+
+    expect(getStatusText(event)).toBe("Using cached packages");
   });
 });

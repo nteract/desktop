@@ -10,7 +10,12 @@
  */
 
 import { describe, expect, it } from "vite-plus/test";
-import { isCommBroadcast, isEnvProgressBroadcast } from "../src/broadcast-types";
+import {
+  type EnvProgressBroadcast,
+  type EnvProgressEvent,
+  isCommBroadcast,
+  isEnvProgressBroadcast,
+} from "../src/broadcast-types";
 
 // All guards share `hasBroadcastEvent` — exercise the invalid-payload
 // matrix once so every guard inherits the coverage.
@@ -68,5 +73,18 @@ describe("broadcast type guards", () => {
       const hits = GUARDS.filter(([, guard]) => guard(payload));
       expect(hits.length).toBe(1);
     }
+  });
+
+  it("models flattened env progress broadcasts from Rust", () => {
+    const event: EnvProgressEvent = {
+      env_type: "pixi",
+      phase: "offline_hit",
+    };
+    const broadcast: EnvProgressBroadcast = {
+      event: "env_progress",
+      ...event,
+    };
+
+    expect(isEnvProgressBroadcast(broadcast)).toBe(true);
   });
 });

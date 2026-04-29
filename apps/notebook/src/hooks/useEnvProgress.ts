@@ -1,6 +1,11 @@
 import { useCallback, useEffect, useState } from "react";
+import {
+  type EnvProgressEnvType,
+  type EnvProgressEvent,
+  type EnvProgressPhase,
+  isEnvProgressBroadcast,
+} from "runtimed";
 import { subscribeBroadcast } from "../lib/notebook-frame-bus";
-import type { DaemonBroadcast, EnvProgressEvent, EnvProgressPhase } from "../types";
 
 export interface EnvProgressState {
   /** Whether environment preparation is currently active */
@@ -8,7 +13,7 @@ export interface EnvProgressState {
   /** Current phase name */
   phase: string | null;
   /** Environment type (conda or uv) */
-  envType: "conda" | "uv" | null;
+  envType: EnvProgressEnvType | null;
   /** Error message if phase is "error" */
   error: string | null;
   /** Human-readable status text */
@@ -43,6 +48,8 @@ export function getStatusText(event: EnvProgressEvent): string {
       return "Using cached environment";
     case "lock_file_hit":
       return "Rebuilding from lock file";
+    case "offline_hit":
+      return "Using cached packages";
     case "fetching_repodata": {
       const e = event as Extract<EnvProgressPhase, { phase: "fetching_repodata" }>;
       return `Fetching package index (${e.channels.join(", ")})`;
@@ -180,11 +187,8 @@ export function useEnvProgress() {
     // Subscribe to broadcast events with env_progress via the frame bus
     // (from daemon-managed environment preparation during kernel launch)
     const unsubscribeBroadcast = subscribeBroadcast((payload) => {
-      const broadcast = payload as DaemonBroadcast;
-      if (broadcast.event === "env_progress") {
-        // The daemon broadcast has the same shape as EnvProgressEvent
-        // (env_type + flattened phase fields) plus the "event" tag
-        processEvent(broadcast as unknown as EnvProgressEvent);
+      if (isEnvProgressBroadcast(payload)) {
+        processEvent(payload);
       }
     });
 
