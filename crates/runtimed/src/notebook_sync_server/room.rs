@@ -399,7 +399,7 @@ impl NotebookRoom {
                 // #2150 reconciliation: if the .ipynb on disk has deps that
                 // exactly match a project file's deps (pyproject/env.yml),
                 // treat it as Trusted in memory so the auto-launch gate in
-                // peer.rs does not block. The signature lands in the doc
+                // peer_connection.rs does not block. The signature lands in the doc
                 // via streaming_load's reconciliation pass, which fires
                 // before the first sync flush.
                 if matches!(initial.status, runt_trust::TrustStatus::Untrusted)
