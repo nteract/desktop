@@ -1580,6 +1580,8 @@ impl<'a> Cursor<'a> {
 }
 
 fn verify_plugin_against_wasm(plugin_js: &Path, wasm_path: &Path) -> Result<usize, String> {
+    const WASM_URL_SENTINEL: &str = "__wasm_loaded_via_setWasmUrl__";
+
     if !plugin_js.exists() {
         return Err(format!("plugin bundle missing: {}", plugin_js.display()));
     }
@@ -1600,6 +1602,13 @@ fn verify_plugin_against_wasm(plugin_js: &Path, wasm_path: &Path) -> Result<usiz
 
     let bundle = fs::read_to_string(plugin_js)
         .map_err(|e| format!("failed to read {}: {e}", plugin_js.display()))?;
+
+    if !bundle.contains(WASM_URL_SENTINEL) {
+        return Err(format!(
+            "plugin bundle does not contain {WASM_URL_SENTINEL:?}; \
+             exclude-wasm-inline may not have rewritten the wasm-bindgen URL"
+        ));
+    }
 
     let mut missing = Vec::new();
     for name in &imports {

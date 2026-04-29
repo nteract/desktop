@@ -48,6 +48,11 @@ function getSrcDir(): string {
 }
 
 const srcDir = getSrcDir();
+export const RENDERER_ROLLDOWN_CHECKS = {
+  // These programmatic artifact builds intentionally bundle CSS-heavy renderer
+  // plugins; Rolldown's relative plugin timing diagnostics are noisy here.
+  pluginTimings: false,
+} as const;
 
 export const RENDERER_PLUGINS: RendererPluginDef[] = [
   { name: "markdown", entry: path.resolve(srcDir, "isolated-renderer/markdown-renderer.tsx") },
@@ -120,14 +125,20 @@ export function extractBuildOutput(result: unknown, label: string): { code: stri
  * dummy string, preventing the inline.
  */
 function excludeWasmInline(): import("vite-plus").Plugin {
+  const wasmGlueId = /sift_wasm/;
   return {
     name: "exclude-wasm-inline",
-    transform(code, id) {
-      if (!id.includes("sift_wasm") || !code.includes("sift_wasm_bg.wasm")) return;
-      return code.replace(
-        /new URL\(['"]sift_wasm_bg\.wasm['"],\s*import\.meta\.url\)/g,
-        `"__wasm_loaded_via_setWasmUrl__"`,
-      );
+    transform: {
+      filter: {
+        id: wasmGlueId,
+      },
+      handler(code) {
+        if (!code.includes("sift_wasm_bg.wasm")) return;
+        return code.replace(
+          /new URL\(['"]sift_wasm_bg\.wasm['"],\s*import\.meta\.url\)/g,
+          `"__wasm_loaded_via_setWasmUrl__"`,
+        );
+      },
     },
   };
 }
@@ -164,6 +175,7 @@ export async function buildRendererPlugin(
         fileName: () => `${pluginName}.js`,
       },
       rolldownOptions: {
+        checks: RENDERER_ROLLDOWN_CHECKS,
         external: ["react", "react/jsx-runtime"],
         output: {
           assetFileNames: `${pluginName}.[ext]`,

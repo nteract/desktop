@@ -22,6 +22,7 @@ import tailwindcss from "@tailwindcss/vite";
 import { build } from "vite-plus";
 import {
   buildAllRendererPlugins,
+  RENDERER_ROLLDOWN_CHECKS,
   RENDERER_PLUGINS,
 } from "../src/build/renderer-plugin-builder.ts";
 import { wrapForMcpApp } from "../apps/mcp-app/src/lib/wrap-plugin.js";
@@ -68,6 +69,7 @@ async function buildCoreIIFE(): Promise<{ code: string; css: string }> {
         fileName: () => "isolated-renderer.js",
       },
       rolldownOptions: {
+        checks: RENDERER_ROLLDOWN_CHECKS,
         output: { assetFileNames: "isolated-renderer.[ext]" },
         external: [
           "@tauri-apps/api",

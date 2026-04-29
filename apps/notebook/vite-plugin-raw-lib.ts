@@ -20,7 +20,11 @@ const SOURCEMAP_JS = /\/\/[#@]\s*sourceMappingURL=\S+/g;
 /** Matches CSS-style sourceMappingURL comments: /*# sourceMappingURL=foo.css.map *​/ */
 const SOURCEMAP_CSS = /\/\*[#@]\s*sourceMappingURL=\S+\s*\*\//g;
 
-const PREFIX = "\0raw-lib:";
+const JS_SUFFIX = ".js";
+// Resolve to a path-shaped ID instead of a virtual/protocol-like ID. The
+// synthetic JS suffix keeps CSS files out of Vite's CSS pipeline, while the
+// query lets Vitest dynamic imports stay inside Vite's loader.
+const QUERY = "?raw-lib";
 
 export function rawLibPlugin(nodeModulesDir: string): Plugin {
   const mapping: Record<string, string> = {
@@ -36,16 +40,13 @@ export function rawLibPlugin(nodeModulesDir: string): Plugin {
     name: "raw-lib",
     resolveId(source) {
       const filePath = mapping[source];
-      // Always resolve with a .js suffix so Vite treats the virtual module
-      // as JavaScript — without this, .css paths get routed through Vite's
-      // CSS pipeline which chokes on the `export default` wrapper.
-      if (filePath) return `${PREFIX}${filePath}.js`;
+      if (filePath) return `${filePath}${JS_SUFFIX}${QUERY}`;
       return null;
     },
     async load(id) {
-      if (!id.startsWith(PREFIX)) return null;
-      // Strip the .js suffix we added in resolveId to recover the real path
-      const filePath = id.slice(PREFIX.length, -".js".length);
+      const suffix = `${JS_SUFFIX}${QUERY}`;
+      if (!id.endsWith(suffix)) return null;
+      const filePath = id.slice(0, -suffix.length);
       let content = await fs.readFile(filePath, "utf-8");
       content = content.replace(SOURCEMAP_JS, "").replace(SOURCEMAP_CSS, "");
       return `export default ${JSON.stringify(content)};`;
