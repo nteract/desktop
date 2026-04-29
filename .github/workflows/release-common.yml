@@ -106,6 +106,9 @@ jobs:
     name: Build Linux Executables
     runs-on: blacksmith-4vcpu-ubuntu-2204
     needs: [compute-version, build-wasm]
+    env:
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: "sccache"
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -125,6 +128,9 @@ jobs:
         with:
           shared-key: "linux-release"
 
+      - name: Install sccache
+        uses: mozilla-actions/sccache-action@v0.0.10
+
       - name: Download WASM artifacts
         uses: actions/download-artifact@v4
         with:
@@ -133,9 +139,6 @@ jobs:
       - uses: ./.github/actions/build-runtime-artifacts
         with:
           skip-wasm: true
-
-      - name: Build UI
-        run: pnpm build
 
       - name: Set version in Cargo.toml
         run: |
@@ -173,6 +176,9 @@ jobs:
     name: Build macOS Executables
     runs-on: macos-14-xlarge
     needs: [compute-version, build-wasm]
+    env:
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: "sccache"
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -189,6 +195,9 @@ jobs:
         with:
           shared-key: "macos-release"
 
+      - name: Install sccache
+        uses: mozilla-actions/sccache-action@v0.0.10
+
       - name: Download WASM artifacts
         uses: actions/download-artifact@v4
         with:
@@ -197,9 +206,6 @@ jobs:
       - uses: ./.github/actions/build-runtime-artifacts
         with:
           skip-wasm: true
-
-      - name: Build UI
-        run: pnpm build
 
       - name: Set version in Cargo.toml
         run: |
@@ -237,6 +243,9 @@ jobs:
     name: Build macOS ARM64 Notebook
     runs-on: macos-14-xlarge
     needs: [compute-version, build-wasm]
+    env:
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: "sccache"
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -249,6 +258,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: "macos-notebook-arm64"
+
+      - name: Install sccache
+        uses: mozilla-actions/sccache-action@v0.0.10
 
       - name: Download WASM artifacts
         uses: actions/download-artifact@v4
@@ -405,6 +417,9 @@ jobs:
     name: Build macOS x64 Notebook
     runs-on: macos-14-xlarge
     needs: [compute-version, build-wasm]
+    env:
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: "sccache"
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -420,6 +435,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: "macos-notebook-x64"
+
+      - name: Install sccache
+        uses: mozilla-actions/sccache-action@v0.0.10
 
       - name: Download WASM artifacts
         uses: actions/download-artifact@v4
@@ -576,6 +594,9 @@ jobs:
     name: Build Windows x64 Notebook
     runs-on: blacksmith-4vcpu-windows-2025
     needs: [compute-version, build-wasm]
+    env:
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: "sccache"
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -588,6 +609,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: "windows-notebook-x64"
+
+      - name: Install sccache
+        uses: mozilla-actions/sccache-action@v0.0.10
 
       - name: Download WASM artifacts
         uses: actions/download-artifact@v4
@@ -711,6 +735,9 @@ jobs:
     name: Build Linux x64 Notebook
     runs-on: blacksmith-4vcpu-ubuntu-2204
     needs: [compute-version, build-wasm]
+    env:
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: "sccache"
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -729,6 +756,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: "linux-notebook-x64"
+
+      - name: Install sccache
+        uses: mozilla-actions/sccache-action@v0.0.10
 
       - name: Download WASM artifacts
         uses: actions/download-artifact@v4
@@ -905,6 +935,9 @@ jobs:
     name: Build Python Wheels (${{ matrix.platform.target }})
     runs-on: ${{ matrix.platform.runner }}
     needs: [compute-version, build-wasm]
+    env:
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: "sccache"
     strategy:
       matrix:
         platform:
@@ -928,6 +961,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: "python-${{ matrix.platform.target }}"
+
+      - name: Install sccache
+        uses: mozilla-actions/sccache-action@v0.0.10
 
       - name: Download WASM artifacts
         uses: actions/download-artifact@v4
