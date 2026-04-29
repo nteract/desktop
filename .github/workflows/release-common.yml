@@ -131,6 +131,9 @@ jobs:
       - name: Install sccache
         uses: mozilla-actions/sccache-action@v0.0.10
 
+      - name: Warm up sccache
+        uses: ./.github/actions/sccache-warmup
+
       - name: Download WASM artifacts
         uses: actions/download-artifact@v4
         with:
@@ -198,6 +201,9 @@ jobs:
       - name: Install sccache
         uses: mozilla-actions/sccache-action@v0.0.10
 
+      - name: Warm up sccache
+        uses: ./.github/actions/sccache-warmup
+
       - name: Download WASM artifacts
         uses: actions/download-artifact@v4
         with:
@@ -261,6 +267,9 @@ jobs:
 
       - name: Install sccache
         uses: mozilla-actions/sccache-action@v0.0.10
+
+      - name: Warm up sccache
+        uses: ./.github/actions/sccache-warmup
 
       - name: Download WASM artifacts
         uses: actions/download-artifact@v4
@@ -439,6 +448,9 @@ jobs:
       - name: Install sccache
         uses: mozilla-actions/sccache-action@v0.0.10
 
+      - name: Warm up sccache
+        uses: ./.github/actions/sccache-warmup
+
       - name: Download WASM artifacts
         uses: actions/download-artifact@v4
         with:
@@ -613,6 +625,9 @@ jobs:
       - name: Install sccache
         uses: mozilla-actions/sccache-action@v0.0.10
 
+      - name: Warm up sccache
+        uses: ./.github/actions/sccache-warmup
+
       - name: Download WASM artifacts
         uses: actions/download-artifact@v4
         with:
@@ -759,6 +774,9 @@ jobs:
 
       - name: Install sccache
         uses: mozilla-actions/sccache-action@v0.0.10
+
+      - name: Warm up sccache
+        uses: ./.github/actions/sccache-warmup
 
       - name: Download WASM artifacts
         uses: actions/download-artifact@v4
@@ -992,6 +1010,9 @@ jobs:
 
       - name: Install sccache
         uses: mozilla-actions/sccache-action@v0.0.10
+
+      - name: Warm up sccache
+        uses: ./.github/actions/sccache-warmup
 
       - name: Download WASM artifacts
         uses: actions/download-artifact@v4
