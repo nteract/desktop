@@ -104,6 +104,12 @@ pub struct RoomPersistence {
     /// Shutdown signal for the file watcher task.
     /// Sent when the room is evicted to stop the watcher.
     pub watcher_shutdown_tx: Mutex<Option<oneshot::Sender<()>>>,
+    /// Shutdown/flush request channel for the `.ipynb` autosave task.
+    ///
+    /// The autosave task owns an `Arc<NotebookRoom>`, so broadcast-channel
+    /// closure is not a reliable room-lifecycle signal. Eviction uses this
+    /// channel to request one acknowledged final save before the task exits.
+    pub autosave_shutdown_tx: Mutex<Option<mpsc::UnboundedSender<AutosaveShutdownRequest>>>,
     /// Shutdown signal for the project-file watcher task.
     ///
     /// Separate from `watcher_shutdown_tx` (which watches the `.ipynb`)
@@ -150,6 +156,7 @@ impl RoomPersistence {
             last_save_sources: RwLock::new(HashMap::new()),
             last_self_write: AtomicU64::new(0),
             watcher_shutdown_tx: Mutex::new(None),
+            autosave_shutdown_tx: Mutex::new(None),
             project_file_watcher_shutdown_tx: Mutex::new(None),
             nbformat_attachments: RwLock::new(HashMap::new()),
             is_loading: AtomicBool::new(false),
@@ -169,6 +176,7 @@ impl RoomPersistence {
             last_save_sources: RwLock::new(HashMap::new()),
             last_self_write: AtomicU64::new(0),
             watcher_shutdown_tx: Mutex::new(None),
+            autosave_shutdown_tx: Mutex::new(None),
             project_file_watcher_shutdown_tx: Mutex::new(None),
             nbformat_attachments: RwLock::new(HashMap::new()),
             is_loading: AtomicBool::new(false),

@@ -8,8 +8,8 @@ use crate::task_supervisor::spawn_best_effort;
 
 use super::{
     flush_launched_deps_to_metadata, rename_env_dir_to_unified_hash, save_notebook_to_disk,
-    send_runtime_agent_request, should_preserve_env_on_eviction, CapturedEnvRuntime, NotebookRoom,
-    NotebookRooms,
+    send_runtime_agent_request, should_preserve_env_on_eviction, shutdown_autosave_debouncer,
+    CapturedEnvRuntime, NotebookRoom, NotebookRooms,
 };
 
 pub(super) async fn handle_peer_disconnect(
@@ -329,6 +329,21 @@ pub(super) async fn handle_peer_disconnect(
                             env_source
                         );
                     }
+                }
+
+                const AUTOSAVE_SHUTDOWN_TIMEOUT: std::time::Duration =
+                    std::time::Duration::from_secs(5);
+                let autosave_shutdown_ok = shutdown_autosave_debouncer(
+                    &room_for_eviction,
+                    &notebook_id_for_eviction,
+                    AUTOSAVE_SHUTDOWN_TIMEOUT,
+                )
+                .await;
+                if !autosave_shutdown_ok {
+                    warn!(
+                        "[notebook-sync] Autosave shutdown did not complete final .ipynb save for {}; continuing eviction after .automerge flush",
+                        notebook_id_for_eviction
+                    );
                 }
 
                 // Rename the env dir to match the post-flush unified
