@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
-use tracing::{error, info, warn};
+use tracing::{info, warn};
 
 use crate::daemon_base_dir;
 
@@ -328,9 +328,11 @@ pub(crate) fn unix_cleanup_decision(
             CleanupDecision::RetainForRetry
         }
         Err(e) => {
-            error!(
+            tracing::error!(
                 "[runtime-agent-manifest] Failed to kill runtime agent {} (pgid {}): {}",
-                runtime_agent_id, pgid, e
+                runtime_agent_id,
+                pgid,
+                e
             );
             CleanupDecision::RetainForRetry
         }
