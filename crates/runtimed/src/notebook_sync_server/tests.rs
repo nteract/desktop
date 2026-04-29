@@ -7274,3 +7274,44 @@ async fn test_autosave_shutdown_flushes_pending_doc_change() {
         "shutdown should consume the autosave lifecycle handle"
     );
 }
+
+#[tokio::test]
+async fn test_install_autosave_shutdown_tx_signals_replaced_handle() {
+    use std::time::Duration;
+
+    let tmp = tempfile::TempDir::new().unwrap();
+    let blob_store = test_blob_store(&tmp);
+    let docs_dir = tmp.path().join("docs");
+    std::fs::create_dir_all(&docs_dir).unwrap();
+
+    let room = NotebookRoom::new_fresh(Uuid::new_v4(), None, &docs_dir, blob_store, false);
+
+    let (old_tx, mut old_rx) = mpsc::unbounded_channel::<AutosaveShutdownRequest>();
+    install_autosave_shutdown_tx(&room, old_tx).await;
+
+    let (new_tx, mut new_rx) = mpsc::unbounded_channel::<AutosaveShutdownRequest>();
+    install_autosave_shutdown_tx(&room, new_tx).await;
+
+    let replaced_ack = tokio::time::timeout(Duration::from_millis(500), old_rx.recv()).await;
+    assert!(
+        matches!(replaced_ack, Ok(Some(_))),
+        "replacing the autosave shutdown handle should signal the old task: {replaced_ack:?}"
+    );
+    assert!(
+        new_rx.try_recv().is_err(),
+        "new shutdown handle should remain installed until explicit shutdown"
+    );
+
+    let ack_task = tokio::spawn(async move {
+        let ack_tx = new_rx
+            .recv()
+            .await
+            .expect("explicit shutdown should use the new handle");
+        let _ = ack_tx.send(true);
+    });
+    assert!(
+        shutdown_autosave_debouncer(&room, "fake.ipynb", Duration::from_millis(500)).await,
+        "explicit shutdown should receive ack from the new handle"
+    );
+    ack_task.await.unwrap();
+}

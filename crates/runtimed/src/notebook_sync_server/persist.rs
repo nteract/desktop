@@ -363,7 +363,7 @@ pub(crate) async fn finalize_untitled_promotion(room: &Arc<NotebookRoom>, canoni
     // Spawn autosave debouncer so subsequent edits persist to .ipynb.
     let shutdown_tx =
         spawn_autosave_debouncer(canonical.to_string_lossy().into_owned(), Arc::clone(room));
-    *room.persistence.autosave_shutdown_tx.lock().await = Some(shutdown_tx);
+    install_autosave_shutdown_tx(room, shutdown_tx).await;
 
     // Clear ephemeral markers.
     room.identity.is_ephemeral.store(false, Ordering::Relaxed);
@@ -674,6 +674,23 @@ pub(crate) fn spawn_autosave_debouncer(
     spawn_autosave_debouncer_with_config(notebook_id, room, AutosaveDebouncerConfig::default())
 }
 
+pub(crate) async fn install_autosave_shutdown_tx(
+    room: &NotebookRoom,
+    shutdown_tx: mpsc::UnboundedSender<AutosaveShutdownRequest>,
+) {
+    let previous_tx = room
+        .persistence
+        .autosave_shutdown_tx
+        .lock()
+        .await
+        .replace(shutdown_tx);
+
+    if let Some(previous_tx) = previous_tx {
+        let (ack_tx, _ack_rx) = oneshot::channel::<bool>();
+        let _ = previous_tx.send(ack_tx);
+    }
+}
+
 /// Request one final autosave and stop the `.ipynb` autosave task.
 ///
 /// The task owns a room `Arc`, so room eviction cannot rely on broadcast
@@ -774,7 +791,13 @@ fn spawn_autosave_debouncer_with_config(
                         }
                     }
                     Some(ack_tx) = shutdown_rx.recv() => {
-                        let ok = if !is_untitled_notebook(&notebook_id) && !room.is_loading() {
+                        let ok = if room.is_loading() {
+                            warn!(
+                                "[autosave] Final save on shutdown skipped while {} is loading",
+                                notebook_id
+                            );
+                            false
+                        } else if !is_untitled_notebook(&notebook_id) {
                             match save_notebook_to_disk(&room, None).await {
                                 Ok(path) => {
                                     info!("[autosave] Final save on shutdown: {}", path);

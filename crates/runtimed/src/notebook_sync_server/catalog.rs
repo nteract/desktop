@@ -103,7 +103,7 @@ pub async fn get_or_create_room(
         // Spawn autosave debouncer to keep .ipynb on disk current.
         let path_str = notebook_path.to_string_lossy().to_string();
         let shutdown_tx = spawn_autosave_debouncer(path_str, room.clone());
-        *room.persistence.autosave_shutdown_tx.lock().await = Some(shutdown_tx);
+        install_autosave_shutdown_tx(&room, shutdown_tx).await;
     }
 
     room
