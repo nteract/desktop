@@ -3728,6 +3728,8 @@ dependencies = [
 [[package]]
 name = "jupyter-protocol"
 version = "2.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "67c8c5887974082be34e2bdac6b9b9dd8ad89951cae918b197959035b0673f6f"
 dependencies = [
  "async-trait",
  "bytes",
@@ -3742,8 +3744,7 @@ dependencies = [
 [[package]]
 name = "jupyter-protocol"
 version = "2.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "67c8c5887974082be34e2bdac6b9b9dd8ad89951cae918b197959035b0673f6f"
+source = "git+https://github.com/quillaid/runtimed.git?branch=feat%2Fipc-transport#6938d702b43192a933cee7f168e2176e85bf93d9"
 dependencies = [
  "async-trait",
  "bytes",
@@ -6928,7 +6929,7 @@ dependencies = [
  "dirs",
  "flate2",
  "futures",
- "jupyter-protocol 2.0.0",
+ "jupyter-protocol 2.0.0 (git+https://github.com/quillaid/runtimed.git?branch=feat%2Fipc-transport)",
  "kernel-env",
  "libc",
  "notebook-doc",
@@ -7047,7 +7048,7 @@ dependencies = [
  "hyper",
  "hyper-util",
  "jiter",
- "jupyter-protocol 2.0.0",
+ "jupyter-protocol 2.0.0 (git+https://github.com/quillaid/runtimed.git?branch=feat%2Fipc-transport)",
  "kernel-env",
  "kernel-launch",
  "libc",
@@ -7181,6 +7182,7 @@ dependencies = [
 [[package]]
 name = "runtimelib"
 version = "2.0.0"
+source = "git+https://github.com/quillaid/runtimed.git?branch=feat%2Fipc-transport#6938d702b43192a933cee7f168e2176e85bf93d9"
 dependencies = [
  "aws-lc-rs",
  "base64 0.22.1",
@@ -7190,7 +7192,7 @@ dependencies = [
  "dirs",
  "futures",
  "glob",
- "jupyter-protocol 2.0.0",
+ "jupyter-protocol 2.0.0 (git+https://github.com/quillaid/runtimed.git?branch=feat%2Fipc-transport)",
  "serde",
  "serde_json",
  "shellexpand",
