@@ -43,9 +43,9 @@ futures = "0.3"
 bytes = "1"
 base64 = "0.22"
 tokio = { version = "1.36.0", features = ["full"] }
-runtimelib = { git = "https://github.com/runtimed/runtimed.git", rev = "2849523ef299d09b6a1ed838e2398ecf6ad74e70", default-features = false }
-jupyter-protocol = { git = "https://github.com/runtimed/runtimed.git", rev = "2849523ef299d09b6a1ed838e2398ecf6ad74e70" }
-nbformat = { git = "https://github.com/runtimed/runtimed.git", rev = "2849523ef299d09b6a1ed838e2398ecf6ad74e70" }
+runtimelib = { git = "https://github.com/quillaid/runtimed.git", rev = "7473fe4b3b57d324a9558e873de84c4ecf85a059", default-features = false }
+jupyter-protocol = { git = "https://github.com/quillaid/runtimed.git", rev = "7473fe4b3b57d324a9558e873de84c4ecf85a059" }
+nbformat = { git = "https://github.com/quillaid/runtimed.git", rev = "7473fe4b3b57d324a9558e873de84c4ecf85a059" }
 thiserror = "2"
 schemars = "1"
 notify = "8"
