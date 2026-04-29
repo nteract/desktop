@@ -55,6 +55,7 @@ mod metadata;
 mod nbformat_convert;
 mod path_index;
 mod peer;
+mod peer_pool_sync;
 mod peer_presence;
 mod peer_writer;
 mod persist;
