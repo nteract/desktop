@@ -414,6 +414,9 @@ def daemon_process(request):
     log_level = os.environ.get("RUNTIMED_LOG_LEVEL", "info")
 
     xdist_worker = os.environ.get("PYTEST_XDIST_WORKER", "master")
+    xdist_worker_index = (
+        int(xdist_worker.removeprefix("gw")) if xdist_worker.startswith("gw") else 0
+    )
 
     # Create a temp directory for this test run
     # ignore_cleanup_errors=True prevents OSError when ipykernel leaves behind
@@ -446,6 +449,8 @@ def daemon_process(request):
             uv_pool_size,
             "--conda-pool-size",
             conda_pool_size,
+            "--pixi-pool-size",
+            "0",
         ]
 
         print(f"\n[test] Starting daemon: {' '.join(cmd)}", file=sys.stderr)
@@ -457,6 +462,7 @@ def daemon_process(request):
             env = os.environ.copy()
             env["RUST_LOG"] = log_level
             env["RUNTIMED_WORKSPACE_PATH"] = str(workspace_dir)
+            env["RUNTIMED_TEST_KERNEL_PORT_RANGE_START"] = str(9000 + xdist_worker_index * 100)
 
             proc = subprocess.Popen(
                 cmd,
