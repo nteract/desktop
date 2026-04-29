@@ -10,9 +10,7 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-#[cfg(unix)]
-use std::path::Path;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
@@ -55,6 +53,9 @@ pub(crate) fn cleanup_ipc_sockets(prefix: &Path) {
         let _ = std::fs::remove_file(format!("{}-{}", prefix.display(), port));
     }
 }
+
+#[cfg(not(unix))]
+pub(crate) fn cleanup_ipc_sockets(_prefix: &Path) {}
 
 async fn bind_kernel_port_listeners(ip: IpAddr, ports: KernelPorts) -> Result<Vec<TcpListener>> {
     let port_numbers = [
@@ -671,6 +672,7 @@ impl KernelConnection for JupyterKernel {
             ConnectionInfo,
         );
 
+        #[cfg(unix)]
         let use_ipc = kernel_type != "deno";
 
         #[cfg(unix)]
@@ -681,8 +683,10 @@ impl KernelConnection for JupyterKernel {
             None
         };
 
+        #[cfg(not(unix))]
+        let ipc_prefix: Option<PathBuf> = None;
+
         let (mut process, _stderr_buffer, connection_info) = {
-            #[cfg(unix)]
             if let Some(ref prefix) = ipc_prefix {
                 let connection_info = ConnectionInfo {
                     transport: jupyter_protocol::connection_info::Transport::IPC,

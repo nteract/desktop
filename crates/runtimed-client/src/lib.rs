@@ -254,17 +254,67 @@ pub fn default_notebook_docs_dir() -> PathBuf {
 /// daemons never collide.
 /// Kernel socket files are `kernel-{id}-ipc-{1..5}` inside this dir.
 #[cfg(unix)]
-pub fn ipc_socket_dir() -> PathBuf {
+fn ipc_socket_base_dir() -> PathBuf {
     // SAFETY: getuid() is always safe — it's a read-only syscall with no
     // preconditions.
     let uid = unsafe { libc::getuid() };
-    let base = PathBuf::from("/tmp").join(format!("{}-{}", cache_namespace(), uid));
+    PathBuf::from("/tmp").join(format!("{}-{}", cache_namespace(), uid))
+}
+
+#[cfg(unix)]
+pub fn ipc_socket_dir() -> PathBuf {
+    let base = ipc_socket_base_dir();
     if is_dev_mode() {
         if let Some(worktree) = get_workspace_path() {
             return base.join(format!("wt-{}", worktree_hash(&worktree)));
         }
     }
     base
+}
+
+#[cfg(unix)]
+fn ensure_private_ipc_dir(dir: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+    match std::fs::create_dir(dir) {
+        Ok(()) => {
+            std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
+            return Ok(());
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(e) => return Err(e),
+    }
+
+    let metadata = std::fs::symlink_metadata(dir)?;
+    if metadata.file_type().is_symlink() || !metadata.file_type().is_dir() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            format!(
+                "IPC socket path exists but is not a directory: {}",
+                dir.display()
+            ),
+        ));
+    }
+
+    // SAFETY: getuid() is always safe — it's a read-only syscall with no
+    // preconditions.
+    let uid = unsafe { libc::getuid() };
+    if metadata.uid() != uid {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            format!(
+                "IPC socket directory is owned by uid {}, expected {}: {}",
+                metadata.uid(),
+                uid,
+                dir.display()
+            ),
+        ));
+    }
+
+    if metadata.permissions().mode() & 0o777 != 0o700 {
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(())
 }
 
 /// Create the IPC socket directory with owner-only permissions (`0o700`).
@@ -274,9 +324,11 @@ pub fn ipc_socket_dir() -> PathBuf {
 /// our directory.
 #[cfg(unix)]
 pub fn ensure_ipc_socket_dir() -> std::io::Result<()> {
+    ensure_private_ipc_dir(&ipc_socket_base_dir())?;
     let dir = ipc_socket_dir();
-    std::fs::create_dir_all(&dir)?;
-    std::fs::set_permissions(&dir, std::os::unix::fs::PermissionsExt::from_mode(0o700))?;
+    if dir != ipc_socket_base_dir() {
+        ensure_private_ipc_dir(&dir)?;
+    }
     Ok(())
 }
 
