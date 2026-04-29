@@ -413,16 +413,24 @@ def daemon_process(request):
     binary = _find_runtimed_binary()
     log_level = os.environ.get("RUNTIMED_LOG_LEVEL", "info")
 
+    xdist_worker = os.environ.get("PYTEST_XDIST_WORKER", "master")
+
     # Create a temp directory for this test run
     # ignore_cleanup_errors=True prevents OSError when ipykernel leaves behind
     # directories like 'magics' that aren't empty during cleanup
-    with tempfile.TemporaryDirectory(prefix="runtimed-test-", ignore_cleanup_errors=True) as tmpdir:
+    with tempfile.TemporaryDirectory(
+        prefix=f"runtimed-test-{xdist_worker}-", ignore_cleanup_errors=True
+    ) as tmpdir:
         tmpdir = Path(tmpdir)
         socket_path = tmpdir / "runtimed.sock"
         cache_dir = tmpdir / "cache"
         blob_dir = tmpdir / "blobs"
+        workspace_dir = tmpdir / "workspace"
         cache_dir.mkdir()
         blob_dir.mkdir()
+        workspace_dir.mkdir()
+        uv_pool_size = os.environ.get("RUNTIMED_TEST_UV_POOL_SIZE", "3")
+        conda_pool_size = os.environ.get("RUNTIMED_TEST_CONDA_POOL_SIZE", "1")
 
         # Build command
         cmd = [
@@ -435,9 +443,9 @@ def daemon_process(request):
             "--blob-store-dir",
             str(blob_dir),
             "--uv-pool-size",
-            "3",  # Reduced from 6 — CI runners are slow to warm large pools
+            uv_pool_size,
             "--conda-pool-size",
-            "1",  # Reduced from 3 — one env is enough, tests run sequentially
+            conda_pool_size,
         ]
 
         print(f"\n[test] Starting daemon: {' '.join(cmd)}", file=sys.stderr)
@@ -448,6 +456,7 @@ def daemon_process(request):
         with open(log_file, "w") as log_f:
             env = os.environ.copy()
             env["RUST_LOG"] = log_level
+            env["RUNTIMED_WORKSPACE_PATH"] = str(workspace_dir)
 
             proc = subprocess.Popen(
                 cmd,
@@ -475,8 +484,8 @@ def daemon_process(request):
         # Wait for pools to warm up before running tests.
         # We poll the daemon log file for pool-ready messages since
         # a reachable socket doesn't guarantee pools are warmed.
-        uv_ready = False
-        conda_ready = False
+        uv_ready = uv_pool_size == "0"
+        conda_ready = conda_pool_size == "0"
         import re
 
         # Match either format:
@@ -557,7 +566,7 @@ def daemon_process(request):
                 dest_dir = Path(artifact_dir)
                 dest_dir.mkdir(parents=True, exist_ok=True)
                 module_name = request.module.__name__.replace(".", "_")
-                dest = dest_dir / f"daemon-{module_name}.log"
+                dest = dest_dir / f"daemon-{module_name}-{xdist_worker}.log"
                 shutil.copy2(log_file, dest)
                 print(f"[test] Copied daemon log to {dest}", file=sys.stderr)
 
