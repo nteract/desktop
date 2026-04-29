@@ -7088,10 +7088,10 @@ async fn test_save_writes_empty_outputs_when_cell_execution_id_cleared() {
     );
 }
 
-/// `RuntimeStateDoc` mutations (output arrivals) must wake the autosave
-/// debouncer. Otherwise, when iopub flushes outputs after the
-/// autosave-trigger window has expired, the .ipynb is never updated to
-/// reflect them and disappears in the cell list at restart.
+/// Save-relevant runtime-state changes (output arrivals) must wake the
+/// autosave debouncer via `notebook_file_dirty_tx`. Otherwise, when iopub
+/// flushes outputs after the cell's NotebookDoc edit window has expired,
+/// the .ipynb is never updated and the user sees `outputs: []` on disk.
 #[tokio::test(start_paused = true)]
 async fn test_autosave_fires_on_runtime_state_change() {
     use std::time::Duration;
@@ -7146,6 +7146,9 @@ async fn test_autosave_fires_on_runtime_state_change() {
     );
 
     // Output arrives in RuntimeStateDoc only - no NotebookDoc change.
+    // The peer.rs RuntimeStateSync handler is what fires this signal in
+    // production when the runtime agent forwards outputs; we fire it
+    // directly here since the test bypasses the peer-sync machinery.
     room.state
         .with_doc(|sd| {
             let output = serde_json::json!({
@@ -7159,6 +7162,7 @@ async fn test_autosave_fires_on_runtime_state_change() {
             Ok(())
         })
         .unwrap();
+    let _ = room.broadcasts.notebook_file_dirty_tx.send(());
 
     // Poll for autosave to flush. Each sleep advances the paused clock so
     // the 2s debounce + 500ms check interval can elapse.
@@ -7179,4 +7183,113 @@ async fn test_autosave_fires_on_runtime_state_change() {
             serde_json::to_string_pretty(&nb).unwrap()
         );
     }
+}
+
+/// `set_last_saved` is a runtime-state mutation, but the autosave's own
+/// stamp must not feed back into the autosave subscription. The narrow
+/// `notebook_file_dirty_tx` signal stays silent on metadata writes like
+/// `last_saved`, so a single output arrival should produce exactly one
+/// flush, not an indefinite save-stamp-save loop.
+#[tokio::test(start_paused = true)]
+async fn test_autosave_does_not_self_trigger_after_state_save() {
+    use std::time::Duration;
+
+    let tmp = tempfile::TempDir::new().unwrap();
+    let blob_store = test_blob_store(&tmp);
+    let docs_dir = tmp.path().join("docs");
+    std::fs::create_dir_all(&docs_dir).unwrap();
+
+    let uuid = Uuid::new_v4();
+    let room = Arc::new(NotebookRoom::new_fresh(
+        uuid, None, &docs_dir, blob_store, false,
+    ));
+
+    let eid = "exec-1";
+    {
+        let mut doc = room.doc.write().await;
+        doc.add_cell(0, "cell1", "code").unwrap();
+        doc.update_source("cell1", "print('hi')").unwrap();
+        doc.set_execution_id("cell1", Some(eid)).unwrap();
+    }
+    room.state
+        .with_doc(|sd| {
+            sd.create_execution_with_source(eid, "cell1", "print('hi')", 1)?;
+            Ok(())
+        })
+        .unwrap();
+
+    let save_path = tmp.path().join("loop.ipynb");
+    let written = save_notebook_to_disk(&room, Some(save_path.to_str().unwrap()))
+        .await
+        .unwrap();
+    let canonical = tokio::fs::canonicalize(&written)
+        .await
+        .unwrap_or_else(|_| PathBuf::from(&written));
+    let path_index = Arc::new(tokio::sync::Mutex::new(PathIndex::new()));
+    try_claim_path(&path_index, &canonical, room.id)
+        .await
+        .expect("path claim should succeed");
+    finalize_untitled_promotion(&room, canonical.clone()).await;
+
+    // One real state mutation: kernel produces an output.
+    room.state
+        .with_doc(|sd| {
+            sd.append_output(
+                eid,
+                &serde_json::json!({
+                    "output_type": "stream",
+                    "name": "stdout",
+                    "text": ["hi\n"]
+                }),
+            )?;
+            sd.set_execution_count(eid, 1)?;
+            sd.set_execution_done(eid, true)?;
+            Ok(())
+        })
+        .unwrap();
+    let _ = room.broadcasts.notebook_file_dirty_tx.send(());
+
+    // Wait for autosave to flush the output and stamp `last_saved`.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+    loop {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let content = tokio::fs::read_to_string(&save_path).await.unwrap();
+        let nb: serde_json::Value = serde_json::from_str(&content).unwrap();
+        if nb["cells"][0]["outputs"]
+            .as_array()
+            .map(|o| !o.is_empty())
+            .unwrap_or(false)
+        {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "autosave never flushed the output"
+        );
+    }
+
+    // Snapshot the `last_saved` stamp the autosave just wrote.
+    let stamp_after_first_save = room
+        .state
+        .read(|sd| sd.read_state().last_saved.clone())
+        .unwrap();
+    assert!(
+        stamp_after_first_save.is_some(),
+        "autosave should stamp last_saved after a successful flush"
+    );
+
+    // Idle for several debounce windows. If `set_last_saved` is feeding back
+    // into the autosave subscription, the stamp will keep ticking forward
+    // even with no real mutations. It must stay frozen.
+    for _ in 0..30 {
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    let stamp_after_idle = room
+        .state
+        .read(|sd| sd.read_state().last_saved.clone())
+        .unwrap();
+    assert_eq!(
+        stamp_after_idle, stamp_after_first_save,
+        "autosave self-triggered: last_saved advanced without any real state change",
+    );
 }

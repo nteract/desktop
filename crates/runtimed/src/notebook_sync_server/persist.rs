@@ -658,11 +658,13 @@ impl Default for AutosaveDebouncerConfig {
 /// whenever the Automerge document changes. Only for saved (non-untitled)
 /// notebooks. Does NOT format cells — formatting is reserved for explicit saves.
 ///
-/// Subscribes to both `room.broadcasts.changed_tx` (NotebookDoc edits) and
-/// `room.state.subscribe()` (RuntimeStateDoc edits) so output arrivals from
-/// the kernel drive a re-save. Without the state subscription, outputs that
-/// land after the cell's NotebookDoc edit window would never reach disk and
-/// the .ipynb would carry stale `outputs: []` for the lifetime of the room.
+/// Subscribes to two narrow signals: `room.broadcasts.changed_tx` for
+/// NotebookDoc edits, and `room.broadcasts.notebook_file_dirty_tx` for
+/// RuntimeStateDoc mutations that affect serialized .ipynb bytes (kernel
+/// outputs, execution counts, terminal status flips). The full state
+/// notifier on `RuntimeStateHandle` is intentionally NOT subscribed: it
+/// fires on every heads change including `last_saved`, which the autosave
+/// itself writes after each successful flush.
 pub(crate) fn spawn_autosave_debouncer(notebook_id: String, room: Arc<NotebookRoom>) {
     spawn_autosave_debouncer_with_config(notebook_id, room, AutosaveDebouncerConfig::default());
 }
@@ -674,7 +676,7 @@ fn spawn_autosave_debouncer_with_config(
     config: AutosaveDebouncerConfig,
 ) {
     let mut changed_rx = room.broadcasts.changed_tx.subscribe();
-    let mut state_changed_rx = room.state.subscribe();
+    let mut file_dirty_rx = room.broadcasts.notebook_file_dirty_tx.subscribe();
     spawn_supervised(
         "autosave-debouncer",
         async move {
@@ -720,19 +722,17 @@ fn spawn_autosave_debouncer_with_config(
                             }
                         }
                     }
-                    state_result = state_changed_rx.recv() => {
-                        match state_result {
+                    file_dirty_result = file_dirty_rx.recv() => {
+                        match file_dirty_result {
                             Ok(()) | Err(broadcast::error::RecvError::Lagged(_)) => {
                                 last_receive = Some(Instant::now());
                             }
                             Err(broadcast::error::RecvError::Closed) => {
-                                // RuntimeStateHandle dropped before the room.
-                                // Stop watching state but keep serving NotebookDoc
-                                // edits via changed_rx. Replace the receiver with
-                                // a never-ready one so the select! arm still
-                                // compiles but never fires.
+                                // Sender side dropped before the room. Swap in a
+                                // never-ready receiver so select! still compiles
+                                // and we keep serving NotebookDoc edits.
                                 let (_tx, rx) = broadcast::channel(1);
-                                state_changed_rx = rx;
+                                file_dirty_rx = rx;
                             }
                         }
                     }
@@ -764,14 +764,24 @@ fn spawn_autosave_debouncer_with_config(
                                     // Check if changes arrived during the save. If so,
                                     // keep last_receive set so we flush again soon —
                                     // don't stamp last_saved while the file is stale.
-                                    let changed_during_save =
-                                        matches!(changed_rx.try_recv(), Ok(()) | Err(broadcast::error::TryRecvError::Lagged(_)));
-                                    if changed_during_save {
+                                    let notebook_changed = matches!(
+                                        changed_rx.try_recv(),
+                                        Ok(()) | Err(broadcast::error::TryRecvError::Lagged(_))
+                                    );
+                                    let file_dirty = matches!(
+                                        file_dirty_rx.try_recv(),
+                                        Ok(()) | Err(broadcast::error::TryRecvError::Lagged(_))
+                                    );
+                                    if notebook_changed || file_dirty {
                                         last_receive = Some(Instant::now());
                                     } else {
                                         last_receive = None;
                                         // Stamp last_saved on the runtime-state doc.
                                         // Frontends compute dirty = local_edit_at > last_saved.
+                                        // Safe to write here without echoing back into
+                                        // autosave: this listener watches
+                                        // `notebook_file_dirty_tx`, not the full state
+                                        // notifier, so set_last_saved doesn't re-arm us.
                                         let now = chrono::Utc::now().to_rfc3339();
                                         if let Err(e) = room.state.with_doc(|sd| {
                                             sd.set_last_saved(Some(&now))

@@ -34,13 +34,21 @@ impl RoomIdentity {
 
 /// Per-room broadcast fan-out.
 ///
-/// Groups the four channels that distribute room-scoped events to peer sync
-/// loops: document-change notifications, kernel broadcasts (EnvProgress,
-/// Comm), and presence traffic. `presence`
-/// holds the per-peer state that `presence_tx` relays between connections.
+/// Groups the channels that distribute room-scoped events to peer sync loops:
+/// document-change notifications, save-relevant runtime-state changes, kernel
+/// broadcasts (EnvProgress, Comm), and presence traffic. `presence` holds the
+/// per-peer state that `presence_tx` relays between connections.
 pub struct RoomBroadcasts {
     /// Broadcast channel to notify all peers in this room of doc changes.
     pub changed_tx: broadcast::Sender<()>,
+    /// Broadcast channel signaling that a runtime-state mutation could change
+    /// the serialized .ipynb bytes (kernel outputs, execution counts, terminal
+    /// status flips). The autosave debouncer listens here. `state_changed_tx`
+    /// (on `RuntimeStateHandle`) fires on any heads change including
+    /// `last_saved`, kernel lifecycle, and project context — those are
+    /// peer-sync concerns, not save concerns. Keeping the two signals
+    /// separate prevents an autosave -> set_last_saved -> autosave loop.
+    pub notebook_file_dirty_tx: broadcast::Sender<()>,
     /// Broadcast channel for kernel events: EnvProgress and Comm (widget messages).
     pub kernel_broadcast_tx: broadcast::Sender<NotebookBroadcast>,
     /// Broadcast channel for presence frames (cursor, selection, kernel state).
@@ -54,10 +62,12 @@ pub struct RoomBroadcasts {
 impl Default for RoomBroadcasts {
     fn default() -> Self {
         let (changed_tx, _) = broadcast::channel(16);
+        let (notebook_file_dirty_tx, _) = broadcast::channel(16);
         let (kernel_broadcast_tx, _) = broadcast::channel(KERNEL_BROADCAST_CAPACITY);
         let (presence_tx, _) = broadcast::channel(64);
         Self {
             changed_tx,
+            notebook_file_dirty_tx,
             kernel_broadcast_tx,
             presence_tx,
             presence: Arc::new(RwLock::new(PresenceState::new())),

@@ -23,7 +23,7 @@ pub(super) async fn handle_runtime_state_frame(
     let message =
         sync::Message::decode(payload).map_err(|e| anyhow::anyhow!("decode state sync: {}", e))?;
 
-    let reply_encoded: Option<Option<Vec<u8>>> = room
+    let result: Option<(Option<Vec<u8>>, bool)> = room
         .state
         .with_doc(|state_doc| {
             let recv_result = catch_automerge_panic("state-receive-sync", || {
@@ -43,25 +43,28 @@ pub(super) async fn handle_runtime_state_frame(
                 }
             };
 
-            // If the client sent changes, notification is automatic via the
-            // heads comparison in RuntimeStateDoc::with_doc.
-            let _ = had_changes;
-
-            Ok(Some(generate_runtime_state_sync_message(
+            let reply = generate_runtime_state_sync_message(
                 state_doc,
                 state_peer_state,
                 "state-sync-reply",
-            )))
+            );
+            Ok(Some((reply, had_changes)))
         })
         .ok()
         .flatten();
 
-    let reply_encoded = match reply_encoded {
-        Some(encoded) => encoded,
+    let (reply_encoded, had_changes) = match result {
+        Some(pair) => pair,
         None => return Ok(false),
     };
     if let Some(encoded) = reply_encoded {
         writer.send_frame(NotebookFrameType::RuntimeStateSync, encoded)?;
+    }
+
+    if had_changes {
+        // Save-relevant state arrived from a peer (kernel agent forwarding
+        // outputs, or another notebook client). Wake the autosave debouncer.
+        let _ = room.broadcasts.notebook_file_dirty_tx.send(());
     }
 
     persist_terminal_execution_records(room, store, persisted_records).await;

@@ -246,6 +246,10 @@ pub async fn handle_runtime_agent_sync_connection<R, W>(
                                 }
                             }
                             if state_changed {
+                                // Output / execution-count / terminal-status
+                                // changes from the kernel arrive here; signal
+                                // autosave to flush them to the .ipynb.
+                                let _ = room.broadcasts.notebook_file_dirty_tx.send(());
                                 persist_terminal_execution_records(
                                     &room,
                                     &execution_store,
