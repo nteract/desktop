@@ -734,6 +734,7 @@ impl RuntimeAgentRequest {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::{BTreeMap, BTreeSet};
 
     #[test]
     fn env_kind_uv_round_trip() {
@@ -1039,6 +1040,37 @@ mod tests {
                     "cursor_pos": 13,
                 }),
             ),
+            (
+                "save_notebook",
+                serde_json::json!({
+                    "action": "save_notebook",
+                    "format_cells": true,
+                    "path": "/tmp/example.ipynb",
+                }),
+            ),
+            (
+                "clone_as_ephemeral",
+                serde_json::json!({
+                    "action": "clone_as_ephemeral",
+                    "source_notebook_id": "source-room",
+                }),
+            ),
+            (
+                "get_doc_bytes",
+                serde_json::json!({ "action": "get_doc_bytes" }),
+            ),
+            (
+                "send_comm",
+                serde_json::json!({
+                    "action": "send_comm",
+                    "message": {
+                        "header": {},
+                        "content": {},
+                        "buffers": [],
+                        "channel": "shell",
+                    },
+                }),
+            ),
         ];
 
         for (name, json) in cases {
@@ -1059,6 +1091,181 @@ mod tests {
                 )
             });
         }
+    }
+
+    fn extract_string_array(source: &str, const_name: &str) -> BTreeSet<String> {
+        let needle = format!("export const {const_name} = [");
+        let start = source
+            .find(&needle)
+            .unwrap_or_else(|| panic!("missing TS const {const_name}"))
+            + needle.len();
+        let rest = &source[start..];
+        let end = rest
+            .find("] as const")
+            .unwrap_or_else(|| panic!("missing end of TS const {const_name}"));
+
+        rest[..end]
+            .split(',')
+            .filter_map(|part| {
+                let value = part.trim().trim_matches('\n').trim();
+                value
+                    .strip_prefix('"')
+                    .and_then(|s| s.strip_suffix('"'))
+                    .map(ToOwned::to_owned)
+            })
+            .collect()
+    }
+
+    fn extract_frame_type_object(source: &str) -> BTreeMap<String, u8> {
+        let needle = "export const FrameType = {";
+        let start = source.find(needle).expect("missing TS FrameType object") + needle.len();
+        let rest = &source[start..];
+        let end = rest
+            .find("} as const")
+            .expect("missing end of TS FrameType");
+
+        rest[..end]
+            .lines()
+            .filter_map(|line| {
+                let line = line.trim();
+                if line.is_empty() || line.starts_with("/**") || line.starts_with('*') {
+                    return None;
+                }
+                let (name, value) = line.trim_end_matches(',').split_once(':')?;
+                let value = value.trim();
+                let parsed = if let Some(hex) = value.strip_prefix("0x") {
+                    u8::from_str_radix(hex, 16).expect("valid hex frame byte")
+                } else {
+                    value.parse::<u8>().expect("valid decimal frame byte")
+                };
+                Some((name.trim().to_owned(), parsed))
+            })
+            .collect()
+    }
+
+    fn expected_notebook_request_actions() -> BTreeSet<String> {
+        [
+            "launch_kernel",
+            "execute_cell",
+            "execute_cell_guarded",
+            "clear_outputs",
+            "interrupt_execution",
+            "shutdown_kernel",
+            "run_all_cells",
+            "run_all_cells_guarded",
+            "send_comm",
+            "get_history",
+            "complete",
+            "save_notebook",
+            "clone_as_ephemeral",
+            "sync_environment",
+            "approve_trust",
+            "approve_project_environment",
+            "get_doc_bytes",
+        ]
+        .into_iter()
+        .map(ToOwned::to_owned)
+        .collect()
+    }
+
+    fn expected_notebook_response_results() -> BTreeSet<String> {
+        [
+            "kernel_launched",
+            "kernel_already_running",
+            "cell_queued",
+            "outputs_cleared",
+            "interrupt_sent",
+            "kernel_shutting_down",
+            "no_kernel",
+            "guard_rejected",
+            "all_cells_queued",
+            "notebook_saved",
+            "save_error",
+            "notebook_cloned",
+            "ok",
+            "error",
+            "history_result",
+            "completion_result",
+            "sync_environment_complete",
+            "sync_environment_failed",
+            "doc_bytes",
+        ]
+        .into_iter()
+        .map(ToOwned::to_owned)
+        .collect()
+    }
+
+    #[test]
+    fn typescript_protocol_contract_matches_rust_wire_discriminants() {
+        let ts_contract = include_str!("../../../packages/runtimed/src/protocol-contract.ts");
+        let ts_transport = include_str!("../../../packages/runtimed/src/transport.ts");
+
+        assert_eq!(
+            extract_string_array(ts_contract, "NOTEBOOK_REQUEST_TYPES"),
+            expected_notebook_request_actions()
+        );
+        assert_eq!(
+            extract_string_array(ts_contract, "NOTEBOOK_RESPONSE_RESULTS"),
+            expected_notebook_response_results()
+        );
+        assert_eq!(
+            extract_string_array(ts_contract, "SESSION_CONTROL_TYPES"),
+            BTreeSet::from(["sync_status".to_string()])
+        );
+        assert_eq!(
+            extract_string_array(ts_contract, "NOTEBOOK_DOC_PHASES"),
+            BTreeSet::from([
+                "pending".to_string(),
+                "syncing".to_string(),
+                "interactive".to_string()
+            ])
+        );
+        assert_eq!(
+            extract_string_array(ts_contract, "RUNTIME_STATE_PHASES"),
+            BTreeSet::from([
+                "pending".to_string(),
+                "syncing".to_string(),
+                "ready".to_string()
+            ])
+        );
+        assert_eq!(
+            extract_string_array(ts_contract, "INITIAL_LOAD_PHASES"),
+            BTreeSet::from([
+                "not_needed".to_string(),
+                "streaming".to_string(),
+                "ready".to_string(),
+                "failed".to_string()
+            ])
+        );
+
+        assert_eq!(
+            extract_frame_type_object(ts_transport),
+            BTreeMap::from([
+                (
+                    "AUTOMERGE_SYNC".to_string(),
+                    notebook_doc::frame_types::AUTOMERGE_SYNC
+                ),
+                ("REQUEST".to_string(), notebook_doc::frame_types::REQUEST),
+                ("RESPONSE".to_string(), notebook_doc::frame_types::RESPONSE),
+                (
+                    "BROADCAST".to_string(),
+                    notebook_doc::frame_types::BROADCAST
+                ),
+                ("PRESENCE".to_string(), notebook_doc::frame_types::PRESENCE),
+                (
+                    "RUNTIME_STATE_SYNC".to_string(),
+                    notebook_doc::frame_types::RUNTIME_STATE_SYNC
+                ),
+                (
+                    "POOL_STATE_SYNC".to_string(),
+                    notebook_doc::frame_types::POOL_STATE_SYNC
+                ),
+                (
+                    "SESSION_CONTROL".to_string(),
+                    notebook_doc::frame_types::SESSION_CONTROL
+                ),
+            ])
+        );
     }
 
     #[test]
