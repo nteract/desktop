@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use tokio::io::AsyncWrite;
 use tokio::sync::mpsc;
-use tracing::debug;
+use tracing::{debug, warn};
 
 use crate::connection::{self, NotebookFrameType};
 
@@ -182,6 +182,45 @@ pub(super) fn spawn_peer_request_worker(
     PeerRequestWorker { tx, handle }
 }
 
+pub(super) fn enqueue_notebook_request(
+    request_worker: &PeerRequestWorker,
+    writer: &PeerWriter,
+    payload: &[u8],
+    notebook_id: &str,
+    peer_id: &str,
+) -> anyhow::Result<()> {
+    let envelope: notebook_protocol::protocol::NotebookRequestEnvelope =
+        serde_json::from_slice(payload)?;
+    debug!(
+        "[notebook-sync] Enqueuing {} id={} peer={} notebook={}",
+        request_label(&envelope.request),
+        envelope.id.as_deref().unwrap_or("-"),
+        peer_id,
+        notebook_id,
+    );
+
+    if let Err(e) = request_worker.enqueue(envelope) {
+        match e {
+            RequestEnqueueError::Full(envelope) => {
+                warn!(
+                    "[notebook-sync] Peer request queue full for {} (peer_id={})",
+                    notebook_id, peer_id
+                );
+                queue_request_error(writer, envelope.id, "Peer request queue full")?;
+            }
+            RequestEnqueueError::Closed(envelope) => {
+                warn!(
+                    "[notebook-sync] Peer request worker stopped for {} (peer_id={})",
+                    notebook_id, peer_id
+                );
+                queue_request_error(writer, envelope.id, "Peer request worker stopped")?;
+                anyhow::bail!("peer request worker stopped for {}", notebook_id);
+            }
+        }
+    }
+    Ok(())
+}
+
 pub(super) fn queue_request_error(
     writer: &PeerWriter,
     id: Option<String>,
@@ -294,5 +333,100 @@ mod tests {
             "request enqueue should not wait for the busy worker"
         );
         assert!(matches!(err, RequestEnqueueError::Full(_)));
+    }
+
+    #[tokio::test]
+    async fn enqueue_notebook_request_rejects_malformed_payload_without_reply() {
+        let (request_tx, _request_rx) =
+            mpsc::channel::<notebook_protocol::protocol::NotebookRequestEnvelope>(1);
+        let request_worker = PeerRequestWorker {
+            tx: request_tx,
+            handle: tokio::spawn(std::future::pending::<anyhow::Result<()>>()),
+        };
+        let (writer_tx, mut writer_rx) = mpsc::channel::<OutboundFrame>(1);
+        let writer = PeerWriter { tx: writer_tx };
+
+        let err =
+            enqueue_notebook_request(&request_worker, &writer, b"not json", "notebook", "peer")
+                .expect_err("malformed request payload should fail");
+        assert!(err.to_string().contains("expected ident"));
+        assert!(
+            writer_rx.try_recv().is_err(),
+            "malformed envelopes have no request id to echo"
+        );
+    }
+
+    #[tokio::test]
+    async fn enqueue_notebook_request_reports_full_queue_to_peer() {
+        let (request_tx, _request_rx) =
+            mpsc::channel::<notebook_protocol::protocol::NotebookRequestEnvelope>(1);
+        request_tx
+            .try_send(notebook_protocol::protocol::NotebookRequestEnvelope {
+                id: Some("first".to_string()),
+                request: NotebookRequest::GetDocBytes {},
+            })
+            .expect("queue should accept first request");
+        let request_worker = PeerRequestWorker {
+            tx: request_tx,
+            handle: tokio::spawn(std::future::pending::<anyhow::Result<()>>()),
+        };
+        let (writer_tx, mut writer_rx) = mpsc::channel::<OutboundFrame>(1);
+        let writer = PeerWriter { tx: writer_tx };
+
+        let payload = serde_json::to_vec(&notebook_protocol::protocol::NotebookRequestEnvelope {
+            id: Some("second".to_string()),
+            request: NotebookRequest::GetDocBytes {},
+        })
+        .unwrap();
+        enqueue_notebook_request(&request_worker, &writer, &payload, "notebook", "peer")
+            .expect("full queue should be reported to the peer without failing the loop");
+
+        let frame = writer_rx
+            .try_recv()
+            .expect("full queue should enqueue an error response");
+        assert_eq!(frame.frame_type, NotebookFrameType::Response);
+        let reply: notebook_protocol::protocol::NotebookResponseEnvelope =
+            serde_json::from_slice(&frame.payload).unwrap();
+        assert_eq!(reply.id.as_deref(), Some("second"));
+        assert!(matches!(
+            reply.response,
+            notebook_protocol::protocol::NotebookResponse::Error { ref error }
+                if error == "Peer request queue full"
+        ));
+    }
+
+    #[tokio::test]
+    async fn enqueue_notebook_request_reports_closed_worker_then_fails() {
+        let (request_tx, request_rx) =
+            mpsc::channel::<notebook_protocol::protocol::NotebookRequestEnvelope>(1);
+        drop(request_rx);
+        let request_worker = PeerRequestWorker {
+            tx: request_tx,
+            handle: tokio::spawn(std::future::pending::<anyhow::Result<()>>()),
+        };
+        let (writer_tx, mut writer_rx) = mpsc::channel::<OutboundFrame>(1);
+        let writer = PeerWriter { tx: writer_tx };
+
+        let payload = serde_json::to_vec(&notebook_protocol::protocol::NotebookRequestEnvelope {
+            id: Some("closed".to_string()),
+            request: NotebookRequest::GetDocBytes {},
+        })
+        .unwrap();
+        let err = enqueue_notebook_request(&request_worker, &writer, &payload, "notebook", "peer")
+            .expect_err("closed worker should stop the peer loop");
+        assert_eq!(err.to_string(), "peer request worker stopped for notebook");
+
+        let frame = writer_rx
+            .try_recv()
+            .expect("closed worker should enqueue an error response before failing");
+        assert_eq!(frame.frame_type, NotebookFrameType::Response);
+        let reply: notebook_protocol::protocol::NotebookResponseEnvelope =
+            serde_json::from_slice(&frame.payload).unwrap();
+        assert_eq!(reply.id.as_deref(), Some("closed"));
+        assert!(matches!(
+            reply.response,
+            notebook_protocol::protocol::NotebookResponse::Error { ref error }
+                if error == "Peer request worker stopped"
+        ));
     }
 }
