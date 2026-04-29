@@ -42,6 +42,7 @@ pub mod project_file;
 pub(crate) mod requests;
 pub mod runtime_agent;
 pub mod runtime_agent_handle;
+pub(crate) mod runtime_agent_manifest;
 pub mod singleton;
 pub mod stream_terminal;
 pub mod sync_server;

@@ -1171,12 +1171,10 @@ impl Daemon {
                     )
                     .await;
                 }
-                // Unregister from process group registry and drop handle
+                // Drop the handle so it tears down the runtime-agent ownership group
+                // and removes the matching manifest only after cleanup succeeds.
                 {
                     let mut ra_guard = room.runtime_agent_handle.lock().await;
-                    if let Some(ref handle) = *ra_guard {
-                        handle.unregister();
-                    }
                     *ra_guard = None;
                 }
                 {
