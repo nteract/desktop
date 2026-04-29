@@ -5,7 +5,7 @@ use notebook_protocol::connection::{send_typed_frame, FramedReader, NotebookFram
 use notebook_protocol::protocol::RuntimeAgentResponse;
 use tracing::{debug, info, warn};
 
-use super::peer_runtime_sync::persist_terminal_execution_records;
+use super::peer_runtime_sync::{persist_terminal_execution_records, runtime_file_save_fingerprint};
 use super::peer_writer::spawn_peer_writer;
 use super::{NotebookRoom, RuntimeAgentMessage, STATE_SYNC_COMPACT_THRESHOLD};
 
@@ -202,12 +202,17 @@ pub async fn handle_runtime_agent_sync_connection<R, W>(
                     NotebookFrameType::RuntimeStateSync => {
                         if let Ok(msg) = automerge::sync::Message::decode(&typed_frame.payload) {
                             let mut state_changed = false;
+                            let mut runtime_file_dirty = false;
                             let reply_encoded = room.state.with_doc(|sd| {
+                                let before = runtime_file_save_fingerprint(sd);
                                 if let Ok(changed) = sd.receive_sync_message_with_changes(
                                     &mut state_sync_state, msg,
                                 ) {
                                     if changed {
                                         state_changed = true;
+                                        if runtime_file_save_fingerprint(sd) != before {
+                                            runtime_file_dirty = true;
+                                        }
                                         // Notification handled by with_doc heads check
                                     }
                                 }
@@ -224,6 +229,9 @@ pub async fn handle_runtime_agent_sync_connection<R, W>(
                                 }
                             }
                             if state_changed {
+                                if runtime_file_dirty {
+                                    let _ = room.broadcasts.file_dirty_tx.send(());
+                                }
                                 persist_terminal_execution_records(
                                     &room,
                                     &execution_store,
