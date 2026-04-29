@@ -853,6 +853,34 @@ jobs:
           path: crates/notebook/binaries/nteract-mcp-x86_64-unknown-linux-gnu
           if-no-files-found: error
 
+  smoke-fedora-appimage:
+    name: Smoke Fedora AppImage
+    runs-on: blacksmith-4vcpu-ubuntu-2204
+    needs: [build-notebook-linux-x64]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Download Linux AppImage
+        uses: actions/download-artifact@v4
+        with:
+          name: nteract-linux-x64
+          path: artifacts
+
+      - name: Smoke AppImage in Fedora
+        run: |
+          CHANNEL="${RUNT_BUILD_CHANNEL:-stable}"
+          APPIMAGE="artifacts/nteract-${CHANNEL}-linux-x64.AppImage"
+          docker run --rm \
+            -v "${PWD}:/workspace" \
+            -w /workspace \
+            fedora:latest \
+            bash -lc '
+              set -euo pipefail
+              dnf install -y coreutils findutils fuse-libs grep procps-ng systemd
+              bash scripts/ci/fedora-appimage-smoke.sh "$1"
+            ' bash "$APPIMAGE"
+
   build-nteract-package:
     name: Build nteract Package
     runs-on: blacksmith-4vcpu-ubuntu-2404
@@ -1158,6 +1186,7 @@ jobs:
         build-notebook-macos-x64,
         build-notebook-windows-x64,
         build-notebook-linux-x64,
+        smoke-fedora-appimage,
         build-python-wheels,
         build-nteract-package,
         build-dx-package,
