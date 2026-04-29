@@ -1,12 +1,15 @@
+use std::path::Path;
 use std::sync::Arc;
 
 use automerge::sync;
-use tokio::io::AsyncWrite;
+use tokio::io::{AsyncRead, AsyncWrite};
 use tracing::{info, warn};
 
 use crate::connection::{self, NotebookFrameType};
 
-use super::{catch_automerge_panic, NotebookRoom, STATE_SYNC_COMPACT_THRESHOLD};
+use super::{
+    catch_automerge_panic, streaming_load_cells, NotebookRoom, STATE_SYNC_COMPACT_THRESHOLD,
+};
 
 pub(crate) async fn send_session_status<W>(
     writer: &mut W,
@@ -140,4 +143,91 @@ where
     }
 
     Ok(())
+}
+
+/// Stream initial notebook file contents into the room before steady-state sync.
+///
+/// The caller passes `peer_state` from the initial notebook-doc sync so each
+/// streamed batch can produce deltas from the same baseline.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn stream_initial_load<R, W>(
+    reader: &mut R,
+    writer: &mut W,
+    room: &Arc<NotebookRoom>,
+    needs_load: Option<&Path>,
+    execution_store_dir: &Path,
+    peer_state: &mut sync::State,
+    notebook_doc_phase: notebook_protocol::protocol::NotebookDocPhaseWire,
+    runtime_state_phase: notebook_protocol::protocol::RuntimeStatePhaseWire,
+    initial_load_phase: notebook_protocol::protocol::InitialLoadPhaseWire,
+    client_protocol_version: u8,
+) -> anyhow::Result<notebook_protocol::protocol::InitialLoadPhaseWire>
+where
+    R: AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
+    let Some(load_path) = needs_load else {
+        return Ok(initial_load_phase);
+    };
+    if !room.try_start_loading() {
+        return Ok(initial_load_phase);
+    }
+
+    // Streaming load: add cells in batches and sync after each batch so the
+    // frontend can observe progressive notebook-doc updates.
+    let execution_store =
+        runtimed_client::execution_store::ExecutionStore::new(execution_store_dir.to_path_buf());
+    match streaming_load_cells(
+        reader,
+        writer,
+        room,
+        load_path,
+        Some(&execution_store),
+        peer_state,
+    )
+    .await
+    {
+        Ok(count) => {
+            room.finish_loading();
+            info!(
+                "[notebook-sync] Streaming load complete: {} cells from {}",
+                count,
+                load_path.display()
+            );
+            let initial_load_phase = notebook_protocol::protocol::InitialLoadPhaseWire::Ready;
+            if client_protocol_version >= 3 {
+                send_session_status(
+                    writer,
+                    notebook_doc_phase,
+                    runtime_state_phase,
+                    initial_load_phase.clone(),
+                )
+                .await?;
+            }
+            Ok(initial_load_phase)
+        }
+        Err(e) => {
+            room.finish_loading();
+            {
+                let mut doc = room.doc.write().await;
+                let _ = doc.clear_all_cells();
+            }
+            let _ = room.broadcasts.changed_tx.send(());
+            warn!(
+                "[notebook-sync] Streaming load failed for {}: {}",
+                load_path.display(),
+                e
+            );
+            if client_protocol_version >= 3 {
+                send_session_status(
+                    writer,
+                    notebook_doc_phase,
+                    runtime_state_phase,
+                    notebook_protocol::protocol::InitialLoadPhaseWire::Failed { reason: e.clone() },
+                )
+                .await?;
+            }
+            Err(anyhow::anyhow!("Streaming load failed: {}", e))
+        }
+    }
 }
