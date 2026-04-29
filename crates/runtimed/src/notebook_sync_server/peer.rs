@@ -9,8 +9,8 @@ use super::peer_runtime_sync::{
     forward_runtime_state_broadcast, handle_runtime_state_frame, persist_terminal_execution_records,
 };
 use super::peer_writer::{
-    queue_request_error, queue_session_status, spawn_peer_request_worker, spawn_peer_writer,
-    PeerWriter, RequestEnqueueError,
+    enqueue_notebook_request, queue_session_status, spawn_peer_request_worker, spawn_peer_writer,
+    PeerWriter,
 };
 use super::*;
 use runtime_doc::RuntimeLifecycle;
@@ -1478,48 +1478,13 @@ where
                             }
 
                             NotebookFrameType::Request => {
-                                // Decode and enqueue the request, then return to
-                                // frame reads. The per-peer request worker preserves
-                                // request order and echoes the id on the response.
-                                let envelope: notebook_protocol::protocol::NotebookRequestEnvelope =
-                                    serde_json::from_slice(&frame.payload)?;
-                                debug!(
-                                    "[notebook-sync] Enqueuing {} id={} peer={} notebook={}",
-                                    metadata::request_label(&envelope.request),
-                                    envelope.id.as_deref().unwrap_or("-"),
+                                enqueue_notebook_request(
+                                    &request_worker,
+                                    &peer_writer,
+                                    &frame.payload,
+                                    &notebook_id,
                                     peer_id,
-                                    notebook_id,
-                                );
-                                if let Err(e) = request_worker.enqueue(envelope) {
-                                    match e {
-                                        RequestEnqueueError::Full(envelope) => {
-                                            warn!(
-                                                "[notebook-sync] Peer request queue full for {} (peer_id={})",
-                                                notebook_id, peer_id
-                                            );
-                                            queue_request_error(
-                                                &peer_writer,
-                                                envelope.id,
-                                                "Peer request queue full",
-                                            )?;
-                                        }
-                                        RequestEnqueueError::Closed(envelope) => {
-                                            warn!(
-                                                "[notebook-sync] Peer request worker stopped for {} (peer_id={})",
-                                                notebook_id, peer_id
-                                            );
-                                            queue_request_error(
-                                                &peer_writer,
-                                                envelope.id,
-                                                "Peer request worker stopped",
-                                            )?;
-                                            return Err(anyhow::anyhow!(
-                                                "peer request worker stopped for {}",
-                                                notebook_id
-                                            ));
-                                        }
-                                    }
-                                }
+                                )?;
                             }
 
                             NotebookFrameType::Presence => {
