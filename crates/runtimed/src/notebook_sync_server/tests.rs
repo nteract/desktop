@@ -7197,3 +7197,183 @@ async fn test_autosave_fires_on_runtime_file_dirty_without_self_loop() {
         "last_saved changed without a new file-dirty or NotebookDoc signal"
     );
 }
+
+#[tokio::test(start_paused = true)]
+async fn test_autosave_shutdown_flushes_pending_doc_change() {
+    use std::time::Duration;
+
+    let tmp = tempfile::TempDir::new().unwrap();
+    let blob_store = test_blob_store(&tmp);
+    let docs_dir = tmp.path().join("docs");
+    std::fs::create_dir_all(&docs_dir).unwrap();
+
+    let room = Arc::new(NotebookRoom::new_fresh(
+        Uuid::new_v4(),
+        None,
+        &docs_dir,
+        blob_store,
+        false,
+    ));
+
+    {
+        let mut doc = room.doc.write().await;
+        doc.add_cell(0, "cell-1", "code").unwrap();
+        doc.update_source("cell-1", "before = 1").unwrap();
+    }
+
+    let save_path = tmp.path().join("auto.ipynb");
+    let written = save_notebook_to_disk(&room, Some(save_path.to_str().unwrap()))
+        .await
+        .unwrap();
+    let canonical = tokio::fs::canonicalize(&written)
+        .await
+        .unwrap_or_else(|_| PathBuf::from(&written));
+    let path_index = Arc::new(tokio::sync::Mutex::new(PathIndex::new()));
+    try_claim_path(&path_index, &canonical, room.id)
+        .await
+        .expect("path claim should succeed");
+    finalize_untitled_promotion(&room, canonical.clone()).await;
+
+    {
+        let mut doc = room.doc.write().await;
+        doc.add_cell(1, "cell-2", "code").unwrap();
+        doc.update_source("cell-2", "after = 2").unwrap();
+    }
+    let _ = room.broadcasts.changed_tx.send(());
+
+    assert!(
+        shutdown_autosave_debouncer(&room, &canonical.to_string_lossy(), Duration::from_secs(5))
+            .await,
+        "autosave shutdown should complete its final save"
+    );
+
+    let content = tokio::fs::read_to_string(&save_path).await.unwrap();
+    let nb: serde_json::Value = serde_json::from_str(&content).unwrap();
+    let cells = nb["cells"].as_array().expect("cells array");
+    assert_eq!(
+        cells.len(),
+        2,
+        "shutdown final save should persist the pending doc edit"
+    );
+    let sources: Vec<String> = cells
+        .iter()
+        .map(|c| match &c["source"] {
+            serde_json::Value::String(s) => s.clone(),
+            serde_json::Value::Array(arr) => {
+                arr.iter().filter_map(|v| v.as_str()).collect::<String>()
+            }
+            other => panic!("unexpected source shape: {other:?}"),
+        })
+        .collect();
+    assert!(
+        sources.iter().any(|source| source == "after = 2"),
+        "shutdown final save should include the edit made inside the debounce window; got: {sources:?}"
+    );
+    assert!(
+        room.persistence.autosave_shutdown_tx.lock().await.is_none(),
+        "shutdown should consume the autosave lifecycle handle"
+    );
+}
+
+#[tokio::test]
+async fn test_install_autosave_shutdown_tx_signals_replaced_handle() {
+    use std::time::Duration;
+
+    let tmp = tempfile::TempDir::new().unwrap();
+    let blob_store = test_blob_store(&tmp);
+    let docs_dir = tmp.path().join("docs");
+    std::fs::create_dir_all(&docs_dir).unwrap();
+
+    let room = NotebookRoom::new_fresh(Uuid::new_v4(), None, &docs_dir, blob_store, false);
+
+    let (old_tx, mut old_rx) = mpsc::unbounded_channel::<AutosaveShutdownRequest>();
+    install_autosave_shutdown_tx(&room, old_tx).await;
+
+    let (new_tx, mut new_rx) = mpsc::unbounded_channel::<AutosaveShutdownRequest>();
+    let replaced_ack_task = tokio::spawn(async move {
+        let ack_tx = old_rx
+            .recv()
+            .await
+            .expect("replacing the handle should signal the old task");
+        let _ = ack_tx.send(true);
+    });
+    install_autosave_shutdown_tx(&room, new_tx).await;
+    replaced_ack_task.await.unwrap();
+    assert!(
+        new_rx.try_recv().is_err(),
+        "new shutdown handle should remain installed until explicit shutdown"
+    );
+
+    let ack_task = tokio::spawn(async move {
+        let ack_tx = new_rx
+            .recv()
+            .await
+            .expect("explicit shutdown should use the new handle");
+        let _ = ack_tx.send(true);
+    });
+    assert!(
+        shutdown_autosave_debouncer(&room, "fake.ipynb", Duration::from_millis(500)).await,
+        "explicit shutdown should receive ack from the new handle"
+    );
+    ack_task.await.unwrap();
+}
+
+#[tokio::test]
+async fn test_autosave_shutdown_during_loading_returns_false_without_write() {
+    use std::time::Duration;
+
+    let tmp = tempfile::TempDir::new().unwrap();
+    let blob_store = test_blob_store(&tmp);
+    let docs_dir = tmp.path().join("docs");
+    std::fs::create_dir_all(&docs_dir).unwrap();
+
+    let room = Arc::new(NotebookRoom::new_fresh(
+        Uuid::new_v4(),
+        None,
+        &docs_dir,
+        blob_store,
+        false,
+    ));
+
+    {
+        let mut doc = room.doc.write().await;
+        doc.add_cell(0, "cell-1", "code").unwrap();
+        doc.update_source("cell-1", "before = 1").unwrap();
+    }
+
+    let save_path = tmp.path().join("loading.ipynb");
+    let written = save_notebook_to_disk(&room, Some(save_path.to_str().unwrap()))
+        .await
+        .unwrap();
+    let canonical = tokio::fs::canonicalize(&written)
+        .await
+        .unwrap_or_else(|_| PathBuf::from(&written));
+    *room.identity.path.write().await = Some(canonical.clone());
+    let shutdown_tx =
+        spawn_autosave_debouncer(canonical.to_string_lossy().into_owned(), Arc::clone(&room));
+    install_autosave_shutdown_tx(&room, shutdown_tx).await;
+
+    {
+        let mut doc = room.doc.write().await;
+        doc.add_cell(1, "cell-2", "code").unwrap();
+        doc.update_source("cell-2", "after = 2").unwrap();
+    }
+    let _ = room.broadcasts.changed_tx.send(());
+
+    assert!(room.try_start_loading(), "test should mark room as loading");
+    assert!(
+        !shutdown_autosave_debouncer(&room, &canonical.to_string_lossy(), Duration::from_secs(5))
+            .await,
+        "shutdown while loading should report that no final save happened"
+    );
+    room.finish_loading();
+
+    let content = tokio::fs::read_to_string(&save_path).await.unwrap();
+    let nb: serde_json::Value = serde_json::from_str(&content).unwrap();
+    let cells = nb["cells"].as_array().expect("cells array");
+    assert_eq!(
+        cells.len(),
+        1,
+        "shutdown while loading should not write pending edits to disk"
+    );
+}

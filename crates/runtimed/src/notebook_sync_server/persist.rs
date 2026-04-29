@@ -361,7 +361,9 @@ pub(crate) async fn finalize_untitled_promotion(room: &Arc<NotebookRoom>, canoni
     }
 
     // Spawn autosave debouncer so subsequent edits persist to .ipynb.
-    spawn_autosave_debouncer(canonical.to_string_lossy().into_owned(), Arc::clone(room));
+    let shutdown_tx =
+        spawn_autosave_debouncer(canonical.to_string_lossy().into_owned(), Arc::clone(room));
+    install_autosave_shutdown_tx(room, shutdown_tx).await;
 
     // Clear ephemeral markers.
     room.identity.is_ephemeral.store(false, Ordering::Relaxed);
@@ -654,6 +656,8 @@ impl Default for AutosaveDebouncerConfig {
     }
 }
 
+pub(crate) type AutosaveShutdownRequest = oneshot::Sender<bool>;
+
 /// Spawn a debounced autosave task that writes the `.ipynb` file to disk
 /// whenever serialized notebook content changes. Only for saved (non-untitled)
 /// notebooks. Does NOT format cells — formatting is reserved for explicit saves.
@@ -663,8 +667,86 @@ impl Default for AutosaveDebouncerConfig {
 /// `file_dirty_tx`. Generic RuntimeStateDoc broadcasts are intentionally not
 /// autosave triggers because they also carry session/UI fields like
 /// `last_saved`, lifecycle, path, and project context.
-pub(crate) fn spawn_autosave_debouncer(notebook_id: String, room: Arc<NotebookRoom>) {
-    spawn_autosave_debouncer_with_config(notebook_id, room, AutosaveDebouncerConfig::default());
+pub(crate) fn spawn_autosave_debouncer(
+    notebook_id: String,
+    room: Arc<NotebookRoom>,
+) -> mpsc::UnboundedSender<AutosaveShutdownRequest> {
+    spawn_autosave_debouncer_with_config(notebook_id, room, AutosaveDebouncerConfig::default())
+}
+
+pub(crate) async fn install_autosave_shutdown_tx(
+    room: &NotebookRoom,
+    shutdown_tx: mpsc::UnboundedSender<AutosaveShutdownRequest>,
+) {
+    let previous_tx = room
+        .persistence
+        .autosave_shutdown_tx
+        .lock()
+        .await
+        .replace(shutdown_tx);
+
+    if let Some(previous_tx) = previous_tx {
+        let (ack_tx, ack_rx) = oneshot::channel::<bool>();
+        if previous_tx.send(ack_tx).is_err() {
+            return;
+        }
+        match tokio::time::timeout(std::time::Duration::from_secs(5), ack_rx).await {
+            Ok(Ok(true)) => {}
+            Ok(Ok(false)) => {
+                warn!("[autosave] Replaced autosave task reported failed shutdown");
+            }
+            Ok(Err(_)) => {
+                warn!("[autosave] Replaced autosave task dropped shutdown ack");
+            }
+            Err(_) => {
+                warn!("[autosave] Timed out waiting for replaced autosave task shutdown");
+            }
+        }
+    }
+}
+
+/// Request one final autosave and stop the `.ipynb` autosave task.
+///
+/// The task owns a room `Arc`, so room eviction cannot rely on broadcast
+/// channels closing to signal shutdown. This helper consumes the stored
+/// lifecycle channel and waits for an explicit save acknowledgement.
+pub(crate) async fn shutdown_autosave_debouncer(
+    room: &NotebookRoom,
+    notebook_id: &str,
+    timeout: std::time::Duration,
+) -> bool {
+    let shutdown_tx = room.persistence.autosave_shutdown_tx.lock().await.take();
+    let Some(shutdown_tx) = shutdown_tx else {
+        return true;
+    };
+
+    let (ack_tx, ack_rx) = oneshot::channel::<bool>();
+    if shutdown_tx.send(ack_tx).is_err() {
+        debug!(
+            "[autosave] Shutdown skipped for {} (autosave task already exited)",
+            notebook_id
+        );
+        return true;
+    }
+
+    match tokio::time::timeout(timeout, ack_rx).await {
+        Ok(Ok(true)) => true,
+        Ok(Ok(false)) => false,
+        Ok(Err(_)) => {
+            warn!(
+                "[autosave] Shutdown ack dropped for {} before final save completed",
+                notebook_id
+            );
+            false
+        }
+        Err(_) => {
+            warn!(
+                "[autosave] Shutdown timed out for {} after {:?}",
+                notebook_id, timeout
+            );
+            false
+        }
+    }
 }
 
 /// Spawn autosave debouncer with custom timing configuration (for testing).
@@ -672,9 +754,10 @@ fn spawn_autosave_debouncer_with_config(
     notebook_id: String,
     room: Arc<NotebookRoom>,
     config: AutosaveDebouncerConfig,
-) {
+) -> mpsc::UnboundedSender<AutosaveShutdownRequest> {
     let mut changed_rx = room.broadcasts.changed_tx.subscribe();
     let mut file_dirty_rx = room.broadcasts.file_dirty_tx.subscribe();
+    let (shutdown_tx, mut shutdown_rx) = mpsc::unbounded_channel::<AutosaveShutdownRequest>();
     spawn_supervised(
         "autosave-debouncer",
         async move {
@@ -698,19 +781,6 @@ fn spawn_autosave_debouncer_with_config(
                                 last_receive = Some(Instant::now());
                             }
                             Err(broadcast::error::RecvError::Closed) => {
-                                // Room is being evicted — do a final autosave
-                                if !is_untitled_notebook(&notebook_id)
-                                    && !room.is_loading()
-                                {
-                                    match save_notebook_to_disk(&room, None).await {
-                                        Ok(path) => {
-                                            info!("[autosave] Final save on room close: {}", path);
-                                        }
-                                        Err(e) => {
-                                            warn!("[autosave] Final save failed: {}", e);
-                                        }
-                                    }
-                                }
                                 break;
                             }
                             Err(broadcast::error::RecvError::Lagged(n)) => {
@@ -733,6 +803,39 @@ fn spawn_autosave_debouncer_with_config(
                                 file_dirty_rx = rx;
                             }
                         }
+                    }
+                    Some(ack_tx) = shutdown_rx.recv() => {
+                        let ok = if room.is_loading() {
+                            warn!(
+                                "[autosave] Final save on shutdown skipped while {} is loading",
+                                notebook_id
+                            );
+                            false
+                        } else if !is_untitled_notebook(&notebook_id) {
+                            match save_notebook_to_disk(&room, None).await {
+                                Ok(path) => {
+                                    info!("[autosave] Final save on shutdown: {}", path);
+                                    let now = chrono::Utc::now().to_rfc3339();
+                                    if let Err(e) = room.state.with_doc(|sd| {
+                                        sd.set_last_saved(Some(&now))
+                                    }) {
+                                        warn!(
+                                            "[autosave] set_last_saved failed during shutdown: {}",
+                                            e
+                                        );
+                                    }
+                                    true
+                                }
+                                Err(e) => {
+                                    warn!("[autosave] Final save on shutdown failed: {}", e);
+                                    false
+                                }
+                            }
+                        } else {
+                            true
+                        };
+                        let _ = ack_tx.send(ok);
+                        break;
                     }
                     _ = check_interval.tick() => {
                         let should_flush = if let Some(recv) = last_receive {
@@ -802,6 +905,7 @@ fn spawn_autosave_debouncer_with_config(
             trigger_global_shutdown();
         },
     );
+    shutdown_tx
 }
 
 /// Actually persist bytes to disk, logging if it takes too long.
