@@ -380,7 +380,7 @@ async def daemon_health_check(daemon_process):
 
 
 @pytest.fixture(scope="module")
-def daemon_process():
+def daemon_process(request):
     """Fixture that ensures a daemon is running.
 
     In CI mode (RUNTIMED_INTEGRATION_TEST=1), spawns a daemon process.
@@ -556,7 +556,8 @@ def daemon_process():
 
                 dest_dir = Path(artifact_dir)
                 dest_dir.mkdir(parents=True, exist_ok=True)
-                dest = dest_dir / "daemon.log"
+                module_name = request.module.__name__.replace(".", "_")
+                dest = dest_dir / f"daemon-{module_name}.log"
                 shutil.copy2(log_file, dest)
                 print(f"[test] Copied daemon log to {dest}", file=sys.stderr)
 
@@ -1396,8 +1397,12 @@ class TestDenoKernel:
         except Exception:
             pass
 
-    async def test_deno_kernel_launch(self, deno_session):
-        """Deno kernel launches and executes TypeScript."""
+    async def test_create_deno_notebook_launches_kernel(self, deno_session):
+        """Creating a Deno notebook returns with a usable Deno kernel."""
+        assert await deno_session.is_connected()
+        assert await deno_session.kernel_started()
+        assert await deno_session.kernel_type() == "deno"
+
         result = await deno_session.execute_cell(
             await deno_session.create_cell("console.log('hello from deno')")
         )
@@ -1424,6 +1429,10 @@ class TestDenoKernel:
         assert ks["name"] == "deno"
         assert ks["display_name"] == "Deno"
         assert ks.get("language") == "typescript"
+
+        # Has zero cells (frontend creates the first cell locally)
+        cells = await deno_session.get_cells()
+        assert len(cells) == 0
 
         # Verify the kernel is actually Deno by executing TypeScript
         result = await deno_session.execute_cell(
@@ -2584,17 +2593,6 @@ class TestCreateNotebook:
         assert info.notebook_id == session.notebook_id
         # New notebooks don't need trust approval
         assert info.needs_trust_approval is False
-
-    async def test_create_deno_notebook(self, client):
-        """Creating Deno notebook returns after the auto-launched kernel is usable."""
-        session = await client.create_notebook(runtime="deno")
-        assert await session.is_connected()
-        assert await session.kernel_started()
-        assert await session.kernel_type() == "deno"
-
-        # Has zero cells (frontend creates the first cell locally)
-        cells = await session.get_cells()
-        assert len(cells) == 0
 
     async def test_create_notebook_with_working_dir(self, client, tmp_path):
         """working_dir is used for project file detection."""

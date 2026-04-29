@@ -315,18 +315,24 @@ async fn ensure_create_runtime_ready(
     let mut forced_launch = false;
 
     loop {
-        let (lifecycle, runtime) = {
+        let (lifecycle, error_reason, error_details, runtime) = {
             let st = state.lock().await;
             let handle = st
                 .handle
                 .as_ref()
                 .ok_or_else(|| to_py_err("Not connected"))?;
-            let lifecycle = handle
+            let (lifecycle, error_reason, error_details) = handle
                 .get_runtime_state()
                 .ok()
-                .map(|rs| rs.kernel.lifecycle)
-                .unwrap_or(RuntimeLifecycle::NotStarted);
-            (lifecycle, st.runtime.clone())
+                .map(|rs| {
+                    (
+                        rs.kernel.lifecycle,
+                        rs.kernel.error_reason,
+                        rs.kernel.error_details,
+                    )
+                })
+                .unwrap_or((RuntimeLifecycle::NotStarted, None, None));
+            (lifecycle, error_reason, error_details, st.runtime.clone())
         };
 
         match lifecycle {
@@ -347,9 +353,18 @@ async fn ensure_create_runtime_ready(
                 }
             }
             RuntimeLifecycle::Error => {
-                return Err(to_py_err(
-                    "Kernel auto-launch failed during notebook creation",
-                ));
+                let mut message = "Kernel auto-launch failed during notebook creation".to_string();
+                if let Some(details) = error_details.as_deref().filter(|value| !value.is_empty()) {
+                    message.push_str(": ");
+                    message.push_str(details);
+                } else if let Some(reason) =
+                    error_reason.as_deref().filter(|value| !value.is_empty())
+                {
+                    message.push_str(" (");
+                    message.push_str(reason);
+                    message.push(')');
+                }
+                return Err(to_py_err(message));
             }
             RuntimeLifecycle::NotStarted
             | RuntimeLifecycle::AwaitingTrust
