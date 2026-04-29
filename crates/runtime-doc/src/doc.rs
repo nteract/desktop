@@ -45,6 +45,7 @@
 //!     removed: List[Str]   (packages in kernel but not in metadata)
 //!     channels_changed: bool
 //!     deno_changed: bool
+//!     progress: Map|null    (latest flattened EnvProgress event, daemon-authored)
 //!   trust/
 //!     status: Str          ("trusted" | "untrusted" | "signature_invalid" | "no_dependencies")
 //!     needs_approval: bool
@@ -213,6 +214,9 @@ pub struct EnvState {
     /// Packages pre-installed in the prewarmed environment (empty for inline envs).
     #[serde(default)]
     pub prewarmed_packages: Vec<String>,
+    /// Latest environment-preparation progress event, if any.
+    #[serde(default)]
+    pub progress: Option<serde_json::Value>,
 }
 
 impl Default for EnvState {
@@ -224,6 +228,7 @@ impl Default for EnvState {
             channels_changed: false,
             deno_changed: false,
             prewarmed_packages: Vec::new(),
+            progress: None,
         }
     }
 }
@@ -401,6 +406,8 @@ impl RuntimeStateDoc {
             .expect("scaffold env.deno_changed");
         doc.put_object(&env, "prewarmed_packages", ObjType::List)
             .expect("scaffold env.prewarmed_packages");
+        doc.put(&env, "progress", ScalarValue::Null)
+            .expect("scaffold env.progress");
 
         // trust/
         let trust = doc
@@ -501,6 +508,8 @@ impl RuntimeStateDoc {
             .expect("scaffold env.removed");
         doc.put_object(&env, "prewarmed_packages", ObjType::List)
             .expect("scaffold env.prewarmed_packages");
+        doc.put(&env, "progress", ScalarValue::Null)
+            .expect("scaffold env.progress");
 
         let trust = doc
             .put_object(&ROOT, "trust", ObjType::Map)
@@ -1902,6 +1911,41 @@ impl RuntimeStateDoc {
         Ok(())
     }
 
+    /// Update the latest environment preparation progress snapshot.
+    pub fn set_env_progress(
+        &mut self,
+        env_type: &str,
+        phase: &serde_json::Value,
+    ) -> Result<(), RuntimeStateError> {
+        let env = self.scaffold_map("env")?;
+        let serde_json::Value::Object(mut map) = phase.clone() else {
+            return Err(RuntimeStateError::InvalidProgressShape);
+        };
+        map.insert(
+            "env_type".to_string(),
+            serde_json::Value::String(env_type.to_string()),
+        );
+        let progress = serde_json::Value::Object(map);
+
+        if automunge::read_json_value(&self.doc, &env, "progress") == Some(progress.clone()) {
+            return Ok(());
+        }
+
+        automunge::update_json_at_key(&mut self.doc, &env, "progress", &progress)?;
+        Ok(())
+    }
+
+    /// Clear the latest environment preparation progress snapshot.
+    pub fn clear_env_progress(&mut self) -> Result<(), RuntimeStateError> {
+        let env = self.scaffold_map("env")?;
+        if automunge::read_json_value(&self.doc, &env, "progress") == Some(serde_json::Value::Null)
+        {
+            return Ok(());
+        }
+        automunge::update_json_at_key(&mut self.doc, &env, "progress", &serde_json::Value::Null)?;
+        Ok(())
+    }
+
     /// Set the `last_saved` timestamp.
     pub fn set_last_saved(&mut self, timestamp: Option<&str>) -> Result<(), RuntimeStateError> {
         self.set_optional_str("last_saved", timestamp)
@@ -2450,6 +2494,10 @@ impl RuntimeStateDoc {
                 channels_changed: self.read_bool(e, "channels_changed"),
                 deno_changed: self.read_bool(e, "deno_changed"),
                 prewarmed_packages: self.read_str_list(e, "prewarmed_packages"),
+                progress: match automunge::read_json_value(&self.doc, e, "progress") {
+                    Some(serde_json::Value::Null) | None => None,
+                    other => other,
+                },
             })
             .unwrap_or_default();
 
@@ -3002,6 +3050,65 @@ mod tests {
         assert_eq!(state.env.removed, removed);
         assert!(state.env.channels_changed);
         assert!(!state.env.deno_changed);
+    }
+
+    #[test]
+    fn test_env_progress_defaults_to_none() {
+        let doc = RuntimeStateDoc::new();
+        assert_eq!(doc.read_state().env.progress, None);
+    }
+
+    #[test]
+    fn test_set_env_progress_round_trips_flattened_event() {
+        let mut doc = RuntimeStateDoc::new();
+        doc.set_env_progress(
+            "pixi",
+            &serde_json::json!({
+                "phase": "download_progress",
+                "completed": 2,
+                "total": 5,
+                "current_package": "polars",
+                "bytes_downloaded": 1024,
+                "bytes_total": 4096,
+                "bytes_per_second": 512,
+            }),
+        )
+        .unwrap();
+
+        assert_eq!(
+            doc.read_state().env.progress,
+            Some(serde_json::json!({
+                "env_type": "pixi",
+                "phase": "download_progress",
+                "completed": 2,
+                "total": 5,
+                "current_package": "polars",
+                "bytes_downloaded": 1024,
+                "bytes_total": 4096,
+                "bytes_per_second": 512,
+            }))
+        );
+    }
+
+    #[test]
+    fn test_clear_env_progress_returns_to_none() {
+        let mut doc = RuntimeStateDoc::new();
+        doc.set_env_progress("uv", &serde_json::json!({ "phase": "offline_hit" }))
+            .unwrap();
+        assert!(doc.read_state().env.progress.is_some());
+
+        doc.clear_env_progress().unwrap();
+        assert_eq!(doc.read_state().env.progress, None);
+    }
+
+    #[test]
+    fn test_set_env_progress_rejects_non_object_phase() {
+        let mut doc = RuntimeStateDoc::new();
+        let err = doc
+            .set_env_progress("uv", &serde_json::json!("offline_hit"))
+            .unwrap_err();
+        assert!(matches!(err, RuntimeStateError::InvalidProgressShape));
+        assert_eq!(doc.read_state().env.progress, None);
     }
 
     #[test]

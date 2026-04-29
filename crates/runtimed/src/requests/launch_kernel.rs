@@ -81,6 +81,7 @@ pub(crate) async fn handle(
                 // while we hold the sync mutex. Prevents a concurrent
                 // LaunchKernel from also proceeding past this gate.
                 sd.clear_comms().ok();
+                sd.clear_env_progress().ok();
                 sd.set_trust("trusted", false).ok();
                 sd.set_lifecycle(&RuntimeLifecycle::Resolving).ok();
             }
@@ -614,8 +615,9 @@ pub(crate) async fn handle(
 
     // For inline deps, prepare a cached environment with rich progress
     let launch_progress_handler: std::sync::Arc<dyn kernel_env::ProgressHandler> =
-        std::sync::Arc::new(crate::inline_env::BroadcastProgressHandler::new(
+        std::sync::Arc::new(crate::inline_env::BroadcastProgressHandler::with_state(
             room.broadcasts.kernel_broadcast_tx.clone(),
+            room.state.clone(),
         ));
 
     // Fetch feature flags up front so inline env hashing matches

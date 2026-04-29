@@ -1820,8 +1820,9 @@ pub(crate) async fn acquire_prewarmed_env_with_capture(
         _ => return acquire_pool_env_for_source(env_source, daemon, room).await,
     };
     let progress_handler: std::sync::Arc<dyn kernel_env::ProgressHandler> =
-        std::sync::Arc::new(crate::inline_env::BroadcastProgressHandler::new(
+        std::sync::Arc::new(crate::inline_env::BroadcastProgressHandler::with_state(
             room.broadcasts.kernel_broadcast_tx.clone(),
+            room.state.clone(),
         ));
 
     // Reopen path: if the notebook has an env_id and the unified-hash env
@@ -2143,6 +2144,7 @@ pub(crate) async fn reset_starting_state_with_outcome<'a>(
             }
         }
         sd.set_prewarmed_packages(&[])?;
+        sd.clear_env_progress()?;
         Ok(())
     }) {
         warn!("[runtime-state] {}", e);
@@ -2856,8 +2858,9 @@ pub(crate) async fn auto_launch_kernel(
 
     // For inline deps, prepare a cached environment with rich progress
     let progress_handler: std::sync::Arc<dyn kernel_env::ProgressHandler> =
-        std::sync::Arc::new(crate::inline_env::BroadcastProgressHandler::new(
+        std::sync::Arc::new(crate::inline_env::BroadcastProgressHandler::with_state(
             room.broadcasts.kernel_broadcast_tx.clone(),
+            room.state.clone(),
         ));
 
     // Fetch feature flags now so inline env prep hashes match what the
