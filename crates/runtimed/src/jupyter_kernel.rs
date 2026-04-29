@@ -778,9 +778,7 @@ impl KernelConnection for JupyterKernel {
         #[cfg(unix)]
         let ipc_prefix = {
             let prefix = ipc_path_prefix(&kernel_id);
-            if let Some(parent) = prefix.parent() {
-                tokio::fs::create_dir_all(parent).await?;
-            }
+            crate::ensure_ipc_socket_dir()?;
             Some(prefix)
         };
 
