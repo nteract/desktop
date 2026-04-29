@@ -14,7 +14,31 @@ use tokio::sync::{broadcast, RwLock};
 use tracing::{debug, info, warn};
 
 use crate::connection;
-use crate::settings_doc::SettingsDoc;
+use crate::settings_doc::{
+    SettingsDoc, SyncedSettings, MAX_KEEP_ALIVE_SECS, MAX_POOL_SIZE, MIN_KEEP_ALIVE_SECS,
+};
+
+const SETTINGS_RPC_KEYS: &[&str] = &[
+    "theme",
+    "color_theme",
+    "default_runtime",
+    "default_python_env",
+    "uv.default_packages",
+    "conda.default_packages",
+    "pixi.default_packages",
+    "keep_alive_secs",
+    "onboarding_completed",
+    "uv_pool_size",
+    "conda_pool_size",
+    "pixi_pool_size",
+    "bootstrap_dx",
+    "install_id",
+    "telemetry_enabled",
+    "telemetry_consent_recorded",
+    "telemetry_last_daemon_ping_at",
+    "telemetry_last_app_ping_at",
+    "telemetry_last_mcp_ping_at",
+];
 
 /// Check if an error is just a normal connection close.
 pub(crate) fn is_connection_closed(e: &anyhow::Error) -> bool {
@@ -166,6 +190,104 @@ fn build_snapshot_message(doc: &SettingsDoc) -> anyhow::Result<SettingsRpcServer
     Ok(SettingsRpcServerMessage::Snapshot { settings: value })
 }
 
+fn validate_settings_rpc_write(
+    doc: &SettingsDoc,
+    key: &str,
+    value: &serde_json::Value,
+) -> Result<bool, String> {
+    if !SETTINGS_RPC_KEYS.contains(&key) {
+        return Err(format!(
+            "unknown setting '{key}'. Valid keys: {}",
+            SETTINGS_RPC_KEYS.join(", ")
+        ));
+    }
+
+    validate_field_constraints(key, value)?;
+
+    let current = serde_json::to_value(doc.get_all()).map_err(|e| e.to_string())?;
+    let mut candidate = current.clone();
+    set_json_setting(&mut candidate, key, value.clone())?;
+    serde_json::from_value::<SyncedSettings>(candidate.clone())
+        .map_err(|e| format!("invalid value for setting '{key}': {e}"))?;
+
+    Ok(candidate != current)
+}
+
+fn validate_field_constraints(key: &str, value: &serde_json::Value) -> Result<(), String> {
+    match key {
+        "keep_alive_secs" => {
+            let secs = value
+                .as_u64()
+                .ok_or_else(|| "keep_alive_secs must be an unsigned integer".to_string())?;
+            if !(MIN_KEEP_ALIVE_SECS..=MAX_KEEP_ALIVE_SECS).contains(&secs) {
+                return Err(format!(
+                    "keep_alive_secs must be between {MIN_KEEP_ALIVE_SECS} and {MAX_KEEP_ALIVE_SECS}"
+                ));
+            }
+        }
+        "uv_pool_size" | "conda_pool_size" | "pixi_pool_size" => {
+            let size = value
+                .as_u64()
+                .ok_or_else(|| format!("{key} must be an unsigned integer"))?;
+            if size > MAX_POOL_SIZE {
+                return Err(format!("{key} must be between 0 and {MAX_POOL_SIZE}"));
+            }
+        }
+        "uv.default_packages" | "conda.default_packages" | "pixi.default_packages" => {
+            let packages = value
+                .as_array()
+                .ok_or_else(|| format!("{key} must be an array of package strings"))?;
+            for package in packages {
+                let package = package
+                    .as_str()
+                    .ok_or_else(|| format!("{key} must be an array of package strings"))?;
+                notebook_doc::metadata::validate_package_specifier(package)
+                    .map_err(|e| e.to_string())?;
+            }
+        }
+        "telemetry_last_daemon_ping_at"
+        | "telemetry_last_app_ping_at"
+        | "telemetry_last_mcp_ping_at" => {
+            if !(value.is_null() || value.as_u64().is_some()) {
+                return Err(format!(
+                    "{key} must be null or an unsigned integer timestamp"
+                ));
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn set_json_setting(
+    root: &mut serde_json::Value,
+    key: &str,
+    value: serde_json::Value,
+) -> Result<(), String> {
+    let parts: Vec<&str> = key.split('.').collect();
+    if parts.iter().any(|part| part.is_empty()) {
+        return Err("setting key must not contain empty path segments".to_string());
+    }
+
+    let mut current = root;
+    for part in &parts[..parts.len().saturating_sub(1)] {
+        current = current
+            .as_object_mut()
+            .ok_or_else(|| format!("expected object while setting '{key}'"))?
+            .entry((*part).to_string())
+            .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+    }
+
+    let leaf = parts
+        .last()
+        .ok_or_else(|| "setting key must not be empty".to_string())?;
+    current
+        .as_object_mut()
+        .ok_or_else(|| format!("expected object while setting '{key}'"))?
+        .insert((*leaf).to_string(), value);
+    Ok(())
+}
+
 /// Handle a single `Handshake::SettingsRpc` client.
 ///
 /// Prototype channel for nteract/desktop#1598. Runs alongside the existing
@@ -221,21 +343,34 @@ where
                         type ApplyOk = (SettingsRpcServerMessage, bool);
                         let apply_result: Result<ApplyOk, String> = {
                             let mut doc = settings.write().await;
-                            let before = doc.heads();
-                            doc.put_value(&key, &value);
-                            let after = doc.heads();
-                            let doc_changed = before != after;
+                            match validate_settings_rpc_write(&doc, &key, &value) {
+                                Err(e) => Err(e),
+                                Ok(expected_change) => {
+                                    let before = doc.heads();
+                                    if expected_change {
+                                        doc.put_value(&key, &value);
+                                    }
+                                    let after = doc.heads();
+                                    let doc_changed = before != after;
 
-                            let persist_result = if doc_changed {
-                                try_persist_settings(&mut doc, &automerge_path, &json_path)
-                            } else {
-                                Ok(())
-                            };
-                            persist_result.and_then(|()| {
-                                build_snapshot_message(&doc)
-                                    .map(|snapshot| (snapshot, doc_changed))
-                                    .map_err(|e| e.to_string())
-                            })
+                                    if expected_change && !doc_changed {
+                                        Err(format!(
+                                            "setting '{key}' is valid but is not supported by the SettingsDoc writer"
+                                        ))
+                                    } else {
+                                        let persist_result = if doc_changed {
+                                            try_persist_settings(&mut doc, &automerge_path, &json_path)
+                                        } else {
+                                            Ok(())
+                                        };
+                                        persist_result.and_then(|()| {
+                                            build_snapshot_message(&doc)
+                                                .map(|snapshot| (snapshot, doc_changed))
+                                                .map_err(|e| e.to_string())
+                                        })
+                                    }
+                                }
+                            }
                         };
 
                         match apply_result {
@@ -303,5 +438,101 @@ where
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::settings_doc::{ColorTheme, ThemeMode};
+
+    fn validation_error(key: &str, value: serde_json::Value) -> String {
+        let doc = SettingsDoc::new();
+        validate_settings_rpc_write(&doc, key, &value).expect_err("write should be rejected")
+    }
+
+    #[test]
+    fn settings_rpc_validation_accepts_supported_changes() {
+        let doc = SettingsDoc::new();
+
+        assert!(
+            validate_settings_rpc_write(&doc, "theme", &serde_json::json!("dark")).unwrap(),
+            "changing a scalar enum should report a document change"
+        );
+        assert!(
+            validate_settings_rpc_write(
+                &doc,
+                "uv.default_packages",
+                &serde_json::json!(["numpy", "pandas"])
+            )
+            .unwrap(),
+            "changing a package list should report a document change"
+        );
+        assert!(
+            validate_settings_rpc_write(&doc, "keep_alive_secs", &serde_json::json!(60)).unwrap(),
+            "changing a bounded number should report a document change"
+        );
+    }
+
+    #[test]
+    fn settings_rpc_validation_detects_no_op_writes() {
+        let doc = SettingsDoc::new();
+
+        assert!(
+            !validate_settings_rpc_write(&doc, "theme", &serde_json::json!(ThemeMode::System))
+                .unwrap(),
+            "writing the current theme should be a no-op"
+        );
+        assert!(
+            !validate_settings_rpc_write(
+                &doc,
+                "color_theme",
+                &serde_json::json!(ColorTheme::Classic)
+            )
+            .unwrap(),
+            "writing the current color theme should be a no-op"
+        );
+    }
+
+    #[test]
+    fn settings_rpc_validation_rejects_unknown_keys_and_bad_types() {
+        let unknown = validation_error("theme.typo", serde_json::json!("dark"));
+        assert!(unknown.contains("unknown setting"));
+
+        let bad_theme = validation_error("theme", serde_json::json!("midnight"));
+        assert!(bad_theme.contains("invalid value"));
+
+        let bad_bool = validation_error("telemetry_enabled", serde_json::json!("false"));
+        assert!(bad_bool.contains("invalid value"));
+
+        let bad_timestamp =
+            validation_error("telemetry_last_app_ping_at", serde_json::json!("yesterday"));
+        assert!(bad_timestamp.contains("must be null or an unsigned integer timestamp"));
+    }
+
+    #[test]
+    fn settings_rpc_validation_rejects_out_of_range_numbers() {
+        let too_short = validation_error("keep_alive_secs", serde_json::json!(1));
+        assert!(too_short.contains("keep_alive_secs must be between"));
+
+        let too_large_pool = validation_error("uv_pool_size", serde_json::json!(MAX_POOL_SIZE + 1));
+        assert!(too_large_pool.contains("uv_pool_size must be between"));
+
+        let wrong_pool_type = validation_error("conda_pool_size", serde_json::json!("3"));
+        assert!(wrong_pool_type.contains("conda_pool_size must be an unsigned integer"));
+    }
+
+    #[test]
+    fn settings_rpc_validation_rejects_malformed_package_lists() {
+        let not_array = validation_error("uv.default_packages", serde_json::json!("numpy"));
+        assert!(not_array.contains("must be an array of package strings"));
+
+        let non_string =
+            validation_error("conda.default_packages", serde_json::json!(["numpy", 123]));
+        assert!(non_string.contains("must be an array of package strings"));
+
+        let invalid_spec =
+            validation_error("pixi.default_packages", serde_json::json!(["[\"numpy\""]));
+        assert!(!invalid_spec.is_empty());
     }
 }

@@ -17,7 +17,8 @@ pub use framing::{
 };
 
 pub use handshake::{
-    Handshake, NotebookConnectionInfo, ProtocolCapabilities, PROTOCOL_V4, PROTOCOL_VERSION,
+    Handshake, NotebookConnectionInfo, ProtocolCapabilities, PROTOCOL_V4, PROTOCOL_V5,
+    PROTOCOL_VERSION,
 };
 
 pub use settings_rpc::{SettingsRpcClientMessage, SettingsRpcServerMessage};
@@ -156,6 +157,10 @@ mod tests {
         let json = serde_json::to_string(&Handshake::SettingsSync).unwrap();
         assert_eq!(json, r#"{"channel":"settings_sync"}"#);
 
+        // SettingsRpc
+        let json = serde_json::to_string(&Handshake::SettingsRpc).unwrap();
+        assert_eq!(json, r#"{"channel":"settings_rpc"}"#);
+
         // NotebookSync (without protocol - should omit the field)
         let json = serde_json::to_string(&Handshake::NotebookSync {
             notebook_id: "abc".into(),
@@ -166,30 +171,30 @@ mod tests {
         .unwrap();
         assert_eq!(json, r#"{"channel":"notebook_sync","notebook_id":"abc"}"#);
 
-        // NotebookSync with v4 protocol
+        // NotebookSync with v5 protocol
         let json = serde_json::to_string(&Handshake::NotebookSync {
             notebook_id: "abc".into(),
-            protocol: Some(PROTOCOL_V4.into()),
+            protocol: Some(PROTOCOL_V5.into()),
             working_dir: None,
             initial_metadata: None,
         })
         .unwrap();
         assert_eq!(
             json,
-            r#"{"channel":"notebook_sync","notebook_id":"abc","protocol":"v4"}"#
+            r#"{"channel":"notebook_sync","notebook_id":"abc","protocol":"v5"}"#
         );
 
         // NotebookSync with working_dir for untitled notebook
         let json = serde_json::to_string(&Handshake::NotebookSync {
             notebook_id: "550e8400-e29b-41d4-a716-446655440000".into(),
-            protocol: Some(PROTOCOL_V4.into()),
+            protocol: Some(PROTOCOL_V5.into()),
             working_dir: Some("/home/user/project".into()),
             initial_metadata: None,
         })
         .unwrap();
         assert_eq!(
             json,
-            r#"{"channel":"notebook_sync","notebook_id":"550e8400-e29b-41d4-a716-446655440000","protocol":"v4","working_dir":"/home/user/project"}"#
+            r#"{"channel":"notebook_sync","notebook_id":"550e8400-e29b-41d4-a716-446655440000","protocol":"v5","working_dir":"/home/user/project"}"#
         );
 
         // Blob
@@ -253,7 +258,7 @@ mod tests {
     fn test_notebook_connection_info_serialization() {
         // Success case (minimal - no optional fields)
         let info = NotebookConnectionInfo {
-            protocol: PROTOCOL_V4.into(),
+            protocol: PROTOCOL_V5.into(),
             protocol_version: None,
             daemon_version: None,
             notebook_id: "/home/user/notebook.ipynb".into(),
@@ -266,12 +271,12 @@ mod tests {
         let json = serde_json::to_string(&info).unwrap();
         assert_eq!(
             json,
-            r#"{"protocol":"v4","notebook_id":"/home/user/notebook.ipynb","cell_count":5,"needs_trust_approval":false,"ephemeral":false}"#
+            r#"{"protocol":"v5","notebook_id":"/home/user/notebook.ipynb","cell_count":5,"needs_trust_approval":false,"ephemeral":false}"#
         );
 
         // With version info
         let info = NotebookConnectionInfo {
-            protocol: PROTOCOL_V4.into(),
+            protocol: PROTOCOL_V5.into(),
             protocol_version: Some(PROTOCOL_VERSION),
             daemon_version: Some("0.1.0+abc123".into()),
             notebook_id: "/home/user/notebook.ipynb".into(),
@@ -287,7 +292,7 @@ mod tests {
 
         // With trust approval needed
         let info = NotebookConnectionInfo {
-            protocol: PROTOCOL_V4.into(),
+            protocol: PROTOCOL_V5.into(),
             protocol_version: None,
             daemon_version: None,
             notebook_id: "550e8400-e29b-41d4-a716-446655440000".into(),
@@ -302,7 +307,7 @@ mod tests {
 
         // Error case
         let info = NotebookConnectionInfo {
-            protocol: PROTOCOL_V4.into(),
+            protocol: PROTOCOL_V5.into(),
             protocol_version: None,
             daemon_version: None,
             notebook_id: String::new(),
@@ -317,7 +322,7 @@ mod tests {
 
         // With notebook_path
         let info = NotebookConnectionInfo {
-            protocol: PROTOCOL_V4.into(),
+            protocol: PROTOCOL_V5.into(),
             protocol_version: None,
             daemon_version: None,
             notebook_id: "550e8400-e29b-41d4-a716-446655440000".into(),

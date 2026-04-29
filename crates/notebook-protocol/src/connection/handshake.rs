@@ -96,13 +96,15 @@ pub enum Handshake {
 }
 
 pub const PROTOCOL_V4: &str = "v4";
+pub const PROTOCOL_V5: &str = "v5";
 
 /// Numeric protocol version for version negotiation.
 /// Increment this when making breaking protocol changes.
 ///
 /// Protocol v4 removes legacy environment-sync request/response variants and
 /// is not wire-compatible with v3 clients.
-pub const PROTOCOL_VERSION: u32 = 4;
+/// Protocol v5 adds the daemon-owned `SettingsRpc` handshake channel.
+pub const PROTOCOL_VERSION: u32 = 5;
 
 /// Server response indicating protocol capabilities.
 ///
@@ -110,7 +112,7 @@ pub const PROTOCOL_VERSION: u32 = 4;
 /// Used by the `NotebookSync` handshake variant.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProtocolCapabilities {
-    /// Protocol version string (currently always "v4").
+    /// Protocol version string (currently always "v5").
     pub protocol: String,
     /// Numeric protocol version for explicit version checking.
     /// Clients can compare this against their expected version.
@@ -128,7 +130,7 @@ pub struct ProtocolCapabilities {
 /// Contains notebook_id derived by the daemon (from path or generated env_id).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NotebookConnectionInfo {
-    /// Protocol version string (currently always "v4").
+    /// Protocol version string (currently always "v5").
     pub protocol: String,
     /// Numeric protocol version for explicit version checking.
     #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -476,7 +476,7 @@ async fn test_external_settings_json_edit_survives_settings_sync_ack() {
 #[tokio::test]
 async fn test_settings_rpc_set_setting_round_trip() {
     use runtimed::settings_doc::{SyncedSettings, ThemeMode};
-    use runtimed::settings_rpc_client::SettingsRpcClient;
+    use runtimed::settings_rpc_client::{SettingsRpcClient, SettingsRpcError};
 
     let temp_dir = TempDir::new().unwrap();
     let mut config = test_config(&temp_dir);
@@ -502,9 +502,13 @@ async fn test_settings_rpc_set_setting_round_trip() {
 
     // Connect via the new RPC handshake and read the initial snapshot.
     let mut rpc_client =
-        SettingsRpcClient::connect_with_timeout(socket_path, Duration::from_secs(2))
+        SettingsRpcClient::connect_with_timeout(socket_path.clone(), Duration::from_secs(2))
             .await
             .expect("SettingsRpcClient should connect via unified socket");
+    let mut peer_client =
+        SettingsRpcClient::connect_with_timeout(socket_path, Duration::from_secs(2))
+            .await
+            .expect("second SettingsRpcClient should connect via unified socket");
 
     assert_eq!(
         rpc_client.get_snapshot().theme,
@@ -525,6 +529,35 @@ async fn test_settings_rpc_set_setting_round_trip() {
         rpc_client.get_snapshot().theme,
         ThemeMode::Dark,
         "snapshot push from broadcast should reflect the new theme"
+    );
+    let peer_snapshot = tokio::time::timeout(Duration::from_secs(2), peer_client.recv_snapshot())
+        .await
+        .expect("peer should receive settings_changed broadcast")
+        .expect("peer snapshot should decode");
+    assert_eq!(
+        peer_snapshot.theme,
+        ThemeMode::Dark,
+        "peer snapshot should reflect the RPC write"
+    );
+
+    let rejected = rpc_client
+        .set_setting("theme.typo", &serde_json::Value::String("light".into()))
+        .await
+        .expect_err("unknown setting keys must be rejected");
+    assert!(
+        matches!(rejected, SettingsRpcError::Rejected(_)),
+        "unknown setting should produce a daemon rejection, got {rejected:?}"
+    );
+
+    rpc_client
+        .set_setting("theme", &serde_json::Value::String("dark".into()))
+        .await
+        .expect("same-value set_setting should still be acked");
+    let no_peer_snapshot =
+        tokio::time::timeout(Duration::from_millis(300), peer_client.recv_snapshot()).await;
+    assert!(
+        no_peer_snapshot.is_err(),
+        "same-value write should not broadcast to peers"
     );
 
     // The on-disk JSON mirror must reflect the change too. Without the

@@ -206,7 +206,7 @@ where
 
     // Send capabilities response unless already sent via NotebookConnectionInfo.
     if !skip_capabilities {
-        let (proto_str, proto_ver) = (connection::PROTOCOL_V4, connection::PROTOCOL_VERSION);
+        let (proto_str, proto_ver) = (connection::PROTOCOL_V5, connection::PROTOCOL_VERSION);
         let caps = connection::ProtocolCapabilities {
             protocol: proto_str.to_string(),
             protocol_version: Some(proto_ver),

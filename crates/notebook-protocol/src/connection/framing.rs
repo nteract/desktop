@@ -114,7 +114,7 @@ pub(super) fn frame_size_limits(type_byte: u8) -> FrameSizeLimits {
     }
 }
 
-/// Minimum protocol version accepted by v4 daemons.
+/// Minimum protocol version accepted by current daemons.
 pub const MIN_PROTOCOL_VERSION: u32 = 4;
 
 /// Magic bytes identifying the runtimed protocol.

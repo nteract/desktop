@@ -711,7 +711,7 @@ impl SyncEnvironmentResult {
 #[pyclass(get_all, skip_from_py_object)]
 #[derive(Clone, Debug)]
 pub struct NotebookConnectionInfo {
-    /// Protocol version (currently "v4").
+    /// Protocol version (currently "v5").
     pub protocol: String,
     /// Numeric protocol version for explicit version checking.
     pub protocol_version: Option<u32>,
