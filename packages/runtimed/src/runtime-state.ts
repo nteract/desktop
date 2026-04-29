@@ -347,8 +347,8 @@ export function diffExecutions(
 /**
  * Resolve the most recent execution_count for a cell from RuntimeState.
  *
- * The daemon writes execution_count to RuntimeStateDoc (not NotebookDoc),
- * so the WASM handle's get_cell_execution_count always returns "null".
+ * RuntimeStateDoc is the live source of truth. NotebookDoc may carry a
+ * persisted nbformat-history fallback when runtime state is unavailable.
  * This mirrors runt-mcp's get_cell_execution_count_from_runtime: find
  * the most recent execution for the cell that has a count set.
  */

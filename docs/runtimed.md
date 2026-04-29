@@ -231,7 +231,7 @@ ROOT/
     notebook_metadata: Str      <- Legacy JSON mirror (dual-written)
 ```
 
-Outputs live in `RuntimeStateDoc` (separate Automerge doc, frame type `0x05`) keyed by `execution_id`, with each manifest carrying an `output_id` UUID for addressable references. They are not stored in the notebook doc.
+Outputs live in `RuntimeStateDoc` (separate Automerge doc, frame type `0x05`) keyed by `execution_id`, with each manifest carrying an `output_id` UUID for addressable references. They are not stored in the notebook doc. Execution counts are duplicated intentionally: `RuntimeStateDoc` is authoritative for live sessions, while `NotebookDoc.execution_count` is the persisted nbformat-history fallback used when runtime state is unavailable.
 
 Cell ordering uses fractional indexing via the `position` field. Cells are sorted lexicographically by `position`, with `cell_id` as a tiebreaker for the (rare) case where two cells receive the same fractional index.
 

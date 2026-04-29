@@ -1392,7 +1392,7 @@ async fn test_apply_ipynb_changes_updates_execution_count() {
     .await;
     assert!(changed, "Should detect execution_count change");
 
-    // execution_count is now in RuntimeStateDoc via synthetic execution_id
+    // Live execution_count is resolved from RuntimeStateDoc via synthetic execution_id.
     let doc = room.doc.read().await;
     let eid = doc.get_execution_id("cell-1");
     drop(doc);

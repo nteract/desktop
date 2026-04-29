@@ -74,9 +74,9 @@ describe("WASM integration: real frames through SyncEngine", { retry: 3 }, () =>
       expect(h.client.get_cell_type("md-cell")).toBe("markdown");
     });
 
-    it.skip("client sees execution count after sync — execution_count moved to RuntimeStateDoc", async () => {
-      // execution_count is now in RuntimeStateDoc, not NotebookDoc.
-      // The WASM set_execution_count method was removed.
+    it.skip("client sees live execution count after sync", async () => {
+      // Live execution_count is sourced from RuntimeStateDoc. The WASM
+      // set_execution_count method was removed from NotebookDoc mutations.
     });
   });
 

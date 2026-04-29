@@ -185,9 +185,8 @@ export async function createWasmHarness(notebookId = "test-notebook"): Promise<W
     },
 
     serverSetExecutionCount(_cellId: string, _count: string) {
-      // No-op: execution_count is now in RuntimeStateDoc, not NotebookDoc.
-      // The WASM set_execution_count method was removed. Tests that need
-      // to verify execution_count should use RuntimeStateDoc instead.
+      // No-op: live execution_count is sourced from RuntimeStateDoc. The WASM
+      // set_execution_count method was removed from NotebookDoc mutations.
     },
 
     serverClearOutputs(cellId: string) {

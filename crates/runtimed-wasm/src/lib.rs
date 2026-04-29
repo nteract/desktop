@@ -858,8 +858,20 @@ impl NotebookHandle {
     }
 
     /// Get a cell's execution count.
+    ///
+    /// RuntimeStateDoc is authoritative while an execution is known. The
+    /// NotebookDoc cell field is a durable nbformat-history fallback for
+    /// reload/export paths where runtime state is unavailable.
     pub fn get_cell_execution_count(&self, cell_id: &str) -> Option<String> {
-        self.doc.get_cell_execution_count(cell_id)
+        self.state_doc
+            .read_state()
+            .executions
+            .values()
+            .filter(|exec| exec.cell_id == cell_id)
+            .filter_map(|exec| exec.execution_count)
+            .max()
+            .map(|count| count.to_string())
+            .or_else(|| self.doc.get_cell_execution_count(cell_id))
     }
 
     /// Get a cell's metadata as a native JS object.

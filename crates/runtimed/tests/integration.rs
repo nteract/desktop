@@ -667,9 +667,8 @@ async fn test_notebook_sync_cross_window_propagation() {
     assert!(cell.is_some(), "client2 should have cell c1");
     let cell = cell.unwrap();
     assert_eq!(cell.source, "x = 42");
-    // execution_count is now in RuntimeStateDoc, not NotebookDoc.
-    // The cell snapshot shows the default "null" — execution count
-    // is resolved from RuntimeStateDoc at save time and by the frontend.
+    // Live execution_count is resolved from RuntimeStateDoc at save time and
+    // by the frontend. NotebookDoc keeps only the persisted history fallback.
 
     // Shutdown
     pool_client.shutdown().await.ok();

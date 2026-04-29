@@ -720,6 +720,45 @@ mod tests {
         }
     }
 
+    #[test]
+    fn get_cell_execution_count_falls_back_to_notebook_doc() {
+        let (handle, _shared, _rx, _cmd_rx) = test_handle_with_shared();
+
+        handle
+            .with_doc(|doc| {
+                let mut nd = notebook_doc::NotebookDoc::wrap(std::mem::take(doc));
+                nd.add_cell_full("cell-1", "code", "80", "x = 1", "7", &serde_json::json!({}))
+                    .unwrap();
+                *doc = nd.into_inner();
+            })
+            .unwrap();
+
+        assert_eq!(
+            handle.get_cell_execution_count("cell-1").as_deref(),
+            Some("7")
+        );
+    }
+
+    #[test]
+    fn get_cell_execution_count_prefers_runtime_state() {
+        let (handle, shared, _rx, _cmd_rx) = test_handle_with_shared();
+
+        handle
+            .with_doc(|doc| {
+                let mut nd = notebook_doc::NotebookDoc::wrap(std::mem::take(doc));
+                nd.add_cell_full("cell-1", "code", "80", "x = 1", "7", &serde_json::json!({}))
+                    .unwrap();
+                *doc = nd.into_inner();
+            })
+            .unwrap();
+        set_execution(&shared, "exec-1", "cell-1", "done", &[], Some(9));
+
+        assert_eq!(
+            handle.get_cell_execution_count("cell-1").as_deref(),
+            Some("9")
+        );
+    }
+
     #[tokio::test]
     async fn await_execution_terminal_returns_once_status_done() {
         use crate::execution_wait::{await_execution_terminal, ExecutionTerminalState};

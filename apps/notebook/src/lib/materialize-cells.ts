@@ -242,8 +242,8 @@ export function cellSnapshotsToNotebookCellsSync(
         .map((output) => resolveOutputSync(output, blobPort ?? null, cache))
         .filter((o): o is JupyterOutput => o !== null);
 
-      // Resolve execution_count from RuntimeState (source of truth) rather
-      // than the stale NotebookDoc field which is always "null".
+      // RuntimeState is the live source of truth. NotebookDoc carries the
+      // persisted nbformat history fallback for runtime-free reload/export.
       const runtimeCount = getExecutionCountFromRuntime(snap.id);
       const ec =
         runtimeCount ?? (Number.isNaN(executionCount) ? null : executionCount);
@@ -307,7 +307,8 @@ export async function cellSnapshotsToNotebookCells(
           )
         ).filter((o): o is JupyterOutput => o !== null);
 
-        // Resolve execution_count from RuntimeState (source of truth)
+        // RuntimeState is the live source of truth. NotebookDoc carries the
+        // persisted nbformat history fallback for runtime-free reload/export.
         const runtimeCount = getExecutionCountFromRuntime(snap.id);
         const ec =
           runtimeCount ??
