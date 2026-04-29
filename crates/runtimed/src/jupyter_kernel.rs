@@ -49,7 +49,40 @@ use notebook_protocol::protocol::LaunchedEnvConfig;
 /// also `ip_local_port_range` start, typically 32768). 9000-9999 is in the
 /// IANA user-port range, far from any default ephemeral pool, and unlikely
 /// to clash with common services on a developer machine.
-const KERNEL_PORT_RANGE: std::ops::RangeInclusive<u16> = 9000..=9999;
+const DEFAULT_KERNEL_PORT_RANGE: std::ops::RangeInclusive<u16> = 9000..=9999;
+const TEST_KERNEL_PORT_RANGE_SIZE: u16 = 100;
+static NEXT_KERNEL_PORT_OFFSET: AtomicU64 = AtomicU64::new(0);
+
+fn kernel_port_range() -> std::ops::RangeInclusive<u16> {
+    match std::env::var("RUNTIMED_TEST_KERNEL_PORT_RANGE_START") {
+        Ok(raw) => match raw.parse::<u16>() {
+            Ok(start) => {
+                let end = start.saturating_add(TEST_KERNEL_PORT_RANGE_SIZE - 1);
+                start..=end
+            }
+            Err(e) => {
+                warn!(
+                    "[jupyter-kernel] Ignoring invalid RUNTIMED_TEST_KERNEL_PORT_RANGE_START={raw:?}: {e}"
+                );
+                DEFAULT_KERNEL_PORT_RANGE
+            }
+        },
+        Err(_) => DEFAULT_KERNEL_PORT_RANGE,
+    }
+}
+
+fn kernel_port_candidates(num: usize) -> Vec<u16> {
+    let range = kernel_port_range();
+    let start = u32::from(*range.start());
+    let end = u32::from(*range.end());
+    let len = (end - start + 1) as usize;
+    let offset = NEXT_KERNEL_PORT_OFFSET.fetch_add(num as u64, Ordering::Relaxed) as usize % len;
+
+    (0..len)
+        .map(|i| start + ((offset + i) % len) as u32)
+        .filter_map(|port| u16::try_from(port).ok())
+        .collect()
+}
 
 /// Reserve `num` TCP ports for a kernel's ZMQ sockets.
 ///
@@ -71,7 +104,7 @@ async fn reserve_kernel_ports(ip: IpAddr, num: usize) -> Result<(Vec<u16>, Vec<T
     let mut ports: Vec<u16> = Vec::with_capacity(num);
     let mut listeners: Vec<TcpListener> = Vec::with_capacity(num);
 
-    for port in KERNEL_PORT_RANGE {
+    for port in kernel_port_candidates(num) {
         if ports.len() == num {
             break;
         }
@@ -84,7 +117,7 @@ async fn reserve_kernel_ports(ip: IpAddr, num: usize) -> Result<(Vec<u16>, Vec<T
 
     if ports.len() == num {
         debug!(
-            "[jupyter-kernel] Reserved {} ports from KERNEL_PORT_RANGE: {:?}",
+            "[jupyter-kernel] Reserved {} ports from configured range: {:?}",
             num, ports
         );
         return Ok((ports, listeners));

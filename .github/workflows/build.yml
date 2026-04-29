@@ -635,13 +635,74 @@ jobs:
             > e2e-logs/daemon.log 2>&1 &
           DAEMON_PID=$!
 
-          # Wait for pool warm-up (skip for tests with no pool)
+          RUNT=$(find target/release/binaries -maxdepth 1 -name 'runt-*' -print -quit)
+          if [ -z "$RUNT" ]; then
+            echo "Could not find runt binary"
+            exit 1
+          fi
+
+          wait_for_daemon() {
+            local timeout="$1"
+            for i in $(seq 1 "$timeout"); do
+              kill -0 "$DAEMON_PID" 2>/dev/null || {
+                echo "Daemon died while waiting for readiness"
+                cat e2e-logs/daemon.log
+                exit 1
+              }
+
+              STATUS=$(env -u UV_CACHE_DIR -u UV_PYTHON_INSTALL_DIR \
+                RUNTIMED_WORKSPACE_PATH="${GITHUB_WORKSPACE}" \
+                "$RUNT" daemon status --json 2>/dev/null || true)
+
+              if [ -n "$STATUS" ] && STATUS_JSON="$STATUS" \
+                UV_POOL="${{ matrix.uv_pool }}" \
+                CONDA_POOL="${{ matrix.conda_pool }}" \
+                python3 <<'PY'
+          import json
+          import os
+          import sys
+
+          status = json.loads(os.environ["STATUS_JSON"])
+          if not status.get("running"):
+              sys.exit(1)
+
+          pool = status.get("pool_stats") or {}
+
+          def ready(name, requested):
+              if int(requested) <= 0:
+                  return True
+              state = pool.get(name) or {}
+              return int(state.get("available") or 0) > 0
+
+          sys.exit(
+              0
+              if ready("uv", os.environ["UV_POOL"])
+              and ready("conda", os.environ["CONDA_POOL"])
+              else 1
+          )
+          PY
+              then
+                echo "Daemon ready after ${i}s"
+                echo "$STATUS"
+                return 0
+              fi
+
+              sleep 1
+            done
+
+            echo "Daemon was not ready within ${timeout}s"
+            echo "Last daemon status:"
+            echo "${STATUS:-<none>}"
+            echo "Daemon log:"
+            cat e2e-logs/daemon.log
+            exit 1
+          }
+
+          # Wait for daemon readiness and, when requested, at least one warm pool entry.
           if [ "${{ matrix.uv_pool }}" = "0" ] && [ "${{ matrix.conda_pool }}" = "0" ]; then
-            echo "No pool to warm, sleeping 5s..."
-            sleep 5
+            wait_for_daemon 30
           else
-            echo "Waiting for daemon pool to warm (90s on cold CI)..."
-            sleep 90
+            wait_for_daemon 120
           fi
 
           # Start the app (with notebook if specified)
@@ -786,6 +847,8 @@ jobs:
           export RUNTIMED_BINARY="${GITHUB_WORKSPACE}/target/release/runtimed"
           export RUNTIMED_LOG_LEVEL=debug
           export RUNTIMED_WORKSPACE_PATH="${GITHUB_WORKSPACE}"
+          export RUNTIMED_TEST_UV_POOL_SIZE=1
+          export RUNTIMED_TEST_CONDA_POOL_SIZE=0
           # Tells the test fixture to copy daemon.log into the artifact
           # dir on teardown so a post-mortem has the daemon's side of any
           # failure (see #2290).
@@ -798,9 +861,13 @@ jobs:
           # timeout = 600). uv-installed bindings landed in
           # ${GITHUB_WORKSPACE}/.venv via VIRTUAL_ENV in the previous step.
           export VIRTUAL_ENV="${GITHUB_WORKSPACE}/.venv"
+          export RUNTIMED_PYTEST_WORKERS=6
           uv run pytest \
             tests/test_daemon_integration.py \
             tests/test_dx_integration.py \
+            -n "${RUNTIMED_PYTEST_WORKERS}" \
+            --dist loadscope \
+            --durations=25 \
             -v --tb=short 2>&1 | tee integration-logs/test-output.log || FAIL=1
 
           exit "${FAIL:-0}"

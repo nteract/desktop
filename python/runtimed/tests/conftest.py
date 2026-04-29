@@ -47,6 +47,9 @@ def pytest_report_header(config):
     else:
         lines.append("runtimed: dev mode (expects running daemon)")
 
+    if worker := os.environ.get("PYTEST_XDIST_WORKER"):
+        lines.append(f"pytest-xdist worker: {worker}")
+
     # Check for custom socket path
     if "RUNTIMED_SOCKET_PATH" in os.environ:
         lines.append(f"runtimed socket: {os.environ['RUNTIMED_SOCKET_PATH']}")
