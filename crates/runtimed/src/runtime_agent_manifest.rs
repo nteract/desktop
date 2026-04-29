@@ -239,6 +239,17 @@ pub(crate) fn reap_manifest_dir(dir: &Path) -> usize {
 
 fn remove_manifest_path(path: &Path, manifest: &RuntimeAgentManifest) {
     if let Some(connection_file) = &manifest.connection_file {
+        // If the connection file specifies IPC transport, clean up the
+        // socket files. Parse best-effort — if the file is gone or
+        // malformed, skip silently.
+        #[cfg(unix)]
+        if let Ok(contents) = std::fs::read_to_string(connection_file) {
+            if let Ok(info) = serde_json::from_str::<jupyter_protocol::ConnectionInfo>(&contents) {
+                if info.transport == jupyter_protocol::connection_info::Transport::IPC {
+                    crate::jupyter_kernel::cleanup_ipc_sockets(std::path::Path::new(&info.ip));
+                }
+            }
+        }
         let _ = std::fs::remove_file(connection_file);
     }
     if let Err(e) = std::fs::remove_file(path) {
