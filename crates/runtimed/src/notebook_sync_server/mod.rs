@@ -55,6 +55,7 @@ mod metadata;
 mod nbformat_convert;
 mod path_index;
 mod peer;
+mod peer_writer;
 mod persist;
 mod project_context;
 mod room;
