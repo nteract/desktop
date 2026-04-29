@@ -246,8 +246,10 @@ function AppContent() {
   const {
     uvError: poolUvError,
     condaError: poolCondaError,
+    pixiError: poolPixiError,
     dismissUvError: dismissPoolUvError,
     dismissCondaError: dismissPoolCondaError,
+    dismissPixiError: dismissPoolPixiError,
   } = usePoolState();
 
   // Trust verification for notebook dependencies
@@ -1587,8 +1589,10 @@ function AppContent() {
         <PoolErrorBanner
           uvError={poolUvError}
           condaError={poolCondaError}
+          pixiError={poolPixiError}
           onDismissUv={dismissPoolUvError}
           onDismissConda={dismissPoolCondaError}
+          onDismissPixi={dismissPoolPixiError}
         />
         {needsApproval &&
           !trustApprovalHandoffPending &&

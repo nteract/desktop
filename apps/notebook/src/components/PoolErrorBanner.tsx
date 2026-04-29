@@ -3,12 +3,12 @@ import { AlertTriangle, Clock, Settings, X } from "lucide-react";
 import type { PoolErrorWithTimestamp } from "../hooks/usePoolState";
 
 interface PoolErrorItemProps {
-  envType: "UV" | "Conda";
+  envType: "UV" | "Conda" | "Pixi";
   error: PoolErrorWithTimestamp;
   onDismiss: () => void;
 }
 
-function errorSubtitle(error: PoolErrorWithTimestamp, envType: "UV" | "Conda"): string {
+function errorSubtitle(error: PoolErrorWithTimestamp, envType: "UV" | "Conda" | "Pixi"): string {
   switch (error.error_kind) {
     case "timeout":
       return "Retrying automatically";
@@ -85,23 +85,27 @@ function PoolErrorItem({ envType, error, onDismiss }: PoolErrorItemProps) {
 interface PoolErrorBannerProps {
   uvError: PoolErrorWithTimestamp | null;
   condaError: PoolErrorWithTimestamp | null;
+  pixiError: PoolErrorWithTimestamp | null;
   onDismissUv: () => void;
   onDismissConda: () => void;
+  onDismissPixi: () => void;
 }
 
 /**
  * Banner component showing pool warming errors.
  *
- * Displays amber warning banners for UV and/or Conda pool errors,
+ * Displays amber warning banners for UV, Conda, and Pixi pool errors,
  * with contextual messages based on error type.
  */
 export function PoolErrorBanner({
   uvError,
   condaError,
+  pixiError,
   onDismissUv,
   onDismissConda,
+  onDismissPixi,
 }: PoolErrorBannerProps) {
-  if (!uvError && !condaError) {
+  if (!uvError && !condaError && !pixiError) {
     return null;
   }
 
@@ -111,6 +115,7 @@ export function PoolErrorBanner({
       {condaError && (
         <PoolErrorItem envType="Conda" error={condaError} onDismiss={onDismissConda} />
       )}
+      {pixiError && <PoolErrorItem envType="Pixi" error={pixiError} onDismiss={onDismissPixi} />}
     </div>
   );
 }

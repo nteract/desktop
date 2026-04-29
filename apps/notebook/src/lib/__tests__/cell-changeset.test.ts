@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 import {
+  classifyCellChangesetMaterialization,
   type CellChangeset,
   type ChangedFields,
   mergeChangesets,
@@ -162,23 +163,9 @@ describe("CellChangeset helpers", () => {
 describe("CellChangeset classification", () => {
   it("source-only changeset", () => {
     const cs = sourceOnly("cell-1");
-    const isSourceOnly =
-      cs.added.length === 0 &&
-      cs.removed.length === 0 &&
-      !cs.order_changed &&
-      cs.changed.every((c) => {
-        const f = c.fields;
-        return (
-          f.source &&
-          !f.outputs &&
-          !f.execution_count &&
-          !f.cell_type &&
-          !f.metadata &&
-          !f.position &&
-          !f.resolved_assets
-        );
-      });
-    expect(isSourceOnly).toBe(true);
+    expect(classifyCellChangesetMaterialization(cs)).toEqual({
+      kind: "incremental",
+    });
   });
 
   it("structural changeset with added cells", () => {
@@ -187,16 +174,28 @@ describe("CellChangeset classification", () => {
       added: ["cell-new"],
       order_changed: true,
     };
-    const isStructural =
-      cs.added.length > 0 || cs.removed.length > 0 || cs.order_changed;
-    expect(isStructural).toBe(true);
+    expect(classifyCellChangesetMaterialization(cs)).toEqual({
+      kind: "full",
+      reason: "structural",
+    });
   });
 
   it("non-structural output change", () => {
     const cs = outputsOnly("cell-1");
-    const isStructural =
-      cs.added.length > 0 || cs.removed.length > 0 || cs.order_changed;
-    expect(isStructural).toBe(false);
+    expect(classifyCellChangesetMaterialization(cs)).toEqual({
+      kind: "incremental",
+    });
+  });
+
+  it("resolved asset changeset", () => {
+    const cs: CellChangeset = {
+      ...empty,
+      changed: [{ cell_id: "cell-1", fields: { resolved_assets: true } }],
+    };
+    expect(classifyCellChangesetMaterialization(cs)).toEqual({
+      kind: "full",
+      reason: "resolved_assets",
+    });
   });
 });
 

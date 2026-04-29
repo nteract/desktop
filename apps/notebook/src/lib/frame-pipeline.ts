@@ -10,6 +10,7 @@ import {
   needsPlugin,
   preWarmForMimes,
 } from "@/components/isolated/iframe-libraries";
+import { classifyCellChangesetMaterialization } from "runtimed";
 import type { JupyterOutput } from "../types";
 import type { NotebookHandle } from "../wasm/runtimed-wasm/runtimed_wasm.js";
 import { getBlobPort } from "./blob-port";
@@ -22,10 +23,14 @@ import { notifyMetadataChanged } from "./notebook-metadata";
 // Re-export CellChangeset types so existing consumers don't break.
 export type {
   CellChangeset,
+  CellChangesetMaterialization,
   ChangedCell,
   ChangedFields,
 } from "./cell-changeset";
-export { mergeChangesets } from "./cell-changeset";
+export {
+  classifyCellChangesetMaterialization,
+  mergeChangesets,
+} from "./cell-changeset";
 
 // ── Materialization dependencies ─────────────────────────────────────
 
@@ -91,35 +96,25 @@ export async function materializeChangeset(
 
   // ── Full materialization fallback ──────────────────────────────────
 
-  if (!changeset) {
-    logger.debug(
-      "[frame-pipeline] full materialization: no changeset from WASM",
-    );
+  const materialization = classifyCellChangesetMaterialization(changeset);
+  if (materialization.kind === "full") {
+    if (materialization.reason === "missing_changeset") {
+      logger.debug(
+        "[frame-pipeline] full materialization: no changeset from WASM",
+      );
+    } else {
+      logger.debug(
+        `[frame-pipeline] full materialization: +${changeset?.added.length ?? 0} -${changeset?.removed.length ?? 0} reorder=${changeset?.order_changed ?? false} reason=${materialization.reason}`,
+      );
+    }
     await deps.materializeCells(handle);
     notifyMetadataChanged();
     return;
   }
 
-  // Structural changes (cells added/removed/reordered) or resolved_assets
-  // changes require full materialization. resolved_assets are only available
-  // from get_cells_json() (full serialization), not per-cell WASM accessors,
-  // so the incremental path would serve stale values from the previous cell.
-  const hasResolvedAssetChanges = changeset.changed.some(
-    (c) => c.fields.resolved_assets,
-  );
-  if (
-    changeset.added.length > 0 ||
-    changeset.removed.length > 0 ||
-    changeset.order_changed ||
-    hasResolvedAssetChanges
-  ) {
-    logger.debug(
-      `[frame-pipeline] full materialization: +${changeset.added.length} -${changeset.removed.length} reorder=${changeset.order_changed} assets=${hasResolvedAssetChanges}`,
-    );
-    await deps.materializeCells(handle);
-    notifyMetadataChanged();
-    return;
-  }
+  // `classifyCellChangesetMaterialization(null)` always takes the full
+  // materialization branch above; this guard narrows the incremental path.
+  if (!changeset) return;
 
   // ── Per-cell incremental materialization ───────────────────────────
 

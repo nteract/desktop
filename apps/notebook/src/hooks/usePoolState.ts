@@ -24,7 +24,7 @@ function errorsEqual(
 }
 
 /** Extract error info from a RuntimePoolState, or null if healthy. */
-function extractError(pool: PoolState["uv"] | PoolState["conda"]): PoolErrorWithTimestamp | null {
+function extractError(pool: PoolState[keyof PoolState]): PoolErrorWithTimestamp | null {
   if (!pool.error) return null;
   return {
     message: pool.error,
@@ -48,13 +48,16 @@ export function usePoolState() {
   // Track dismissed errors so they don't reappear until state changes
   const [dismissedUv, setDismissedUv] = useState(false);
   const [dismissedConda, setDismissedConda] = useState(false);
+  const [dismissedPixi, setDismissedPixi] = useState(false);
 
   // Track previous errors to detect changes and reset dismiss state
   const prevUvErrorRef = useRef<PoolErrorWithTimestamp | null>(null);
   const prevCondaErrorRef = useRef<PoolErrorWithTimestamp | null>(null);
+  const prevPixiErrorRef = useRef<PoolErrorWithTimestamp | null>(null);
 
   const uvError = extractError(poolState.uv);
   const condaError = extractError(poolState.conda);
+  const pixiError = extractError(poolState.pixi);
 
   // Reset dismiss state when error changes
   if (!errorsEqual(uvError, prevUvErrorRef.current)) {
@@ -65,6 +68,10 @@ export function usePoolState() {
     prevCondaErrorRef.current = condaError;
     if (dismissedConda) setDismissedConda(false);
   }
+  if (!errorsEqual(pixiError, prevPixiErrorRef.current)) {
+    prevPixiErrorRef.current = pixiError;
+    if (dismissedPixi) setDismissedPixi(false);
+  }
 
   const dismissUvError = useCallback(() => {
     setDismissedUv(true);
@@ -74,17 +81,27 @@ export function usePoolState() {
     setDismissedConda(true);
   }, []);
 
+  const dismissPixiError = useCallback(() => {
+    setDismissedPixi(true);
+  }, []);
+
   const dismissAll = useCallback(() => {
     setDismissedUv(true);
     setDismissedConda(true);
+    setDismissedPixi(true);
   }, []);
 
   return {
     uvError: dismissedUv ? null : uvError,
     condaError: dismissedConda ? null : condaError,
-    hasErrors: (!dismissedUv && uvError !== null) || (!dismissedConda && condaError !== null),
+    pixiError: dismissedPixi ? null : pixiError,
+    hasErrors:
+      (!dismissedUv && uvError !== null) ||
+      (!dismissedConda && condaError !== null) ||
+      (!dismissedPixi && pixiError !== null),
     dismissUvError,
     dismissCondaError,
+    dismissPixiError,
     dismissAll,
   };
 }

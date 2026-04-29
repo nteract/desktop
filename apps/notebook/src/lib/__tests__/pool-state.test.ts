@@ -35,12 +35,20 @@ describe("pool-state store", () => {
       retry_in_secs: 30,
       failed_package: "pandas",
     },
+    pixi: {
+      available: 1,
+      warming: 0,
+      pool_size: 1,
+      consecutive_failures: 0,
+      retry_in_secs: 0,
+    },
   };
 
   it("starts at DEFAULT_POOL_STATE with zeroed pools", () => {
     expect(getPoolState()).toEqual(DEFAULT_POOL_STATE);
     expect(getPoolState().uv.available).toBe(0);
     expect(getPoolState().conda.available).toBe(0);
+    expect(getPoolState().pixi.available).toBe(0);
     expect(getPoolState().uv.error).toBeUndefined();
   });
 
@@ -59,18 +67,35 @@ describe("pool-state store", () => {
   });
 
   it("DEFAULT_POOL_STATE's nested pools are independent objects", () => {
-    // If uv and conda aliased the same object (via module-level object
-    // literal share), a daemon update that only touched `uv` would
-    // silently mutate `conda` too — a real bug waiting to happen.
+    // If pool defaults aliased the same object (via module-level object
+    // literal share), a daemon update that only touched one manager would
+    // silently mutate the others too — a real bug waiting to happen.
     expect(DEFAULT_POOL_STATE.uv).not.toBe(DEFAULT_POOL_STATE.conda);
+    expect(DEFAULT_POOL_STATE.uv).not.toBe(DEFAULT_POOL_STATE.pixi);
+    expect(DEFAULT_POOL_STATE.conda).not.toBe(DEFAULT_POOL_STATE.pixi);
   });
 
   it("setPoolState keeps the reference, not a defensive copy", () => {
     // useSyncExternalStore re-renders only when the snapshot reference
     // changes. If we deep-cloned, callers would over-render. If we kept
-    // the old reference, callers would under-render. Pin: same-ref out.
+    // the old reference, callers would under-render. Pin: same-ref out
+    // for complete daemon snapshots.
     setPoolState(populated);
     expect(getPoolState()).toBe(populated);
+  });
+
+  it("normalizes stale pool snapshots that predate pixi", () => {
+    const stale = {
+      uv: populated.uv,
+      conda: populated.conda,
+    } as PoolState;
+
+    setPoolState(stale);
+
+    expect(getPoolState()).not.toBe(stale);
+    expect(getPoolState().uv).toBe(populated.uv);
+    expect(getPoolState().conda).toBe(populated.conda);
+    expect(getPoolState().pixi).toBe(DEFAULT_POOL_STATE.pixi);
   });
 
   it("successive setPoolState calls each replace the snapshot", () => {
@@ -109,6 +134,7 @@ describe("pool-state store", () => {
     const fresh: PoolState = {
       uv: { ...DEFAULT_POOL_STATE.uv, available: 5 },
       conda: { ...DEFAULT_POOL_STATE.conda },
+      pixi: { ...DEFAULT_POOL_STATE.pixi },
     };
     setPoolState(fresh);
     expect(getPoolState()).toBe(fresh);
