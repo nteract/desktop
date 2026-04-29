@@ -8,6 +8,9 @@ Built on [runtimelib](https://crates.io/crates/runtimelib) and [jupyter-protocol
 
 Download the latest release from [GitHub Releases](https://github.com/nteract/desktop/releases).
 
+Linux users on Debian or Ubuntu should prefer the APT repository at
+`https://apt.runtimed.com`; see [Linux install options](docs/linux.md).
+
 The desktop app bundles everything — `runt` CLI and `runtimed` daemon.
 
 The `runt` CLI and `runtimed` Python bindings ship with the app and stay up to date automatically. For nightly builds, use `runt-nightly` instead.
