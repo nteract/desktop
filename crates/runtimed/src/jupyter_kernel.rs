@@ -1198,28 +1198,49 @@ impl KernelConnection for JupyterKernel {
 
         // ── ZMQ connections and background tasks ─────────────────────────
 
-        // IPC: wait for the kernel to create socket files before connecting.
+        // IPC: wait for the kernel to create ALL socket files before connecting.
         // Unlike TCP (where connect can retry internally), zmq.rs IPC connect
         // fails immediately with ENOENT if the socket file doesn't exist yet.
-        // The kernel (ipykernel/Deno) needs time to start, parse the
-        // connection file, and call zmq.bind() which creates the socket files.
+        // The kernel (ipykernel) needs time to start, parse the connection
+        // file, and call zmq.bind() on each channel — which creates the socket
+        // files. We wait for all 5 (shell, iopub, stdin, control, hb) so no
+        // subsequent connect() races the kernel's bind().
         #[cfg(unix)]
         if connection_info.transport == jupyter_protocol::connection_info::Transport::IPC {
-            let shell_socket = format!("{}-{}", connection_info.ip, connection_info.shell_port);
+            let socket_paths: Vec<String> = [
+                connection_info.shell_port,
+                connection_info.iopub_port,
+                connection_info.stdin_port,
+                connection_info.control_port,
+                connection_info.hb_port,
+            ]
+            .iter()
+            .map(|port| format!("{}-{}", connection_info.ip, port))
+            .collect();
+
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
             loop {
-                if std::path::Path::new(&shell_socket).exists() {
-                    debug!("[jupyter-kernel] IPC socket ready: {}", shell_socket);
+                let all_exist = socket_paths
+                    .iter()
+                    .all(|p| std::path::Path::new(p).exists());
+                if all_exist {
+                    debug!(
+                        "[jupyter-kernel] All 5 IPC sockets ready (prefix={})",
+                        connection_info.ip
+                    );
                     break;
                 }
                 if std::time::Instant::now() >= deadline {
-                    // Clean up since we're about to fail
+                    let missing: Vec<_> = socket_paths
+                        .iter()
+                        .filter(|p| !std::path::Path::new(p.as_str()).exists())
+                        .collect();
                     if let Some(ref prefix) = ipc_prefix {
                         cleanup_ipc_sockets(prefix);
                     }
                     return Err(anyhow::anyhow!(
-                        "Kernel did not create IPC socket within 30s: {}",
-                        shell_socket
+                        "Kernel did not create IPC sockets within 30s. Missing: {:?}",
+                        missing
                     ));
                 }
                 tokio::time::sleep(std::time::Duration::from_millis(100)).await;
