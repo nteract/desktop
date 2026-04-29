@@ -54,6 +54,7 @@ mod metadata;
 mod nbformat_convert;
 mod path_index;
 mod peer;
+mod peer_eviction;
 mod peer_notebook_sync;
 mod peer_pool_sync;
 mod peer_presence;
