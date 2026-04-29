@@ -901,21 +901,28 @@ impl PyKernelState {
 }
 
 /// Environment sync state from the RuntimeStateDoc.
-#[pyclass(name = "EnvState", get_all, skip_from_py_object)]
+#[pyclass(name = "EnvState", skip_from_py_object)]
 #[derive(Clone, Debug)]
 pub struct PyEnvState {
     /// Whether notebook metadata matches the launched kernel config.
+    #[pyo3(get)]
     pub in_sync: bool,
     /// Packages in metadata but not in the kernel environment.
+    #[pyo3(get)]
     pub added: Vec<String>,
     /// Packages in the kernel environment but not in metadata.
+    #[pyo3(get)]
     pub removed: Vec<String>,
     /// Whether conda channels differ.
+    #[pyo3(get)]
     pub channels_changed: bool,
     /// Whether deno config differs.
+    #[pyo3(get)]
     pub deno_changed: bool,
     /// Packages pre-installed in the prewarmed environment.
+    #[pyo3(get)]
     pub prewarmed_packages: Vec<String>,
+    progress_value: Option<serde_json::Value>,
 }
 
 #[pymethods]
@@ -936,6 +943,15 @@ impl PyEnvState {
             format!("{base})")
         } else {
             format!("{base}, prewarmed={})", self.prewarmed_packages.len())
+        }
+    }
+
+    /// Latest environment preparation progress event, if any.
+    #[getter]
+    fn progress<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        match &self.progress_value {
+            Some(value) => json_to_py(py, value),
+            None => Ok(py.None().into_bound(py)),
         }
     }
 
@@ -1112,6 +1128,7 @@ impl From<runtime_doc::RuntimeState> for PyRuntimeState {
                 channels_changed: rs.env.channels_changed,
                 deno_changed: rs.env.deno_changed,
                 prewarmed_packages: rs.env.prewarmed_packages,
+                progress_value: rs.env.progress,
             },
             last_saved: rs.last_saved,
             executions: rs
@@ -1289,6 +1306,7 @@ mod tests {
                 channels_changed: true,
                 deno_changed: true,
                 prewarmed_packages: vec!["ipykernel".to_string()],
+                progress: Some(json!({"env_type": "uv", "phase": "offline_hit"})),
             },
             last_saved: Some("2026-04-27T12:00:00Z".to_string()),
             executions,
@@ -1317,6 +1335,10 @@ mod tests {
         assert_eq!(
             py_state.env.prewarmed_packages,
             vec!["ipykernel".to_string()]
+        );
+        assert_eq!(
+            py_state.env.progress_value,
+            Some(json!({"env_type": "uv", "phase": "offline_hit"}))
         );
         assert_eq!(
             py_state.executions["exec-1"].__repr__(),

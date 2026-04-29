@@ -10,6 +10,7 @@
  */
 
 import { describe, expect, it } from "vite-plus/test";
+import type { EnvProgressBroadcast } from "../src/broadcast-types";
 import { isCommBroadcast, isEnvProgressBroadcast } from "../src/broadcast-types";
 
 // All guards share `hasBroadcastEvent` — exercise the invalid-payload
@@ -68,5 +69,17 @@ describe("broadcast type guards", () => {
       const hits = GUARDS.filter(([, guard]) => guard(payload));
       expect(hits.length).toBe(1);
     }
+  });
+
+  it("models flattened env progress broadcasts from Rust", () => {
+    const payload: EnvProgressBroadcast = {
+      event: "env_progress",
+      env_type: "uv",
+      phase: "ready",
+      env_path: "/tmp/env",
+      python_path: "/tmp/env/bin/python",
+    };
+
+    expect(isEnvProgressBroadcast(payload)).toBe(true);
   });
 });

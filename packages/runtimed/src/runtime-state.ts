@@ -104,7 +104,45 @@ export interface EnvState {
   channels_changed: boolean;
   deno_changed: boolean;
   prewarmed_packages: string[];
+  progress: EnvProgressEvent | null;
 }
+
+export type EnvProgressEnvType = "conda" | "uv" | "pixi" | (string & {});
+
+export type EnvProgressPhase =
+  | { phase: "starting"; env_hash: string }
+  | { phase: "cache_hit"; env_path: string }
+  | { phase: "lock_file_hit" }
+  | { phase: "offline_hit" }
+  | { phase: "fetching_repodata"; channels: string[] }
+  | { phase: "repodata_complete"; record_count: number; elapsed_ms: number }
+  | { phase: "solving"; spec_count: number }
+  | { phase: "solve_complete"; package_count: number; elapsed_ms: number }
+  | { phase: "installing"; total: number }
+  | {
+      phase: "download_progress";
+      completed: number;
+      total: number;
+      current_package: string;
+      bytes_downloaded: number;
+      bytes_total: number | null;
+      bytes_per_second: number;
+    }
+  | {
+      phase: "link_progress";
+      completed: number;
+      total: number;
+      current_package: string;
+    }
+  | { phase: "install_complete"; elapsed_ms: number }
+  | { phase: "creating_venv" }
+  | { phase: "installing_packages"; packages: string[] }
+  | { phase: "ready"; env_path: string; python_path: string }
+  | { phase: "error"; message: string };
+
+export type EnvProgressEvent = EnvProgressPhase & {
+  env_type: EnvProgressEnvType;
+};
 
 /**
  * Trust status mirrors `runt_trust::TrustStatus` serialized with
@@ -258,6 +296,7 @@ export const DEFAULT_RUNTIME_STATE: RuntimeState = {
     channels_changed: false,
     deno_changed: false,
     prewarmed_packages: [],
+    progress: null,
   },
   trust: {
     status: "no_dependencies",

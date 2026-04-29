@@ -124,6 +124,7 @@ function makeRuntimeState(
       channels_changed: false,
       deno_changed: false,
       prewarmed_packages: [],
+      progress: null,
     },
     trust: {
       status: "trusted",
@@ -660,6 +661,7 @@ describe("SyncEngine", () => {
           channels_changed: false,
           deno_changed: false,
           prewarmed_packages: [],
+          progress: null,
         },
         trust: {
           status: "trusted",
@@ -713,6 +715,7 @@ describe("SyncEngine", () => {
           channels_changed: false,
           deno_changed: false,
           prewarmed_packages: [],
+          progress: null,
         },
         trust: {
           status: "trusted",
@@ -2186,6 +2189,7 @@ describe("getExecutionCountForCell", () => {
       channels_changed: false,
       deno_changed: false,
       prewarmed_packages: [],
+      progress: null,
     },
     trust: {
       status: "trusted",

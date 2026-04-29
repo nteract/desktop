@@ -20,6 +20,7 @@ import {
   type NotebookClient,
   type NotebookResponse,
   RUNTIME_STATUS,
+  isEnvProgressBroadcast,
   runtimeStatusKey,
   type RuntimeStatusKey,
   statusKeyToLegacyStatus,
@@ -33,7 +34,6 @@ import {
   resetRuntimeState,
   useRuntimeState,
 } from "../lib/runtime-state";
-import type { DaemonBroadcast } from "../types";
 
 // ── Hook types ──────────────────────────────────────────────────────
 
@@ -204,21 +204,25 @@ export function useDaemonKernel({
 
     const unsubscribeBroadcast = subscribeBroadcast((payload) => {
       if (cancelled) return;
-      const broadcast = payload as DaemonBroadcast;
 
-      switch (broadcast.event) {
-        // Custom comm messages (buttons, model.send()) are now handled
-        // by the SyncEngine.commBroadcasts$ subscriber in App.tsx.
+      // Custom comm messages (buttons, model.send()) are now handled
+      // by the SyncEngine.commBroadcasts$ subscriber in App.tsx. Env
+      // progress state is daemon-authored in RuntimeStateDoc; the
+      // broadcast remains only as a compatibility event for older
+      // consumers.
+      if (isEnvProgressBroadcast(payload)) {
+        return;
+      }
 
-        case "env_progress":
-          break;
-
-        default: {
-          const event = (broadcast as { event?: string }).event;
-          if (event !== undefined) {
-            logger.debug(`[daemon-kernel] Unknown broadcast event: ${event}`);
-          }
-        }
+      if (
+        typeof payload === "object" &&
+        payload !== null &&
+        "event" in payload &&
+        typeof (payload as { event: unknown }).event === "string"
+      ) {
+        logger.debug(
+          `[daemon-kernel] Unknown broadcast event: ${(payload as { event: string }).event}`,
+        );
       }
     });
 

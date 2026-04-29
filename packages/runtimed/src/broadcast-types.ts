@@ -11,6 +11,8 @@
  * to broadcasts.
  */
 
+import type { EnvProgressEvent } from "./runtime-state";
+
 // ── Broadcast interfaces ────────────────────────────────────────────
 
 export interface CommBroadcast {
@@ -20,14 +22,9 @@ export interface CommBroadcast {
   buffers: number[][];
 }
 
-export interface EnvProgressBroadcast {
+export type EnvProgressBroadcast = EnvProgressEvent & {
   event: "env_progress";
-  env_type: string;
-  // Phase-specific fields are flattened on the wire; carry them through
-  // as a permissive index so the daemon can extend the shape without
-  // breaking subscribers.
-  [key: string]: unknown;
-}
+};
 
 /** Union of all known broadcast types with an `event` field. */
 export type KnownBroadcast = CommBroadcast | EnvProgressBroadcast;

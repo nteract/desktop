@@ -1,8 +1,8 @@
 //! Cached environment creation for inline dependencies.
 //!
 //! Delegates to `kernel_env` for the actual environment creation while
-//! providing a [`BroadcastProgressHandler`] that forwards progress events
-//! to connected notebook clients via the broadcast channel.
+//! providing a [`BroadcastProgressHandler`] that records progress in
+//! RuntimeStateDoc and forwards compatibility broadcast events.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -12,6 +12,7 @@ use kernel_env::progress::{EnvProgressPhase, ProgressHandler};
 use tokio::sync::broadcast;
 
 use crate::protocol::NotebookBroadcast;
+use runtime_doc::RuntimeStateHandle;
 
 // Re-export the PreparedEnv-equivalent types for callers that still
 // use the old `inline_env::PreparedEnv` pattern.
@@ -29,11 +30,19 @@ pub struct PreparedEnv {
 /// connected notebook clients via a [`broadcast::Sender`].
 pub struct BroadcastProgressHandler {
     tx: broadcast::Sender<NotebookBroadcast>,
+    state: Option<RuntimeStateHandle>,
 }
 
 impl BroadcastProgressHandler {
     pub fn new(tx: broadcast::Sender<NotebookBroadcast>) -> Self {
-        Self { tx }
+        Self { tx, state: None }
+    }
+
+    pub fn with_state(tx: broadcast::Sender<NotebookBroadcast>, state: RuntimeStateHandle) -> Self {
+        Self {
+            tx,
+            state: Some(state),
+        }
     }
 }
 
@@ -41,6 +50,19 @@ impl ProgressHandler for BroadcastProgressHandler {
     fn on_progress(&self, env_type: &str, phase: EnvProgressPhase) {
         // Log all phases
         kernel_env::LogHandler.on_progress(env_type, phase.clone());
+
+        if let Some(state) = &self.state {
+            match serde_json::to_value(&phase) {
+                Ok(value) => {
+                    if let Err(e) = state.with_doc(|sd| sd.set_env_progress(env_type, &value)) {
+                        tracing::warn!("[runtime-state] failed to write env progress: {}", e);
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("[runtime-state] failed to serialize env progress: {}", e);
+                }
+            }
+        }
 
         // Broadcast to connected clients
         let _ = self.tx.send(NotebookBroadcast::EnvProgress {

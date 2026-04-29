@@ -1,14 +1,14 @@
-import { useCallback, useEffect, useState } from "react";
-import { subscribeBroadcast } from "../lib/notebook-frame-bus";
-import type { DaemonBroadcast, EnvProgressEvent, EnvProgressPhase } from "../types";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import type { EnvProgressEnvType, EnvProgressEvent, EnvProgressPhase } from "runtimed";
+import { useRuntimeState } from "../lib/runtime-state";
 
 export interface EnvProgressState {
   /** Whether environment preparation is currently active */
   isActive: boolean;
   /** Current phase name */
   phase: string | null;
-  /** Environment type (conda or uv) */
-  envType: "conda" | "uv" | null;
+  /** Environment type (conda, uv, pixi, or a future daemon-provided manager). */
+  envType: EnvProgressEnvType | null;
   /** Error message if phase is "error" */
   error: string | null;
   /** Human-readable status text */
@@ -43,6 +43,8 @@ export function getStatusText(event: EnvProgressEvent): string {
       return "Using cached environment";
     case "lock_file_hit":
       return "Rebuilding from lock file";
+    case "offline_hit":
+      return "Using cached packages";
     case "fetching_repodata": {
       const e = event as Extract<EnvProgressPhase, { phase: "fetching_repodata" }>;
       return `Fetching package index (${e.channels.join(", ")})`;
@@ -95,6 +97,18 @@ export function getStatusText(event: EnvProgressEvent): string {
   }
 }
 
+const EMPTY_ENV_PROGRESS: EnvProgressState = {
+  isActive: false,
+  phase: null,
+  envType: null,
+  error: null,
+  statusText: "",
+  elapsedMs: null,
+  progress: null,
+  bytesPerSecond: null,
+  currentPackage: null,
+};
+
 function extractProgress(event: EnvProgressEvent): { completed: number; total: number } | null {
   const phase = event.phase;
   if (phase === "download_progress") {
@@ -108,105 +122,75 @@ function extractProgress(event: EnvProgressEvent): { completed: number; total: n
   return null;
 }
 
+export function projectEnvProgress(event: EnvProgressEvent | null): EnvProgressState {
+  if (!event) return EMPTY_ENV_PROGRESS;
+
+  const phase = event.phase;
+  // Only terminal success states stop active progress. `error` is terminal
+  // too, but remains visible until the caller locally resets/dismisses it.
+  const isTerminalSuccess = phase === "ready" || phase === "cache_hit" || phase === "offline_hit";
+  const isError = phase === "error";
+  const error = isError ? (event as Extract<EnvProgressPhase, { phase: "error" }>).message : null;
+
+  let elapsedMs: number | null = null;
+  if ("elapsed_ms" in event && typeof event.elapsed_ms === "number") {
+    elapsedMs = event.elapsed_ms;
+  }
+
+  let bytesPerSecond: number | null = null;
+  if (phase === "download_progress") {
+    const e = event as Extract<EnvProgressPhase, { phase: "download_progress" }>;
+    bytesPerSecond = e.bytes_per_second;
+  }
+
+  let currentPackage: string | null = null;
+  if (phase === "download_progress") {
+    const e = event as Extract<EnvProgressPhase, { phase: "download_progress" }>;
+    currentPackage = e.current_package || null;
+  } else if (phase === "link_progress") {
+    const e = event as Extract<EnvProgressPhase, { phase: "link_progress" }>;
+    currentPackage = e.current_package || null;
+  }
+
+  return {
+    isActive: !isTerminalSuccess && !isError,
+    phase,
+    envType: event.env_type,
+    error,
+    statusText: getStatusText(event),
+    elapsedMs,
+    progress: extractProgress(event),
+    bytesPerSecond,
+    currentPackage,
+  };
+}
+
+function progressKey(event: EnvProgressEvent | null): string | null {
+  return event ? JSON.stringify(event) : null;
+}
+
 export function useEnvProgress() {
-  const [state, setState] = useState<EnvProgressState>({
-    isActive: false,
-    phase: null,
-    envType: null,
-    error: null,
-    statusText: "",
-    elapsedMs: null,
-    progress: null,
-    bytesPerSecond: null,
-    currentPackage: null,
-  });
+  const runtimeState = useRuntimeState();
+  const progressEvent = runtimeState.env.progress;
+  const currentKey = progressKey(progressEvent);
+  const [dismissedKey, setDismissedKey] = useState<string | null>(null);
 
   useEffect(() => {
-    let cancelled = false;
+    if (currentKey !== dismissedKey && dismissedKey !== null) {
+      setDismissedKey(null);
+    }
+  }, [currentKey, dismissedKey]);
 
-    const processEvent = (payload: EnvProgressEvent) => {
-      if (cancelled) return;
-
-      const phase = payload.phase;
-      // Only "ready" and "cache_hit" are terminal success states
-      // "error" is terminal but we keep error visible
-      const isTerminalSuccess = phase === "ready" || phase === "cache_hit";
-      const isError = phase === "error";
-      const error = isError
-        ? (payload as Extract<EnvProgressPhase, { phase: "error" }>).message
-        : null;
-
-      // Extract elapsed_ms from phases that have it
-      let elapsedMs: number | null = null;
-      if ("elapsed_ms" in payload && typeof payload.elapsed_ms === "number") {
-        elapsedMs = payload.elapsed_ms;
-      }
-
-      // Extract progress from download/link phases
-      const progress = extractProgress(payload);
-
-      // Extract bytes per second from download phase
-      let bytesPerSecond: number | null = null;
-      if (phase === "download_progress") {
-        const e = payload as Extract<EnvProgressPhase, { phase: "download_progress" }>;
-        bytesPerSecond = e.bytes_per_second;
-      }
-
-      // Extract current package
-      let currentPackage: string | null = null;
-      if (phase === "download_progress") {
-        const e = payload as Extract<EnvProgressPhase, { phase: "download_progress" }>;
-        currentPackage = e.current_package || null;
-      } else if (phase === "link_progress") {
-        const e = payload as Extract<EnvProgressPhase, { phase: "link_progress" }>;
-        currentPackage = e.current_package || null;
-      }
-
-      setState((prev) => ({
-        // Keep active until success; errors stay visible until reset
-        isActive: !isTerminalSuccess && !isError,
-        phase,
-        envType: payload.env_type,
-        // Keep previous error if we're in error state and don't have a new error
-        error: error ?? (isError ? prev.error : null),
-        statusText: getStatusText(payload),
-        elapsedMs,
-        progress,
-        bytesPerSecond,
-        currentPackage,
-      }));
-    };
-
-    // Subscribe to broadcast events with env_progress via the frame bus
-    // (from daemon-managed environment preparation during kernel launch)
-    const unsubscribeBroadcast = subscribeBroadcast((payload) => {
-      const broadcast = payload as DaemonBroadcast;
-      if (broadcast.event === "env_progress") {
-        // The daemon broadcast has the same shape as EnvProgressEvent
-        // (env_type + flattened phase fields) plus the "event" tag
-        processEvent(broadcast as unknown as EnvProgressEvent);
-      }
-    });
-
-    return () => {
-      cancelled = true;
-      unsubscribeBroadcast();
-    };
-  }, []);
+  const state = useMemo(() => {
+    if (currentKey && currentKey === dismissedKey) {
+      return EMPTY_ENV_PROGRESS;
+    }
+    return projectEnvProgress(progressEvent);
+  }, [currentKey, dismissedKey, progressEvent]);
 
   const reset = useCallback(() => {
-    setState({
-      isActive: false,
-      phase: null,
-      envType: null,
-      error: null,
-      statusText: "",
-      elapsedMs: null,
-      progress: null,
-      bytesPerSecond: null,
-      currentPackage: null,
-    });
-  }, []);
+    setDismissedKey(currentKey);
+  }, [currentKey]);
 
   return { ...state, reset };
 }
