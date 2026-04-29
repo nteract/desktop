@@ -6,8 +6,8 @@ use tracing::{debug, warn};
 
 use crate::connection::{self, NotebookFrameType};
 
-use super::metadata::{handle_notebook_request, request_label};
 use super::NotebookRoom;
+use crate::requests::{handle_notebook_request, request_label};
 
 pub(super) const PEER_OUTBOUND_QUEUE_CAPACITY: usize = 1024;
 const PEER_REQUEST_QUEUE_CAPACITY: usize = 64;

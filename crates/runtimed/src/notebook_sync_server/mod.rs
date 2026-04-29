@@ -43,7 +43,7 @@ use crate::notebook_doc::{CellSnapshot, NotebookDoc};
 use crate::notebook_metadata::NotebookMetadataSnapshot;
 use crate::output_prep::{DenoLaunchedConfig, LaunchedEnvConfig};
 use crate::paths::notebook_doc_filename;
-use crate::protocol::{EnvSyncDiff, NotebookBroadcast, NotebookRequest, NotebookResponse};
+use crate::protocol::{EnvSyncDiff, NotebookBroadcast, NotebookResponse};
 use crate::task_supervisor::{spawn_best_effort, spawn_supervised};
 use notebook_doc::diff::diff_metadata_touched;
 use notebook_doc::presence::{self, PresenceState};
