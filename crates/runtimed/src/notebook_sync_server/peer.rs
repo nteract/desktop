@@ -5,6 +5,9 @@ use super::peer_presence::{
     cleanup_presence_on_disconnect, forward_presence_broadcast, handle_presence_frame,
     prune_stale_presence, send_initial_presence_snapshot,
 };
+use super::peer_runtime_sync::{
+    forward_runtime_state_broadcast, handle_runtime_state_frame, persist_terminal_execution_records,
+};
 use super::peer_writer::{
     queue_request_error, queue_session_status, spawn_peer_request_worker, spawn_peer_writer,
     PeerWriter, RequestEnqueueError,
@@ -1188,6 +1191,9 @@ where
         String,
         runtimed_client::execution_store::ExecutionRecord,
     > = std::collections::HashMap::new();
+    let execution_store = runtimed_client::execution_store::ExecutionStore::new(
+        daemon.config.execution_store_dir.clone(),
+    );
 
     // Initial RuntimeStateDoc sync — encode inside lock, send outside.
     // Uses bounded generation to compact atomically if the message would exceed
@@ -1522,74 +1528,18 @@ where
                             }
 
                             NotebookFrameType::RuntimeStateSync => {
-                                // Client sync — accept changes (frontend may write
-                                // to comms/*/state/* for widget state updates).
-                                let message = sync::Message::decode(&frame.payload)
-                                    .map_err(|e| anyhow::anyhow!("decode state sync: {}", e))?;
-                                // None signals "continue" (receive failed, skip reply)
-                                let reply_encoded: Option<Option<Vec<u8>>> = room.state.with_doc(|state_doc| {
-                                    let recv_result = catch_automerge_panic("state-receive-sync", || {
-                                        state_doc.receive_sync_message_with_changes(
-                                            &mut state_peer_state,
-                                            message,
-                                        )
-                                    });
-                                    let had_changes = match recv_result {
-                                        Ok(Ok(changed)) => changed,
-                                        Ok(Err(e)) => {
-                                            warn!("[notebook-sync] state receive_sync_message error: {}", e);
-                                            return Ok(None); // signal continue
-                                        }
-                                        Err(e) => {
-                                            warn!("{}", e);
-                                            state_doc.rebuild_from_save();
-                                            state_peer_state = sync::State::new();
-                                            return Ok(None); // signal continue
-                                        }
-                                    };
-
-                                    // If client sent changes, notification is automatic
-                                    // via heads comparison in with_doc.
-                                    // But if had_changes is true from receive, heads
-                                    // will differ and with_doc notifies automatically.
-                                    let _ = had_changes; // heads-based notification handles this
-
-                                    let encoded = match catch_automerge_panic("state-sync-reply", || {
-                                        state_doc
-                                            .generate_sync_message(&mut state_peer_state)
-                                            .map(|msg| msg.encode())
-                                    }) {
-                                        Ok(encoded) => encoded,
-                                        Err(e) => {
-                                            warn!("{}", e);
-                                            state_doc.rebuild_from_save();
-                                            state_peer_state = sync::State::new();
-                                            state_doc
-                                                .generate_sync_message(&mut state_peer_state)
-                                                .map(|msg| msg.encode())
-                                        }
-                                    };
-                                    Ok(Some(encoded))
-                                }).ok().flatten();
-                                let reply_encoded = match reply_encoded {
-                                    Some(encoded) => encoded,
-                                    None => continue, // receive failed
-                                };
-                                if let Some(encoded) = reply_encoded {
-                                    peer_writer.send_frame(
-                                        NotebookFrameType::RuntimeStateSync,
-                                        encoded,
-                                    )?;
-                                }
-
-                                persist_terminal_execution_records(
+                                if !handle_runtime_state_frame(
                                     room,
-                                    &runtimed_client::execution_store::ExecutionStore::new(
-                                        daemon.config.execution_store_dir.clone(),
-                                    ),
+                                    &mut state_peer_state,
+                                    &peer_writer,
+                                    &frame.payload,
+                                    &execution_store,
                                     &mut persisted_execution_records,
                                 )
-                                .await;
+                                .await?
+                                {
+                                    continue;
+                                }
 
                                 if runtime_state_phase
                                     != notebook_protocol::protocol::RuntimeStatePhaseWire::Ready
@@ -1679,66 +1629,16 @@ where
 
             // RuntimeStateDoc changed — push update to this client
             result = state_changed_rx.recv() => {
-                match result {
-                    Ok(()) => {
-                        let encoded = room.state.with_doc(|state_doc| {
-                            match catch_automerge_panic("state-broadcast", || {
-                                state_doc
-                                    .generate_sync_message(&mut state_peer_state)
-                                    .map(|msg| msg.encode())
-                            }) {
-                                Ok(encoded) => Ok(encoded),
-                                Err(e) => {
-                                    warn!("{}", e);
-                                    state_doc.rebuild_from_save();
-                                    state_peer_state = sync::State::new();
-                                    Ok(state_doc
-                                        .generate_sync_message(&mut state_peer_state)
-                                        .map(|msg| msg.encode()))
-                                }
-                            }
-                        }).ok().flatten();
-                        if let Some(encoded) = encoded {
-                            peer_writer.send_frame(
-                                NotebookFrameType::RuntimeStateSync,
-                                encoded,
-                            )?;
-                        }
-                    }
-                    Err(broadcast::error::RecvError::Lagged(n)) => {
-                        tracing::debug!(
-                            "[notebook-sync] Peer {} lagged {} runtime state updates",
-                            peer_id, n
-                        );
-                        // Send a full sync to catch up
-                        let encoded = room.state.with_doc(|state_doc| {
-                            match catch_automerge_panic("state-broadcast-lagged", || {
-                                state_doc
-                                    .generate_sync_message(&mut state_peer_state)
-                                    .map(|msg| msg.encode())
-                            }) {
-                                Ok(encoded) => Ok(encoded),
-                                Err(e) => {
-                                    warn!("{}", e);
-                                    state_doc.rebuild_from_save();
-                                    state_peer_state = sync::State::new();
-                                    Ok(state_doc
-                                        .generate_sync_message(&mut state_peer_state)
-                                        .map(|msg| msg.encode()))
-                                }
-                            }
-                        }).ok().flatten();
-                        if let Some(encoded) = encoded {
-                            peer_writer.send_frame(
-                                NotebookFrameType::RuntimeStateSync,
-                                encoded,
-                            )?;
-                        }
-                    }
-                    Err(broadcast::error::RecvError::Closed) => {
-                        // State change channel closed — room is being evicted
-                        return Ok(());
-                    }
+                if !forward_runtime_state_broadcast(
+                    room,
+                    peer_id,
+                    &mut state_peer_state,
+                    &peer_writer,
+                    result,
+                )
+                .await?
+                {
+                    return Ok(());
                 }
             }
 
@@ -1833,71 +1733,4 @@ async fn queue_doc_sync(
         writer.send_frame(NotebookFrameType::AutomergeSync, encoded)?;
     }
     Ok(())
-}
-
-async fn persist_terminal_execution_records(
-    room: &NotebookRoom,
-    store: &runtimed_client::execution_store::ExecutionStore,
-    persisted_records: &mut std::collections::HashMap<
-        String,
-        runtimed_client::execution_store::ExecutionRecord,
-    >,
-) {
-    let notebook_path = room
-        .identity
-        .path
-        .read()
-        .await
-        .as_ref()
-        .map(|p| p.to_string_lossy().to_string());
-    let context_id = notebook_execution_context_id(room, notebook_path.as_deref());
-    let records = room
-        .state
-        .read(|sd| {
-            sd.read_state()
-                .executions
-                .into_iter()
-                .filter_map(|(execution_id, exec)| {
-                    if !matches!(exec.status.as_str(), "done" | "error") {
-                        return None;
-                    }
-                    Some(
-                        runtimed_client::execution_store::ExecutionRecord::from_execution_state(
-                            &execution_id,
-                            "notebook",
-                            context_id.clone(),
-                            notebook_path.clone(),
-                            &exec,
-                        ),
-                    )
-                })
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-
-    for record in records {
-        if persisted_records
-            .get(&record.execution_id)
-            .is_some_and(|existing| existing.payload_matches(&record))
-        {
-            continue;
-        }
-        if let Err(e) = store.write_record(record.clone()).await {
-            warn!(
-                "[execution-store] Failed to persist execution record: {}",
-                e
-            );
-        } else {
-            persisted_records.insert(record.execution_id.clone(), record);
-        }
-    }
-}
-
-pub(crate) fn notebook_execution_context_id(
-    room: &NotebookRoom,
-    notebook_path: Option<&str>,
-) -> String {
-    notebook_path
-        .map(str::to_string)
-        .unwrap_or_else(|| room.id.to_string())
 }
