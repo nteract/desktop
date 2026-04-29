@@ -1053,8 +1053,21 @@ jobs:
           target: ${{ matrix.platform.target }}
           args: --release --out dist
           working-directory: python/runtimed
-          sccache: true
+          # sccache is installed and selected above with RUSTC_WRAPPER. Letting
+          # maturin-action manage sccache as well can leave its post-build stats
+          # step talking to a different client/server version.
+          sccache: false
           maturin-version: "v1.11.5"
+
+      - name: Print sccache stats
+        if: always()
+        shell: bash
+        run: |
+          if command -v sccache >/dev/null 2>&1; then
+            sccache --show-stats || true
+          else
+            echo "sccache is not available on PATH"
+          fi
 
       - name: Upload wheels
         uses: actions/upload-artifact@v4
@@ -1261,6 +1274,25 @@ jobs:
           name: nteract-linux-x64
           path: ./notebook-linux-x64
 
+      - name: Report downloaded release artifact sizes
+        run: |
+          echo "Downloaded artifact directories:"
+          du -sh \
+            executables \
+            notebook-macos-arm64 \
+            notebook-macos-x64 \
+            notebook-windows-x64 \
+            notebook-linux-x64
+          echo ""
+          echo "Downloaded artifact files:"
+          find \
+            executables \
+            notebook-macos-arm64 \
+            notebook-macos-x64 \
+            notebook-windows-x64 \
+            notebook-linux-x64 \
+            -type f -printf "%12s  %p\n" | sort -nr
+
       - name: Prepare release assets
         run: |
           CHANNEL="${RUNT_BUILD_CHANNEL:-stable}"
@@ -1378,6 +1410,14 @@ jobs:
         with:
           name: dx-dist
           path: ./dx-dist
+
+      - name: Report final release asset sizes
+        run: |
+          echo "Release asset directories:"
+          du -sh release-assets wheels nteract-dist dx-dist
+          echo ""
+          echo "Release asset files:"
+          find release-assets wheels nteract-dist dx-dist -type f -printf "%12s  %p\n" | sort -nr
 
       - name: Install uv
         uses: astral-sh/setup-uv@v7
