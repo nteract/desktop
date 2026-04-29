@@ -12,6 +12,12 @@ pub enum Handshake {
     Pool,
     /// Automerge settings sync.
     SettingsSync,
+    /// RPC settings channel: full snapshot push, scalar `SetSetting` writes.
+    ///
+    /// Opt-in alternative to `SettingsSync`. The daemon owns `settings.json`;
+    /// clients send `SetSetting { key, value }` against the daemon's current
+    /// snapshot rather than pushing CRDT state. Prototype for issue #1598.
+    SettingsRpc,
     /// Automerge notebook sync (per-notebook room).
     ///
     /// The optional `protocol` field is accepted for version negotiation.

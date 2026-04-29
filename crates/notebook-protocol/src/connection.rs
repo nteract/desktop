@@ -6,6 +6,7 @@
 mod env;
 mod framing;
 mod handshake;
+mod settings_rpc;
 
 pub use env::{EnvSource, LaunchSpec, PackageManager};
 
@@ -18,6 +19,8 @@ pub use framing::{
 pub use handshake::{
     Handshake, NotebookConnectionInfo, ProtocolCapabilities, PROTOCOL_V4, PROTOCOL_VERSION,
 };
+
+pub use settings_rpc::{SettingsRpcClientMessage, SettingsRpcServerMessage};
 
 #[cfg(test)]
 mod tests {

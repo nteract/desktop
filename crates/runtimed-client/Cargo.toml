@@ -16,6 +16,7 @@ workspace = true
 ts-bindings = ["dep:ts-rs"]
 
 [dependencies]
+anyhow = { workspace = true }
 notebook-protocol = { path = "../notebook-protocol" }
 notebook-doc = { path = "../notebook-doc" }
 runtime-doc = { path = "../runtime-doc" }

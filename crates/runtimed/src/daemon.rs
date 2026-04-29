@@ -1682,6 +1682,21 @@ impl Daemon {
                 )
                 .await
             }
+            Handshake::SettingsRpc => {
+                let (reader, writer) = tokio::io::split(stream);
+                let changed_tx = self.settings_changed.clone();
+                let changed_rx = self.settings_changed.subscribe();
+                crate::sync_server::handle_settings_rpc_connection(
+                    reader,
+                    writer,
+                    self.settings.clone(),
+                    changed_tx,
+                    changed_rx,
+                    self.config.resolved_settings_doc_path(),
+                    self.config.resolved_settings_json_path(),
+                )
+                .await
+            }
             Handshake::NotebookSync {
                 notebook_id,
                 protocol,

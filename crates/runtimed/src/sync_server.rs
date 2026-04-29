@@ -8,9 +8,10 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use automerge::sync;
+use notebook_protocol::connection::{SettingsRpcClientMessage, SettingsRpcServerMessage};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::{broadcast, RwLock};
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use crate::connection;
 use crate::settings_doc::SettingsDoc;
@@ -115,11 +116,192 @@ where
 }
 
 /// Persist the settings document to disk (both Automerge binary and JSON mirror).
+///
+/// The Automerge sync path treats persist failures as best-effort warnings
+/// (the in-memory CRDT is still authoritative; the next change retries).
+/// The RPC path needs the failure surfaced to the writing client, so it
+/// uses `try_persist_settings` instead.
 fn persist_settings(doc: &mut SettingsDoc, automerge_path: &Path, json_path: &Path) {
     if let Err(e) = doc.save_to_file(automerge_path) {
         warn!("[sync] Failed to save Automerge doc: {}", e);
     }
     if let Err(e) = doc.save_json_mirror(json_path) {
         warn!("[sync] Failed to write JSON mirror: {}", e);
+    }
+}
+
+/// Persist the settings document, surfacing the first failure as `Err`.
+///
+/// Used by the RPC `SetSetting` path so the ack can carry `ok: false`
+/// when the on-disk write fails. The in-memory doc is left as the
+/// caller wrote it; rollback is the caller's call. We still attempt
+/// both writes so a partially recoverable state (Automerge ok, JSON
+/// mirror failed) doesn't silently leave only one side persisted.
+fn try_persist_settings(
+    doc: &mut SettingsDoc,
+    automerge_path: &Path,
+    json_path: &Path,
+) -> Result<(), String> {
+    let mut first_error: Option<String> = None;
+    if let Err(e) = doc.save_to_file(automerge_path) {
+        let msg = format!("save Automerge doc: {e}");
+        warn!("[settings-rpc] {msg}");
+        first_error.get_or_insert(msg);
+    }
+    if let Err(e) = doc.save_json_mirror(json_path) {
+        let msg = format!("write JSON mirror: {e}");
+        warn!("[settings-rpc] {msg}");
+        first_error.get_or_insert(msg);
+    }
+    match first_error {
+        None => Ok(()),
+        Some(msg) => Err(msg),
+    }
+}
+
+/// Build a `Snapshot` server message from the current `SettingsDoc`.
+fn build_snapshot_message(doc: &SettingsDoc) -> anyhow::Result<SettingsRpcServerMessage> {
+    let snapshot = doc.get_all();
+    let value = serde_json::to_value(&snapshot)?;
+    Ok(SettingsRpcServerMessage::Snapshot { settings: value })
+}
+
+/// Handle a single `Handshake::SettingsRpc` client.
+///
+/// Prototype channel for nteract/desktop#1598. Runs alongside the existing
+/// Automerge `SettingsSync` handler against the same `SettingsDoc` and the
+/// same `settings_changed` broadcast. The Automerge path is the source of
+/// truth for now; this channel is opt-in and additive.
+///
+/// Wire shape:
+/// 1. On connect: server sends one `Snapshot`.
+/// 2. Loop: select between client `SetSetting` requests and `settings_changed`
+///    broadcast ticks. Each `SetSetting` is applied via
+///    `SettingsDoc::put_value`, persisted, broadcast, and acked. Each
+///    broadcast tick causes a fresh `Snapshot` to go out.
+pub async fn handle_settings_rpc_connection<R, W>(
+    mut reader: R,
+    mut writer: W,
+    settings: Arc<RwLock<SettingsDoc>>,
+    changed_tx: broadcast::Sender<()>,
+    mut changed_rx: broadcast::Receiver<()>,
+    automerge_path: PathBuf,
+    json_path: PathBuf,
+) -> anyhow::Result<()>
+where
+    R: AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
+    info!("[settings-rpc] New client connected");
+
+    // Initial snapshot. Build with a short read lock so we don't hold the
+    // guard across the socket write.
+    let initial = {
+        let doc = settings.read().await;
+        build_snapshot_message(&doc)?
+    };
+    connection::send_json_frame(&mut writer, &initial).await?;
+
+    loop {
+        tokio::select! {
+            // Inbound client message.
+            result = connection::recv_json_frame::<_, SettingsRpcClientMessage>(&mut reader) => {
+                match result? {
+                    Some(SettingsRpcClientMessage::SetSetting { key, value }) => {
+                        debug!("[settings-rpc] SetSetting key={key} value={value}");
+
+                        // Apply + persist + build the post-write snapshot
+                        // under a single write-lock scope. Don't hold the
+                        // RwLock guard across `.await`. Compare heads so
+                        // no-op writes (same value, unsupported value
+                        // shape silently ignored by `put_value`) don't
+                        // wake the `settings_changed` subscribers — the
+                        // existing Automerge handler enforces the same
+                        // invariant against pool-warming churn (#2120).
+                        type ApplyOk = (SettingsRpcServerMessage, bool);
+                        let apply_result: Result<ApplyOk, String> = {
+                            let mut doc = settings.write().await;
+                            let before = doc.heads();
+                            doc.put_value(&key, &value);
+                            let after = doc.heads();
+                            let doc_changed = before != after;
+
+                            let persist_result = if doc_changed {
+                                try_persist_settings(&mut doc, &automerge_path, &json_path)
+                            } else {
+                                Ok(())
+                            };
+                            persist_result.and_then(|()| {
+                                build_snapshot_message(&doc)
+                                    .map(|snapshot| (snapshot, doc_changed))
+                                    .map_err(|e| e.to_string())
+                            })
+                        };
+
+                        match apply_result {
+                            Ok((snapshot, doc_changed)) => {
+                                // Always echo the post-write snapshot to the
+                                // writer so set-and-read patterns see a
+                                // consistent view, even on no-op writes.
+                                connection::send_json_frame(&mut writer, &snapshot).await?;
+                                if doc_changed {
+                                    // Fan out to peers; our own broadcast
+                                    // tick will fire on the next select
+                                    // iteration and resend the same
+                                    // snapshot — harmless, the client
+                                    // treats a duplicate snapshot as a
+                                    // no-op refresh.
+                                    let _ = changed_tx.send(());
+                                }
+                                let ack = SettingsRpcServerMessage::SetSettingAck {
+                                    ok: true,
+                                    error: None,
+                                };
+                                connection::send_json_frame(&mut writer, &ack).await?;
+                            }
+                            Err(e) => {
+                                let ack = SettingsRpcServerMessage::SetSettingAck {
+                                    ok: false,
+                                    error: Some(e),
+                                };
+                                connection::send_json_frame(&mut writer, &ack).await?;
+                            }
+                        }
+                    }
+                    None => {
+                        info!("[settings-rpc] Client disconnected");
+                        return Ok(());
+                    }
+                }
+            }
+
+            // Settings changed elsewhere (this client's own write, the
+            // Automerge sync handler, or the `settings.json` watcher).
+            // Push a fresh snapshot.
+            tick = changed_rx.recv() => {
+                match tick {
+                    Ok(()) => {
+                        let snapshot = {
+                            let doc = settings.read().await;
+                            build_snapshot_message(&doc)?
+                        };
+                        connection::send_json_frame(&mut writer, &snapshot).await?;
+                    }
+                    Err(broadcast::error::RecvError::Lagged(n)) => {
+                        // Broadcast queue overflowed. Resync with current
+                        // state instead of giving up.
+                        debug!("[settings-rpc] broadcast lagged by {n}, resyncing");
+                        let snapshot = {
+                            let doc = settings.read().await;
+                            build_snapshot_message(&doc)?
+                        };
+                        connection::send_json_frame(&mut writer, &snapshot).await?;
+                    }
+                    Err(broadcast::error::RecvError::Closed) => {
+                        return Ok(());
+                    }
+                }
+            }
+        }
     }
 }

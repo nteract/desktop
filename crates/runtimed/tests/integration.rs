@@ -474,6 +474,71 @@ async fn test_external_settings_json_edit_survives_settings_sync_ack() {
 }
 
 #[tokio::test]
+async fn test_settings_rpc_set_setting_round_trip() {
+    use runtimed::settings_doc::{SyncedSettings, ThemeMode};
+    use runtimed::settings_rpc_client::SettingsRpcClient;
+
+    let temp_dir = TempDir::new().unwrap();
+    let mut config = test_config(&temp_dir);
+    let socket_path = config.socket_path.clone();
+    let settings_dir = temp_dir.path().canonicalize().unwrap();
+    let settings_doc_path = settings_dir.join("settings.automerge");
+    let settings_json_path = settings_dir.join("settings.json");
+    config.settings_doc_path = Some(settings_doc_path);
+    config.settings_json_path = Some(settings_json_path.clone());
+
+    // Seed a default `settings.json` so the daemon hydrates a known
+    // baseline (theme: System).
+    let initial = serde_json::to_string_pretty(&SyncedSettings::default()).unwrap();
+    std::fs::write(&settings_json_path, initial).unwrap();
+
+    let daemon = Daemon::new(config).unwrap();
+    let daemon_handle = tokio::spawn(async move {
+        daemon.run().await.ok();
+    });
+
+    let pool_client = PoolClient::new(socket_path.clone());
+    assert!(wait_for_daemon(&pool_client).await);
+
+    // Connect via the new RPC handshake and read the initial snapshot.
+    let mut rpc_client =
+        SettingsRpcClient::connect_with_timeout(socket_path, Duration::from_secs(2))
+            .await
+            .expect("SettingsRpcClient should connect via unified socket");
+
+    assert_eq!(
+        rpc_client.get_snapshot().theme,
+        ThemeMode::System,
+        "initial snapshot should match seeded settings"
+    );
+
+    // Issue a scalar write. The daemon applies it under its write lock,
+    // persists, broadcasts, and acks. The ack happens after the broadcast
+    // tick on this same connection, so the snapshot we cached during
+    // `set_setting` already reflects the new value.
+    rpc_client
+        .set_setting("theme", &serde_json::Value::String("dark".into()))
+        .await
+        .expect("set_setting should be acked");
+
+    assert_eq!(
+        rpc_client.get_snapshot().theme,
+        ThemeMode::Dark,
+        "snapshot push from broadcast should reflect the new theme"
+    );
+
+    // The on-disk JSON mirror must reflect the change too. Without the
+    // mirror write, an external editor reading `settings.json` after the
+    // RPC would see a stale value.
+    let saved_json = std::fs::read_to_string(&settings_json_path).unwrap();
+    let saved: SyncedSettings = serde_json::from_str(&saved_json).unwrap();
+    assert_eq!(saved.theme, ThemeMode::Dark);
+
+    pool_client.shutdown().await.ok();
+    let _ = tokio::time::timeout(Duration::from_secs(2), daemon_handle).await;
+}
+
+#[tokio::test]
 async fn test_blob_server_health() {
     let temp_dir = TempDir::new().unwrap();
     let config = test_config(&temp_dir);

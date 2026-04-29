@@ -38,6 +38,7 @@ pub mod protocol;
 pub mod runtime;
 pub mod service;
 pub mod settings_doc;
+pub mod settings_rpc_client;
 pub mod singleton;
 pub mod sync_client;
 pub mod telemetry;
