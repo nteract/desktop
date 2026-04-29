@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
+use notebook_protocol::connection::LaunchSpec;
 use notebook_protocol::protocol::{
     NotebookBroadcast, NotebookRequest, NotebookResponse, SaveErrorKind,
 };
@@ -559,7 +560,7 @@ pub(crate) async fn start_kernel(
     let response = handle
         .send_request(NotebookRequest::LaunchKernel {
             kernel_type: kernel_type.to_string(),
-            env_source: env_source.to_string(),
+            env_source: LaunchSpec::parse(env_source),
             notebook_path: resolved_path,
         })
         .await
@@ -574,7 +575,7 @@ pub(crate) async fn start_kernel(
         } => {
             st.kernel_started = true;
             st.kernel_type = Some(actual_type.clone());
-            st.env_source = Some(actual_env);
+            st.env_source = Some(actual_env.to_string());
             if kernel_type != actual_type {
                 return Err(to_py_err(format!(
                     "Kernel type mismatch: requested '{}' but '{}' is already running",
@@ -590,7 +591,7 @@ pub(crate) async fn start_kernel(
         } => {
             st.kernel_started = true;
             st.kernel_type = Some(actual_type.clone());
-            st.env_source = Some(actual_env);
+            st.env_source = Some(actual_env.to_string());
             if kernel_type != actual_type {
                 return Err(to_py_err(format!(
                     "Kernel type mismatch: requested '{}' but '{}' is already running",
@@ -700,7 +701,7 @@ pub(crate) async fn restart_kernel(
     handle.confirm_sync().await.map_err(to_py_err)?;
     let launch_fut = handle.send_request(NotebookRequest::LaunchKernel {
         kernel_type: restart_kernel_type,
-        env_source: restart_env_source,
+        env_source: LaunchSpec::parse(&restart_env_source),
         notebook_path: resolved_path,
     });
 
@@ -754,7 +755,7 @@ pub(crate) async fn restart_kernel(
             } => {
                 st.kernel_started = true;
                 st.kernel_type = Some(actual_type);
-                st.env_source = Some(actual_env);
+                st.env_source = Some(actual_env.to_string());
             }
             NotebookResponse::GuardRejected { reason } => return Err(to_py_err(reason)),
             NotebookResponse::Error { error } => return Err(to_py_err(error)),
