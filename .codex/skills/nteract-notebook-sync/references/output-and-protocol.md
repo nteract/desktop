@@ -10,7 +10,10 @@ When changing frame handling, keep the following aligned:
 
 When changing the wire handshake or typed frame semantics, also inspect:
 
-- `crates/notebook-protocol/src/connection.rs`
+- `crates/notebook-protocol/src/connection.rs` (public re-export facade)
+- `crates/notebook-protocol/src/connection/framing.rs` (preamble, typed frames, frame caps)
+- `crates/notebook-protocol/src/connection/handshake.rs` (handshake, capabilities, connection info)
+- `crates/notebook-protocol/src/connection/env.rs` (launch spec and env metadata types)
 - `crates/notebook-protocol/src/protocol.rs`
 - `contributing/protocol.md`
 

@@ -6,7 +6,7 @@ This document describes the wire protocol between notebook clients (frontend WAS
 
 Two independent version numbers handle compatibility, separate from the artifact version:
 
-- **Protocol version** (`PROTOCOL_VERSION` in `connection.rs`, currently `4`) — governs wire compatibility. Every connection sends the 5-byte magic preamble (`0xC0DE01AC` + version byte) at the start of the stream. Bump when the framing, handshake shape, or message serialization format changes. Protocol v4 removes legacy environment-sync request/response variants. The Pool channel remains version-tolerant for daemon upgrade probes; all notebook/runtime channels require current clients.
+- **Protocol version** (`PROTOCOL_VERSION` defined in `connection/handshake.rs` and re-exported from `connection.rs`, currently `4`) — governs wire compatibility. Every connection sends the 5-byte magic preamble (`0xC0DE01AC` + version byte) at the start of the stream. Bump when the framing, handshake shape, or message serialization format changes. Protocol v4 removes legacy environment-sync request/response variants. The Pool channel remains version-tolerant for daemon upgrade probes; all notebook/runtime channels require current clients.
 - **Schema version** (`SCHEMA_VERSION` in `notebook-doc/src/lib.rs`, currently `4`) — governs Automerge document compatibility. Stored in the doc root as `schema_version`. Bump when the document structure changes. The current schema stores cells as a fractional-indexed `Map` and keeps outputs in `RuntimeStateDoc` keyed by `execution_id`, with per-output `output_id` UUIDs on manifests. Future bumps MUST ship a `migrate_vN_to_v(N+1)` function that preserves user data — v1–v3 were pre-release and the v4 load path discards older docs on load, which is only safe because no real user data lives at those versions.
 
 These are just incrementing integers. They evolve independently from each other and from the artifact version. A protocol or schema bump doesn't automatically force a major version bump — that depends on whether the change is user-facing.
@@ -370,7 +370,10 @@ Widget state now lives in `doc.comms/` in RuntimeStateDoc. The daemon writes com
 
 | File | Role |
 |------|------|
-| `crates/notebook-protocol/src/connection.rs` | Frame protocol: length-prefixed typed frames, handshake, preamble |
+| `crates/notebook-protocol/src/connection.rs` | Public connection API facade and compatibility re-exports |
+| `crates/notebook-protocol/src/connection/framing.rs` | Frame protocol: preamble, length-prefixed typed frames, frame caps |
+| `crates/notebook-protocol/src/connection/handshake.rs` | Protocol version, handshake, capabilities, connection info |
+| `crates/notebook-protocol/src/connection/env.rs` | Launch spec, package manager, and environment source wire types |
 | `crates/notebook-protocol/src/protocol.rs` | Canonical wire types: `NotebookRequest`, `NotebookResponse`, `NotebookBroadcast` |
 | `crates/runtimed-client/src/protocol.rs` | Daemon-internal types (`Request`, `Response`, `BlobRequest`), re-exports from `notebook-protocol` |
 | `crates/notebook-sync/src/relay.rs` | Relay handle for notebook sync connections |
@@ -385,7 +388,7 @@ Widget state now lives in `doc.comms/` in RuntimeStateDoc. The daemon writes com
 | `crates/runtimed-wasm/src/lib.rs` | WASM bindings: cell mutations, sync, per-cell accessors, `CellChangeset` |
 | `crates/notebook-doc/src/lib.rs` | `NotebookDoc`: Automerge schema, cell CRUD, output writes, per-cell accessors |
 | `crates/notebook-doc/src/diff.rs` | `CellChangeset`: structural diff from Automerge patches |
-| `crates/notebook-doc/src/frame_types.rs` | Shared frame type constants (0x00–0x06) |
+| `crates/notebook-doc/src/frame_types.rs` | Shared frame type constants (0x00–0x07) |
 | `crates/notebook-doc/src/runtime_state.rs` | `RuntimeStateDoc`: per-notebook daemon-authoritative state (kernel, queue, env sync) |
 | `apps/notebook/src/lib/runtime-state.ts` | Frontend runtime state store + `useRuntimeState()` hook |
 | `apps/notebook/src/lib/frame-types.ts` | Frame type constants + `sendFrame()` binary IPC helper |
