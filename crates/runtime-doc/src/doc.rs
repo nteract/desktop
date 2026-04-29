@@ -85,7 +85,7 @@ use automerge::{
     ObjType, ReadDoc, ScalarValue, Value, ROOT,
 };
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::{
     KernelActivity, KernelErrorReason, ProjectContext, ProjectFile, ProjectFileExtras,
@@ -1526,6 +1526,43 @@ impl RuntimeStateDoc {
         self.doc.put(&entry, "execution_count", ScalarValue::Null)?;
         self.doc.put(&entry, "success", ScalarValue::Null)?;
         Ok(true)
+    }
+
+    /// Remove all execution entries associated with the given cell ids.
+    ///
+    /// Used when a failed notebook load rolls back newly added cells before
+    /// they become durable notebook state.
+    pub fn remove_executions_for_cells(
+        &mut self,
+        cell_ids: &[String],
+    ) -> Result<usize, RuntimeStateError> {
+        if cell_ids.is_empty() {
+            return Ok(0);
+        }
+
+        let Some(executions) = self.get_map("executions") else {
+            return Ok(0);
+        };
+
+        let cell_ids: HashSet<&str> = cell_ids.iter().map(String::as_str).collect();
+        let execution_ids: Vec<String> = self
+            .doc
+            .keys(&executions)
+            .filter(|execution_id| {
+                let Some((_, entry)) = self.doc.get(&executions, execution_id).ok().flatten()
+                else {
+                    return false;
+                };
+                cell_ids.contains(self.read_str(&entry, "cell_id").as_str())
+            })
+            .collect();
+
+        for execution_id in &execution_ids {
+            self.doc.delete(&executions, execution_id.as_str())?;
+            self.remove_display_index_entries_for_execution(execution_id);
+        }
+
+        Ok(execution_ids.len())
     }
 
     // ── display_index management ─────────────────────────────────────
@@ -3455,6 +3492,36 @@ mod tests {
 
         let state = doc.read_state();
         assert_eq!(state.execution_count_for_cell("cell-1"), None);
+    }
+
+    #[test]
+    fn test_remove_executions_for_cells_removes_matching_executions_and_indexes() {
+        let mut doc = RuntimeStateDoc::new();
+        doc.create_execution("exec-a", "cell-a").unwrap();
+        doc.create_execution("exec-b", "cell-b").unwrap();
+        doc.create_execution("exec-c", "cell-a").unwrap();
+        doc.add_display_index_entry("display-1", "exec-a", "output-a");
+        doc.add_display_index_entry("display-1", "exec-b", "output-b");
+        doc.add_display_index_entry("display-2", "exec-a", "output-c");
+
+        let removed = doc
+            .remove_executions_for_cells(&["cell-a".to_string()])
+            .unwrap();
+
+        assert_eq!(removed, 2);
+        let state = doc.read_state();
+        assert!(!state.executions.contains_key("exec-a"));
+        assert!(state.executions.contains_key("exec-b"));
+        assert!(!state.executions.contains_key("exec-c"));
+        assert_eq!(
+            doc.get_display_index_entries("display-1"),
+            vec![("exec-b".to_string(), "output-b".to_string())],
+            "display index entries for removed executions should be cleared"
+        );
+        assert!(
+            doc.get_display_index_entries("display-2").is_empty(),
+            "all display ids for removed executions should be cleared"
+        );
     }
 
     #[test]
