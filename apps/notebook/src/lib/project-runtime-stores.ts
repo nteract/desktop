@@ -70,10 +70,6 @@ export function projectRuntimeStateToExecutions(state: RuntimeState): void {
   }
 }
 
-export function resetRuntimeExecutionProjection(): void {
-  executionProjector.reset();
-}
-
 /**
  * Seed the outputs / executions stores directly from the WASM handle.
  *
@@ -221,7 +217,7 @@ function tryResolveSync(
 }
 
 export function resetRuntimeStoresProjection(): void {
-  resetRuntimeExecutionProjection();
+  executionProjector.reset();
   resetNotebookExecutions();
   resetNotebookOutputs();
 }

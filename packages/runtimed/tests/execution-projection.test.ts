@@ -169,6 +169,71 @@ describe("RuntimeExecutionProjector", () => {
     });
   });
 
+  it("projects added, changed, and removed executions in the same tick", () => {
+    const projector = new RuntimeExecutionProjector();
+    projector.project(
+      stateWith({
+        "exec-stays": {
+          cell_id: "cell-1",
+          execution_count: 1,
+          status: "running",
+          success: null,
+          outputs: [{ output_id: "old" }],
+        },
+        "exec-removed": {
+          cell_id: "cell-2",
+          execution_count: 2,
+          status: "done",
+          success: true,
+          outputs: [],
+        },
+      }),
+    );
+
+    const projection = projector.project(
+      stateWith({
+        "exec-stays": {
+          cell_id: "cell-1",
+          execution_count: 1,
+          status: "running",
+          success: null,
+          outputs: [{ output_id: "new" }],
+        },
+        "exec-added": {
+          cell_id: "cell-3",
+          execution_count: 3,
+          status: "queued",
+          success: null,
+          outputs: [],
+        },
+      }),
+    );
+
+    expect(projection.removed_execution_ids).toEqual(["exec-removed"]);
+    expect(projection.upserts).toEqual([
+      [
+        "exec-stays",
+        {
+          cell_id: "cell-1",
+          execution_count: 1,
+          status: "running",
+          success: null,
+          output_ids: ["new"],
+        },
+      ],
+      [
+        "exec-added",
+        {
+          cell_id: "cell-3",
+          execution_count: 3,
+          status: "queued",
+          success: null,
+          output_ids: [],
+        },
+      ],
+    ]);
+  });
+
   it("reset clears projection cache", () => {
     const projector = new RuntimeExecutionProjector();
     const state = stateWith({
