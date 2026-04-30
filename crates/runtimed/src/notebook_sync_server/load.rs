@@ -464,10 +464,8 @@ where
     );
     let notebook_path = room
         .file_binding
-        .path
-        .read()
+        .path()
         .await
-        .as_ref()
         .map(|p| p.to_string_lossy().to_string());
     let context_id = super::notebook_execution_context_id(room, notebook_path.as_deref());
     let durable_records = durable_execution_records(execution_store, &context_id).await;
@@ -1109,7 +1107,7 @@ pub(crate) async fn apply_ipynb_changes(
         }
         map
     };
-    let notebook_path_for_assets = room.file_binding.path.read().await.clone();
+    let notebook_path_for_assets = room.file_binding.path().await;
     let converted_attachments: HashMap<String, AttachmentRefs> = {
         let mut map = HashMap::new();
         for cell in external_cells {

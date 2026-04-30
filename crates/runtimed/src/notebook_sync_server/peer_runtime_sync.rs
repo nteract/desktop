@@ -212,10 +212,8 @@ pub(super) async fn persist_terminal_execution_records(
 ) {
     let notebook_path = room
         .file_binding
-        .path
-        .read()
+        .path()
         .await
-        .as_ref()
         .map(|p| p.to_string_lossy().to_string());
     let context_id = notebook_execution_context_id(room, notebook_path.as_deref());
     let records = room

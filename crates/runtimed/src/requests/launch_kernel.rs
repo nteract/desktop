@@ -51,10 +51,8 @@ pub(crate) async fn handle(
         Some(p) => Some(p),
         None => room
             .file_binding
-            .path
-            .read()
+            .path()
             .await
-            .as_ref()
             .map(|p| p.to_string_lossy().into_owned()),
     };
     // Check RuntimeStateDoc for launch serialization.

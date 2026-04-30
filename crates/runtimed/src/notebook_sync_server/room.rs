@@ -30,18 +30,24 @@ impl RoomIdentity {
 /// saved-as to a new path.
 pub struct NotebookFileBinding {
     /// The canonical `.ipynb` path, when this room is file-backed.
-    pub path: RwLock<Option<PathBuf>>,
+    path: RwLock<Option<PathBuf>>,
     /// Whether this notebook is ephemeral (in-memory only, no .ipynb on disk).
-    pub is_ephemeral: AtomicBool,
+    is_ephemeral: AtomicBool,
     /// Shutdown signal for the `.ipynb` file watcher task.
-    pub watcher_shutdown_tx: Mutex<Option<oneshot::Sender<()>>>,
+    watcher_shutdown_tx: Mutex<Option<oneshot::Sender<()>>>,
     /// Shutdown signal for the project-file watcher task.
     ///
     /// This watcher is derived from the bound notebook path and is rearmed when
     /// the binding moves to a new path.
-    pub project_file_watcher_shutdown_tx: Mutex<Option<oneshot::Sender<()>>>,
+    project_file_watcher_shutdown_tx: Mutex<Option<oneshot::Sender<()>>>,
     /// Shutdown/flush request channel for the `.ipynb` autosave task.
-    pub autosave_shutdown_tx: Mutex<Option<mpsc::UnboundedSender<AutosaveShutdownRequest>>>,
+    autosave_shutdown_tx: Mutex<Option<mpsc::UnboundedSender<AutosaveShutdownRequest>>>,
+}
+
+pub struct NotebookFileBindingSaveSnapshot {
+    pub was_untitled: bool,
+    pub old_path: Option<PathBuf>,
+    pub is_ephemeral: bool,
 }
 
 impl NotebookFileBinding {
@@ -53,6 +59,54 @@ impl NotebookFileBinding {
             project_file_watcher_shutdown_tx: Mutex::new(None),
             autosave_shutdown_tx: Mutex::new(None),
         }
+    }
+
+    pub async fn path(&self) -> Option<PathBuf> {
+        self.path.read().await.clone()
+    }
+
+    pub async fn has_saved_path(&self) -> bool {
+        self.path.read().await.is_some()
+    }
+
+    pub fn is_ephemeral(&self) -> bool {
+        self.is_ephemeral.load(Ordering::Relaxed)
+    }
+
+    pub async fn path_matches(&self, path: &Path) -> bool {
+        self.path.read().await.as_deref() == Some(path)
+    }
+
+    pub async fn save_snapshot(&self) -> NotebookFileBindingSaveSnapshot {
+        let old_path = self.path.read().await.clone();
+        NotebookFileBindingSaveSnapshot {
+            was_untitled: old_path.is_none(),
+            old_path,
+            is_ephemeral: self.is_ephemeral(),
+        }
+    }
+
+    async fn set_bound_path(&self, canonical: PathBuf) {
+        *self.path.write().await = Some(canonical);
+    }
+
+    fn mark_file_backed(&self) {
+        self.is_ephemeral.store(false, Ordering::Relaxed);
+    }
+
+    #[cfg(test)]
+    pub async fn set_path_for_test(&self, path: Option<PathBuf>) {
+        *self.path.write().await = path;
+    }
+
+    #[cfg(test)]
+    pub async fn has_project_file_watcher_for_test(&self) -> bool {
+        self.project_file_watcher_shutdown_tx.lock().await.is_some()
+    }
+
+    #[cfg(test)]
+    pub async fn has_autosave_shutdown_tx_for_test(&self) -> bool {
+        self.autosave_shutdown_tx.lock().await.is_some()
     }
 
     pub async fn claim_path(
@@ -99,10 +153,8 @@ impl NotebookFileBinding {
     }
 
     pub async fn promote_after_save(room: &Arc<NotebookRoom>, canonical: PathBuf) {
-        *room.file_binding.path.write().await = Some(canonical.clone());
-        room.file_binding
-            .is_ephemeral
-            .store(false, Ordering::Relaxed);
+        room.file_binding.set_bound_path(canonical.clone()).await;
+        room.file_binding.mark_file_backed();
         Self::set_runtime_path(room, &canonical).await;
         room.file_binding
             .start_file_lifecycle(room, &canonical)
@@ -112,7 +164,7 @@ impl NotebookFileBinding {
     }
 
     pub async fn rebind_after_save_as(room: &Arc<NotebookRoom>, canonical: PathBuf) {
-        *room.file_binding.path.write().await = Some(canonical.clone());
+        room.file_binding.set_bound_path(canonical.clone()).await;
         Self::set_runtime_path(room, &canonical).await;
         room.file_binding
             .start_file_lifecycle(room, &canonical)
@@ -125,14 +177,48 @@ impl NotebookFileBinding {
         if canonical.extension().is_some_and(|ext| ext == "ipynb") {
             let shutdown_tx =
                 spawn_notebook_file_watcher(canonical.to_path_buf(), Arc::clone(room));
-            if let Some(previous_tx) = self.watcher_shutdown_tx.lock().await.replace(shutdown_tx) {
-                let _ = previous_tx.send(());
-            }
+            self.install_notebook_watcher_shutdown_tx(shutdown_tx).await;
         }
 
         let shutdown_tx =
             spawn_autosave_debouncer(canonical.to_string_lossy().into_owned(), Arc::clone(room));
         self.install_autosave_shutdown_tx(shutdown_tx).await;
+    }
+
+    pub async fn install_notebook_watcher_shutdown_tx(&self, shutdown_tx: oneshot::Sender<()>) {
+        let previous_tx = self.watcher_shutdown_tx.lock().await.replace(shutdown_tx);
+        if let Some(previous_tx) = previous_tx {
+            let _ = previous_tx.send(());
+        }
+    }
+
+    pub async fn shutdown_notebook_watcher(&self) -> bool {
+        let shutdown_tx = self.watcher_shutdown_tx.lock().await.take();
+        let Some(shutdown_tx) = shutdown_tx else {
+            return false;
+        };
+        let _ = shutdown_tx.send(());
+        true
+    }
+
+    pub async fn install_project_file_watcher_shutdown_tx(&self, shutdown_tx: oneshot::Sender<()>) {
+        let previous_tx = self
+            .project_file_watcher_shutdown_tx
+            .lock()
+            .await
+            .replace(shutdown_tx);
+        if let Some(previous_tx) = previous_tx {
+            let _ = previous_tx.send(());
+        }
+    }
+
+    pub async fn shutdown_project_file_watcher(&self) -> bool {
+        let shutdown_tx = self.project_file_watcher_shutdown_tx.lock().await.take();
+        let Some(shutdown_tx) = shutdown_tx else {
+            return false;
+        };
+        let _ = shutdown_tx.send(());
+        true
     }
 
     pub async fn install_autosave_shutdown_tx(

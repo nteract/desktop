@@ -617,13 +617,7 @@ pub(crate) fn compute_env_sync_diff(
 /// blob-store hashes, then updates the cell-local `resolved_assets` maps so
 /// isolated markdown rendering can rewrite those refs to blob URLs.
 pub(crate) async fn process_markdown_assets(room: &NotebookRoom) {
-    let notebook_path = room
-        .file_binding
-        .path
-        .read()
-        .await
-        .clone()
-        .filter(|p| p.exists());
+    let notebook_path = room.file_binding.path().await.filter(|p| p.exists());
     // Fork BEFORE async resolution so the fork's baseline predates
     // any concurrent edits. Asset updates on the fork are treated as
     // concurrent with user edits via Automerge's CRDT merge.
