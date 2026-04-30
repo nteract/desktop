@@ -272,7 +272,6 @@ Requests are one-shot JSON messages sent from the client to the daemon. Each req
 | `LaunchKernel` | Start a kernel with environment config |
 | `ExecuteCell { cell_id }` | Queue a cell for execution (daemon reads source from synced doc) |
 | `ExecuteCellGuarded { cell_id, observed_heads }` | Queue a cell only if the approved notebook heads still match |
-| `ClearOutputs { cell_ids }` | Clear visible outputs for one or more cells by removing their execution pointers |
 | `InterruptExecution` | Send SIGINT to the running kernel |
 | `ShutdownKernel` | Stop the kernel process |
 | `RunAllCells` | Execute all code cells in order |

@@ -192,6 +192,7 @@ function AppContent() {
     addCell,
     moveCell,
     deleteCell,
+    clearOutputs,
     save,
     openNotebook,
     cloneNotebook,
@@ -375,7 +376,6 @@ function AppContent() {
     launchKernel,
     executeCell,
     executeCellGuarded,
-    clearOutputs,
     interruptKernel,
     shutdownKernel,
     syncEnvironment,
@@ -1139,9 +1139,8 @@ function AppContent() {
           return;
         }
 
-        // No explicit ClearOutputs IPC needed. Starting a fresh execution
-        // updates the cell's execution_id pointer, and output rendering
-        // follows that pointer.
+        // Starting a fresh execution updates the cell's execution_id pointer,
+        // and output rendering follows that pointer.
 
         // Start kernel via daemon if not running or awaiting trust, then queue cell.
         if (

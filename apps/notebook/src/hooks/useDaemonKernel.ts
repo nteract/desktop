@@ -280,11 +280,6 @@ export function useDaemonKernel({
     [client],
   );
 
-  const clearOutputs = useCallback(
-    (cellIds: string | string[]) => client.clearOutputs(cellIds) as Promise<NotebookResponse>,
-    [client],
-  );
-
   const interruptKernel = useCallback(
     () => client.interruptKernel() as Promise<NotebookResponse>,
     [client],
@@ -341,7 +336,6 @@ export function useDaemonKernel({
     launchKernel,
     executeCell,
     executeCellGuarded,
-    clearOutputs,
     interruptKernel,
     shutdownKernel,
     syncEnvironment,

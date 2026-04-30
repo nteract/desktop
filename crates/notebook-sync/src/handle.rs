@@ -287,6 +287,24 @@ impl DocHandle {
         self.with_notebook_doc(|nd| nd.delete_cell(cell_id))
     }
 
+    /// Clear a cell's visible outputs by removing its current execution pointer.
+    pub fn clear_outputs(&self, cell_id: &str) -> Result<bool, SyncError> {
+        self.with_notebook_doc(|nd| nd.clear_outputs(cell_id))
+    }
+
+    /// Clear visible outputs for a batch of cells.
+    pub fn clear_outputs_for_cells(&self, cell_ids: &[String]) -> Result<usize, SyncError> {
+        self.with_notebook_doc(|nd| {
+            let mut cleared = 0;
+            for cell_id in cell_ids {
+                if nd.clear_outputs(cell_id)? {
+                    cleared += 1;
+                }
+            }
+            Ok(cleared)
+        })
+    }
+
     /// Move a cell to after another cell (or to the beginning if `None`).
     /// Returns the new position string.
     pub fn move_cell(
@@ -480,6 +498,12 @@ impl DocHandle {
         }
     }
 
+    /// Get a single cell's current execution pointer.
+    pub fn get_cell_execution_id(&self, cell_id: &str) -> Option<String> {
+        let state = self.doc.lock().ok()?;
+        read_execution_id(&state.doc, cell_id)
+    }
+
     /// Get a single cell's execution count (e.g. "5" or "null").
     ///
     /// RuntimeStateDoc is authoritative while an execution is known. The
@@ -487,12 +511,12 @@ impl DocHandle {
     /// reload/export paths where runtime state is unavailable.
     pub fn get_cell_execution_count(&self, cell_id: &str) -> Option<String> {
         if let Ok(state) = self.doc.lock() {
-            if let Some(count) = state
-                .state_doc
-                .read_state()
-                .execution_count_for_cell(cell_id)
-            {
-                return Some(count.to_string());
+            if let Some(eid) = read_execution_id(&state.doc, cell_id) {
+                if let Some(exec) = state.state_doc.get_execution(&eid) {
+                    if let Some(count) = exec.execution_count {
+                        return Some(count.to_string());
+                    }
+                }
             }
         }
 

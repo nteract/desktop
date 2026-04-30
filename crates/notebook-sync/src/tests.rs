@@ -528,6 +528,39 @@ mod tests {
     }
 
     #[test]
+    fn test_convenience_clear_outputs() {
+        let (handle, _changed_rx, _cmd_rx) = test_handle();
+
+        handle.add_cell_after("cell-1", "code", None).unwrap();
+        handle
+            .add_cell_after("cell-2", "code", Some("cell-1"))
+            .unwrap();
+        handle
+            .with_doc(|doc| {
+                let mut nd = notebook_doc::NotebookDoc::wrap(std::mem::take(doc));
+                nd.set_execution_id("cell-1", Some("exec-1")).unwrap();
+                nd.set_execution_id("cell-2", Some("exec-2")).unwrap();
+                *doc = nd.into_inner();
+            })
+            .unwrap();
+
+        assert!(handle.clear_outputs("cell-1").unwrap());
+        assert_eq!(handle.get_cell_execution_id("cell-1").as_deref(), None);
+        assert_eq!(
+            handle.get_cell_execution_count("cell-1").as_deref(),
+            Some("null")
+        );
+
+        assert_eq!(
+            handle
+                .clear_outputs_for_cells(&["cell-2".to_string(), "missing".to_string()])
+                .unwrap(),
+            1
+        );
+        assert_eq!(handle.get_cell_execution_id("cell-2").as_deref(), None);
+    }
+
+    #[test]
     fn test_convenience_set_metadata_snapshot() {
         let (handle, _changed_rx, _cmd_rx) = test_handle();
 

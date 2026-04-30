@@ -13,7 +13,6 @@ pub const NOTEBOOK_REQUEST_TYPES: &[&str] = &[
     "launch_kernel",
     "execute_cell",
     "execute_cell_guarded",
-    "clear_outputs",
     "interrupt_execution",
     "shutdown_kernel",
     "run_all_cells",
@@ -33,7 +32,6 @@ pub const NOTEBOOK_RESPONSE_RESULTS: &[&str] = &[
     "kernel_launched",
     "kernel_already_running",
     "cell_queued",
-    "outputs_cleared",
     "interrupt_sent",
     "kernel_shutting_down",
     "no_kernel",
@@ -137,7 +135,6 @@ export type NotebookRequest =
     }}
   | {{ type: "execute_cell"; cell_id: string }}
   | {{ type: "execute_cell_guarded"; cell_id: string; observed_heads: string[] }}
-  | {{ type: "clear_outputs"; cell_ids: string[] }}
   | {{ type: "interrupt_execution" }}
   | {{ type: "shutdown_kernel" }}
   | {{ type: "run_all_cells" }}
@@ -195,7 +192,6 @@ export type NotebookResponse =
       launched_config: LaunchedEnvConfig;
     }}
   | {{ result: "cell_queued"; cell_id: string; execution_id: string }}
-  | {{ result: "outputs_cleared"; cell_ids: string[] }}
   | {{ result: "interrupt_sent" }}
   | {{ result: "kernel_shutting_down" }}
   | {{ result: "no_kernel" }}

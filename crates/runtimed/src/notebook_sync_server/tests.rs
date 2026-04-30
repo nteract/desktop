@@ -7380,7 +7380,7 @@ async fn test_save_preserves_outputs_when_execution_in_flight() {
     );
 }
 
-/// When a cell's `execution_id` is `None` (cleared via ClearOutputs), save
+/// When a cell's `execution_id` is `None` (cleared via local Automerge mutation), save
 /// must write empty outputs. The clear is intentional - we don't fall back
 /// to historical executions.
 #[tokio::test]

@@ -512,6 +512,31 @@ export function useAutomergeNotebook() {
     [commitMutation],
   );
 
+  const clearOutputs = useCallback(
+    (cellIds: string | string[]) => {
+      const ids = Array.isArray(cellIds) ? cellIds : [cellIds];
+      if (ids.length === 0) return false;
+      const handle = handleRef.current;
+      const engine = engineRef.current;
+      if (!handle || !engine) {
+        logger.debug("[automerge-notebook] clearOutputs skipped: no handle/engine");
+        return false;
+      }
+
+      let changed = false;
+      for (const cellId of ids) {
+        changed = !!handle.clear_outputs(cellId) || changed;
+      }
+      if (!changed) return false;
+
+      rematerializeCellsSync(handle);
+      updateCellExecutionPointersFromHandle(handle, ids);
+      engine.flush();
+      return true;
+    },
+    [rematerializeCellsSync],
+  );
+
   const setCellSourceHidden = useCallback(
     (cellId: string, hidden: boolean) => {
       commitMutation((handle) => {
@@ -643,6 +668,7 @@ export function useAutomergeNotebook() {
     addCell,
     moveCell,
     deleteCell,
+    clearOutputs,
     save,
     openNotebook,
     cloneNotebook,

@@ -7,8 +7,6 @@ use rmcp::ErrorData as McpError;
 use schemars::JsonSchema;
 use serde::Deserialize;
 
-use notebook_protocol::protocol::NotebookRequest;
-
 use crate::execution;
 use crate::NteractMcp;
 
@@ -318,12 +316,7 @@ pub async fn clear_outputs(
     }
 
     if !cell_ids.is_empty() {
-        if let Err(e) = handle
-            .send_request(NotebookRequest::ClearOutputs {
-                cell_ids: cell_ids.clone(),
-            })
-            .await
-        {
+        if let Err(e) = handle.clear_outputs_for_cells(&cell_ids) {
             return tool_error(&format!("Failed to clear outputs: {e}"));
         }
     }

@@ -127,20 +127,6 @@ export class NotebookClient {
     }
   }
 
-  /** Clear outputs for one or more cells by removing their execution pointers. */
-  async clearOutputs(cellIds: string | string[]): Promise<NotebookResponse> {
-    const ids = Array.isArray(cellIds) ? cellIds : [cellIds];
-    try {
-      return await this.sendRequest({
-        type: "clear_outputs",
-        cell_ids: ids,
-      });
-    } catch (e) {
-      this.log.error("[notebook-client] Clear outputs failed:", e);
-      throw e;
-    }
-  }
-
   /** Interrupt kernel execution. */
   async interruptKernel(): Promise<NotebookResponse> {
     try {

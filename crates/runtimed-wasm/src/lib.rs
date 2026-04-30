@@ -829,11 +829,14 @@ impl NotebookHandle {
     /// NotebookDoc cell field is a durable nbformat-history fallback for
     /// reload/export paths where runtime state is unavailable.
     pub fn get_cell_execution_count(&self, cell_id: &str) -> Option<String> {
-        self.state_doc
-            .read_state()
-            .execution_count_for_cell(cell_id)
-            .map(|count| count.to_string())
-            .or_else(|| self.doc.get_cell_execution_count(cell_id))
+        if let Some(eid) = self.doc.get_execution_id(cell_id) {
+            if let Some(exec) = self.state_doc.get_execution(&eid) {
+                if let Some(count) = exec.execution_count {
+                    return Some(count.to_string());
+                }
+            }
+        }
+        self.doc.get_cell_execution_count(cell_id)
     }
 
     /// Get a cell's metadata as a native JS object.
@@ -917,6 +920,13 @@ impl NotebookHandle {
         self.doc
             .delete_cell(cell_id)
             .map_err(|e| JsError::new(&format!("delete_cell failed: {}", e)))
+    }
+
+    /// Clear a cell's visible outputs by removing its current execution pointer.
+    pub fn clear_outputs(&mut self, cell_id: &str) -> Result<bool, JsError> {
+        self.doc
+            .clear_outputs(cell_id)
+            .map_err(|e| JsError::new(&format!("clear_outputs failed: {}", e)))
     }
 
     /// Update a cell's source text using Automerge Text CRDT (Myers diff).
