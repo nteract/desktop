@@ -20,12 +20,19 @@ export {
 
 // Protocol contract
 export {
+  DISPLAY_CAPABLE_JUPYTER_OUTPUT_TYPES,
   INITIAL_LOAD_PHASES,
   NOTEBOOK_DOC_PHASES,
   NOTEBOOK_REQUEST_TYPES,
   NOTEBOOK_RESPONSE_RESULTS,
   RUNTIME_STATE_PHASES,
   SESSION_CONTROL_TYPES,
+  isDisplayCapableJupyterOutput,
+  isDisplayCapableJupyterOutputType,
+  isInitialLoadFailed,
+  isInitialLoadStreaming,
+  type DisplayCapableJupyterOutput,
+  type DisplayCapableJupyterOutputType,
   type SessionControlMessage,
 } from "./protocol-contract";
 
@@ -40,6 +47,14 @@ export type {
   TextAttribution,
 } from "./handle";
 
+// Text attribution events
+export {
+  createTextAttributionEvent,
+  isTextAttributionEvent,
+  TEXT_ATTRIBUTION_EVENT_TYPE,
+  type TextAttributionEvent,
+} from "./text-attribution-event";
+
 // Cell changeset
 export {
   classifyCellChangesetMaterialization,
@@ -49,6 +64,16 @@ export {
   type ChangedFields,
   mergeChangesets,
 } from "./cell-changeset";
+
+// Execution projection
+export {
+  buildRuntimeExecutionSnapshot,
+  collectExecutionOutputIds,
+  collectOutputIds,
+  executionFingerprint,
+  extractOutputId,
+  type RuntimeExecutionSnapshot,
+} from "./execution-projection";
 
 // Runtime state
 export {

@@ -25,22 +25,10 @@ import {
   type AttributionMark,
   addTextAttributions,
 } from "@/components/editor/text-attribution";
+import { isTextAttributionEvent, type TextAttribution } from "runtimed";
 import { findPeerColorByActorLabel } from "./cursor-registry";
 import { getCellEditor } from "./editor-registry";
 import { subscribeBroadcast } from "./notebook-frame-bus";
-
-// ── Types (text_attribution event shape from WASM) ───────────────────
-
-interface TextAttributionEvent {
-  type: "text_attribution";
-  attributions: Array<{
-    cell_id: string;
-    index: number;
-    text: string;
-    deleted: number;
-    actors: string[];
-  }>;
-}
 
 // ── Color cache ──────────────────────────────────────────────────────
 
@@ -70,17 +58,11 @@ function colorForActors(actors: string[]): string {
 // ── Event handler ────────────────────────────────────────────────────
 
 function handleBroadcast(payload: unknown): void {
-  // Type-narrow: only handle text_attribution events
-  if (
-    !payload ||
-    typeof payload !== "object" ||
-    (payload as { type?: string }).type !== "text_attribution"
-  ) {
+  if (!isTextAttributionEvent(payload)) {
     return;
   }
 
-  const event = payload as TextAttributionEvent;
-  if (!event.attributions || event.attributions.length === 0) return;
+  if (payload.attributions.length === 0) return;
 
   // Defer mark creation by one microtask. The CRDT bridge also
   // subscribes to this broadcast and applies text changes to the CM
@@ -90,14 +72,12 @@ function handleBroadcast(payload: unknown): void {
   // insert-then-delete pairs to zero width. By deferring, we guarantee
   // the CM document already reflects the new content when we read
   // positions, so marks land on the correct text.
-  const attributions = event.attributions;
+  const attributions = payload.attributions;
   queueMicrotask(() => dispatchAttributionMarks(attributions));
 }
 
 /** Create and dispatch attribution marks after the CRDT bridge has applied text changes. */
-function dispatchAttributionMarks(
-  attributions: TextAttributionEvent["attributions"],
-): void {
+function dispatchAttributionMarks(attributions: TextAttribution[]): void {
   // Group attributions by cell_id for batch dispatch
   const byCellId = new Map<string, AttributionMark[]>();
 
