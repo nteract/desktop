@@ -5,6 +5,10 @@ export interface CodeCell {
   cell_type: "code";
   id: string;
   source: string;
+  /**
+   * Display count projected from RuntimeStateDoc when available, with the
+   * notebook-doc nbformat fallback used only when runtime state is absent.
+   */
   execution_count: number | null;
   /**
    * Legacy: after Phase C-lite, the frame pipeline no longer populates
