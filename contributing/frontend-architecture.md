@@ -99,11 +99,17 @@ next. The abstraction lives in `packages/notebook-host/src/`.
 - `setOpenUrlHost(host)` — `open-url.ts`
 - `setMetadataTransport(host.transport)` — `notebook-metadata.ts`
 
-**Not yet migrated** — a pile of `invoke(...)` calls for kernel / save /
-clone / dependency-detection. Those are slated to swap onto
-`host.transport.sendRequest(NotebookRequest)` (direct protocol dispatch)
-and daemon-owned file detection in subsequent PRs. See
-`.context/tauri-daemon-audit.md` for the full audit + migration queue.
+Notebook request/response traffic is sent through `NotebookClient` on
+`host.transport`, which encodes `NotebookRequestEnvelope` values and delivers
+them as typed protocol frames (`0x01`) through the relay. The corresponding
+responses return as `0x02` frames on the unified `notebook:frame` event and are
+resolved by request id.
+
+Some direct `invoke(...)` calls remain for host-side work that is not a notebook
+request/response frame: save/open dialogs, app update flows, dependency
+validation helpers, daemon reconnect/status commands, and other narrow platform
+effects. Prefer extending `NotebookRequest` for daemon-owned notebook behavior,
+and prefer adding host methods for platform behavior.
 
 **Canonical surface**: `packages/notebook-host/src/types.ts`.
 **Tauri implementation**: `packages/notebook-host/src/tauri/index.ts`.
@@ -247,7 +253,10 @@ Security boundary for untrusted HTML/widget outputs. See [iframe-isolation.md](i
 
 Cell mutations (add, delete, edit) go through the WASM handle for instant response. Source edits are batched via `engine.scheduleFlush()` (20ms debounce), with `engine.flush()` before execute/save. The fast path for typing: `updateCellSource()` → WASM `update_source()` → `updateCellById()` (one cell, one subscriber) → debounced sync to daemon.
 
-Execution requests go to the daemon via dedicated Tauri commands (`execute_cell_via_daemon`, etc.). These are slated to migrate onto `host.transport.sendRequest(NotebookRequest)` in a follow-up — for now they still `invoke(...)` directly.
+Execution requests go through `NotebookClient` on `host.transport`, which sends
+`NotebookRequest` frames over the existing notebook relay. The daemon reads cell
+source from the synced Automerge document, so callers must flush pending source
+sync before execute/save.
 
 ### CellChangeset types
 
