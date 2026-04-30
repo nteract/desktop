@@ -547,19 +547,21 @@ pub(crate) async fn handle(
                 )
                 .await
                 {
-                    Ok(Some(leased)) => {
+                    Ok(Some(env)) => {
                         info!(
                             "[notebook-sync] LaunchKernel: acquired {} env: {:?}",
                             resolved_env_source.as_str(),
-                            leased.env().python_path
+                            env.python_path
                         );
-                        // Set the runtime owner BEFORE releasing the lease
-                        // so the env is never momentarily unprotected.
-                        {
-                            let mut ep = room.runtime_agent_env_path.write().await;
-                            *ep = Some(leased.env().venv_path.clone());
-                        }
-                        Some(leased.transfer_to_runtime().await)
+                        // Set the active runtime owner now so the env is
+                        // protected by `runtime_agent_env_path` through
+                        // the rest of the launch flow. (The pool lease
+                        // was already released inside
+                        // `acquire_prewarmed_env_with_capture`.)
+                        let mut ep = room.runtime_agent_env_path.write().await;
+                        *ep = Some(env.venv_path.clone());
+                        drop(ep);
+                        Some(env)
                     }
                     Ok(None) => None,
                     Err(()) => {
@@ -592,12 +594,12 @@ pub(crate) async fn handle(
                 None
             }
             other => {
-                // For remaining conda sources, route to conda pool.
-                // Set runtime_agent_env_path BEFORE transfer_to_runtime so
-                // the env is never momentarily unprotected.
-                let leased = if other.starts_with("conda:") {
+                // For remaining conda sources, route to conda pool. Set
+                // runtime_agent_env_path BEFORE releasing the lease so the
+                // env is never momentarily unprotected.
+                let (env, guard) = if other.starts_with("conda:") {
                     match daemon.take_conda_env().await {
-                        Some(leased) => leased,
+                        Some(taken) => taken,
                         None => {
                             reset_starting_state(room, None).await;
                             return NotebookResponse::Error {
@@ -608,7 +610,7 @@ pub(crate) async fn handle(
                 } else {
                     // Prewarmed UV
                     match daemon.take_uv_env().await {
-                        Some(leased) => leased,
+                        Some(taken) => taken,
                         None => {
                             reset_starting_state(room, None).await;
                             return NotebookResponse::Error {
@@ -619,9 +621,10 @@ pub(crate) async fn handle(
                 };
                 {
                     let mut ep = room.runtime_agent_env_path.write().await;
-                    *ep = Some(leased.env().venv_path.clone());
+                    *ep = Some(env.venv_path.clone());
                 }
-                Some(leased.transfer_to_runtime().await)
+                guard.release().await;
+                Some(env)
             }
         }
     };

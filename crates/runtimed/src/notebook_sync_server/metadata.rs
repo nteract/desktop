@@ -1813,11 +1813,26 @@ pub(crate) async fn acquire_prewarmed_env_with_capture(
     daemon: &std::sync::Arc<crate::daemon::Daemon>,
     room: &NotebookRoom,
     metadata_snapshot: Option<&NotebookMetadataSnapshot>,
-) -> Result<Option<crate::daemon::LeasedPoolEnv>, ()> {
+) -> Result<Option<crate::PooledEnv>, ()> {
     let runtime = match env_source {
         "uv:prewarmed" => CapturedEnvRuntime::Uv,
         "conda:prewarmed" => CapturedEnvRuntime::Conda,
-        _ => return acquire_pool_env_for_source(env_source, daemon, room).await,
+        _ => {
+            // Non-uv/conda prewarmed sources (e.g. pixi:prewarmed) skip
+            // the capture/claim step. Take the env, set the runtime
+            // owner before releasing the lease, and return the bare env.
+            return match acquire_pool_env_for_source(env_source, daemon, room).await? {
+                Some((env, guard)) => {
+                    {
+                        let mut ep = room.runtime_agent_env_path.write().await;
+                        *ep = Some(env.venv_path.clone());
+                    }
+                    guard.release().await;
+                    Ok(Some(env))
+                }
+                None => Ok(None),
+            };
+        }
     };
     let progress_handler: std::sync::Arc<dyn kernel_env::ProgressHandler> =
         std::sync::Arc::new(crate::inline_env::BroadcastProgressHandler::with_state(
@@ -1857,14 +1872,12 @@ pub(crate) async fn acquire_prewarmed_env_with_capture(
                                 "[notebook-sync] Reopen cache-hit for env_id={} at {:?}",
                                 env_id, prepared.venv_path
                             );
-                            return Ok(Some(crate::daemon::LeasedPoolEnv::cached(
-                                crate::PooledEnv {
-                                    env_type: crate::EnvType::Uv,
-                                    venv_path: prepared.venv_path,
-                                    python_path: prepared.python_path,
-                                    prewarmed_packages: deps.dependencies.clone(),
-                                },
-                            )));
+                            return Ok(Some(crate::PooledEnv {
+                                env_type: crate::EnvType::Uv,
+                                venv_path: prepared.venv_path,
+                                python_path: prepared.python_path,
+                                prewarmed_packages: deps.dependencies.clone(),
+                            }));
                         }
                         Err(e) => {
                             warn!(
@@ -1889,14 +1902,12 @@ pub(crate) async fn acquire_prewarmed_env_with_capture(
                                 "[notebook-sync] Reopen cache-hit for env_id={} at {:?}",
                                 env_id, prepared.env_path
                             );
-                            return Ok(Some(crate::daemon::LeasedPoolEnv::cached(
-                                crate::PooledEnv {
-                                    env_type: crate::EnvType::Conda,
-                                    venv_path: prepared.env_path,
-                                    python_path: prepared.python_path,
-                                    prewarmed_packages: deps.dependencies.clone(),
-                                },
-                            )));
+                            return Ok(Some(crate::PooledEnv {
+                                env_type: crate::EnvType::Conda,
+                                venv_path: prepared.env_path,
+                                python_path: prepared.python_path,
+                                prewarmed_packages: deps.dependencies.clone(),
+                            }));
                         }
                         Err(e) => {
                             warn!(
@@ -1912,7 +1923,8 @@ pub(crate) async fn acquire_prewarmed_env_with_capture(
 
     // First-launch path: take from pool, strip base to derive user_defaults,
     // claim to the unified-hash location, and capture into metadata.
-    let Some(mut leased) = acquire_pool_env_for_source(env_source, daemon, room).await? else {
+    let Some((mut env, guard)) = acquire_pool_env_for_source(env_source, daemon, room).await?
+    else {
         // Pool returned `Ok(None)` (e.g. pixi → launch on demand). Pass
         // that through to the caller.
         return Ok(None);
@@ -1924,12 +1936,11 @@ pub(crate) async fn acquire_prewarmed_env_with_capture(
 
     match runtime {
         CapturedEnvRuntime::Uv => {
-            let pooled = leased.env();
             let user_defaults =
-                kernel_env::strip_base(&pooled.prewarmed_packages, kernel_env::UV_BASE_PACKAGES);
+                kernel_env::strip_base(&env.prewarmed_packages, kernel_env::UV_BASE_PACKAGES);
             let prewarmed = kernel_env::uv::UvEnvironment {
-                venv_path: pooled.venv_path.clone(),
-                python_path: pooled.python_path.clone(),
+                venv_path: env.venv_path.clone(),
+                python_path: env.python_path.clone(),
             };
             let cache_dir = kernel_env::uv::default_cache_dir_uv();
             match kernel_env::uv::claim_prewarmed_environment_in(
@@ -1941,17 +1952,14 @@ pub(crate) async fn acquire_prewarmed_env_with_capture(
             .await
             {
                 Ok(claimed) => {
-                    // Mutate the inner env to point at the claimed location.
-                    // The lease's `leased_path` is unchanged (still tracks
-                    // the original pool path, which `claim_prewarmed_*`
-                    // moved into the unified-hash cache). transfer_to_runtime
-                    // releases the lease for that original path.
+                    // claim_prewarmed_* moved the env from the original
+                    // pool path to the unified-hash cache. The lease still
+                    // tracks the original (now-empty) path; release it so
+                    // orphan GC can stop tracking it. Returned env points
+                    // to the claimed location.
                     let claimed_path = claimed.venv_path.clone();
-                    {
-                        let inner = leased.env_mut();
-                        inner.venv_path = claimed_path.clone();
-                        inner.python_path = claimed.python_path;
-                    }
+                    env.venv_path = claimed_path.clone();
+                    env.python_path = claimed.python_path;
                     let _wrote = capture_env_into_metadata(
                         room,
                         CapturedEnvRuntime::Uv,
@@ -1963,28 +1971,32 @@ pub(crate) async fn acquire_prewarmed_env_with_capture(
                         "[notebook-sync] Captured prewarmed UV env into metadata for env_id={} at {:?}",
                         env_id, claimed_path
                     );
-                    Ok(Some(leased))
+                    guard.release().await;
+                    Ok(Some(env))
                 }
                 Err(e) => {
                     warn!(
                         "[notebook-sync] Failed to claim UV pool env ({}), using raw pool env",
                         e
                     );
+                    // Set runtime_agent_env_path to the raw pool path
+                    // BEFORE releasing the lease so the env is never
+                    // momentarily unprotected.
                     {
                         let mut ep = room.runtime_agent_env_path.write().await;
-                        *ep = Some(leased.env().venv_path.clone());
+                        *ep = Some(env.venv_path.clone());
                     }
-                    Ok(Some(leased))
+                    guard.release().await;
+                    Ok(Some(env))
                 }
             }
         }
         CapturedEnvRuntime::Conda => {
-            let pooled = leased.env();
             let user_defaults =
-                kernel_env::strip_base(&pooled.prewarmed_packages, kernel_env::CONDA_BASE_PACKAGES);
+                kernel_env::strip_base(&env.prewarmed_packages, kernel_env::CONDA_BASE_PACKAGES);
             let prewarmed = kernel_env::conda::CondaEnvironment {
-                env_path: pooled.venv_path.clone(),
-                python_path: pooled.python_path.clone(),
+                env_path: env.venv_path.clone(),
+                python_path: env.python_path.clone(),
             };
             let cache_dir = kernel_env::conda::default_cache_dir_conda();
             match kernel_env::conda::claim_prewarmed_environment_in(
@@ -1997,11 +2009,8 @@ pub(crate) async fn acquire_prewarmed_env_with_capture(
             {
                 Ok(claimed) => {
                     let claimed_path = claimed.env_path.clone();
-                    {
-                        let inner = leased.env_mut();
-                        inner.venv_path = claimed_path.clone();
-                        inner.python_path = claimed.python_path;
-                    }
+                    env.venv_path = claimed_path.clone();
+                    env.python_path = claimed.python_path;
                     let _wrote = capture_env_into_metadata(
                         room,
                         CapturedEnvRuntime::Conda,
@@ -2013,7 +2022,8 @@ pub(crate) async fn acquire_prewarmed_env_with_capture(
                         "[notebook-sync] Captured prewarmed conda env into metadata for env_id={} at {:?}",
                         env_id, claimed_path
                     );
-                    Ok(Some(leased))
+                    guard.release().await;
+                    Ok(Some(env))
                 }
                 Err(e) => {
                     warn!(
@@ -2022,9 +2032,10 @@ pub(crate) async fn acquire_prewarmed_env_with_capture(
                     );
                     {
                         let mut ep = room.runtime_agent_env_path.write().await;
-                        *ep = Some(leased.env().venv_path.clone());
+                        *ep = Some(env.venv_path.clone());
                     }
-                    Ok(Some(leased))
+                    guard.release().await;
+                    Ok(Some(env))
                 }
             }
         }
@@ -2033,29 +2044,32 @@ pub(crate) async fn acquire_prewarmed_env_with_capture(
 
 /// Acquire a pooled environment from the appropriate pool based on env_source.
 ///
-/// - `Ok(Some(leased))`: lease is still held; caller must call
-///   `transfer_to_runtime()` on success or `release_and_delete()` on failure.
-///   `Drop` releases the lease best-effort if the caller forgets either.
-/// - `Ok(None)`: env source doesn't need a pool entry (e.g. pixi pool empty
-///   → launch on demand via `pixi exec`).
+/// Returns the env paired with its `PoolLeaseGuard`. The caller is
+/// responsible for calling `release()` (success) or `release_and_delete()`
+/// (failure) on the guard; if dropped without either, the lease is
+/// released best-effort and the directory is left for orphan GC.
+///
+/// - `Ok(Some((env, guard)))`: env is leased.
+/// - `Ok(None)`: env source doesn't need a pool entry (e.g. pixi pool
+///   empty → launch on demand via `pixi exec`).
 /// - `Err(())`: pool empty for a source that requires one; caller should
 ///   bail with an error.
 async fn acquire_pool_env_for_source(
     env_source: &str,
     daemon: &std::sync::Arc<crate::daemon::Daemon>,
     _room: &NotebookRoom,
-) -> Result<Option<crate::daemon::LeasedPoolEnv>, ()> {
+) -> Result<Option<(crate::PooledEnv, crate::daemon::PoolLeaseGuard)>, ()> {
     use notebook_protocol::connection::{EnvSource, PackageManager};
     let parsed = EnvSource::parse(env_source);
     // Route to appropriate pool based on the resolved manager family.
     if matches!(parsed, EnvSource::Prewarmed(PackageManager::Pixi)) {
         return match daemon.take_pixi_env().await {
-            Some(leased) => {
+            Some((env, guard)) => {
                 info!(
                     "[notebook-sync] Acquired Pixi env from pool: {:?}",
-                    leased.env().python_path
+                    env.python_path
                 );
-                Ok(Some(leased))
+                Ok(Some((env, guard)))
             }
             None => {
                 // Pixi pool empty — launch on demand via pixi exec (no pooled env needed)
@@ -2066,12 +2080,12 @@ async fn acquire_pool_env_for_source(
     }
     if parsed.package_manager() == Some(PackageManager::Conda) {
         match daemon.take_conda_env().await {
-            Some(leased) => {
+            Some((env, guard)) => {
                 info!(
                     "[notebook-sync] Acquired Conda env from pool: {:?}",
-                    leased.env().python_path
+                    env.python_path
                 );
-                Ok(Some(leased))
+                Ok(Some((env, guard)))
             }
             None => {
                 error!("[notebook-sync] Conda pool empty, cannot launch");
@@ -2081,12 +2095,12 @@ async fn acquire_pool_env_for_source(
     } else {
         // UV pool for uv:* sources and as default
         match daemon.take_uv_env().await {
-            Some(leased) => {
+            Some((env, guard)) => {
                 info!(
                     "[notebook-sync] Acquired UV env from pool: {:?}",
-                    leased.env().python_path
+                    env.python_path
                 );
-                Ok(Some(leased))
+                Ok(Some((env, guard)))
             }
             None => {
                 error!("[notebook-sync] UV pool empty, cannot launch");
@@ -2256,19 +2270,18 @@ pub(crate) async fn try_uv_pool_for_inline_deps(
     }
 
     // Take the env, then compare against what it *actually* has installed.
-    // The lease is held by `leased` until we either transfer ownership
-    // (success path: env promoted into the inline cache, lease released)
-    // or release_and_delete (failure path: env directory removed). Drop
-    // catches any forgotten branch.
-    let mut leased = match daemon.take_uv_env().await {
-        Some(leased) => leased,
+    // The guard holds the lease until we either release (success path:
+    // env promoted into the inline cache) or release_and_delete (failure
+    // path: env directory removed). Drop catches any forgotten branch.
+    let (mut env, guard) = match daemon.take_uv_env().await {
+        Some(taken) => taken,
         None => {
             info!("[notebook-sync] UV pool empty, falling back to full build");
             return Err(());
         }
     };
 
-    let actual_packages = leased.env().prewarmed_packages.clone();
+    let actual_packages = env.prewarmed_packages.clone();
     let relation = crate::inline_env::compare_deps_to_pool(&effective_deps, &actual_packages);
 
     match relation {
@@ -2278,13 +2291,13 @@ pub(crate) async fn try_uv_pool_for_inline_deps(
             // restart with the same deps cache-hits instead of taking
             // another pool env. See #2089 / #2083.
             crate::inline_env::claim_pool_env_for_uv_inline_cache(
-                leased.env_mut(),
+                &mut env,
                 deps,
                 None,
                 bootstrap_dx,
             )
             .await;
-            let env = leased.transfer_to_runtime().await;
+            guard.release().await;
             Ok((env, actual_packages))
         }
         crate::inline_env::PoolDepRelation::Additive { delta } => {
@@ -2293,8 +2306,8 @@ pub(crate) async fn try_uv_pool_for_inline_deps(
                 delta
             );
             let uv_env = kernel_env::UvEnvironment {
-                venv_path: leased.env().venv_path.clone(),
-                python_path: leased.env().python_path.clone(),
+                venv_path: env.venv_path.clone(),
+                python_path: env.python_path.clone(),
             };
             progress_handler.on_progress(
                 "uv",
@@ -2309,13 +2322,13 @@ pub(crate) async fn try_uv_pool_for_inline_deps(
                     // Promote the pool env into the inline-env cache so
                     // the next restart cache-hits. See #2089 / #2083.
                     crate::inline_env::claim_pool_env_for_uv_inline_cache(
-                        leased.env_mut(),
+                        &mut env,
                         deps,
                         None,
                         bootstrap_dx,
                     )
                     .await;
-                    let env = leased.transfer_to_runtime().await;
+                    guard.release().await;
                     progress_handler.on_progress(
                         "uv",
                         kernel_env::EnvProgressPhase::Ready {
@@ -2332,7 +2345,7 @@ pub(crate) async fn try_uv_pool_for_inline_deps(
                     );
                     // Clean up the taken pool env — it's out of the pool's
                     // tracking and would otherwise leak on disk.
-                    leased.release_and_delete().await;
+                    guard.release_and_delete().await;
                     Err(())
                 }
             }
@@ -2340,7 +2353,7 @@ pub(crate) async fn try_uv_pool_for_inline_deps(
         crate::inline_env::PoolDepRelation::Independent => {
             // Shouldn't reach here (pre-check above), but handle gracefully
             debug!("[notebook-sync] UV pool env doesn't match inline deps, falling back");
-            leased.release_and_delete().await;
+            guard.release_and_delete().await;
             Err(())
         }
     }
@@ -2379,18 +2392,18 @@ pub(crate) async fn try_conda_pool_for_inline_deps(
     }
 
     // Take the env, then compare against what it *actually* has installed.
-    // Lease held by `leased`; consumed via transfer_to_runtime() (success)
-    // or release_and_delete() (failure). See try_uv_pool_for_inline_deps
-    // for the same pattern.
-    let mut leased = match daemon.take_conda_env().await {
-        Some(leased) => leased,
+    // Guard holds the lease; consumed via release() (success) or
+    // release_and_delete() (failure). See try_uv_pool_for_inline_deps for
+    // the same pattern.
+    let (mut env, guard) = match daemon.take_conda_env().await {
+        Some(taken) => taken,
         None => {
             info!("[notebook-sync] Conda pool empty, falling back to full build");
             return Err(());
         }
     };
 
-    let actual_packages = leased.env().prewarmed_packages.clone();
+    let actual_packages = env.prewarmed_packages.clone();
     let relation = crate::inline_env::compare_deps_to_pool(deps, &actual_packages);
 
     match relation {
@@ -2398,13 +2411,9 @@ pub(crate) async fn try_conda_pool_for_inline_deps(
             info!("[notebook-sync] Inline Conda deps are subset of pool env, reusing directly");
             // Promote the pool env into the inline-env cache so the next
             // restart cache-hits. See #2089 / #2083.
-            crate::inline_env::claim_pool_env_for_conda_inline_cache(
-                leased.env_mut(),
-                deps,
-                channels,
-            )
-            .await;
-            let env = leased.transfer_to_runtime().await;
+            crate::inline_env::claim_pool_env_for_conda_inline_cache(&mut env, deps, channels)
+                .await;
+            guard.release().await;
             Ok((env, actual_packages))
         }
         crate::inline_env::PoolDepRelation::Additive { delta } => {
@@ -2413,8 +2422,8 @@ pub(crate) async fn try_conda_pool_for_inline_deps(
                 delta
             );
             let conda_env = kernel_env::CondaEnvironment {
-                env_path: leased.env().venv_path.clone(),
-                python_path: leased.env().python_path.clone(),
+                env_path: env.venv_path.clone(),
+                python_path: env.python_path.clone(),
             };
             // Pass ALL inline deps to sync_dependencies, not just the delta.
             // The conda solver treats the spec list as the complete desired
@@ -2440,12 +2449,10 @@ pub(crate) async fn try_conda_pool_for_inline_deps(
                     // Promote the pool env into the inline-env cache so
                     // the next restart cache-hits. See #2089 / #2083.
                     crate::inline_env::claim_pool_env_for_conda_inline_cache(
-                        leased.env_mut(),
-                        deps,
-                        channels,
+                        &mut env, deps, channels,
                     )
                     .await;
-                    let env = leased.transfer_to_runtime().await;
+                    guard.release().await;
                     progress_handler.on_progress(
                         "conda",
                         kernel_env::EnvProgressPhase::Ready {
@@ -2460,14 +2467,14 @@ pub(crate) async fn try_conda_pool_for_inline_deps(
                         "[notebook-sync] Failed to install delta into Conda pool env: {}, falling back",
                         e
                     );
-                    leased.release_and_delete().await;
+                    guard.release_and_delete().await;
                     Err(())
                 }
             }
         }
         crate::inline_env::PoolDepRelation::Independent => {
             debug!("[notebook-sync] Conda pool env doesn't match inline deps, falling back");
-            leased.release_and_delete().await;
+            guard.release_and_delete().await;
             Err(())
         }
     }
@@ -2723,15 +2730,16 @@ pub(crate) async fn auto_launch_kernel(
                     )
                     .await
                     {
-                        Ok(Some(leased)) => {
-                            // Set the runtime owner BEFORE releasing the
-                            // lease so the env is never momentarily
-                            // unprotected.
-                            {
-                                let mut ep = room.runtime_agent_env_path.write().await;
-                                *ep = Some(leased.env().venv_path.clone());
-                            }
-                            Some(leased.transfer_to_runtime().await)
+                        Ok(Some(env)) => {
+                            // Set the active runtime owner now so the env
+                            // is protected by `runtime_agent_env_path`
+                            // through the rest of the auto-launch flow.
+                            // (`acquire_prewarmed_env_with_capture` already
+                            // released the pool lease internally.)
+                            let mut ep = room.runtime_agent_env_path.write().await;
+                            *ep = Some(env.venv_path.clone());
+                            drop(ep);
+                            Some(env)
                         }
                         Ok(None) => None,
                         Err(()) => {
@@ -2792,12 +2800,11 @@ pub(crate) async fn auto_launch_kernel(
                         )
                         .await
                         {
-                            Ok(Some(leased)) => {
-                                {
-                                    let mut ep = room.runtime_agent_env_path.write().await;
-                                    *ep = Some(leased.env().venv_path.clone());
-                                }
-                                Some(leased.transfer_to_runtime().await)
+                            Ok(Some(env)) => {
+                                let mut ep = room.runtime_agent_env_path.write().await;
+                                *ep = Some(env.venv_path.clone());
+                                drop(ep);
+                                Some(env)
                             }
                             Ok(None) => None,
                             Err(()) => {
@@ -2825,12 +2832,11 @@ pub(crate) async fn auto_launch_kernel(
                 )
                 .await
                 {
-                    Ok(Some(leased)) => {
-                        {
-                            let mut ep = room.runtime_agent_env_path.write().await;
-                            *ep = Some(leased.env().venv_path.clone());
-                        }
-                        Some(leased.transfer_to_runtime().await)
+                    Ok(Some(env)) => {
+                        let mut ep = room.runtime_agent_env_path.write().await;
+                        *ep = Some(env.venv_path.clone());
+                        drop(ep);
+                        Some(env)
                     }
                     Ok(None) => None,
                     Err(()) => {
