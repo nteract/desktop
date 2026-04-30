@@ -13,9 +13,8 @@
  */
 
 import {
-  buildRuntimeExecutionSnapshot,
   collectOutputIds,
-  executionFingerprint,
+  RuntimeExecutionProjector,
   type RuntimeState,
 } from "runtimed";
 import type { NotebookHandle } from "../wasm/runtimed-wasm/runtimed_wasm.js";
@@ -43,21 +42,7 @@ import type { JupyterOutput } from "../types";
 
 // ── Executions store projection ──────────────────────────────────────
 
-/**
- * Module-local record of the previous sync's execution_id set. Used to
- * evict entries the daemon has trimmed out of `RuntimeStateDoc`. Without
- * this, old executions accumulate forever in the store.
- */
-let _knownExecutionIds: Set<string> = new Set();
-
-/**
- * Previously-seen scalar fingerprint per execution (`status`, count, success,
- * and output_id list). Lets the projection short-circuit on untouched
- * executions instead of rebuilding `output_ids` for every execution on
- * every tick — critical because `runtimeState$` emits once per stream
- * append.
- */
-const _prevExecutionFingerprint: Map<string, string> = new Map();
+const executionProjector = new RuntimeExecutionProjector();
 
 /**
  * Project the current RuntimeState into the executions store.
@@ -75,26 +60,18 @@ const _prevExecutionFingerprint: Map<string, string> = new Map();
  * `updateCellExecutionPointersFromHandle`).
  */
 export function projectRuntimeStateToExecutions(state: RuntimeState): void {
-  const nextIds = new Set<string>();
-  for (const [execution_id, entry] of Object.entries(state.executions)) {
-    nextIds.add(execution_id);
-    const fp = executionFingerprint(entry);
-    if (_prevExecutionFingerprint.get(execution_id) === fp) continue;
-    _prevExecutionFingerprint.set(execution_id, fp);
-    setExecution(execution_id, buildRuntimeExecutionSnapshot(entry));
+  const projection = executionProjector.project(state);
+  for (const [execution_id, snapshot] of projection.upserts) {
+    setExecution(execution_id, snapshot);
   }
 
-  // Evict executions the daemon dropped. Keeps the store from drifting
-  // monotonically larger across long sessions with restart cycles.
-  const removed: string[] = [];
-  for (const prev of _knownExecutionIds) {
-    if (!nextIds.has(prev)) removed.push(prev);
+  if (projection.removed_execution_ids.length > 0) {
+    deleteExecutions(projection.removed_execution_ids);
   }
-  if (removed.length > 0) {
-    deleteExecutions(removed);
-    for (const eid of removed) _prevExecutionFingerprint.delete(eid);
-  }
-  _knownExecutionIds = nextIds;
+}
+
+export function resetRuntimeExecutionProjection(): void {
+  executionProjector.reset();
 }
 
 /**
@@ -244,8 +221,7 @@ function tryResolveSync(
 }
 
 export function resetRuntimeStoresProjection(): void {
-  _knownExecutionIds = new Set();
-  _prevExecutionFingerprint.clear();
+  resetRuntimeExecutionProjection();
   resetNotebookExecutions();
   resetNotebookOutputs();
 }

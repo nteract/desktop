@@ -3,18 +3,16 @@ import { afterEach, describe, expect, it } from "vite-plus/test";
 import {
   getCellExecutionId,
   getExecutionById,
-  resetNotebookExecutions,
   setCellExecutionPointer,
 } from "../notebook-executions";
+import { getOutputById } from "../notebook-outputs";
 import {
-  getOutputById,
-  resetNotebookOutputs,
-} from "../notebook-outputs";
-import { projectRuntimeStateToExecutions } from "../project-runtime-stores";
+  projectRuntimeStateToExecutions,
+  resetRuntimeStoresProjection,
+} from "../project-runtime-stores";
 
 afterEach(() => {
-  resetNotebookExecutions();
-  resetNotebookOutputs();
+  resetRuntimeStoresProjection();
 });
 
 function stateWith(
