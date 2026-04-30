@@ -20,14 +20,27 @@ cd "$WORKDIR"
 echo "Extracting AppImage"
 "$APPIMAGE_COPY" --appimage-extract > appimage-extract.log
 
-RUNT="$WORKDIR/squashfs-root/usr/bin/runt"
-RUNTIMED="$WORKDIR/squashfs-root/usr/bin/runtimed"
-MCP="$WORKDIR/squashfs-root/usr/bin/nteract-mcp"
+BIN_DIR="$WORKDIR/squashfs-root/usr/bin"
 
-for binary in "$RUNT" "$RUNTIMED" "$MCP"; do
-  if [[ ! -x "$binary" ]]; then
-    echo "Expected executable missing from AppImage: $binary" >&2
-    find "$WORKDIR/squashfs-root/usr/bin" -maxdepth 1 -type f -print >&2 || true
+find_executable() {
+  local name
+  for name in "$@"; do
+    if [[ -x "$BIN_DIR/$name" ]]; then
+      printf '%s/%s\n' "$BIN_DIR" "$name"
+      return 0
+    fi
+  done
+  return 1
+}
+
+RUNT=$(find_executable runt-nightly runt) || true
+RUNTIMED=$(find_executable runtimed-nightly runtimed) || true
+MCP=$(find_executable nteract-mcp-nightly nteract-mcp) || true
+
+for binary_name in runt runtimed nteract-mcp; do
+  if ! find_executable "$binary_name-nightly" "$binary_name" >/dev/null; then
+    echo "Expected executable missing from AppImage: $binary_name or $binary_name-nightly" >&2
+    find "$BIN_DIR" -maxdepth 1 -type f -print >&2 || true
     exit 1
   fi
 done
@@ -38,8 +51,10 @@ export XDG_DATA_HOME="$HOME/.local/share"
 export XDG_CACHE_HOME="$HOME/.cache"
 mkdir -p "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" "$XDG_CACHE_HOME"
 
-"$RUNT" --version
-"$RUNTIMED" --version
+runt_version=$("$RUNT" --version)
+runtimed_version=$("$RUNTIMED" --version)
+echo "$runt_version"
+echo "$runtimed_version"
 
 RUNT_DIR=$(dirname "$RUNT")
 export PATH="$RUNT_DIR:$PATH"
@@ -61,12 +76,12 @@ if [[ "$mcp_status" -ne 0 && "$mcp_status" -ne 124 ]]; then
   exit "$mcp_status"
 fi
 
-if grep -Fq "runt not found" nteract-mcp.stderr; then
+if grep -Eq "runt(-nightly)? not found" nteract-mcp.stderr; then
   echo "nteract-mcp could not find the bundled runt sidecar" >&2
   exit 1
 fi
 
-if ! grep -Fq "Validated runt is available" nteract-mcp.stderr; then
+if ! grep -Eq "Validated runt(-nightly)? is available" nteract-mcp.stderr; then
   echo "nteract-mcp did not validate the bundled runt sidecar" >&2
   exit 1
 fi

@@ -10,7 +10,7 @@
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use rmcp::ServiceExt;
@@ -29,12 +29,50 @@ fn runt_binary_name_for_channel(channel: &str) -> &'static str {
     runt_workspace::cli_command_name_for(selected_build_channel(channel))
 }
 
+fn executable_name(base: &str) -> String {
+    if cfg!(target_os = "windows") {
+        format!("{base}.exe")
+    } else {
+        base.to_string()
+    }
+}
+
+fn bundled_runt_candidates(exe_path: &Path, channel: &str) -> Vec<PathBuf> {
+    let Some(exe_dir) = exe_path.parent() else {
+        return Vec::new();
+    };
+
+    let mut candidates = Vec::new();
+    let command_name = runt_binary_name_for_channel(channel);
+    candidates.push(exe_dir.join(executable_name(command_name)));
+
+    // Tauri sidecars are internal bundle files and use the configured
+    // externalBin basename (`runt`) even when the public nightly command is
+    // `runt-nightly`. A bundled MCP proxy should stay paired with its sibling
+    // sidecar instead of requiring the public install name to be on PATH.
+    if selected_build_channel(channel) == runt_workspace::BuildChannel::Nightly {
+        candidates.push(exe_dir.join(executable_name("runt")));
+    }
+
+    candidates
+}
+
 /// Find the `runt` or `runt-nightly` binary on PATH or in platform-specific locations.
 fn find_runt_binary(channel: &str) -> Option<PathBuf> {
     let build_channel = selected_build_channel(channel);
     let binary_name = runt_workspace::cli_command_name_for(build_channel);
 
-    // 1. Check PATH via `which`
+    // 1. Check colocated sidecars first so Tauri bundles/AppImages use the
+    // exact `runt` shipped beside this MCP proxy.
+    if let Ok(current_exe) = std::env::current_exe() {
+        for candidate in bundled_runt_candidates(&current_exe, channel) {
+            if candidate.exists() {
+                return Some(candidate);
+            }
+        }
+    }
+
+    // 2. Check PATH via `which`
     let which_cmd = if cfg!(target_os = "windows") {
         "where"
     } else {
@@ -55,7 +93,7 @@ fn find_runt_binary(channel: &str) -> Option<PathBuf> {
         }
     }
 
-    // 2. Check platform-specific app bundle locations
+    // 3. Check platform-specific app bundle locations
     #[cfg(target_os = "macos")]
     {
         let build_channel = if channel == "nightly" {
@@ -65,14 +103,19 @@ fn find_runt_binary(channel: &str) -> Option<PathBuf> {
         };
 
         if let Some(app_bundle) = runt_workspace::find_installed_app_bundle_for(build_channel) {
-            let binary = app_bundle.join("Contents/MacOS").join(binary_name);
-            if binary.exists() {
-                return Some(binary);
+            let exe_dir = app_bundle.join("Contents/MacOS");
+            for candidate in [
+                exe_dir.join(executable_name(binary_name)),
+                exe_dir.join(executable_name("runt")),
+            ] {
+                if candidate.exists() {
+                    return Some(candidate);
+                }
             }
         }
     }
 
-    // 3. Check well-known install locations
+    // 4. Check well-known install locations
     if let Some(home) = dirs::home_dir() {
         #[cfg(target_os = "linux")]
         {
@@ -281,6 +324,28 @@ mod tests {
         assert_eq!(runt_binary_name_for_channel("nightly"), "runt-nightly");
         assert_eq!(runt_binary_name_for_channel("NIGHTLY"), "runt-nightly");
         assert_eq!(runt_binary_name_for_channel("future"), "runt");
+    }
+
+    #[test]
+    fn bundled_nightly_mcp_accepts_tauri_unsuffixed_runt_sidecar() {
+        let exe = PathBuf::from("/tmp/.mount_nteract/usr/bin/nteract-mcp");
+        let candidates = bundled_runt_candidates(&exe, "nightly");
+
+        assert!(candidates.contains(&PathBuf::from("/tmp/.mount_nteract/usr/bin/runt-nightly")));
+        assert!(candidates.contains(&PathBuf::from("/tmp/.mount_nteract/usr/bin/runt")));
+    }
+
+    #[test]
+    fn bundled_stable_mcp_uses_unsuffixed_runt_sidecar() {
+        let exe = PathBuf::from("/Applications/nteract.app/Contents/MacOS/nteract-mcp");
+        let candidates = bundled_runt_candidates(&exe, "stable");
+
+        assert_eq!(
+            candidates,
+            vec![PathBuf::from(
+                "/Applications/nteract.app/Contents/MacOS/runt"
+            )]
+        );
     }
 
     #[test]
