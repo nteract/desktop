@@ -15,6 +15,7 @@ use notebook_doc::mime::{is_binary_mime, ResolvedContentRef};
 use notebook_doc::pool_state::{PoolDoc, PoolState};
 use notebook_doc::presence;
 use notebook_doc::{CellSnapshot, NotebookDoc};
+use notebook_wire::{frame_types, SessionControlMessage, SessionSyncStatusWire};
 use runtime_doc::{
     diff_execution_outputs, diff_output_ids, output_ids_for_execution, ExecutionState,
     RuntimeState, RuntimeStateDoc,
@@ -46,8 +47,6 @@ fn serialize_to_js<T: Serialize>(value: &T) -> Result<JsValue, serde_wasm_bindge
     let serializer = serde_wasm_bindgen::Serializer::new().serialize_maps_as_objects(true);
     value.serialize(&serializer)
 }
-
-use notebook_doc::frame_types;
 
 /// A text attribution range produced when a sync message modifies cell source.
 ///
@@ -87,44 +86,6 @@ impl OutputChangeset {
     pub fn is_empty(&self) -> bool {
         self.changed.is_empty() && self.removed.is_empty()
     }
-}
-
-#[derive(Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-enum SessionControlMessage {
-    SyncStatus(SessionSyncStatusWire),
-}
-
-#[derive(Serialize, Deserialize)]
-pub struct SessionSyncStatusWire {
-    pub notebook_doc: NotebookDocPhaseWire,
-    pub runtime_state: RuntimeStatePhaseWire,
-    pub initial_load: InitialLoadPhaseWire,
-}
-
-#[derive(Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum NotebookDocPhaseWire {
-    Pending,
-    Syncing,
-    Interactive,
-}
-
-#[derive(Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum RuntimeStatePhaseWire {
-    Pending,
-    Syncing,
-    Ready,
-}
-
-#[derive(Serialize, Deserialize)]
-#[serde(tag = "phase", rename_all = "snake_case")]
-pub enum InitialLoadPhaseWire {
-    NotNeeded,
-    Streaming,
-    Ready,
-    Failed { reason: String },
 }
 
 /// Event returned from `receive_frame()` for the frontend to handle.

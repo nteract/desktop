@@ -2648,7 +2648,7 @@ async fn send_frame_bytes(
         guard.as_ref().cloned().ok_or("Not connected to daemon")?
     };
 
-    use notebook_doc::frame_types;
+    use notebook_wire::frame_types;
 
     let frame_type = frame_data[0];
     let payload = &frame_data[1..];

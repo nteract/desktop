@@ -338,12 +338,12 @@ mod tests {
         // Presence frames cap at 1 MiB. A desync that happens to land
         // on the Presence channel with a multi-MiB length header is
         // caught here instead of trying to allocate it.
-        let cap = frame_size_limits(notebook_doc::frame_types::PRESENCE).cap;
+        let cap = frame_size_limits(notebook_wire::frame_types::PRESENCE).cap;
         let body_len: u32 = (cap as u32) + 1;
         let total_len: u32 = body_len + 1;
         let mut buf = Vec::new();
         buf.extend_from_slice(&total_len.to_be_bytes());
-        buf.push(notebook_doc::frame_types::PRESENCE);
+        buf.push(notebook_wire::frame_types::PRESENCE);
         let mut cursor = std::io::Cursor::new(buf);
         let err = recv_typed_frame(&mut cursor).await.unwrap_err();
         assert!(err.to_string().contains("too large for type 0x04"));
@@ -372,12 +372,12 @@ mod tests {
         // The Request cap rejects payloads that exceed the channel's
         // legitimate worst case (today: a SendComm envelope with widget
         // buffers that JSON-expand from binary).
-        let cap = frame_size_limits(notebook_doc::frame_types::REQUEST).cap;
+        let cap = frame_size_limits(notebook_wire::frame_types::REQUEST).cap;
         let body_len: u32 = (cap as u32) + 1;
         let total_len: u32 = body_len + 1;
         let mut buf = Vec::new();
         buf.extend_from_slice(&total_len.to_be_bytes());
-        buf.push(notebook_doc::frame_types::REQUEST);
+        buf.push(notebook_wire::frame_types::REQUEST);
         let mut cursor = std::io::Cursor::new(buf);
         let err = recv_typed_frame(&mut cursor).await.unwrap_err();
         assert!(err.to_string().contains("too large for type 0x01"));
@@ -409,7 +409,7 @@ mod tests {
         // The send path mirrors the receive cap so an outbound oversize
         // surfaces as a clear local error rather than as a generic peer
         // rejection.
-        let cap = frame_size_limits(notebook_doc::frame_types::REQUEST).cap;
+        let cap = frame_size_limits(notebook_wire::frame_types::REQUEST).cap;
         let oversized = vec![0u8; cap + 1];
         let mut buf = Vec::new();
         let err = send_typed_frame(&mut buf, NotebookFrameType::Request, &oversized)
@@ -429,7 +429,7 @@ mod tests {
         // without an explicit limit decision. Compares against the
         // outer ceiling so the test fails when an unknown type ends up
         // on the 100 MiB fallback.
-        use notebook_doc::frame_types as ft;
+        use notebook_wire::frame_types as ft;
         for &ty in &[
             ft::AUTOMERGE_SYNC,
             ft::REQUEST,

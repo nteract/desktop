@@ -2,7 +2,7 @@
 
 ## Fast mapping
 
-- `crates/runtimed/**`, `crates/notebook-doc/**`, `crates/notebook-protocol/**`: start with `cargo test` in the relevant crate
+- `crates/runtimed/**`, `crates/notebook-wire/**`, `crates/notebook-doc/**`, `crates/notebook-protocol/**`: start with `cargo test` in the relevant crate
 - `crates/runtimed-wasm/**`, `apps/notebook/src/wasm/**`, notebook sync plumbing: start with `deno test --allow-read --allow-env --no-check crates/runtimed-wasm/tests/`
 - `apps/notebook/src/**` or shared frontend code: start with `pnpm test:run`
 - `python/runtimed/**`, `python/nteract/**`, `crates/runtimed-py/**`: start with targeted pytest or `uv run nteract`

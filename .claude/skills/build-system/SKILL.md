@@ -31,24 +31,24 @@ Python bindings (`maturin develop`) are no longer part of `cargo xtask build`. R
 
 ## Crate dependency graph
 
-Leaf crates (no internal deps): `kernel-launch`, `runt-trust`, `runt-workspace`
+Leaf crates (no internal deps): `kernel-launch`, `notebook-wire`, `runt-trust`, `runt-workspace`
 
 Shared:
 - `notebook-doc` → no internal deps
-- `notebook-protocol` → `notebook-doc`, `kernel-env`
+- `notebook-protocol` → `notebook-wire`, `kernel-env`
 - `notebook-sync` → `notebook-doc`, `notebook-protocol`
-- `runtimed` → `notebook-doc`, `notebook-protocol`, `kernel-launch`, `kernel-env`, `runt-trust`, `runt-workspace`
+- `runtimed` → `notebook-doc`, `notebook-protocol`, `notebook-wire`, `kernel-launch`, `kernel-env`, `runt-trust`, `runt-workspace`
 
 App binaries:
-- `notebook` (Tauri) → `runtimed-client`, `notebook-doc`, `notebook-protocol`, `notebook-sync`, `runt-trust`, `runt-workspace`
+- `notebook` (Tauri) → `runtimed-client`, `notebook-doc`, `notebook-protocol`, `notebook-sync`, `notebook-wire`, `runt-trust`, `runt-workspace`
 - `runt` → `runtimed-client`, `notebook-doc`, `runt-workspace`, `kernel-env`, `runt-mcp`
-- `runtimed` → `runtimed-client`, `notebook-doc`, `notebook-protocol`, `kernel-launch`, `kernel-env`, `runt-trust`, `runt-workspace`
+- `runtimed` → `runtimed-client`, `notebook-doc`, `notebook-protocol`, `notebook-wire`, `kernel-launch`, `kernel-env`, `runt-trust`, `runt-workspace`
 - `runtimed-py` → `runtimed-client`, `notebook-doc`, `notebook-protocol`, `kernel-env`, `notebook-sync`, `runt-workspace`
-- `runtimed-wasm` → `notebook-doc`
+- `runtimed-wasm` → `notebook-doc`, `notebook-wire`
 
 ## WASM rebuild
 
-The wasm + renderer-plugin outputs are gitignored. Run after changing `crates/runtimed-wasm/`, `crates/sift-wasm/`, `crates/notebook-doc/`, or `scripts/build-renderer-plugins.ts`:
+The wasm + renderer-plugin outputs are gitignored. Run after changing `crates/runtimed-wasm/`, `crates/sift-wasm/`, `crates/notebook-doc/`, `crates/notebook-wire/`, or `scripts/build-renderer-plugins.ts`:
 
 ```bash
 cargo xtask wasm             # rebuild runtimed-wasm + sift-wasm + chained renderer plugins

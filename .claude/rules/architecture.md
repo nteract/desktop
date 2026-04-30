@@ -1,5 +1,6 @@
 ---
 paths:
+  - crates/notebook-wire/**
   - crates/notebook-doc/**
   - crates/notebook-protocol/**
   - crates/notebook-sync/**
@@ -28,11 +29,12 @@ paths:
 
 | Crate | Owns | Consumers |
 |-------|------|-----------|
-| `notebook-doc` | Automerge schema, cell CRUD, nbformat fallback fields, per-cell accessors, `CellChangeset` diffing, fractional indexing, presence encoding, frame type constants | daemon, WASM, Python bindings |
+| `notebook-wire` | Frame bytes, preamble constants, frame caps, typed-frame enum, session-control status shapes | daemon, WASM, Tauri relay, `notebook-protocol` |
+| `notebook-doc` | Automerge schema, cell CRUD, nbformat fallback fields, per-cell accessors, `CellChangeset` diffing, fractional indexing, presence encoding | daemon, WASM, Python bindings |
 | `notebook-protocol` | Wire types (`NotebookRequest`, `NotebookResponse`, `NotebookBroadcast`), connection handshake, frame parsing | daemon, `notebook-sync`, Python bindings |
 | `notebook-sync` | Sync infrastructure (`DocHandle`), snapshot watch channel, per-cell accessors for Python clients, sync task management | Python bindings (`runtimed-py`) |
 
-**Rule of thumb:** Document schema or cell operations -> `notebook-doc`. New request/response/broadcast type -> `notebook-protocol`. Python client sync behavior -> `notebook-sync`.
+**Rule of thumb:** Frame bytes, caps, and connection-local readiness shapes -> `notebook-wire`. Document schema or cell operations -> `notebook-doc`. New request/response/broadcast type -> `notebook-protocol`. Python client sync behavior -> `notebook-sync`.
 
 The Tauri app crate (`crates/notebook/`) is glue -- it wires Tauri commands to daemon requests and manages the socket relay. It does not own protocol types or document operations.
 

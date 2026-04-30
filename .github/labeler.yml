@@ -89,7 +89,7 @@ sync:
   - changed-files:
     - any-glob-to-any-file:
       - 'crates/notebook-sync/**'
-      - 'crates/notebook-doc/src/frame_types*'
+      - 'crates/notebook-wire/**'
       - 'crates/runtimed/src/notebook_sync_server*'
       - 'crates/runtimed/src/notebook_sync_client*'
       - 'crates/runtimed-wasm/**'

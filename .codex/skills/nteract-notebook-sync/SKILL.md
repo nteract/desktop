@@ -1,6 +1,6 @@
 ---
 name: nteract-notebook-sync
-description: Change Automerge notebook sync, CRDT ownership, output manifests, or notebook wire protocol in the nteract desktop repo. Use when editing `crates/notebook-doc/**`, `crates/notebook-protocol/**`, `crates/notebook-sync/**`, `crates/runtimed-wasm/**`, `apps/notebook/src/hooks/useAutomergeNotebook*`, `apps/notebook/src/lib/frame-*`, `materialize-*`, `notebook-cells*`, or daemon blob/output sync paths.
+description: Change Automerge notebook sync, CRDT ownership, output manifests, or notebook wire protocol in the nteract desktop repo. Use when editing `crates/notebook-wire/**`, `crates/notebook-doc/**`, `crates/notebook-protocol/**`, `crates/notebook-sync/**`, `crates/runtimed-wasm/**`, `apps/notebook/src/hooks/useAutomergeNotebook*`, `apps/notebook/src/lib/frame-*`, `materialize-*`, `notebook-cells*`, or daemon blob/output sync paths.
 ---
 
 # nteract Notebook Sync

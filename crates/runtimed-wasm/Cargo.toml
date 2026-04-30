@@ -12,6 +12,7 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 automerge = "0.8"
 notebook-doc = { path = "../notebook-doc" }
+notebook-wire = { path = "../notebook-wire" }
 runtime-doc = { path = "../runtime-doc" }
 wasm-bindgen = "0.2"
 serde = { version = "1", features = ["derive"] }

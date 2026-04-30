@@ -1,5 +1,6 @@
 ---
 paths:
+  - crates/notebook-wire/**
   - crates/notebook-protocol/**
   - crates/notebook-sync/**
   - packages/runtimed/src/transport.ts
@@ -186,14 +187,14 @@ Each cell execution is assigned a unique `execution_id` (UUID). The `QueueEntry`
 
 | File | Role |
 |------|------|
+| `crates/notebook-wire/src/lib.rs` | Frame bytes, preamble constants, frame caps, typed-frame enum, session-control status shapes |
 | `crates/notebook-protocol/src/connection.rs` | Public connection API facade and compatibility re-exports |
-| `crates/notebook-protocol/src/connection/framing.rs` | Frame protocol, preamble, typed frames, frame caps |
+| `crates/notebook-protocol/src/connection/framing.rs` | Frame protocol I/O, preamble validation, typed frames, frame caps |
 | `crates/notebook-protocol/src/connection/handshake.rs` | Protocol version, handshake, capabilities, connection info |
 | `crates/notebook-protocol/src/protocol.rs` | Wire types: requests, responses, broadcasts |
 | `crates/notebook-sync/src/relay.rs` | Relay handle for sync connections |
 | `crates/notebook-sync/src/connect.rs` | Connection setup |
 | `crates/notebook-sync/src/handle.rs` | `DocHandle` -- sync, per-cell accessors |
-| `crates/notebook-doc/src/frame_types.rs` | Shared frame type constants (0x00-0x07) |
 | `crates/runtime-doc/src/doc.rs` | `RuntimeStateDoc` schema |
 | `packages/runtimed/src/transport.ts` | TypeScript `FrameType` constants and transport boundary |
 | `apps/notebook/src/lib/notebook-frame-bus.ts` | In-memory pub/sub |

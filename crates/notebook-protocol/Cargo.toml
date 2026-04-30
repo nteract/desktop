@@ -13,7 +13,7 @@ workspace = true
 anyhow = { workspace = true }
 kernel-env = { path = "../kernel-env", default-features = false }
 log = "0.4"
-notebook-doc = { path = "../notebook-doc" }
+notebook-wire = { path = "../notebook-wire" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }

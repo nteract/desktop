@@ -302,6 +302,7 @@ crates/runt-workspace/
 
 | Crate | What it owns |
 |-------|-------------|
+| `notebook-wire` | Frame bytes, preamble constants, frame caps, typed-frame enum, session-control status shapes |
 | `notebook-doc` | `NotebookDoc`: Automerge schema, cell CRUD, per-cell accessors, `CellChangeset` diffing |
 | `notebook-protocol` | Wire types: `NotebookRequest`, `NotebookResponse`, `NotebookBroadcast` |
 | `notebook-sync` | `DocHandle`: sync infrastructure, snapshot watch channel, per-cell accessors for Python |

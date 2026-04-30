@@ -6,6 +6,10 @@
 use std::path::PathBuf;
 
 use crate::connection::{EnvSource, LaunchSpec};
+pub use notebook_wire::{
+    InitialLoadPhaseWire, NotebookDocPhaseWire, RuntimeStatePhaseWire, SessionControlMessage,
+    SessionSyncStatusWire,
+};
 use serde::{Deserialize, Serialize};
 
 // ── Data structs referenced by protocol enums ───────────────────────────────
@@ -266,52 +270,6 @@ pub struct NotebookResponseEnvelope {
     pub id: Option<String>,
     #[serde(flatten)]
     pub response: NotebookResponse,
-}
-
-/// Session-control messages sent by the daemon on the notebook sync socket.
-///
-/// These frames are connection-local and ordered relative to Automerge sync
-/// frames. They are not room broadcasts.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum SessionControlMessage {
-    SyncStatus(SessionSyncStatusWire),
-}
-
-/// Full connection bootstrap/readiness snapshot.
-///
-/// The daemon emits the full current state on each transition rather than
-/// sending partial deltas.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct SessionSyncStatusWire {
-    pub notebook_doc: NotebookDocPhaseWire,
-    pub runtime_state: RuntimeStatePhaseWire,
-    pub initial_load: InitialLoadPhaseWire,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
-#[serde(rename_all = "snake_case")]
-pub enum NotebookDocPhaseWire {
-    Pending,
-    Syncing,
-    Interactive,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
-#[serde(rename_all = "snake_case")]
-pub enum RuntimeStatePhaseWire {
-    Pending,
-    Syncing,
-    Ready,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(tag = "phase", rename_all = "snake_case")]
-pub enum InitialLoadPhaseWire {
-    NotNeeded,
-    Streaming,
-    Ready,
-    Failed { reason: String },
 }
 
 /// Requests sent from notebook app to daemon for notebook operations.
@@ -1085,6 +1043,21 @@ mod tests {
             ),
         ];
 
+        let request_actions = cases
+            .iter()
+            .map(|(_, json)| {
+                json.get("action")
+                    .and_then(serde_json::Value::as_str)
+                    .expect("case has action")
+                    .to_owned()
+            })
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            request_actions,
+            expected_values(crate::typescript::NOTEBOOK_REQUEST_TYPES),
+            "TypeScript request discriminator list must match the serde request shapes covered here"
+        );
+
         for (name, json) in cases {
             // Also validate the envelope form (with an id), which is what
             // the frame-based path actually sends.
@@ -1155,56 +1128,8 @@ mod tests {
             .collect()
     }
 
-    fn expected_notebook_request_actions() -> BTreeSet<String> {
-        [
-            "launch_kernel",
-            "execute_cell",
-            "execute_cell_guarded",
-            "clear_outputs",
-            "interrupt_execution",
-            "shutdown_kernel",
-            "run_all_cells",
-            "run_all_cells_guarded",
-            "send_comm",
-            "get_history",
-            "complete",
-            "save_notebook",
-            "clone_as_ephemeral",
-            "sync_environment",
-            "approve_trust",
-            "approve_project_environment",
-            "get_doc_bytes",
-        ]
-        .into_iter()
-        .map(ToOwned::to_owned)
-        .collect()
-    }
-
-    fn expected_notebook_response_results() -> BTreeSet<String> {
-        [
-            "kernel_launched",
-            "kernel_already_running",
-            "cell_queued",
-            "outputs_cleared",
-            "interrupt_sent",
-            "kernel_shutting_down",
-            "no_kernel",
-            "guard_rejected",
-            "all_cells_queued",
-            "notebook_saved",
-            "save_error",
-            "notebook_cloned",
-            "ok",
-            "error",
-            "history_result",
-            "completion_result",
-            "sync_environment_complete",
-            "sync_environment_failed",
-            "doc_bytes",
-        ]
-        .into_iter()
-        .map(ToOwned::to_owned)
-        .collect()
+    fn expected_values(values: &[&str]) -> BTreeSet<String> {
+        values.iter().map(|value| (*value).to_owned()).collect()
     }
 
     #[test]
@@ -1214,40 +1139,27 @@ mod tests {
 
         assert_eq!(
             extract_string_array(ts_contract, "NOTEBOOK_REQUEST_TYPES"),
-            expected_notebook_request_actions()
+            expected_values(crate::typescript::NOTEBOOK_REQUEST_TYPES)
         );
         assert_eq!(
             extract_string_array(ts_contract, "NOTEBOOK_RESPONSE_RESULTS"),
-            expected_notebook_response_results()
+            expected_values(crate::typescript::NOTEBOOK_RESPONSE_RESULTS)
         );
         assert_eq!(
             extract_string_array(ts_contract, "SESSION_CONTROL_TYPES"),
-            BTreeSet::from(["sync_status".to_string()])
+            expected_values(crate::typescript::SESSION_CONTROL_TYPES)
         );
         assert_eq!(
             extract_string_array(ts_contract, "NOTEBOOK_DOC_PHASES"),
-            BTreeSet::from([
-                "pending".to_string(),
-                "syncing".to_string(),
-                "interactive".to_string()
-            ])
+            expected_values(crate::typescript::NOTEBOOK_DOC_PHASES)
         );
         assert_eq!(
             extract_string_array(ts_contract, "RUNTIME_STATE_PHASES"),
-            BTreeSet::from([
-                "pending".to_string(),
-                "syncing".to_string(),
-                "ready".to_string()
-            ])
+            expected_values(crate::typescript::RUNTIME_STATE_PHASES)
         );
         assert_eq!(
             extract_string_array(ts_contract, "INITIAL_LOAD_PHASES"),
-            BTreeSet::from([
-                "not_needed".to_string(),
-                "streaming".to_string(),
-                "ready".to_string(),
-                "failed".to_string()
-            ])
+            expected_values(crate::typescript::INITIAL_LOAD_PHASES)
         );
 
         assert_eq!(
@@ -1255,26 +1167,26 @@ mod tests {
             BTreeMap::from([
                 (
                     "AUTOMERGE_SYNC".to_string(),
-                    notebook_doc::frame_types::AUTOMERGE_SYNC
+                    notebook_wire::frame_types::AUTOMERGE_SYNC
                 ),
-                ("REQUEST".to_string(), notebook_doc::frame_types::REQUEST),
-                ("RESPONSE".to_string(), notebook_doc::frame_types::RESPONSE),
+                ("REQUEST".to_string(), notebook_wire::frame_types::REQUEST),
+                ("RESPONSE".to_string(), notebook_wire::frame_types::RESPONSE),
                 (
                     "BROADCAST".to_string(),
-                    notebook_doc::frame_types::BROADCAST
+                    notebook_wire::frame_types::BROADCAST
                 ),
-                ("PRESENCE".to_string(), notebook_doc::frame_types::PRESENCE),
+                ("PRESENCE".to_string(), notebook_wire::frame_types::PRESENCE),
                 (
                     "RUNTIME_STATE_SYNC".to_string(),
-                    notebook_doc::frame_types::RUNTIME_STATE_SYNC
+                    notebook_wire::frame_types::RUNTIME_STATE_SYNC
                 ),
                 (
                     "POOL_STATE_SYNC".to_string(),
-                    notebook_doc::frame_types::POOL_STATE_SYNC
+                    notebook_wire::frame_types::POOL_STATE_SYNC
                 ),
                 (
                     "SESSION_CONTROL".to_string(),
-                    notebook_doc::frame_types::SESSION_CONTROL
+                    notebook_wire::frame_types::SESSION_CONTROL
                 ),
             ])
         );

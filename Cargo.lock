@@ -4505,6 +4505,7 @@ dependencies = [
  "notebook-doc",
  "notebook-protocol",
  "notebook-sync",
+ "notebook-wire",
  "rfd 0.17.2",
  "runt-workspace",
  "runtimed-client",
@@ -4554,7 +4555,7 @@ dependencies = [
  "anyhow",
  "kernel-env",
  "log",
- "notebook-doc",
+ "notebook-wire",
  "serde",
  "serde_json",
  "tokio",
@@ -4574,6 +4575,13 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "uuid",
+]
+
+[[package]]
+name = "notebook-wire"
+version = "0.2.7"
+dependencies = [
+ "serde",
 ]
 
 [[package]]
@@ -7059,6 +7067,7 @@ dependencies = [
  "notebook-doc",
  "notebook-protocol",
  "notebook-sync",
+ "notebook-wire",
  "notify",
  "notify-debouncer-mini",
  "petname",
@@ -7171,6 +7180,7 @@ dependencies = [
  "getrandom 0.2.17",
  "getrandom 0.3.4",
  "notebook-doc",
+ "notebook-wire",
  "runtime-doc",
  "serde",
  "serde-wasm-bindgen",

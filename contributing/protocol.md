@@ -419,12 +419,13 @@ Widget state now lives in `doc.comms/` in RuntimeStateDoc. The daemon writes com
 | File | Role |
 |------|------|
 | `crates/notebook-protocol/src/connection.rs` | Public connection API facade and compatibility re-exports |
-| `crates/notebook-protocol/src/connection/framing.rs` | Frame protocol: preamble, length-prefixed typed frames, frame caps |
+| `crates/notebook-wire/src/lib.rs` | Low-level wire constants, preamble bytes, frame caps, typed-frame enum, session-control status shapes |
+| `crates/notebook-protocol/src/connection/framing.rs` | Frame protocol I/O: preamble validation and length-prefixed typed-frame send/receive |
 | `crates/notebook-protocol/src/connection/handshake.rs` | Protocol version, handshake, capabilities, connection info |
 | `crates/notebook-protocol/src/connection/env.rs` | Launch spec, package manager, and environment source wire types |
 | `crates/notebook-protocol/src/protocol.rs` | Canonical wire types: `NotebookRequest`, `NotebookResponse`, `NotebookBroadcast` |
-| `packages/runtimed/src/request-types.ts` | TypeScript request/response protocol unions consumed by JS clients |
-| `packages/runtimed/src/protocol-contract.ts` | Checked TypeScript discriminant lists for frame/session/request/response drift tests |
+| `packages/runtimed/src/request-types.ts` | Generated TypeScript request/response protocol unions consumed by JS clients |
+| `packages/runtimed/src/protocol-contract.ts` | Generated TypeScript discriminant lists for frame/session/request/response drift tests |
 | `crates/runtimed-client/src/protocol.rs` | Daemon-internal types (`Request`, `Response`, `BlobRequest`), re-exports from `notebook-protocol` |
 | `crates/notebook-sync/src/relay.rs` | Relay handle for notebook sync connections |
 | `crates/notebook-sync/src/connect.rs` | Connection setup (`connect_open_relay`, `connect_create_relay`) |
@@ -446,7 +447,6 @@ Widget state now lives in `doc.comms/` in RuntimeStateDoc. The daemon writes com
 | `crates/runtimed-wasm/src/lib.rs` | WASM bindings: cell mutations, sync, per-cell accessors, `CellChangeset` |
 | `crates/notebook-doc/src/lib.rs` | `NotebookDoc`: Automerge schema, cell CRUD, nbformat fallback fields, per-cell accessors |
 | `crates/notebook-doc/src/diff.rs` | `CellChangeset`: structural diff from Automerge patches |
-| `crates/notebook-doc/src/frame_types.rs` | Shared frame type constants (0x00–0x07) |
 | `crates/runtime-doc/src/doc.rs` | `RuntimeStateDoc`: per-notebook daemon-authoritative state (kernel, queue, env sync) |
 | `apps/notebook/src/lib/runtime-state.ts` | Frontend runtime state store + `useRuntimeState()` hook |
 | `packages/runtimed/src/transport.ts` | TypeScript `FrameType` constants and transport boundary |
