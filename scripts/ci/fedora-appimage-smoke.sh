@@ -32,14 +32,44 @@ for binary in "$RUNT" "$RUNTIMED" "$MCP"; do
   fi
 done
 
-"$RUNT" --version
-"$RUNTIMED" --version
-
 export HOME="$WORKDIR/home"
 export XDG_CONFIG_HOME="$HOME/.config"
 export XDG_DATA_HOME="$HOME/.local/share"
 export XDG_CACHE_HOME="$HOME/.cache"
 mkdir -p "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" "$XDG_CACHE_HOME"
+
+"$RUNT" --version
+"$RUNTIMED" --version
+
+RUNT_DIR=$(dirname "$RUNT")
+export PATH="$RUNT_DIR:$PATH"
+
+set +e
+timeout 10s "$MCP" < /dev/null > nteract-mcp.stdout 2> nteract-mcp.stderr
+mcp_status=$?
+set -e
+
+echo "=== nteract-mcp stdout ==="
+cat nteract-mcp.stdout
+echo
+echo "=== nteract-mcp stderr ==="
+cat nteract-mcp.stderr
+echo
+
+if [[ "$mcp_status" -ne 0 && "$mcp_status" -ne 124 ]]; then
+  echo "nteract-mcp failed with status $mcp_status" >&2
+  exit "$mcp_status"
+fi
+
+if grep -Fq "runt not found" nteract-mcp.stderr; then
+  echo "nteract-mcp could not find the bundled runt sidecar" >&2
+  exit 1
+fi
+
+if ! grep -Fq "Validated runt is available" nteract-mcp.stderr; then
+  echo "nteract-mcp did not validate the bundled runt sidecar" >&2
+  exit 1
+fi
 
 # Simulate the environment AppRun gives child processes. The daemon doctor
 # path should still call the host systemctl and should persist service files
@@ -62,6 +92,7 @@ echo "=== daemon doctor stderr ==="
 cat doctor.stderr
 echo
 
+# shellcheck disable=SC2016
 if grep -Eiq 'symbol lookup error|error while loading shared libraries|version `[^`]+'\'' not found|liblzma|libsystemd' doctor.stderr doctor.json; then
   echo "daemon doctor appears to have used AppImage libraries for host systemctl" >&2
   exit 1
@@ -89,6 +120,22 @@ fi
 
 if ! grep -Fq "ExecStart=$XDG_DATA_HOME" "$SERVICE_FILE"; then
   echo "service file does not point at the durable per-user data directory" >&2
+  exit 1
+fi
+
+SERVICE_EXEC=$(grep -E '^ExecStart=' "$SERVICE_FILE" | head -n1 | sed 's/^ExecStart=//')
+if [[ -z "$SERVICE_EXEC" ]]; then
+  echo "service file has no ExecStart" >&2
+  exit 1
+fi
+
+if [[ ! -x "$SERVICE_EXEC" ]]; then
+  echo "daemon doctor did not copy runtimed to an executable durable path: $SERVICE_EXEC" >&2
+  exit 1
+fi
+
+if ! cmp -s "$RUNTIMED" "$SERVICE_EXEC"; then
+  echo "durable runtimed binary does not match the AppImage sidecar" >&2
   exit 1
 fi
 
