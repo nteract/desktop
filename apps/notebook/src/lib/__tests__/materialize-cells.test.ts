@@ -8,6 +8,8 @@ import {
   resolveOutput,
   reuseOutputsIfUnchanged,
 } from "../materialize-cells";
+import { resetRuntimeState, setRuntimeState } from "../runtime-state";
+import { DEFAULT_RUNTIME_STATE } from "runtimed";
 
 // ---------------------------------------------------------------------------
 // Mock fetch globally for blob-store resolution tests
@@ -23,6 +25,7 @@ beforeEach(() => {
 afterEach(() => {
   mockFetch.mockReset();
   vi.unstubAllGlobals();
+  resetRuntimeState();
 });
 
 // ---------------------------------------------------------------------------
@@ -38,6 +41,8 @@ function codeSnapshot(
   source: string,
   outputs: unknown[] = [],
   executionCount = "null",
+  executionId: string | null =
+    executionCount === "null" && outputs.length === 0 ? null : `exec-${id}`,
 ): CellSnapshot {
   return {
     id,
@@ -45,6 +50,7 @@ function codeSnapshot(
     position: "80",
     source,
     execution_count: executionCount,
+    execution_id: executionId,
     outputs,
     metadata: {},
   };
@@ -547,6 +553,44 @@ describe("cellSnapshotsToNotebookCells", () => {
       const cells = await cellSnapshotsToNotebookCells([snap], null, new Map());
       if (cells[0].cell_type === "code") {
         expect(cells[0].execution_count).toBeNull();
+      }
+    });
+
+    it("returns null when the notebook doc has no execution pointer", async () => {
+      const snap = codeSnapshot("c1", "", [], "7", null);
+      const cells = await cellSnapshotsToNotebookCells([snap], null, new Map());
+      if (cells[0].cell_type === "code") {
+        expect(cells[0].execution_count).toBeNull();
+      }
+    });
+
+    it("uses the count for the pointed execution, not older executions for the cell", async () => {
+      setRuntimeState({
+        ...DEFAULT_RUNTIME_STATE,
+        executions: {
+          old: {
+            cell_id: "c1",
+            status: "done",
+            execution_count: 9,
+            success: true,
+            output_ids: [],
+            seq: 1,
+          },
+          current: {
+            cell_id: "c1",
+            status: "running",
+            execution_count: 2,
+            success: null,
+            output_ids: [],
+            seq: 2,
+          },
+        },
+      });
+
+      const snap = codeSnapshot("c1", "", [], "9", "current");
+      const cells = await cellSnapshotsToNotebookCells([snap], null, new Map());
+      if (cells[0].cell_type === "code") {
+        expect(cells[0].execution_count).toBe(2);
       }
     });
   });

@@ -1236,25 +1236,17 @@ pub(crate) async fn move_cell(
     Ok(cell_id.to_string())
 }
 
-/// Clear a cell's outputs.
-///
-/// Sends a ClearOutputs request to the daemon — outputs live in RuntimeStateDoc,
-/// so the daemon handles clearing the execution_id pointer and outputs.
+/// Clear a cell's visible outputs by removing its current execution pointer.
 pub(crate) async fn clear_outputs(state: &Arc<Mutex<SessionState>>, cell_id: &str) -> PyResult<()> {
-    let handle = {
+    {
         let st = state.lock().await;
-        st.handle
+        let handle = st
+            .handle
             .as_ref()
-            .ok_or_else(|| to_py_err("Not connected"))?
-            .clone()
-    };
+            .ok_or_else(|| to_py_err("Not connected"))?;
 
-    handle
-        .send_request(NotebookRequest::ClearOutputs {
-            cell_id: cell_id.to_string(),
-        })
-        .await
-        .map_err(|e| to_py_err(format!("Failed to clear outputs: {e}")))?;
+        handle.clear_outputs(cell_id).map_err(to_py_err)?;
+    }
 
     // Emit focus presence — cell-level operation on outputs, not source
     emit_focus_presence(state, cell_id).await;

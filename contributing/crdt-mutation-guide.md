@@ -69,8 +69,6 @@ Functions that write to the CRDT follow this pattern:
 | `apply*FromDaemon` | Same as above — applies daemon state to the store. |
 
 Examples:
-- `clearOutputsLocal(cellId)` — user hit Ctrl-Enter, clear in CRDT + store
-- `clearOutputsFromDaemon(cellId)` — daemon broadcast, store only
 - `applyExecutionCountFromDaemon(cellId, count)` — daemon broadcast, store only
 
 ## The CodeMirror CRDT Bridge

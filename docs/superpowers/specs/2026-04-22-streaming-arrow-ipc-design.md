@@ -152,7 +152,7 @@ Because the frontend reads manifests directly from the CRDT, late joiners and re
 - **Comm drops / kernel restart mid-stream.** Pull task detects the closed comm, sets `complete: false` and adds `{error: "stream_interrupted"}` to the manifest. The frontend renders whatever rows have arrived plus an "interrupted" banner. No retry — re-executing the cell produces a fresh stream.
 - **dx error during pull** (e.g. Arrow encoding fails for an unusual dtype). dx returns `{op: "error", message: "..."}` on the comm. Runtime agent records the error on the manifest the same way, stops the pull task. Frontend shows the partial rows + error.
 - **Blob store write failure.** Current behavior: output manifest records the failure per-MIME. Streaming extends this — one bad chunk sets `complete: false` + `error` and stops further pulls for that output.
-- **Re-execution of the cell.** Existing `clear_execution_outputs` drops the whole list; the pull task for the old `output_id` sees its output vanish on the next CRDT read and exits. No dangling comm.
+- **Re-execution of the cell.** The cell moves to a fresh `execution_id`; the pull task for the old `output_id` sees that its execution is no longer current on the next CRDT read and exits. No dangling comm.
 
 ## Testing
 

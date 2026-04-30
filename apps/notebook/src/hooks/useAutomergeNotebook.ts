@@ -34,13 +34,7 @@ import {
   seedOutputStoresFromHandle,
   updateCellExecutionPointersFromHandle,
 } from "../lib/project-runtime-stores";
-import {
-  getCellExecutionId,
-  getExecutionById,
-  setCellExecutionPointer,
-  setExecution,
-} from "../lib/notebook-executions";
-import { deleteOutputs, updateOutputsByDisplayId } from "../lib/notebook-outputs";
+import { updateOutputsByDisplayId } from "../lib/notebook-outputs";
 import { cloneNotebookFile, openNotebookFile, saveNotebook } from "../lib/notebook-file-ops";
 import { emitBroadcast, emitPresence } from "../lib/notebook-frame-bus";
 import { notifyMetadataChanged, setNotebookHandle } from "../lib/notebook-metadata";
@@ -58,31 +52,6 @@ import init, { NotebookHandle } from "../wasm/runtimed-wasm/runtimed_wasm.js";
 const wasmReady: Promise<void> = init().then(() => {
   logger.info("[automerge-notebook] WASM initialized");
 });
-
-/**
- * Phase C-lite helper: clear the per-execution / per-output store entries
- * a cell points at. Used when the daemon signals an `outputs_cleared` event
- * so `<OutputArea>` (which reads from those stores via `useCellOutputs`)
- * updates immediately instead of waiting for the next `runtime_state`
- * snapshot to rebuild the projection.
- */
-function clearCellOutputsStore(cellId: string): void {
-  const executionId = getCellExecutionId(cellId);
-  if (!executionId) return;
-  const snap = getExecutionById(executionId);
-  if (snap && snap.output_ids.length > 0) {
-    deleteOutputs(snap.output_ids);
-    setExecution(executionId, { ...snap, output_ids: [] });
-  }
-  // Detach the cell from the cleared execution. If we left this pointer
-  // in place and the daemon's runtime-state frame for the next execution
-  // arrived before the notebook-doc sync updated `cells.{id}.execution_id`,
-  // `useCellOutputs(cellId)` would stay attached to the cleared
-  // execution and miss the first streamed outputs of the rerun.
-  // `execution_started` broadcasts and the doc-driven pointer refresh
-  // both re-seed the pointer when the new execution lands.
-  setCellExecutionPointer(cellId, null);
-}
 
 // ---------------------------------------------------------------------------
 // Hook
@@ -429,28 +398,6 @@ export function useAutomergeNotebook() {
       )
       .subscribe();
 
-    // ── Bulk output clearing ──────────────────────────────────────
-
-    const clearOutputsSub = new Observable<string[]>((subscriber) =>
-      host.notebook.onOutputsCleared((cellIds) => subscriber.next(cellIds)),
-    ).subscribe((payload) => {
-      const clearedIds = new Set(payload);
-      updateNotebookCells((prev) =>
-        prev.map((c) =>
-          clearedIds.has(c.id) && c.cell_type === "code"
-            ? { ...c, outputs: [], execution_count: null }
-            : c,
-        ),
-      );
-      // Phase C-lite: <OutputArea> reads from the per-output / per-
-      // execution stores now. Clear those immediately for each cell so
-      // the UI reacts without waiting for the next RuntimeStateDoc
-      // snapshot tick.
-      for (const cellId of payload) {
-        clearCellOutputsStore(cellId);
-      }
-    });
-
     return () => {
       cancelled = true;
       logger.info("[automerge-notebook] Cleanup: flushing and stopping engine");
@@ -473,7 +420,6 @@ export function useAutomergeNotebook() {
       outputIdChangesSub.unsubscribe();
       poolStateSub.unsubscribe();
       lifecycleSub.unsubscribe();
-      clearOutputsSub.unsubscribe();
 
       engineRef.current = null;
       transportRef.current = null;
@@ -500,24 +446,6 @@ export function useAutomergeNotebook() {
 
     updateCellById(cellId, (c) => ({ ...c, source }));
     engine.scheduleFlush();
-  }, []);
-
-  const clearOutputsLocal = useCallback((_cellId: string) => {
-    // No-op: the SyncEngine clears outputs via cellChanges$ when the
-    // RuntimeStateDoc reports execution started for this cell. Clearing
-    // here previously caused a CRDT race under rapid ctrl-enter.
-  }, []);
-
-  const clearAllOutputsLocal = useCallback(() => {
-    // No-op: each cell is cleared individually by the SyncEngine
-    // when the RuntimeStateDoc reports execution started.
-  }, []);
-
-  const clearOutputsFromDaemon = useCallback((cellId: string) => {
-    updateCellById(cellId, (c) =>
-      c.cell_type === "code" ? { ...c, outputs: [], execution_count: null } : c,
-    );
-    clearCellOutputsStore(cellId);
   }, []);
 
   const addCell = useCallback(
@@ -584,6 +512,31 @@ export function useAutomergeNotebook() {
     [commitMutation],
   );
 
+  const clearOutputs = useCallback(
+    (cellIds: string | string[]) => {
+      const ids = Array.isArray(cellIds) ? cellIds : [cellIds];
+      if (ids.length === 0) return false;
+      const handle = handleRef.current;
+      const engine = engineRef.current;
+      if (!handle || !engine) {
+        logger.debug("[automerge-notebook] clearOutputs skipped: no handle/engine");
+        return false;
+      }
+
+      let changed = false;
+      for (const cellId of ids) {
+        changed = !!handle.clear_outputs(cellId) || changed;
+      }
+      if (!changed) return false;
+
+      rematerializeCellsSync(handle);
+      updateCellExecutionPointersFromHandle(handle, ids);
+      engine.flush();
+      return true;
+    },
+    [rematerializeCellsSync],
+  );
+
   const setCellSourceHidden = useCallback(
     (cellId: string, hidden: boolean) => {
       commitMutation((handle) => {
@@ -643,9 +596,8 @@ export function useAutomergeNotebook() {
       newData: Record<string, unknown>,
       newMetadata?: Record<string, unknown>,
     ) => {
-      // Legacy cell-store projection. New Phase C-lite consumers read
-      // from the outputs store (see `useCellOutputs`), but cross-cell
-      // readers still look at `cell.outputs` so keep it in sync.
+      // Keep the cell snapshot in sync for cross-cell readers that still
+      // inspect `cell.outputs` directly.
       updateNotebookCells((prev) =>
         prev.map((c) => {
           if (c.cell_type !== "code") return c;
@@ -713,12 +665,10 @@ export function useAutomergeNotebook() {
     focusedCellId,
     setFocusedCellId,
     updateCellSource,
-    clearOutputsLocal,
-    clearAllOutputsLocal,
-    clearOutputsFromDaemon,
     addCell,
     moveCell,
     deleteCell,
+    clearOutputs,
     save,
     openNotebook,
     cloneNotebook,

@@ -22,7 +22,6 @@ use crate::protocol::{NotebookRequest, NotebookResponse};
 
 pub(crate) mod approve_project_environment;
 pub(crate) mod approve_trust;
-pub(crate) mod clear_outputs;
 pub(crate) mod clone_notebook;
 pub(crate) mod complete;
 pub(crate) mod execute_cell;
@@ -47,7 +46,6 @@ pub(crate) fn request_label(req: &NotebookRequest) -> &'static str {
         NotebookRequest::LaunchKernel { .. } => "LaunchKernel",
         NotebookRequest::ExecuteCell { .. } => "ExecuteCell",
         NotebookRequest::ExecuteCellGuarded { .. } => "ExecuteCellGuarded",
-        NotebookRequest::ClearOutputs { .. } => "ClearOutputs",
         NotebookRequest::InterruptExecution { .. } => "InterruptExecution",
         NotebookRequest::ShutdownKernel { .. } => "ShutdownKernel",
         NotebookRequest::RunAllCells { .. } => "RunAllCells",
@@ -88,8 +86,6 @@ pub(crate) async fn handle_notebook_request(
             cell_id,
             observed_heads,
         } => execute_cell::handle_guarded(room, cell_id, observed_heads).await,
-
-        NotebookRequest::ClearOutputs { cell_id } => clear_outputs::handle(room, cell_id).await,
 
         NotebookRequest::InterruptExecution {} => interrupt_execution::handle(room).await,
 

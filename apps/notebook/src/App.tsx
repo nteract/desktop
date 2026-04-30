@@ -192,6 +192,7 @@ function AppContent() {
     addCell,
     moveCell,
     deleteCell,
+    clearOutputs,
     save,
     openNotebook,
     cloneNotebook,
@@ -375,7 +376,6 @@ function AppContent() {
     launchKernel,
     executeCell,
     executeCellGuarded,
-    clearOutputs,
     interruptKernel,
     shutdownKernel,
     syncEnvironment,
@@ -1139,9 +1139,8 @@ function AppContent() {
           return;
         }
 
-        // No explicit ClearOutputs IPC needed — the daemon clears outputs
-        // on execute_input and the SyncEngine injects a clear changeset
-        // when the RuntimeStateDoc reports execution started.
+        // Starting a fresh execution updates the cell's execution_id pointer,
+        // and output rendering follows that pointer.
 
         // Start kernel via daemon if not running or awaiting trust, then queue cell.
         if (
@@ -1271,8 +1270,8 @@ function AppContent() {
   ]);
 
   const handleRestartAndRunAll = useCallback(async () => {
-    // Backend clears outputs and emits cells:outputs_cleared before queuing,
-    // then ensureKernelStarted restarts the kernel
+    // The daemon clears visible outputs by moving cells to fresh execution
+    // pointers before queuing, then ensureKernelStarted restarts the kernel.
     await restartAndRunAll();
   }, [restartAndRunAll]);
 
@@ -1406,7 +1405,8 @@ function AppContent() {
       host.commands.register("notebook.clearAllOutputs", async () => {
         const h = commandHandlersRef.current;
         const codeCells = getNotebookCellsSnapshot().filter((c) => c.cell_type === "code");
-        await Promise.all(codeCells.map((cell) => h.clearOutputs(cell.id)));
+        if (codeCells.length === 0) return;
+        await h.clearOutputs(codeCells.map((cell) => cell.id));
       }),
       host.commands.register("notebook.runAll", () => {
         commandHandlersRef.current.handleRunAllCells();

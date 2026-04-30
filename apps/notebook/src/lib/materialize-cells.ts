@@ -6,7 +6,7 @@ import {
   resolveManifest,
   resolveManifestSync,
 } from "./manifest-resolution";
-import { getExecutionCountForCell, getRuntimeState } from "./runtime-state";
+import { getRuntimeState } from "./runtime-state";
 
 export type { ContentRef, OutputManifest } from "./manifest-resolution";
 // Re-export shared manifest types and functions for downstream consumers
@@ -18,9 +18,29 @@ export {
   resolveManifestSync,
 } from "./manifest-resolution";
 
-/** Resolve execution_count for a cell from the current RuntimeState snapshot. */
-function getExecutionCountFromRuntime(cellId: string): number | null {
-  return getExecutionCountForCell(getRuntimeState(), cellId);
+/** Resolve execution_count from the execution the notebook doc points at. */
+function getExecutionCountFromRuntime(
+  cellId: string,
+  executionId: string | null | undefined,
+): number | null {
+  if (!executionId) return null;
+  const execution = getRuntimeState().executions[executionId];
+  if (!execution || execution.cell_id !== cellId) return null;
+  return execution.execution_count ?? null;
+}
+
+function resolveExecutionCount(
+  cellId: string,
+  executionId: string | null | undefined,
+  legacyExecutionCount: string,
+): number | null {
+  if (!executionId) return null;
+  const runtimeCount = getExecutionCountFromRuntime(cellId, executionId);
+  const fallbackCount =
+    legacyExecutionCount === "null"
+      ? null
+      : Number.parseInt(legacyExecutionCount, 10);
+  return runtimeCount ?? (Number.isNaN(fallbackCount) ? null : fallbackCount);
 }
 
 /**
@@ -50,6 +70,7 @@ export interface CellSnapshot {
   position: string; // Fractional index hex string for ordering (e.g., "80", "7F80")
   source: string;
   execution_count: string; // "5" or "null"
+  execution_id?: string | null;
   outputs: unknown[]; // Structured output manifests (from WASM) or legacy JSON strings
   metadata: Record<string, unknown>; // Cell metadata (arbitrary JSON object)
   resolved_assets?: Record<string, string>; // asset ref → blob hash (markdown cells)
@@ -229,11 +250,6 @@ export function cellSnapshotsToNotebookCellsSync(
   blobPort?: number | null,
 ): NotebookCell[] {
   return snapshots.map((snap) => {
-    const executionCount =
-      snap.execution_count === "null"
-        ? null
-        : Number.parseInt(snap.execution_count, 10);
-
     const metadata = snap.metadata ?? {};
 
     if (snap.cell_type === "code") {
@@ -242,11 +258,11 @@ export function cellSnapshotsToNotebookCellsSync(
         .map((output) => resolveOutputSync(output, blobPort ?? null, cache))
         .filter((o): o is JupyterOutput => o !== null);
 
-      // RuntimeState is the live source of truth. NotebookDoc carries the
-      // persisted nbformat history fallback for runtime-free reload/export.
-      const runtimeCount = getExecutionCountFromRuntime(snap.id);
-      const ec =
-        runtimeCount ?? (Number.isNaN(executionCount) ? null : executionCount);
+      const ec = resolveExecutionCount(
+        snap.id,
+        snap.execution_id,
+        snap.execution_count,
+      );
 
       return {
         id: snap.id,
@@ -291,11 +307,6 @@ export async function cellSnapshotsToNotebookCells(
 ): Promise<NotebookCell[]> {
   return Promise.all(
     snapshots.map(async (snap) => {
-      const executionCount =
-        snap.execution_count === "null"
-          ? null
-          : Number.parseInt(snap.execution_count, 10);
-
       // Metadata defaults to empty object if missing (backward compatibility)
       const metadata = snap.metadata ?? {};
 
@@ -307,12 +318,11 @@ export async function cellSnapshotsToNotebookCells(
           )
         ).filter((o): o is JupyterOutput => o !== null);
 
-        // RuntimeState is the live source of truth. NotebookDoc carries the
-        // persisted nbformat history fallback for runtime-free reload/export.
-        const runtimeCount = getExecutionCountFromRuntime(snap.id);
-        const ec =
-          runtimeCount ??
-          (Number.isNaN(executionCount) ? null : executionCount);
+        const ec = resolveExecutionCount(
+          snap.id,
+          snap.execution_id,
+          snap.execution_count,
+        );
 
         return {
           id: snap.id,
@@ -375,8 +385,8 @@ export function materializeCellFromWasm(
       previousCell?.cell_type === "code" ? previousCell.outputs : undefined;
     const outputs = reuseOutputsIfUnchanged(resolvedOutputs, prevOutputs);
 
-    // Resolve execution_count from RuntimeState (source of truth)
-    const executionCount = getExecutionCountFromRuntime(cellId);
+    const executionId = handle.get_cell_execution_id(cellId) ?? null;
+    const executionCount = getExecutionCountFromRuntime(cellId, executionId);
 
     return {
       id: cellId,

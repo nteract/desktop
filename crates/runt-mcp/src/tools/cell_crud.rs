@@ -7,8 +7,6 @@ use rmcp::ErrorData as McpError;
 use schemars::JsonSchema;
 use serde::Deserialize;
 
-use notebook_protocol::protocol::NotebookRequest;
-
 use crate::execution;
 use crate::NteractMcp;
 
@@ -312,32 +310,20 @@ pub async fn clear_outputs(
     }
 
     let peer_label = server.get_peer_label().await;
-    let mut cleared = Vec::new();
-    let mut failed = Vec::new();
 
     for id in &cell_ids {
         crate::presence::emit_focus(&handle, id, &peer_label).await;
+    }
 
-        match handle
-            .send_request(NotebookRequest::ClearOutputs {
-                cell_id: id.clone(),
-            })
-            .await
-        {
-            Ok(_) => cleared.push(id.as_str()),
-            Err(e) => failed.push(format!("{id}: {e}")),
+    let cleared = if cell_ids.is_empty() {
+        0
+    } else {
+        match handle.clear_outputs_for_cells(&cell_ids) {
+            Ok(count) => count,
+            Err(e) => return tool_error(&format!("Failed to clear outputs: {e}")),
         }
-    }
+    };
 
-    if !failed.is_empty() {
-        return tool_error(&format!(
-            "Cleared {}/{} cells. Failures: {}",
-            cleared.len(),
-            cell_ids.len(),
-            failed.join(", ")
-        ));
-    }
-
-    let result = serde_json::json!({ "cleared": cleared.len() });
+    let result = serde_json::json!({ "cleared": cleared });
     tool_success(&serde_json::to_string_pretty(&result).unwrap_or_default())
 }

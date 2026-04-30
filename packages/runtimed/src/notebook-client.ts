@@ -127,19 +127,6 @@ export class NotebookClient {
     }
   }
 
-  /** Clear outputs for a cell. */
-  async clearOutputs(cellId: string): Promise<NotebookResponse> {
-    try {
-      return await this.sendRequest({
-        type: "clear_outputs",
-        cell_id: cellId,
-      });
-    } catch (e) {
-      this.log.error("[notebook-client] Clear outputs failed:", e);
-      throw e;
-    }
-  }
-
   /** Interrupt kernel execution. */
   async interruptKernel(): Promise<NotebookResponse> {
     try {

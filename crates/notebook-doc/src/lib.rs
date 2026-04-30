@@ -1515,6 +1515,28 @@ impl NotebookDoc {
         Ok(true)
     }
 
+    /// Clear the cell's visible execution.
+    ///
+    /// Outputs and live execution counts are keyed by `execution_id` in
+    /// RuntimeStateDoc. Clearing the pointer makes the cell render as having
+    /// no outputs and no execution count while preserving historical runtime
+    /// state for durable execution lookups and natural trimming.
+    pub fn clear_outputs(&mut self, cell_id: &str) -> Result<bool, AutomergeError> {
+        let cells_id = match self.cells_map_id() {
+            Some(id) => id,
+            None => return Ok(false),
+        };
+        let cell_obj = match self.cell_obj_id(&cells_id, cell_id) {
+            Some(o) => o,
+            None => return Ok(false),
+        };
+
+        self.doc
+            .put(&cell_obj, "execution_id", automerge::ScalarValue::Null)?;
+        self.doc.put(&cell_obj, "execution_count", "null")?;
+        Ok(true)
+    }
+
     /// Read the execution_id pointer from a cell, if set.
     pub fn get_execution_id(&self, cell_id: &str) -> Option<String> {
         let cells_id = self.cells_map_id()?;
@@ -3233,6 +3255,29 @@ mod tests {
             doc.get_cell_execution_count("cell-1").as_deref(),
             Some("null")
         );
+    }
+
+    #[test]
+    fn test_clear_outputs_nulls_execution_pointer_and_count_fallback() {
+        let mut doc = NotebookDoc::new("clear-outputs-test");
+        doc.add_cell_full(
+            "cell-1",
+            "code",
+            "80",
+            "print('hi')",
+            "7",
+            &serde_json::json!({}),
+        )
+        .unwrap();
+        doc.set_execution_id("cell-1", Some("exec-1")).unwrap();
+
+        assert!(doc.clear_outputs("cell-1").unwrap());
+        assert_eq!(doc.get_execution_id("cell-1"), None);
+        assert_eq!(
+            doc.get_cell_execution_count("cell-1").as_deref(),
+            Some("null")
+        );
+        assert!(!doc.clear_outputs("missing").unwrap());
     }
 
     /// Tests three-peer sync: daemon + two clients.
