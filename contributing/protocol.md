@@ -400,19 +400,46 @@ Stream outputs (stdout/stderr) are special: text is fed through a terminal emula
 
 **Multi-window:** Multiple windows join the same room as separate Automerge peers. Each gets sync frames and broadcasts independently. The daemon tracks `active_peers` per room for eviction.
 
-## Architectural Direction
+## Runtime State
 
-### RuntimeStateDoc (PR #977)
+### RuntimeStateDoc
 
-Several broadcast variants carry **state** (kernel status, env sync diff, queue) rather than **events**. State-carrying broadcasts suffer from silent drops, no initial state for late joiners, and ordering races between windows. The `RuntimeStateDoc` replaces these with a daemon-authoritative, per-notebook Automerge document synced via frame type `0x05` on the existing notebook connection.
+State-carrying broadcasts (kernel status, env sync diff, queue) have been
+replaced because they suffer from silent drops, no initial state for late
+joiners, and ordering races between windows. `RuntimeStateDoc` is the
+daemon-authoritative, per-notebook Automerge document synced via frame type
+`0x05` on the existing notebook connection.
 
 The daemon writes kernel status, execution queue, environment progress, project context, and trust state. Clients receive updates via normal Automerge sync — read-only enforced by stripping client changes. The frontend reads via `useRuntimeState()` and the project runtime stores.
 
 **Key files:** `crates/runtime-doc/src/doc.rs` (schema + setters), `crates/runtime-doc/src/handle.rs` (handle), `apps/notebook/src/lib/runtime-state.ts` (frontend store + hook).
 
-### Comms in doc (#761) — Done
+### Widget comm state
 
 Widget state now lives in `doc.comms/` in RuntimeStateDoc. The daemon writes comm entries from kernel IOPub, and new clients receive widget state via normal CRDT sync. `CommSync` broadcast has been removed. The `Comm` broadcast variant is limited to custom messages (ephemeral events like button clicks). Frontend-originated widget state updates write to the CRDT, and the runtime agent diffs comm state on each sync to forward deltas to the kernel.
+
+## Runtime Agent Subprotocol
+
+Runtime agents are same-socket peers that connect with
+`Handshake::RuntimeAgent`. They use the shared framing layer but carry a
+different JSON subprotocol on request/response frame types:
+
+| Frame | Runtime-agent payload |
+|-------|-----------------------|
+| `0x00` | NotebookDoc Automerge sync |
+| `0x01` | `RuntimeAgentRequestEnvelope` |
+| `0x02` | `RuntimeAgentResponseEnvelope` |
+| `0x05` | RuntimeStateDoc Automerge sync |
+
+Coordinator-to-agent RPC covers kernel lifecycle and query-style operations
+such as launch, restart, shutdown, completion, history, comm sends, interrupts,
+and hot environment sync. Cell execution itself is CRDT-driven: the coordinator
+writes execution entries into RuntimeStateDoc, and the runtime agent discovers
+and executes queued entries through RuntimeStateDoc sync.
+
+Because the daemon socket is a same-UID trusted API, the runtime-agent handshake
+must be treated as a powerful attach operation. Do not add runtime-agent
+authority under the assumption that only the desktop app can reach the socket.
 
 ## Key Source Files
 
