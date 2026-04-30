@@ -6,6 +6,7 @@ name = "desktop"
 script = '''
 direnv allow .
 pnpm install
+cargo xtask wasm
 export RUNTIMED_DEV=1
 '''
 
