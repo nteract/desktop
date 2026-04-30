@@ -72,10 +72,10 @@ Notebook request and response frames use `NotebookRequestEnvelope` and `Notebook
 | `InterruptExecution` | Send SIGINT to running kernel |
 | `ShutdownKernel` | Stop the kernel process |
 | `RunAllCells` | Execute all code cells in order |
-| `SaveNotebook` | Persist Automerge doc to `.ipynb` |
+| `SaveNotebook { format_cells, path? }` | Persist Automerge doc to `.ipynb`, optionally save-as to `path` |
 | `SyncEnvironment` | Hot-install packages into running kernel |
 | `ApproveTrust` / `ApproveProjectEnvironment` | Record user approval for dependency or project-file environments |
-| `CloneAsEphemeral` | Fork the current notebook into a new in-memory room |
+| `CloneAsEphemeral { source_notebook_id }` | Fork an existing loaded notebook into a new in-memory room |
 | `GetDocBytes` | Fetch canonical Automerge bytes to bootstrap a WASM peer |
 | `SendComm { message }` | Send comm message to kernel (widget interactions) |
 | `Complete { code, cursor_pos }` | Code completions from kernel |
@@ -87,7 +87,8 @@ Notebook request and response frames use `NotebookRequestEnvelope` and `Notebook
 |----------|---------|
 | `KernelLaunched { env_source }` | Kernel started, includes environment origin label |
 | `CellQueued` | Cell added to execution queue |
-| `NotebookSaved` | File written to disk |
+| `NotebookSaved { path }` | File written to disk |
+| `HistoryResult { entries }` | Kernel input history search results |
 | `CompletionResult { items, cursor_start, cursor_end }` | Code completion results |
 | `Error { error }` | Something went wrong |
 
@@ -159,7 +160,7 @@ Schema (in `crates/runtime-doc/src/doc.rs`):
 | `queue.executing_execution_id` | Str\|null | Execution ID for the executing cell |
 | `queue.queued` | List[Str] | Queued cell IDs |
 | `queue.queued_execution_ids` | List[Str] | Parallel execution IDs for queued entries |
-| `executions.{execution_id}` | Map | `{ cell_id, status, execution_count, success }` |
+| `executions.{execution_id}` | Map | `{ cell_id, status, execution_count, success, outputs[], source?, seq }`; `outputs[]` are inline output manifests with blob refs |
 | `env.in_sync`, `env.added`, `env.removed`, `env.channels_changed`, `env.deno_changed` | bool/List | Environment drift state |
 | `env.prewarmed_packages`, `env.progress` | List/Map | Current prewarmed package snapshot and latest env progress |
 | `trust.status`, `trust.needs_approval` | Str/bool | Trust state |
@@ -168,7 +169,7 @@ Schema (in `crates/runtime-doc/src/doc.rs`):
 | `comms` | Map | Widget state keyed by `comm_id` |
 | `last_saved` | Str\|null | ISO timestamp of last save |
 
-`kernel.status` and `kernel.starting_phase` remain source-compatible projection fields on `KernelState`, but new code should read `kernel.lifecycle` and `kernel.activity`. The daemon is the sole writer. Frontends and Python clients read-only via Automerge sync.
+`kernel.status` and `kernel.starting_phase` remain source-compatible Rust `KernelState` projection fields computed at read time from `kernel.lifecycle`. They are not separate persisted CRDT fields in the typed schema, and new code should read `kernel.lifecycle` and `kernel.activity`. The daemon is the sole writer. Frontends and Python clients read-only via Automerge sync.
 
 ### Execution ID Tracking
 

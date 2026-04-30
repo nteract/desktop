@@ -277,11 +277,11 @@ Requests are one-shot JSON messages sent from the client to the daemon. Each req
 | `ShutdownKernel` | Stop the kernel process |
 | `RunAllCells` | Execute all code cells in order |
 | `RunAllCellsGuarded { observed_heads }` | Run all code cells only if the approved notebook heads still match |
-| `SaveNotebook` | Persist the Automerge doc to `.ipynb` on disk |
+| `SaveNotebook { format_cells, path? }` | Persist the Automerge doc to `.ipynb` on disk, optionally save-as to `path` |
 | `SyncEnvironment` | Hot-install packages into the running kernel's environment |
 | `ApproveTrust` | Sign current dependency metadata after user approval |
 | `ApproveProjectEnvironment` | Record local approval for a project-file environment |
-| `CloneAsEphemeral` | Fork the current notebook into a new in-memory room |
+| `CloneAsEphemeral { source_notebook_id }` | Fork an existing loaded notebook into a new in-memory room |
 | `SendComm { message }` | Send a comm message to the kernel (widget interactions) |
 | `Complete { code, cursor_pos }` | Get code completions from the kernel |
 | `GetHistory { pattern, n, unique }` | Search kernel input history |
@@ -300,13 +300,14 @@ launch and downstream protocol responses carry a concrete `EnvSource`.
 | `KernelAlreadyRunning { env_source, ... }` | Existing kernel reused |
 | `CellQueued` | Cell added to execution queue |
 | `AllCellsQueued { queued }` | All runnable code cells queued with execution IDs |
-| `NotebookSaved` | File written to disk |
+| `NotebookSaved { path }` | File written to disk |
 | `SaveError { error }` | Save failed with structured error details |
 | `GuardRejected { reason }` | Guarded action rejected because observed notebook state changed |
 | `NotebookCloned { notebook_id, working_dir }` | Ephemeral fork created |
 | `SyncEnvironmentComplete` / `SyncEnvironmentFailed` | Hot-sync result |
 | `DocBytes { bytes }` | Canonical Automerge doc bytes |
 | `CompletionResult { items, cursor_start, cursor_end }` | Code completion results (`items: Vec<CompletionItem>`) |
+| `HistoryResult { entries }` | Kernel input history search results |
 | `Error { error }` | Something went wrong |
 
 ### Request flow through the stack
