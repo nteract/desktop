@@ -222,6 +222,10 @@ Other:
 /// worktree hash (no singleton conflicts), and runs pytest against it.
 /// The daemon is cleaned up when tests finish.
 fn cmd_integration(filter: Option<String>) {
+    // runtimed embeds gitignored renderer-plugin artifacts; make this xtask
+    // entry point self-healing in fresh Codex/worktree sessions.
+    ensure_build_artifacts();
+
     // 1. Build the daemon
     println!("Building runtimed for integration tests...");
     let status = Command::new("cargo")
@@ -2348,6 +2352,10 @@ fn cmd_lint(fix: bool) {
 fn cmd_clippy() {
     println!("Running clippy...");
     println!();
+
+    // Match the build/dev entry points: raw cargo will fail in runtimed's
+    // build.rs when gitignored renderer-plugin artifacts are absent.
+    ensure_build_artifacts();
 
     // Exclude runtimed-py to avoid the pyo3/maturin compile cost locally.
     // CI covers it in the runtimed-py-integration job.
