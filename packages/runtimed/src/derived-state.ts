@@ -5,7 +5,13 @@
  * No React, no Tauri, no browser APIs.
  */
 
-import type { QueueEntry, RuntimeState } from "./runtime-state";
+import type {
+  ProjectContext,
+  ProjectFileExtras,
+  ProjectFileKind,
+  QueueEntry,
+  RuntimeState,
+} from "./runtime-state";
 
 // ── Kernel status ───────────────────────────────────────────────────
 
@@ -63,6 +69,63 @@ export interface EnvSyncState {
   diff?: EnvSyncDiff;
 }
 
+export interface PyProjectDeps {
+  path: string;
+  relative_path: string;
+  project_name: string | null;
+  dependencies: string[];
+  dev_dependencies: string[];
+  requires_python: string | null;
+  index_url: string | null;
+}
+
+export interface PyProjectInfo {
+  path: string;
+  relative_path: string;
+  project_name: string | null;
+  has_dependencies: boolean;
+  dependency_count: number;
+  has_dev_dependencies: boolean;
+  requires_python: string | null;
+  has_venv: boolean;
+}
+
+export interface EnvironmentYmlInfo {
+  path: string;
+  relative_path: string;
+  name: string | null;
+  has_dependencies: boolean;
+  dependency_count: number;
+  has_pip_dependencies: boolean;
+  pip_dependency_count: number;
+  python: string | null;
+  channels: string[];
+}
+
+export interface EnvironmentYmlDeps {
+  path: string;
+  relative_path: string;
+  name: string | null;
+  dependencies: string[];
+  pip_dependencies: string[];
+  python: string | null;
+  channels: string[];
+}
+
+export interface PixiInfo {
+  path: string;
+  relative_path: string;
+  workspace_name: string | null;
+  dependencies: string[];
+  has_dependencies: boolean;
+  dependency_count: number;
+  pypi_dependencies: string[];
+  has_pypi_dependencies: boolean;
+  pypi_dependency_count: number;
+  python: string | null;
+  channels: string[];
+}
+
 /**
  * Env-manager the notebook is running under — `"uv"` / `"conda"` /
  * `"pixi"`. Drives toolbar badge + dep-header panel selection.
@@ -95,6 +158,8 @@ export interface EnvManagerMetadataInputs {
   /** pixi.toml detected with non-empty `[dependencies]` or `[pypi-dependencies]`. */
   pixiHasDeps: boolean;
 }
+
+const PYPROJECT: ProjectFileKind = "PyprojectToml";
 
 // ── Derivation functions ────────────────────────────────────────────
 
@@ -177,6 +242,125 @@ export function deriveRuntimeKind(
   if (runtimeHint === "python" || runtimeHint === "deno") return runtimeHint;
   if (state.project_context.state === "Detected") return "python";
   return null;
+}
+
+/**
+ * Derive pyproject.toml display data from daemon-authored project context.
+ *
+ * Fields the daemon does not currently surface (`project_name`,
+ * `index_url`) are emitted as `null`; UI code treats them as optional.
+ * `has_venv` is `false` because the daemon does not currently check the
+ * filesystem for a `.venv` next to the project file.
+ */
+export function derivePyproject(ctx: ProjectContext): {
+  pyprojectInfo: PyProjectInfo | null;
+  pyprojectDeps: PyProjectDeps | null;
+} {
+  if (ctx.state !== "Detected" || ctx.project_file.kind !== PYPROJECT) {
+    return { pyprojectInfo: null, pyprojectDeps: null };
+  }
+  const { project_file, parsed } = ctx;
+  const shared = {
+    path: project_file.absolute_path,
+    relative_path: project_file.relative_to_notebook,
+    project_name: null,
+    requires_python: parsed.requires_python,
+  };
+  return {
+    pyprojectInfo: {
+      ...shared,
+      has_dependencies: parsed.dependencies.length > 0,
+      dependency_count: parsed.dependencies.length,
+      has_dev_dependencies: parsed.dev_dependencies.length > 0,
+      has_venv: false,
+    },
+    pyprojectDeps: {
+      ...shared,
+      dependencies: parsed.dependencies,
+      dev_dependencies: parsed.dev_dependencies,
+      index_url: null,
+    },
+  };
+}
+
+function envYmlExtras(extras: ProjectFileExtras): { channels: string[]; pip: string[] } {
+  if (extras.kind === "EnvironmentYml") {
+    return { channels: extras.channels, pip: extras.pip };
+  }
+  return { channels: [], pip: [] };
+}
+
+/**
+ * Derive environment.yml display data from daemon-authored project context.
+ *
+ * Some fields that the old app-side walker produced (`name`) are not
+ * currently surfaced through `ProjectFileParsed`; they're emitted as
+ * `null` and UI treats them as optional display.
+ */
+export function deriveEnvironmentYml(ctx: ProjectContext): {
+  environmentYmlInfo: EnvironmentYmlInfo | null;
+  environmentYmlDeps: EnvironmentYmlDeps | null;
+} {
+  if (ctx.state !== "Detected" || ctx.project_file.kind !== "EnvironmentYml") {
+    return { environmentYmlInfo: null, environmentYmlDeps: null };
+  }
+  const { channels, pip } = envYmlExtras(ctx.parsed.extras);
+  const shared = {
+    path: ctx.project_file.absolute_path,
+    relative_path: ctx.project_file.relative_to_notebook,
+    name: null,
+    python: ctx.parsed.requires_python,
+    channels,
+  };
+  return {
+    environmentYmlInfo: {
+      ...shared,
+      has_dependencies: ctx.parsed.dependencies.length > 0,
+      dependency_count: ctx.parsed.dependencies.length,
+      has_pip_dependencies: pip.length > 0,
+      pip_dependency_count: pip.length,
+    },
+    environmentYmlDeps: {
+      ...shared,
+      dependencies: ctx.parsed.dependencies,
+      pip_dependencies: pip,
+    },
+  };
+}
+
+function pixiExtras(extras: ProjectFileExtras): {
+  channels: string[];
+  pypi_dependencies: string[];
+} {
+  if (extras.kind === "Pixi") {
+    return { channels: extras.channels, pypi_dependencies: extras.pypi_dependencies };
+  }
+  return { channels: [], pypi_dependencies: [] };
+}
+
+/**
+ * Derive pixi.toml display data from daemon-authored project context.
+ *
+ * `workspace_name` is `null` until the daemon surfaces `[project].name`
+ * through `ProjectFileParsed`; UI treats it as optional display.
+ */
+export function derivePixiInfo(ctx: ProjectContext): PixiInfo | null {
+  if (ctx.state !== "Detected") return null;
+  if (ctx.project_file.kind !== "PixiToml") return null;
+  const { channels, pypi_dependencies } = pixiExtras(ctx.parsed.extras);
+  return {
+    path: ctx.project_file.absolute_path,
+    relative_path: ctx.project_file.relative_to_notebook,
+    workspace_name: null,
+    dependencies: ctx.parsed.dependencies,
+    has_dependencies: ctx.parsed.dependencies.length > 0,
+    dependency_count: ctx.parsed.dependencies.length,
+    pypi_dependencies,
+    has_pypi_dependencies: pypi_dependencies.length > 0,
+    pypi_dependency_count: pypi_dependencies.length,
+    python: ctx.parsed.requires_python,
+    channels,
+  };
 }
 
 /** Derive queue state from RuntimeState. */
