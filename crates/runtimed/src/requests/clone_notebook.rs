@@ -116,9 +116,9 @@ async fn derive_working_dir(room: &NotebookRoom) -> Option<PathBuf> {
     room.identity.working_dir.read().await.clone()
 }
 
-/// Seed the clone room's Automerge doc from the source, then copy markdown
-/// attachments. Called once, immediately after room creation; no other peer
-/// can observe the room between `get_or_create_room` and this call.
+/// Seed the clone room's Automerge doc from the source. Called once,
+/// immediately after room creation; no other peer can observe the room between
+/// `get_or_create_room` and this call.
 async fn seed_clone_from_source(
     source: &NotebookRoom,
     clone: &Arc<NotebookRoom>,
@@ -128,7 +128,6 @@ async fn seed_clone_from_source(
         let doc = source.doc.read().await;
         (doc.get_cells(), doc.get_metadata_snapshot())
     };
-    let attachments = source.nbformat_attachments_snapshot().await;
 
     // Seed the clone's doc.
     {
@@ -158,12 +157,16 @@ async fn seed_clone_from_source(
             // `add_cell_full` seeds an empty `resolved_assets` map. Markdown
             // cells render via `cell.resolvedAssets` (attachment ref -> blob
             // hash), so without this copy, inline images in cloned markdown
-            // cells would break until a save+reload rebuilt the map from
-            // the attachment cache.
+            // cells would break until the next asset-processing pass.
             if !cell.resolved_assets.is_empty() {
                 clone_doc
                     .set_cell_resolved_assets(&cell.id, &cell.resolved_assets)
                     .map_err(|e| format!("set_cell_resolved_assets({}): {e}", cell.id))?;
+            }
+            if !cell.attachments.is_empty() {
+                clone_doc
+                    .set_cell_attachments(&cell.id, &cell.attachments)
+                    .map_err(|e| format!("set_cell_attachments({}): {e}", cell.id))?;
             }
         }
 
@@ -183,15 +186,6 @@ async fn seed_clone_from_source(
 
         // Ephemeral marker lives in raw metadata (set by new_fresh already),
         // no action here.
-    }
-
-    // Copy the markdown-attachment cache. Raw-cell attachments are included
-    // too since nbformat_attachments doesn't discriminate by cell_type; the
-    // save path re-injects them for raw cells via the existing
-    // nbformat_convert wrapper.
-    if !attachments.is_empty() {
-        let mut cache = clone.persistence.nbformat_attachments.write().await;
-        *cache = attachments;
     }
 
     Ok(())

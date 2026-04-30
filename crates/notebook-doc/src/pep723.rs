@@ -320,6 +320,7 @@ print(os.getcwd())"#;
             execution_count: "null".to_string(),
             metadata: serde_json::json!({}),
             resolved_assets: std::collections::HashMap::new(),
+            attachments: std::collections::HashMap::new(),
         }
     }
 

@@ -624,32 +624,30 @@ pub(crate) async fn process_markdown_assets(room: &NotebookRoom) {
         .await
         .clone()
         .filter(|p| p.exists());
-    let nbformat_attachments = room.nbformat_attachments_snapshot().await;
-
     // Fork BEFORE async resolution so the fork's baseline predates
     // any concurrent edits. Asset updates on the fork are treated as
     // concurrent with user edits via Automerge's CRDT merge.
     let (markdown_cells, mut fork) = {
         let mut doc = room.doc.write().await;
-        let cells: Vec<(String, String, HashMap<String, String>)> = doc
+        let cells: Vec<(String, String, HashMap<String, String>, AttachmentRefs)> = doc
             .get_cells()
             .into_iter()
             .filter(|cell| cell.cell_type == "markdown")
-            .map(|cell| (cell.id, cell.source, cell.resolved_assets))
+            .map(|cell| (cell.id, cell.source, cell.resolved_assets, cell.attachments))
             .collect();
         let fork = doc.fork_with_actor(format!("runtimed:assets:{}", uuid::Uuid::new_v4()));
         (cells, fork)
     };
 
     let mut any_changed = false;
-    for (cell_id, source, existing_assets) in markdown_cells {
-        let desired_assets = resolve_markdown_assets(
-            &source,
-            notebook_path.as_deref(),
-            nbformat_attachments.get(&cell_id),
-            &room.blob_store,
-        )
-        .await;
+    for (cell_id, source, existing_assets, attachments) in markdown_cells {
+        let mut desired_assets =
+            resolve_markdown_assets(&source, notebook_path.as_deref(), None, &room.blob_store)
+                .await;
+        // Attachments are already durable blob refs in the cell schema, so
+        // this pass resolves `attachment:` URLs from those refs instead of
+        // from raw nbformat JSON.
+        desired_assets.extend(resolved_attachment_assets(&source, &attachments));
 
         if desired_assets != existing_assets {
             if let Err(e) = fork.set_cell_resolved_assets(&cell_id, &desired_assets) {

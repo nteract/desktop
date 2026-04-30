@@ -38,8 +38,8 @@ use tracing::{debug, error, info, warn};
 
 use crate::blob_store::BlobStore;
 use crate::connection::{self, NotebookFrameType};
-use crate::markdown_assets::resolve_markdown_assets;
-use crate::notebook_doc::{CellSnapshot, NotebookDoc};
+use crate::markdown_assets::{extract_markdown_asset_refs, resolve_markdown_assets};
+use crate::notebook_doc::{AttachmentEncoding, AttachmentRef, CellSnapshot, NotebookDoc};
 use crate::notebook_metadata::NotebookMetadataSnapshot;
 use crate::output_prep::{DenoLaunchedConfig, LaunchedEnvConfig};
 use crate::paths::notebook_doc_filename;
@@ -48,6 +48,7 @@ use crate::task_supervisor::{spawn_best_effort, spawn_supervised};
 use notebook_doc::presence::{self, PresenceState};
 use runtime_doc::RuntimeStateDoc;
 
+mod attachments;
 mod catalog;
 mod load;
 mod metadata;
@@ -70,6 +71,7 @@ mod runtime_bridge;
 #[cfg(test)]
 mod tests;
 
+pub(crate) use attachments::*;
 pub(crate) use catalog::*;
 pub(crate) use load::*;
 pub(crate) use metadata::*;

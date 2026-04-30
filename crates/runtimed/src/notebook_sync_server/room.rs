@@ -241,9 +241,9 @@ impl Default for RoomBroadcasts {
 ///
 /// Always present on every room. The optional `debouncer` field nests the
 /// two debouncer channels that only exist for non-ephemeral rooms
-/// (untitled-saved or file-backed); save-baseline snapshots, streaming-load
-/// gate, and attachment cache are needed whether the room is ephemeral today
-/// or will be promoted to file-backed later.
+/// (untitled-saved or file-backed); save-baseline snapshots and the
+/// streaming-load gate are needed whether the room is ephemeral today or
+/// will be promoted to file-backed later.
 pub struct RoomPersistence {
     /// Debouncer channels — present only when the room writes to a
     /// persisted Automerge doc (`notebook-docs/*.automerge`). Ephemeral
@@ -260,18 +260,6 @@ pub struct RoomPersistence {
     /// Timestamp (ms since epoch) of last self-write to the .ipynb file.
     /// Used to skip file watcher events triggered by our own saves.
     pub last_self_write: AtomicU64,
-    /// Raw nbformat attachments preserved from disk, keyed by cell ID.
-    ///
-    /// Populated only by `.ipynb` load paths. Resolved image data already
-    /// lives in the Automerge doc as blob URLs per cell; this map is the
-    /// raw base64 payload kept in memory so save can round-trip back to
-    /// `.ipynb` byte-identically without re-encoding the blob bytes.
-    ///
-    /// Transitional: this should eventually live in the doc alongside
-    /// cells (as blob references with a stable schema) so user-authored
-    /// attachments become first-class CRDT data. When that lands, this
-    /// field is deleted outright rather than relocated.
-    pub nbformat_attachments: RwLock<HashMap<String, serde_json::Value>>,
     /// Whether a streaming load is in progress for this room.
     /// Prevents two connections from both attempting to load from disk.
     is_loading: AtomicBool,
@@ -297,7 +285,6 @@ impl RoomPersistence {
             debouncer: None,
             last_save_sources: RwLock::new(HashMap::new()),
             last_self_write: AtomicU64::new(0),
-            nbformat_attachments: RwLock::new(HashMap::new()),
             is_loading: AtomicBool::new(false),
         }
     }
@@ -314,7 +301,6 @@ impl RoomPersistence {
             }),
             last_save_sources: RwLock::new(HashMap::new()),
             last_self_write: AtomicU64::new(0),
-            nbformat_attachments: RwLock::new(HashMap::new()),
             is_loading: AtomicBool::new(false),
         }
     }
@@ -684,12 +670,6 @@ impl NotebookRoom {
         // Check runtime agent handle
         let ra = self.runtime_agent_handle.lock().await;
         ra.as_ref().is_some_and(|a| a.is_alive())
-    }
-
-    /// Snapshot of nbformat attachments. Empty before the first `.ipynb`
-    /// load populates the cache.
-    pub async fn nbformat_attachments_snapshot(&self) -> HashMap<String, serde_json::Value> {
-        self.persistence.nbformat_attachments.read().await.clone()
     }
 
     /// Snapshot of cell sources as they were at last save. Empty before

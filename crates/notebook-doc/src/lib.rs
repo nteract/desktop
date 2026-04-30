@@ -30,6 +30,7 @@
 //!                                   counts are in RuntimeStateDoc
 //!       metadata/                 ← Map (native Automerge types, legacy: JSON string fallback)
 //!       resolved_assets/          ← Map of markdown asset ref -> blob hash
+//!       attachments/              ← Map of attachment name -> media type -> {blob_hash, encoding}
 //!   metadata/                     ← Map
 //!     runtime: Str
 //!     kernelspec/                 ← Map (native Automerge, per-field CRDT merge)
@@ -114,6 +115,75 @@ pub struct CellSnapshot {
     /// Resolved markdown asset refs (e.g. `attachment:image.png`, `images/foo.png`) → blob hash
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub resolved_assets: HashMap<String, String>,
+    /// nbformat attachments stored as blob refs.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub attachments: CellAttachments,
+}
+
+/// nbformat attachments for one cell: attachment name -> MIME bundle.
+pub type CellAttachments = HashMap<String, AttachmentMediaBundle>;
+
+/// One nbformat attachment MIME bundle: media type -> blob ref.
+pub type AttachmentMediaBundle = HashMap<String, AttachmentRef>;
+
+/// A single nbformat attachment payload stored by blob reference.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AttachmentRef {
+    pub blob_hash: String,
+    pub encoding: AttachmentEncoding,
+}
+
+/// How to reconstruct a blob-backed nbformat attachment payload.
+///
+/// This is a CRDT schema tag. The daemon's nbformat conversion helpers define
+/// how each known variant maps to on-disk `.ipynb` JSON.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AttachmentEncoding {
+    Base64,
+    Text,
+    Json,
+    /// Preserve forward-compatible schema values even when this client cannot
+    /// reconstruct the nbformat payload.
+    Unknown(String),
+}
+
+impl AttachmentEncoding {
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::Base64 => "base64",
+            Self::Text => "text",
+            Self::Json => "json",
+            Self::Unknown(value) => value.as_str(),
+        }
+    }
+
+    pub fn from_schema_str(value: &str) -> Self {
+        match value {
+            "base64" => Self::Base64,
+            "text" => Self::Text,
+            "json" => Self::Json,
+            other => Self::Unknown(other.to_string()),
+        }
+    }
+}
+
+impl Serialize for AttachmentEncoding {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for AttachmentEncoding {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        Ok(Self::from_schema_str(&value))
+    }
 }
 
 fn default_empty_object() -> serde_json::Value {
@@ -1188,6 +1258,8 @@ impl NotebookDoc {
         self.doc.put_object(&cell_map, "metadata", ObjType::Map)?;
         self.doc
             .put_object(&cell_map, "resolved_assets", ObjType::Map)?;
+        self.doc
+            .put_object(&cell_map, "attachments", ObjType::Map)?;
 
         Ok(position_str)
     }
@@ -1257,6 +1329,8 @@ impl NotebookDoc {
 
         self.doc
             .put_object(&cell_map, "resolved_assets", ObjType::Map)?;
+        self.doc
+            .put_object(&cell_map, "attachments", ObjType::Map)?;
 
         Ok(())
     }
@@ -1692,6 +1766,79 @@ impl NotebookDoc {
         Ok(true)
     }
 
+    /// Get all nbformat attachments for a cell as blob refs
+    /// (`attachment name` -> `media type` -> `blob hash`).
+    pub fn get_cell_attachments(&self, cell_id: &str) -> Option<CellAttachments> {
+        let cells_id = self.cells_map_id()?;
+        let cell_obj = self.cell_obj_id(&cells_id, cell_id)?;
+        let attachments_id = self.map_id(&cell_obj, "attachments")?;
+        Some(read_attachment_refs(&self.doc, &attachments_id))
+    }
+
+    /// Replace all nbformat attachment blob refs for a cell.
+    ///
+    /// Callers must store attachment bytes in the blob store before writing
+    /// these refs. The daemon load/watch paths are the current writers.
+    ///
+    /// Returns `true` if the map changed.
+    pub fn set_cell_attachments(
+        &mut self,
+        cell_id: &str,
+        attachments: &CellAttachments,
+    ) -> Result<bool, AutomergeError> {
+        let cells_id = match self.cells_map_id() {
+            Some(id) => id,
+            None => return Ok(false),
+        };
+        let cell_obj = match self.cell_obj_id(&cells_id, cell_id) {
+            Some(o) => o,
+            None => return Ok(false),
+        };
+
+        let existing = self.get_cell_attachments(cell_id).unwrap_or_default();
+        if existing == *attachments {
+            return Ok(false);
+        }
+
+        let attachments_id = match self.map_id(&cell_obj, "attachments") {
+            Some(id) => id,
+            None => self
+                .doc
+                .put_object(&cell_obj, "attachments", ObjType::Map)?,
+        };
+
+        for key in existing.keys() {
+            if !attachments.contains_key(key) {
+                self.doc.delete(&attachments_id, key)?;
+            }
+        }
+
+        for (name, bundle) in attachments {
+            let bundle_id = match self.map_id(&attachments_id, name) {
+                Some(id) => id,
+                None => self.doc.put_object(&attachments_id, name, ObjType::Map)?,
+            };
+
+            let existing_bundle = existing.get(name).cloned().unwrap_or_default();
+            for media_type in existing_bundle.keys() {
+                if !bundle.contains_key(media_type) {
+                    self.doc.delete(&bundle_id, media_type)?;
+                }
+            }
+            for (media_type, attachment_ref) in bundle {
+                if existing_bundle.get(media_type) != Some(attachment_ref) {
+                    let ref_id = self.doc.put_object(&bundle_id, media_type, ObjType::Map)?;
+                    self.doc
+                        .put(&ref_id, "blob_hash", attachment_ref.blob_hash.as_str())?;
+                    self.doc
+                        .put(&ref_id, "encoding", attachment_ref.encoding.as_str())?;
+                }
+            }
+        }
+
+        Ok(true)
+    }
+
     // ── Notebook metadata ──────────────────────────────────────────
 
     /// Read a metadata value.
@@ -1989,6 +2136,10 @@ impl NotebookDoc {
                 .collect(),
             None => HashMap::new(),
         };
+        let attachments = match self.map_id(cell_obj, "attachments") {
+            Some(map_id) => read_attachment_refs(&self.doc, &map_id),
+            None => HashMap::new(),
+        };
 
         Some(CellSnapshot {
             id,
@@ -1998,6 +2149,7 @@ impl NotebookDoc {
             execution_count,
             metadata,
             resolved_assets,
+            attachments,
         })
     }
 
@@ -2026,6 +2178,7 @@ impl NotebookDoc {
             execution_count,
             metadata: serde_json::json!({}),
             resolved_assets: HashMap::new(),
+            attachments: HashMap::new(),
         })
     }
 }
@@ -2048,6 +2201,36 @@ fn read_str<O: AsRef<automerge::ObjId>, P: Into<automerge::Prop>>(
             },
             _ => None,
         })
+}
+
+fn read_attachment_refs(doc: &AutoCommit, attachments_id: &ObjId) -> CellAttachments {
+    doc.map_range(attachments_id, ..)
+        .filter_map(|item| {
+            if !matches!(item.value, automerge::ValueRef::Object(ObjType::Map)) {
+                return None;
+            }
+            let bundle: AttachmentMediaBundle = doc
+                .map_range(item.id(), ..)
+                .filter_map(|media_item| {
+                    if matches!(media_item.value, automerge::ValueRef::Object(ObjType::Map)) {
+                        let blob_hash = read_str(doc, media_item.id(), "blob_hash")?;
+                        let encoding = read_str(doc, media_item.id(), "encoding")
+                            .map(|value| AttachmentEncoding::from_schema_str(&value))
+                            .unwrap_or(AttachmentEncoding::Base64);
+                        return Some((
+                            media_item.key.to_string(),
+                            AttachmentRef {
+                                blob_hash,
+                                encoding,
+                            },
+                        ));
+                    }
+                    None
+                })
+                .collect();
+            (!bundle.is_empty()).then(|| (item.key.to_string(), bundle))
+        })
+        .collect()
 }
 
 fn read_str_at<O: AsRef<automerge::ObjId>, P: Into<automerge::Prop>>(
@@ -2315,6 +2498,12 @@ pub fn get_cells_from_doc(doc: &AutoCommit) -> Vec<CellSnapshot> {
                     .collect(),
                 _ => HashMap::new(),
             };
+            let attachments = match doc.get(&cell_obj, "attachments").ok().flatten() {
+                Some((automerge::Value::Object(ObjType::Map), map_id)) => {
+                    read_attachment_refs(doc, &map_id)
+                }
+                _ => HashMap::new(),
+            };
 
             Some(CellSnapshot {
                 id,
@@ -2324,6 +2513,7 @@ pub fn get_cells_from_doc(doc: &AutoCommit) -> Vec<CellSnapshot> {
                 execution_count,
                 metadata,
                 resolved_assets,
+                attachments,
             })
         })
         .collect();
@@ -2693,6 +2883,17 @@ mod tests {
         doc.update_source("cell-1", "x = 42").unwrap();
         doc.add_cell(1, "cell-2", "markdown").unwrap();
         doc.update_source("cell-2", "# Hello").unwrap();
+        let attachments = HashMap::from([(
+            "image.png".to_string(),
+            HashMap::from([(
+                "image/png".to_string(),
+                AttachmentRef {
+                    blob_hash: "attachment-hash".to_string(),
+                    encoding: AttachmentEncoding::Base64,
+                },
+            )]),
+        )]);
+        doc.set_cell_attachments("cell-2", &attachments).unwrap();
 
         let bytes = doc.save();
         let loaded = NotebookDoc::load(&bytes).unwrap();
@@ -2704,6 +2905,56 @@ mod tests {
         assert_eq!(cells[0].source, "x = 42");
         assert_eq!(cells[1].id, "cell-2");
         assert_eq!(cells[1].source, "# Hello");
+        assert_eq!(cells[1].attachments, attachments);
+    }
+
+    #[test]
+    fn test_cell_attachments_update_delete_noop_and_raw_roundtrip() {
+        let mut doc = NotebookDoc::new("nb1");
+        doc.add_cell(0, "raw-1", "raw").unwrap();
+
+        let initial = HashMap::from([(
+            "bundle".to_string(),
+            HashMap::from([
+                (
+                    "image/png".to_string(),
+                    AttachmentRef {
+                        blob_hash: "png-hash".to_string(),
+                        encoding: AttachmentEncoding::Base64,
+                    },
+                ),
+                (
+                    "text/plain".to_string(),
+                    AttachmentRef {
+                        blob_hash: "text-hash".to_string(),
+                        encoding: AttachmentEncoding::Text,
+                    },
+                ),
+            ]),
+        )]);
+        assert!(doc.set_cell_attachments("raw-1", &initial).unwrap());
+        assert!(!doc.set_cell_attachments("raw-1", &initial).unwrap());
+
+        let updated = HashMap::from([(
+            "bundle".to_string(),
+            HashMap::from([(
+                "application/custom".to_string(),
+                AttachmentRef {
+                    blob_hash: "custom-hash".to_string(),
+                    encoding: AttachmentEncoding::Unknown("custom".to_string()),
+                },
+            )]),
+        )]);
+        assert!(doc.set_cell_attachments("raw-1", &updated).unwrap());
+        assert_eq!(doc.get_cell_attachments("raw-1").unwrap(), updated);
+
+        let bytes = doc.save();
+        let loaded = NotebookDoc::load(&bytes).unwrap();
+        assert_eq!(loaded.get_cell("raw-1").unwrap().attachments, updated);
+
+        let empty = HashMap::new();
+        assert!(doc.set_cell_attachments("raw-1", &empty).unwrap());
+        assert!(doc.get_cell_attachments("raw-1").unwrap().is_empty());
     }
 
     #[test]
