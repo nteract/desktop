@@ -6,7 +6,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 use std::time::Instant;
 
 use anyhow::Context;
@@ -769,6 +769,152 @@ impl Drop for WarmingGuard {
     }
 }
 
+/// Wraps a `PooledEnv` while it sits in the daemon's `leased_paths` set —
+/// after `Pool::take()` and before ownership transfers to a runtime
+/// (`runtime_agent_env_path`), an inline-cache claim, or an explicit delete.
+///
+/// The lease is what protects the env directory from orphan GC during the
+/// async work between take and ownership transfer. Forcing callers to
+/// consume this wrapper (instead of returning a raw `PooledEnv`) makes the
+/// release obligation a property of the type, so any `?` early return or
+/// branch that drops the wrapper releases the lease.
+///
+/// Lifecycle:
+/// - Success: [`LeasedPoolEnv::transfer_to_runtime`] drains the lease and
+///   returns the inner `PooledEnv`. The caller MUST set the new owner
+///   (typically `room.runtime_agent_env_path`) on the same await chain —
+///   once the lease is released, only that field protects the env from
+///   orphan GC.
+/// - Known failure: [`LeasedPoolEnv::release_and_delete`] removes the env
+///   directory and releases the lease. Use when claim/vendor/spawn errors
+///   leave the env in an inconsistent state.
+/// - Drop without commit (panic, early `?` return): the lease is released
+///   best-effort via `tokio::spawn`, the directory is **not** deleted.
+///   Forgetting to commit must not destroy a working env; orphan GC will
+///   collect the leaked directory once nothing protects it.
+pub struct LeasedPoolEnv {
+    inner: Option<PooledEnv>,
+    daemon: Weak<Daemon>,
+    env_type: EnvType,
+    leased_path: PathBuf,
+}
+
+impl LeasedPoolEnv {
+    fn new(daemon: &Arc<Daemon>, env: PooledEnv) -> Self {
+        let leased_path = pool_env_root(&env.venv_path);
+        let env_type = env.env_type;
+        Self {
+            inner: Some(env),
+            daemon: Arc::downgrade(daemon),
+            env_type,
+            leased_path,
+        }
+    }
+
+    /// Construct a wrapper for an env that was NOT taken from the pool
+    /// (e.g. a content-addressed cache hit or an inline-built env). The
+    /// transfer/release/Drop methods become no-ops on the lease set since
+    /// `daemon.upgrade()` returns `None`. Callers can use this to keep a
+    /// single `Option<LeasedPoolEnv>` type across mixed paths.
+    pub fn cached(env: PooledEnv) -> Self {
+        let env_type = env.env_type;
+        Self {
+            inner: Some(env),
+            daemon: Weak::new(),
+            env_type,
+            leased_path: PathBuf::new(),
+        }
+    }
+
+    /// Borrow the inner env (e.g. to read `venv_path`/`python_path` before
+    /// transferring ownership).
+    pub fn env(&self) -> &PooledEnv {
+        self.inner
+            .as_ref()
+            .expect("LeasedPoolEnv::env called after consumption")
+    }
+
+    /// Mutably borrow the inner env so callers can update `venv_path`
+    /// after a claim/rename promotes the env into a content-addressed
+    /// cache. The lease's `leased_path` is unchanged: it still tracks the
+    /// original `pool_env_root` so orphan GC / lease bookkeeping remains
+    /// consistent regardless of where the directory ends up.
+    pub fn env_mut(&mut self) -> &mut PooledEnv {
+        self.inner
+            .as_mut()
+            .expect("LeasedPoolEnv::env_mut called after consumption")
+    }
+
+    /// Drain the lease and return the inner `PooledEnv`. The caller MUST
+    /// set the new owner (typically `room.runtime_agent_env_path` or an
+    /// inline-cache record) on the same await chain — once the lease is
+    /// released, only that field protects the env from orphan GC.
+    pub async fn transfer_to_runtime(mut self) -> PooledEnv {
+        let env = self
+            .inner
+            .take()
+            .expect("LeasedPoolEnv::transfer_to_runtime called twice");
+        if let Some(daemon) = self.daemon.upgrade() {
+            daemon
+                .release_pool_lease(self.env_type, &self.leased_path)
+                .await;
+        }
+        env
+    }
+
+    /// Delete the env directory and release the lease. Use on known
+    /// failure paths (claim/vendor/spawn errors) where the env may be in
+    /// an inconsistent state and must not be reused.
+    pub async fn release_and_delete(mut self) {
+        let env = self.inner.take();
+        if let Some(daemon) = self.daemon.upgrade() {
+            daemon
+                .release_pool_lease(self.env_type, &self.leased_path)
+                .await;
+        }
+        if env.is_some() {
+            // Always delete the top-level pool dir, not the venv_path —
+            // pixi envs are nested under .pixi/envs/default and the
+            // orphan sweep operates on `runtimed-pixi-*` roots.
+            if let Err(e) = tokio::fs::remove_dir_all(&self.leased_path).await {
+                warn!(
+                    "[runtimed] release_and_delete: failed to remove {:?}: {}",
+                    self.leased_path, e
+                );
+            }
+        }
+    }
+}
+
+impl Drop for LeasedPoolEnv {
+    fn drop(&mut self) {
+        if self.inner.is_none() {
+            // transfer_to_runtime / release_and_delete already drained.
+            return;
+        }
+        let Some(daemon) = self.daemon.upgrade() else {
+            // No lease tracked — `cached(...)` wrapper or daemon already
+            // dropped. Silent no-op.
+            return;
+        };
+        // Caller forgot to call transfer_to_runtime or release_and_delete.
+        // Release the lease asynchronously so the env doesn't stay pinned
+        // forever. Do NOT delete the directory: if ownership had silently
+        // transferred elsewhere, deleting here would corrupt a live kernel.
+        // Orphan GC will collect the directory once nothing protects it.
+        warn!(
+            "[runtimed] LeasedPoolEnv dropped without commit/release: {:?} \
+             (releasing lease, env directory leaked until orphan GC)",
+            self.leased_path
+        );
+        let env_type = self.env_type;
+        let path = self.leased_path.clone();
+        tokio::spawn(async move {
+            daemon.release_pool_lease(env_type, &path).await;
+        });
+    }
+}
+
 /// The pool daemon state.
 pub struct Daemon {
     pub(crate) config: DaemonConfig,
@@ -868,6 +1014,74 @@ impl Daemon {
             EnvType::Pixi => &self.pixi_pool,
         };
         pool.lock().await.release_lease(path);
+    }
+
+    /// Delete `runtimed-{uv,conda,pixi}-*` directories under the cache that
+    /// no pool tracks (available, warming, or leased) and no running
+    /// kernel claims via `runtime_agent_env_path`. Returns the number of
+    /// directories removed.
+    ///
+    /// Extracted from `env_gc_loop` so the regression test can drive the
+    /// sweep without spinning the 30-min loop. The lease-set protection
+    /// (via `Pool::tracked_paths`) is the load-bearing invariant under
+    /// test: if leased paths ever fall out of `tracked_paths`, this sweep
+    /// will delete envs out from under in-flight launches.
+    pub(crate) async fn sweep_orphan_pool_envs(
+        &self,
+        in_use: &std::collections::HashSet<PathBuf>,
+    ) -> usize {
+        let cache_dir = &self.config.cache_dir;
+        if !cache_dir.exists() {
+            return 0;
+        }
+        // Collect pool-tracked paths, normalised to top-level pool dirs so
+        // pixi's nested venv_path (runtimed-pixi-{uuid}/.pixi/envs/default)
+        // matches the top-level directory that the scan below sees. Also
+        // includes warming paths (mid-creation) and leased paths
+        // (taken-but-not-yet-attached) to avoid racing with in-flight
+        // launches and warmup tasks.
+        let mut tracked: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
+        tracked.extend(self.uv_pool.lock().await.tracked_paths());
+        tracked.extend(self.conda_pool.lock().await.tracked_paths());
+        tracked.extend(self.pixi_pool.lock().await.tracked_paths());
+
+        let mut orphans_deleted = 0;
+        let Ok(mut entries) = tokio::fs::read_dir(cache_dir).await else {
+            return 0;
+        };
+        while let Ok(Some(entry)) = entries.next_entry().await {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if !is_pool_env_dir(&name) {
+                continue;
+            }
+            let path = entry.path();
+            if tracked.contains(&path) || in_use.contains(&path) {
+                continue;
+            }
+            if !is_within_cache_dir(&path, cache_dir) {
+                warn!(
+                    "[runtimed] GC: refusing to delete {:?} (not within cache dir)",
+                    path
+                );
+                continue;
+            }
+            info!("[runtimed] GC: removing orphaned pool env {:?}", path);
+            if let Err(e) = tokio::fs::remove_dir_all(&path).await {
+                warn!(
+                    "[runtimed] GC: failed to remove orphaned pool env {:?}: {}",
+                    path, e
+                );
+            } else {
+                orphans_deleted += 1;
+            }
+        }
+        if orphans_deleted > 0 {
+            info!(
+                "[runtimed] GC: cleaned up {} orphaned pool environments",
+                orphans_deleted
+            );
+        }
+        orphans_deleted
     }
 
     /// Get the full list of Conda pool packages (base + user default_packages).
@@ -2530,9 +2744,14 @@ impl Daemon {
 
     /// Take a UV environment from the pool for kernel launching.
     ///
-    /// Returns `Some(PooledEnv)` if an environment is available, `None` otherwise.
+    /// Returns `Some(LeasedPoolEnv)` if an environment is available, `None`
+    /// otherwise. The lease keeps the env in the daemon's per-pool
+    /// `leased_paths` set until the caller calls
+    /// [`LeasedPoolEnv::transfer_to_runtime`] (success) or
+    /// [`LeasedPoolEnv::release_and_delete`] (failure). Dropping the
+    /// wrapper without either releases the lease best-effort and warns.
     /// Automatically triggers replenishment when an environment is taken.
-    pub async fn take_uv_env(self: &Arc<Self>) -> Option<PooledEnv> {
+    pub async fn take_uv_env(self: &Arc<Self>) -> Option<LeasedPoolEnv> {
         let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(120);
 
         loop {
@@ -2562,7 +2781,7 @@ impl Daemon {
                 spawn_best_effort("uv-replenish", async move {
                     daemon.create_uv_env().await;
                 });
-                return Some(e);
+                return Some(LeasedPoolEnv::new(self, e));
             }
 
             if self.uv_pool.lock().await.target() == 0 {
@@ -2619,9 +2838,10 @@ impl Daemon {
 
     /// Take a Conda environment from the pool for kernel launching.
     ///
-    /// Returns `Some(PooledEnv)` if an environment is available, `None` otherwise.
+    /// Returns `Some(LeasedPoolEnv)` if an environment is available, `None`
+    /// otherwise. See [`Daemon::take_uv_env`] for lease semantics.
     /// Automatically triggers replenishment when an environment is taken.
-    pub async fn take_conda_env(self: &Arc<Self>) -> Option<PooledEnv> {
+    pub async fn take_conda_env(self: &Arc<Self>) -> Option<LeasedPoolEnv> {
         let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(120);
 
         loop {
@@ -2645,7 +2865,7 @@ impl Daemon {
                 spawn_best_effort("conda-replenish", async move {
                     daemon.replenish_conda_env().await;
                 });
-                return Some(e);
+                return Some(LeasedPoolEnv::new(self, e));
             }
 
             if self.conda_pool.lock().await.target() == 0 {
@@ -2702,43 +2922,49 @@ impl Daemon {
 
     /// Take a Pixi environment from the pool for kernel launching.
     ///
-    /// Returns `Some(PooledEnv)` if an environment is available, `None` otherwise.
-    pub async fn take_pixi_env(self: &Arc<Self>) -> Option<PooledEnv> {
+    /// Returns `Some(LeasedPoolEnv)` if an environment is available, `None`
+    /// otherwise. See [`Daemon::take_uv_env`] for lease semantics.
+    pub async fn take_pixi_env(self: &Arc<Self>) -> Option<LeasedPoolEnv> {
         let (env, stale_paths) = self.pixi_pool.lock().await.take();
         spawn_env_deletions(stale_paths);
-        if let Some(ref e) = env {
-            info!(
-                "[runtimed] Took Pixi env for kernel launch: {:?}",
-                e.venv_path
+        let e = env?;
+        info!(
+            "[runtimed] Took Pixi env for kernel launch: {:?}",
+            e.venv_path
+        );
+        // Backstop: re-vendor the launcher into this env. See take_uv_env
+        // for rationale. Warn-and-continue on failure.
+        if let Err(err) = kernel_env::launcher::vendor_into_venv(&e.python_path).await {
+            warn!(
+                "[runtimed] Pool take (Pixi): failed to re-vendor launcher into {:?}: {}",
+                e.python_path, err
             );
-            // Backstop: re-vendor the launcher into this env. See take_uv_env
-            // for rationale. Warn-and-continue on failure.
-            if let Err(err) = kernel_env::launcher::vendor_into_venv(&e.python_path).await {
-                warn!(
-                    "[runtimed] Pool take (Pixi): failed to re-vendor launcher into {:?}: {}",
-                    e.python_path, err
-                );
-            }
-            let daemon = self.clone();
-            spawn_best_effort("pixi-replenish", async move {
-                daemon.replenish_pixi_env().await;
-            });
         }
-        env
+        let daemon = self.clone();
+        spawn_best_effort("pixi-replenish", async move {
+            daemon.replenish_pixi_env().await;
+        });
+        Some(LeasedPoolEnv::new(self, e))
     }
 
     /// Handle a single request.
     async fn handle_request(self: Arc<Self>, request: Request) -> Response {
         match request {
             Request::Take { env_type } => {
-                let env = match env_type {
+                let leased = match env_type {
                     EnvType::Uv => self.take_uv_env().await,
                     EnvType::Conda => self.take_conda_env().await,
                     EnvType::Pixi => self.take_pixi_env().await,
                 };
 
-                match env {
-                    Some(env) => {
+                match leased {
+                    Some(leased) => {
+                        // RPC clients own the env from this point — the
+                        // daemon has no handle to track their lifecycle, so
+                        // releasing the lease here matches today's behavior
+                        // (the orphan sweep collects it if the client never
+                        // calls Return).
+                        let env = leased.transfer_to_runtime().await;
                         self.update_pool_doc().await;
                         Response::Env { env }
                     }
@@ -3124,69 +3350,7 @@ impl Daemon {
             // runtimed-pixi-*) that are not tracked by the pool and not in use by
             // running kernels. These can leak when a notebook takes a pool env, mutates
             // it, and then the room is evicted without cleanup.
-            {
-                let cache_dir = &self.config.cache_dir;
-                if cache_dir.exists() {
-                    // Collect pool-tracked paths, normalised to top-level
-                    // pool dirs so pixi's nested venv_path
-                    // (runtimed-pixi-{uuid}/.pixi/envs/default) matches the
-                    // top-level directory that the scan below sees.
-                    // Also includes warming paths (mid-creation) to avoid
-                    // racing with in-progress warmup tasks, and leased
-                    // paths that have been taken from the pool but not yet
-                    // transferred to a runtime/cache owner.
-                    let mut tracked: std::collections::HashSet<PathBuf> =
-                        std::collections::HashSet::new();
-                    {
-                        let pool = self.uv_pool.lock().await;
-                        tracked.extend(pool.tracked_paths());
-                    }
-                    {
-                        let pool = self.conda_pool.lock().await;
-                        tracked.extend(pool.tracked_paths());
-                    }
-                    {
-                        let pool = self.pixi_pool.lock().await;
-                        tracked.extend(pool.tracked_paths());
-                    }
-
-                    let mut orphans_deleted = 0;
-                    if let Ok(mut entries) = tokio::fs::read_dir(cache_dir).await {
-                        while let Ok(Some(entry)) = entries.next_entry().await {
-                            let name = entry.file_name().to_string_lossy().to_string();
-                            if !is_pool_env_dir(&name) {
-                                continue;
-                            }
-                            let path = entry.path();
-                            if tracked.contains(&path) || in_use.contains(&path) {
-                                continue;
-                            }
-                            if !is_within_cache_dir(&path, cache_dir) {
-                                warn!(
-                                    "[runtimed] GC: refusing to delete {:?} (not within cache dir)",
-                                    path
-                                );
-                                continue;
-                            }
-                            info!("[runtimed] GC: removing orphaned pool env {:?}", path);
-                            if let Err(e) = tokio::fs::remove_dir_all(&path).await {
-                                warn!(
-                                    "[runtimed] GC: failed to remove orphaned pool env {:?}: {}",
-                                    path, e
-                                );
-                            } else {
-                                orphans_deleted += 1;
-                            }
-                        }
-                    }
-                    if orphans_deleted > 0 {
-                        info!(
-                            "[runtimed] GC: cleaned up {} orphaned pool environments",
-                            orphans_deleted
-                        );
-                    }
-                }
-            }
+            self.sweep_orphan_pool_envs(&in_use).await;
 
             // Clean up stale worktree state directories
             let worktrees_dir = dirs::cache_dir()
@@ -5143,6 +5307,299 @@ mod tests {
         assert!(tracked.contains(&pool_env_root(&available_env.venv_path)));
         assert!(tracked.contains(&pool_env_root(&leased_env.venv_path)));
         assert!(tracked.contains(&warming));
+    }
+
+    /// Build a minimal `DaemonConfig` for in-process tests. Pool sizes
+    /// are zero so the warming loop doesn't try to create real envs.
+    fn lease_test_config(temp_dir: &TempDir) -> DaemonConfig {
+        #[cfg(windows)]
+        let socket_path = {
+            let unique = temp_dir
+                .path()
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy();
+            std::path::PathBuf::from(format!(r"\\.\pipe\runtimed-lease-test-{}", unique))
+        };
+        #[cfg(not(windows))]
+        let socket_path = temp_dir.path().join("test-lease.sock");
+
+        DaemonConfig {
+            socket_path,
+            cache_dir: temp_dir.path().join("envs"),
+            blob_store_dir: temp_dir.path().join("blobs"),
+            execution_store_dir: temp_dir.path().join("executions"),
+            notebook_docs_dir: temp_dir.path().join("notebook-docs"),
+            uv_pool_size: 0,
+            conda_pool_size: 0,
+            pixi_pool_size: 0,
+            max_age_secs: 3600,
+            lock_dir: Some(temp_dir.path().to_path_buf()),
+            room_eviction_delay_ms: Some(50),
+            use_preferred_blob_port: false,
+            settings_doc_path: Some(temp_dir.path().join("settings.automerge")),
+            settings_json_path: Some(temp_dir.path().join("settings.json")),
+            ..Default::default()
+        }
+    }
+
+    /// Plant a fake pool env on disk under `cache_dir` and register it in
+    /// the UV pool's `available` queue so a subsequent `take_uv_env`
+    /// returns it.
+    fn plant_uv_pool_env(daemon: &Arc<Daemon>, name: &str) -> PathBuf {
+        let venv_path = daemon.config.cache_dir.join(name);
+        std::fs::create_dir_all(&venv_path).unwrap();
+        std::fs::write(venv_path.join(".warmed"), "").unwrap();
+        #[cfg(windows)]
+        let python_path = venv_path.join("Scripts").join("python.exe");
+        #[cfg(not(windows))]
+        let python_path = venv_path.join("bin").join("python");
+        std::fs::create_dir_all(python_path.parent().unwrap()).unwrap();
+        std::fs::write(&python_path, "").unwrap();
+        let env = PooledEnv {
+            env_type: EnvType::Uv,
+            venv_path: venv_path.clone(),
+            python_path,
+            prewarmed_packages: vec![],
+        };
+        // Use try_lock + plain blocking_write isn't available; we're
+        // already in a tokio test, but this helper is sync. Spin a
+        // futures::executor block to push the env in. Simpler: use the
+        // pool's std::sync::Mutex... but the Pool is wrapped in a
+        // tokio::sync::Mutex. Block on the lock via a current-thread
+        // runtime borrow.
+        tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(async {
+                daemon.uv_pool.lock().await.add(env);
+            });
+        });
+        venv_path
+    }
+
+    /// Bug-repro test for the orphan GC race that motivated the lease set.
+    ///
+    /// Without the lease tracking, an env taken via `take_uv_env` lives in
+    /// neither `available` nor `runtime_agent_env_path` until the launch
+    /// flow records it. A concurrent `sweep_orphan_pool_envs` pass during
+    /// that window deletes the env directory out from under the in-flight
+    /// launch. The lease set protects taken-but-not-yet-attached envs by
+    /// keeping them in `Pool::tracked_paths`.
+    ///
+    /// This test would FAIL on `main` prior to #2403 and on any future
+    /// refactor that drops `leased_paths` from `tracked_paths`.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn leased_env_survives_orphan_sweep() {
+        let temp_dir = TempDir::new().unwrap();
+        let daemon = Daemon::new(lease_test_config(&temp_dir)).unwrap();
+        let venv_path = plant_uv_pool_env(&daemon, "runtimed-uv-leased-test");
+
+        // Take the env: it leaves `available` and enters `leased_paths`.
+        let leased = daemon
+            .take_uv_env()
+            .await
+            .expect("take_uv_env returned None");
+        assert_eq!(leased.env().venv_path, venv_path);
+        assert!(
+            !daemon
+                .uv_pool
+                .lock()
+                .await
+                .available
+                .iter()
+                .any(|e| e.env.venv_path == venv_path),
+            "env should have left available after take"
+        );
+
+        // Run the same sweep `env_gc_loop` would. No room records this
+        // env as runtime_agent_env_path, so only the lease protects it.
+        let in_use = std::collections::HashSet::new();
+        let deleted = daemon.sweep_orphan_pool_envs(&in_use).await;
+        assert_eq!(
+            deleted, 0,
+            "leased env must not be swept while the lease wrapper is alive"
+        );
+        assert!(
+            venv_path.exists(),
+            "leased env directory should still exist on disk"
+        );
+
+        // Release the lease via the explicit failure path. The directory
+        // is removed and the lease is no longer in `tracked_paths`.
+        leased.release_and_delete().await;
+        assert!(
+            !venv_path.exists(),
+            "release_and_delete should remove the env directory"
+        );
+        assert!(
+            !daemon
+                .uv_pool
+                .lock()
+                .await
+                .leased_paths
+                .contains(&venv_path),
+            "lease should be released from leased_paths"
+        );
+    }
+
+    /// Drop without `transfer_to_runtime` / `release_and_delete` releases
+    /// the lease (no longer protects the directory) but does NOT delete
+    /// the directory. Forgetting to commit must not destroy a working
+    /// env; orphan GC will collect it once nothing protects it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn dropped_lease_releases_but_does_not_delete() {
+        let temp_dir = TempDir::new().unwrap();
+        let daemon = Daemon::new(lease_test_config(&temp_dir)).unwrap();
+        let venv_path = plant_uv_pool_env(&daemon, "runtimed-uv-drop-test");
+
+        {
+            let _leased = daemon
+                .take_uv_env()
+                .await
+                .expect("take_uv_env returned None");
+            assert!(daemon
+                .uv_pool
+                .lock()
+                .await
+                .leased_paths
+                .contains(&venv_path));
+            // Wrapper drops at end of scope without commit/release.
+        }
+
+        // Drop spawns the release; give it a tick to run. Use tokio yield
+        // + a short loop so this stays robust without arbitrary sleeps.
+        for _ in 0..50 {
+            if !daemon
+                .uv_pool
+                .lock()
+                .await
+                .leased_paths
+                .contains(&venv_path)
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        assert!(
+            !daemon
+                .uv_pool
+                .lock()
+                .await
+                .leased_paths
+                .contains(&venv_path),
+            "Drop must release the lease (best-effort via tokio::spawn)"
+        );
+        assert!(
+            venv_path.exists(),
+            "Drop must NOT delete the env directory \
+             (forgetting to commit must not destroy a working env)"
+        );
+
+        // Now the env is unprotected (no lease, no runtime owner).
+        // Orphan sweep collects it.
+        let deleted = daemon
+            .sweep_orphan_pool_envs(&std::collections::HashSet::new())
+            .await;
+        assert_eq!(
+            deleted, 1,
+            "released env should be reclaimed by orphan sweep"
+        );
+        assert!(!venv_path.exists());
+    }
+
+    /// `transfer_to_runtime` releases the lease (caller now owns the env)
+    /// but does not delete. Caller is expected to set
+    /// `runtime_agent_env_path` so the env stays protected.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn transfer_to_runtime_releases_lease_keeps_env() {
+        let temp_dir = TempDir::new().unwrap();
+        let daemon = Daemon::new(lease_test_config(&temp_dir)).unwrap();
+        let venv_path = plant_uv_pool_env(&daemon, "runtimed-uv-transfer-test");
+
+        let leased = daemon
+            .take_uv_env()
+            .await
+            .expect("take_uv_env returned None");
+        let env = leased.transfer_to_runtime().await;
+
+        assert_eq!(env.venv_path, venv_path);
+        assert!(
+            !daemon
+                .uv_pool
+                .lock()
+                .await
+                .leased_paths
+                .contains(&venv_path),
+            "transfer_to_runtime must release the lease"
+        );
+        assert!(
+            venv_path.exists(),
+            "transfer_to_runtime must NOT delete the env directory"
+        );
+    }
+
+    /// Stress test: parallel `take_uv_env` + orphan sweeps must never
+    /// race in a way that deletes a leased env. This is the original CI
+    /// failure mode that motivated PR #2403.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_take_and_sweep_does_not_delete_leased() {
+        let temp_dir = TempDir::new().unwrap();
+        let daemon = Daemon::new(lease_test_config(&temp_dir)).unwrap();
+
+        // Plant several envs.
+        let envs: Vec<PathBuf> = (0..8)
+            .map(|i| plant_uv_pool_env(&daemon, &format!("runtimed-uv-stress-{i}")))
+            .collect();
+
+        // Spawn a sweeper that runs continuously.
+        let sweeper_daemon = daemon.clone();
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let stop_sig = stop.clone();
+        let sweeper = tokio::spawn(async move {
+            let mut deleted_total = 0;
+            while !stop_sig.load(std::sync::atomic::Ordering::Relaxed) {
+                deleted_total += sweeper_daemon
+                    .sweep_orphan_pool_envs(&std::collections::HashSet::new())
+                    .await;
+                tokio::task::yield_now().await;
+            }
+            deleted_total
+        });
+
+        // Take each env, hold the lease for a few yields, then drop. Run
+        // them in parallel so the sweeper races against active leases.
+        let mut takers = Vec::new();
+        for _ in 0..envs.len() {
+            let d = daemon.clone();
+            takers.push(tokio::spawn(async move {
+                let leased = d.take_uv_env().await.expect("env should be takeable");
+                let venv_path = leased.env().venv_path.clone();
+                // Yield several times to give the sweeper a chance to fire.
+                for _ in 0..20 {
+                    tokio::task::yield_now().await;
+                }
+                // The lease is still alive — env must not be deleted.
+                assert!(
+                    venv_path.exists(),
+                    "env {:?} was deleted while leased",
+                    venv_path
+                );
+                let env = leased.transfer_to_runtime().await;
+                env.venv_path
+            }));
+        }
+
+        // Wait for all takers to finish. The in-loop assertion above
+        // (env still exists while the lease wrapper is alive) is the
+        // load-bearing check — once each taker calls
+        // `transfer_to_runtime`, the lease releases and the sweeper is
+        // free to reclaim the now-unprotected env. We only need to
+        // verify each taker survived its lease window without panicking.
+        for t in takers {
+            t.await.unwrap();
+        }
+
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        let _swept = sweeper.await.unwrap();
     }
 
     #[test]
