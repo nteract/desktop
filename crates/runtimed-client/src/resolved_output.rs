@@ -239,6 +239,7 @@ mod tests {
             execution_count: "null".into(),
             metadata,
             resolved_assets: HashMap::new(),
+            attachments: HashMap::new(),
         }
     }
 

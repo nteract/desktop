@@ -95,6 +95,7 @@ pub(crate) fn parse_cells_from_ipynb(json: &serde_json::Value) -> Option<ParsedI
                 execution_count,
                 metadata,
                 resolved_assets: std::collections::HashMap::new(),
+                attachments: std::collections::HashMap::new(),
             }
         })
         .collect();
@@ -161,7 +162,13 @@ pub(crate) struct ParsedStreamingNotebook {
     pub metadata: Option<NotebookMetadataSnapshot>,
     pub attachments: NbformatAttachmentMap,
 }
-type StreamingLoadBatchEntry = (usize, StreamingCell, Vec<serde_json::Value>, ResolvedAssets);
+type StreamingLoadBatchEntry = (
+    usize,
+    StreamingCell,
+    Vec<serde_json::Value>,
+    ResolvedAssets,
+    AttachmentRefs,
+);
 
 fn should_resolve_markdown_assets(cell_type: &str) -> bool {
     cell_type == "markdown"
@@ -447,10 +454,6 @@ where
     let cells = parsed.cells;
     let metadata = parsed.metadata;
     let nbformat_attachments = parsed.attachments;
-    {
-        let mut cache = room.persistence.nbformat_attachments.write().await;
-        *cache = nbformat_attachments.clone();
-    }
 
     let total_cells = cells.len();
     info!(
@@ -486,25 +489,28 @@ where
             for output in &cell.outputs {
                 output_refs.push(output_value_to_manifest_ref(output, &room.blob_store).await);
             }
-            let resolved_assets = if should_resolve_markdown_assets(&cell.cell_type) {
-                resolve_markdown_assets(
-                    &cell.source,
-                    Some(path),
-                    nbformat_attachments.get(&cell.id),
-                    &room.blob_store,
-                )
-                .await
+            let attachment_refs = nbformat_attachments_to_blob_refs(
+                nbformat_attachments.get(&cell.id),
+                &room.blob_store,
+            )
+            .await
+            .map_err(|e| format!("Failed to ingest attachments for {}: {e}", cell.id))?;
+            let mut resolved_assets = if should_resolve_markdown_assets(&cell.cell_type) {
+                resolve_markdown_assets(&cell.source, Some(path), None, &room.blob_store).await
             } else {
                 ResolvedAssets::new()
             };
-            batch.push((idx, cell, output_refs, resolved_assets));
+            if should_resolve_markdown_assets(&cell.cell_type) {
+                resolved_assets.extend(resolved_attachment_assets(&cell.source, &attachment_refs));
+            }
+            batch.push((idx, cell, output_refs, resolved_assets, attachment_refs));
         }
 
         // Store outputs in RuntimeStateDoc with durable execution state when a
         // matching terminal record exists, otherwise mint synthetic IDs.
         // Collect (cell_id, execution) pairs for linking below.
         let mut cell_executions: HashMap<String, LoadedExecution> = HashMap::new();
-        for (_idx, cell, output_refs, _resolved_assets) in &batch {
+        for (_idx, cell, output_refs, _resolved_assets, _attachment_refs) in &batch {
             if output_refs.is_empty() {
                 continue;
             }
@@ -521,7 +527,7 @@ where
             cell_executions.insert(cell.id.clone(), execution);
         }
         let _ = room.state.with_doc(|sd| {
-            for (_idx, cell, output_refs, _resolved_assets) in &batch {
+            for (_idx, cell, output_refs, _resolved_assets, _attachment_refs) in &batch {
                 if let Some(execution) = cell_executions.get(&cell.id) {
                     let _ = sd.create_execution(&execution.execution_id, &cell.id);
                     let _ = sd.set_outputs(&execution.execution_id, output_refs);
@@ -537,7 +543,7 @@ where
         // Add batch to Automerge doc and generate sync message (inside lock)
         let encoded = {
             let mut doc = room.doc.write().await;
-            for (_idx, cell, _output_refs, resolved_assets) in &batch {
+            for (_idx, cell, _output_refs, resolved_assets, attachment_refs) in &batch {
                 doc.add_cell_full(
                     &cell.id,
                     &cell.cell_type,
@@ -553,6 +559,8 @@ where
                 }
                 doc.set_cell_resolved_assets(&cell.id, resolved_assets)
                     .map_err(|e| format!("Failed to set resolved assets for {}: {}", cell.id, e))?;
+                doc.set_cell_attachments(&cell.id, attachment_refs)
+                    .map_err(|e| format!("Failed to set attachments for {}: {}", cell.id, e))?;
             }
             match catch_automerge_panic("streaming-load-cells", || {
                 doc.generate_sync_message(peer_state).map(|m| m.encode())
@@ -764,6 +772,12 @@ pub(crate) async fn load_notebook_from_disk_with_state_doc_and_execution_store(
             .map_err(|e| format!("Failed to add cell: {}", e))?;
         doc.update_source(&cell.id, &cell.source)
             .map_err(|e| format!("Failed to update source: {}", e))?;
+        let attachment_refs =
+            nbformat_attachments_to_blob_refs(nbformat_attachments.get(&cell.id), blob_store)
+                .await
+                .map_err(|e| format!("Failed to ingest attachments for {}: {e}", cell.id))?;
+        doc.set_cell_attachments(&cell.id, &attachment_refs)
+            .map_err(|e| format!("Failed to set attachments: {}", e))?;
         // Parse execution_count from the .ipynb cell snapshot
         let parsed_ec: Option<i64> = cell.execution_count.parse::<i64>().ok();
         let cell_outputs = outputs_by_cell.get(&cell.id);
@@ -803,13 +817,9 @@ pub(crate) async fn load_notebook_from_disk_with_state_doc_and_execution_store(
                 .map_err(|e| format!("Failed to set execution_id: {}", e))?;
         }
         if should_resolve_markdown_assets(&cell.cell_type) {
-            let resolved_assets = resolve_markdown_assets(
-                &cell.source,
-                Some(path),
-                nbformat_attachments.get(&cell.id),
-                blob_store,
-            )
-            .await;
+            let mut resolved_assets =
+                resolve_markdown_assets(&cell.source, Some(path), None, blob_store).await;
+            resolved_assets.extend(resolved_attachment_assets(&cell.source, &attachment_refs));
             doc.set_cell_resolved_assets(&cell.id, &resolved_assets)
                 .map_err(|e| format!("Failed to set resolved assets: {}", e))?;
         }
@@ -1100,29 +1110,54 @@ pub(crate) async fn apply_ipynb_changes(
         map
     };
     let notebook_path_for_assets = room.file_binding.path.read().await.clone();
+    let converted_attachments: HashMap<String, AttachmentRefs> = {
+        let mut map = HashMap::new();
+        for cell in external_cells {
+            let refs = match nbformat_attachments_to_blob_refs(
+                external_attachments.get(&cell.id),
+                &room.blob_store,
+            )
+            .await
+            {
+                Ok(refs) => refs,
+                Err(e) => {
+                    warn!(
+                        "[notebook-watch] Failed to ingest attachments for {}: {}",
+                        cell.id, e
+                    );
+                    return false;
+                }
+            };
+            if !refs.is_empty() {
+                map.insert(cell.id.clone(), refs);
+            }
+        }
+        map
+    };
+    let empty_assets = HashMap::new();
+    let empty_attachments = HashMap::new();
     let converted_assets: HashMap<String, ResolvedAssets> = {
         let mut map = HashMap::new();
         for cell in external_cells {
             if should_resolve_markdown_assets(&cell.cell_type) {
-                let resolved_assets = resolve_markdown_assets(
+                let mut resolved_assets = resolve_markdown_assets(
                     &cell.source,
                     notebook_path_for_assets.as_deref(),
-                    external_attachments.get(&cell.id),
+                    None,
                     &room.blob_store,
                 )
                 .await;
+                resolved_assets.extend(resolved_attachment_assets(
+                    &cell.source,
+                    converted_attachments
+                        .get(cell.id.as_str())
+                        .unwrap_or(&empty_attachments),
+                ));
                 map.insert(cell.id.clone(), resolved_assets);
             }
         }
         map
     };
-
-    {
-        let mut cache = room.persistence.nbformat_attachments.write().await;
-        *cache = external_attachments.clone();
-    }
-
-    let empty_assets = HashMap::new();
 
     // Build maps for comparison
     let current_map: HashMap<&str, &CellSnapshot> =
@@ -1257,6 +1292,10 @@ pub(crate) async fn apply_ipynb_changes(
                         .get(ext_cell.id.as_str())
                         .unwrap_or(&empty_assets);
                     let _ = fork.set_cell_resolved_assets(&ext_cell.id, ext_assets);
+                    let ext_attachments = converted_attachments
+                        .get(ext_cell.id.as_str())
+                        .unwrap_or(&empty_attachments);
+                    let _ = fork.set_cell_attachments(&ext_cell.id, ext_attachments);
                 }
             }
 
@@ -1485,6 +1524,14 @@ pub(crate) async fn apply_ipynb_changes(
                         changed = true;
                     }
                 }
+                let ext_attachments = converted_attachments
+                    .get(ext_cell.id.as_str())
+                    .unwrap_or(&empty_attachments);
+                if current_cell.attachments != *ext_attachments {
+                    if let Ok(true) = doc.set_cell_attachments(&ext_cell.id, ext_attachments) {
+                        changed = true;
+                    }
+                }
             } else {
                 // New cell - add it
                 // New cells don't have any in-progress state, so always use external values
@@ -1517,6 +1564,10 @@ pub(crate) async fn apply_ipynb_changes(
                         .get(ext_cell.id.as_str())
                         .unwrap_or(&empty_assets);
                     let _ = doc.set_cell_resolved_assets(&ext_cell.id, ext_assets);
+                    let ext_attachments = converted_attachments
+                        .get(ext_cell.id.as_str())
+                        .unwrap_or(&empty_attachments);
+                    let _ = doc.set_cell_attachments(&ext_cell.id, ext_attachments);
                 }
             }
         }

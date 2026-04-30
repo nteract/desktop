@@ -3408,8 +3408,9 @@ pub(crate) fn blob_gc_grace() -> std::time::Duration {
 /// Walk a persisted notebook-doc `.automerge` file and collect blob refs.
 ///
 /// Loads the saved document and pulls blob refs from `cell.resolved_assets`
-/// (markdown image refs). Returns `false` if the file cannot be read or
-/// decoded — the caller logs and moves on.
+/// (markdown image refs) and `cell.attachments` (nbformat attachment payloads).
+/// Returns `false` if the file cannot be read or decoded — the caller logs and
+/// moves on.
 ///
 /// Note: `RuntimeStateDoc` is not persisted to disk separately. Current
 /// schema-v3+ notebook docs store outputs in RuntimeStateDoc while the
@@ -3442,6 +3443,11 @@ pub(crate) async fn collect_hashes_from_persisted_doc(
     for cell in doc.get_cells() {
         for hash in cell.resolved_assets.values() {
             hashes.insert(hash.clone());
+        }
+        for bundle in cell.attachments.values() {
+            for attachment_ref in bundle.values() {
+                hashes.insert(attachment_ref.blob_hash.clone());
+            }
         }
     }
     true
@@ -3515,6 +3521,11 @@ impl Daemon {
                     for cell in doc.get_cells() {
                         for hash in cell.resolved_assets.values() {
                             referenced_hashes.insert(hash.clone());
+                        }
+                        for bundle in cell.attachments.values() {
+                            for attachment_ref in bundle.values() {
+                                referenced_hashes.insert(attachment_ref.blob_hash.clone());
+                            }
                         }
                     }
                 }
@@ -6015,12 +6026,14 @@ mod tests {
     }
 
     /// Build a persisted notebook-doc `.automerge` file with one markdown
-    /// cell that references `blob_hash` via `resolved_assets`. Mirrors the
-    /// real shape of a persisted untitled-notebook doc for GC purposes.
+    /// cell that references `blob_hash` via `resolved_assets` and
+    /// `attachment_hash` via `attachments`. Mirrors the real shape of a
+    /// persisted untitled-notebook doc for GC purposes.
     fn write_persisted_doc_with_blob(
         docs_dir: &Path,
         notebook_id: &str,
         blob_hash: &str,
+        attachment_hash: &str,
     ) -> PathBuf {
         use notebook_doc::NotebookDoc;
         let mut doc = NotebookDoc::new_with_actor(notebook_id, "test");
@@ -6030,6 +6043,17 @@ mod tests {
         let mut assets = std::collections::HashMap::new();
         assets.insert("image.png".to_string(), blob_hash.to_string());
         doc.set_cell_resolved_assets(cell_id, &assets).unwrap();
+        let attachments = std::collections::HashMap::from([(
+            "image.png".to_string(),
+            std::collections::HashMap::from([(
+                "image/png".to_string(),
+                notebook_doc::AttachmentRef {
+                    blob_hash: attachment_hash.to_string(),
+                    encoding: "base64".to_string(),
+                },
+            )]),
+        )]);
+        doc.set_cell_attachments(cell_id, &attachments).unwrap();
 
         let filename = crate::paths::notebook_doc_filename(notebook_id);
         let path = docs_dir.join(filename);
@@ -6069,7 +6093,7 @@ mod tests {
     async fn collect_hashes_walks_persisted_doc_resolved_assets() {
         let tmp = tempfile::TempDir::new().unwrap();
         let docs_dir = tmp.path().to_path_buf();
-        let path = write_persisted_doc_with_blob(&docs_dir, "untitled-abc", "deadbeef");
+        let path = write_persisted_doc_with_blob(&docs_dir, "untitled-abc", "deadbeef", "feedface");
 
         let mut hashes = std::collections::HashSet::new();
         let ok = collect_hashes_from_persisted_doc(&path, &mut hashes).await;
@@ -6077,6 +6101,11 @@ mod tests {
         assert!(
             hashes.contains("deadbeef"),
             "resolved_assets blob hash should be collected, got {:?}",
+            hashes
+        );
+        assert!(
+            hashes.contains("feedface"),
+            "attachment blob hash should be collected, got {:?}",
             hashes
         );
     }
@@ -6099,13 +6128,18 @@ mod tests {
         // The mark phase must still surface it.
         let tmp = tempfile::TempDir::new().unwrap();
         let docs_dir = tmp.path().join("notebook-docs");
-        write_persisted_doc_with_blob(&docs_dir, "untitled-xyz", "cafebabe");
+        write_persisted_doc_with_blob(&docs_dir, "untitled-xyz", "cafebabe", "facefeed");
 
         let rooms: Vec<(String, Arc<crate::notebook_sync_server::NotebookRoom>)> = vec![];
         let refs = Daemon::collect_blob_refs_for_gc(&rooms, &docs_dir).await;
         assert!(
             refs.contains("cafebabe"),
             "persisted-doc blob ref should be collected, got {:?}",
+            refs
+        );
+        assert!(
+            refs.contains("facefeed"),
+            "persisted-doc attachment ref should be collected, got {:?}",
             refs
         );
     }

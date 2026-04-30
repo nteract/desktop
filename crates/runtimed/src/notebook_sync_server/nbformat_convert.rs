@@ -370,6 +370,7 @@ mod tests {
             execution_count: "null".to_string(),
             metadata: json!({}),
             resolved_assets: Default::default(),
+            attachments: std::collections::HashMap::new(),
         }
     }
 
@@ -503,6 +504,7 @@ mod tests {
             execution_count: "2".to_string(),
             metadata: json!({}),
             resolved_assets: Default::default(),
+            attachments: std::collections::HashMap::new(),
         };
         let outputs = vec![json!({
             "output_type": "stream",
@@ -582,6 +584,7 @@ mod tests {
                 execution_count: "1".to_string(),
                 metadata: json!({"tags": ["demo"]}),
                 resolved_assets: Default::default(),
+                attachments: std::collections::HashMap::new(),
             },
             cell_snapshot("cell-2", "markdown", "# heading"),
         ];

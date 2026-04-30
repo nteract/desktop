@@ -437,6 +437,7 @@ async fn render_execution_result(
             .unwrap_or_else(|| "null".to_string()),
         metadata: serde_json::json!({}),
         resolved_assets: std::collections::HashMap::new(),
+        attachments: std::collections::HashMap::new(),
     };
     let snap = cell.unwrap_or(fallback_cell);
     let mut structured_content = if exec.outputs.is_empty() {

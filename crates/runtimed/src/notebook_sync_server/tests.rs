@@ -84,6 +84,34 @@ fn test_sanitize_peer_label_strips_zero_width() {
 }
 
 #[test]
+fn test_image_attachment_hash_uses_stable_image_preference() {
+    let refs = HashMap::from([(
+        "plot".to_string(),
+        HashMap::from([
+            (
+                "image/jpeg".to_string(),
+                AttachmentRef {
+                    blob_hash: "jpeg-hash".to_string(),
+                    encoding: "base64".to_string(),
+                },
+            ),
+            (
+                "image/png".to_string(),
+                AttachmentRef {
+                    blob_hash: "png-hash".to_string(),
+                    encoding: "base64".to_string(),
+                },
+            ),
+        ]),
+    )]);
+
+    assert_eq!(
+        image_attachment_hash(&refs, "plot#fragment").as_deref(),
+        Some("png-hash")
+    );
+}
+
+#[test]
 fn test_sanitize_peer_label_strips_control_chars() {
     assert_eq!(sanitize_peer_label(Some("Claude\x00\x1F"), "fb"), "Claude");
     assert_eq!(sanitize_peer_label(Some("\x07"), "fb"), "fb");
@@ -1381,6 +1409,7 @@ async fn test_apply_ipynb_changes_updates_execution_count() {
         execution_count: "42".to_string(),
         metadata: serde_json::json!({}),
         resolved_assets: std::collections::HashMap::new(),
+        attachments: std::collections::HashMap::new(),
     }];
 
     let changed = apply_ipynb_changes(
@@ -1439,6 +1468,7 @@ async fn test_apply_ipynb_changes_preserves_execution_count_when_kernel_running(
         execution_count: "5".to_string(),
         metadata: serde_json::json!({}),
         resolved_assets: std::collections::HashMap::new(),
+        attachments: std::collections::HashMap::new(),
     }];
 
     let changed = apply_ipynb_changes(
@@ -1485,6 +1515,7 @@ async fn test_apply_ipynb_changes_new_cell_with_outputs_while_kernel_running() {
             execution_count: "null".to_string(),
             metadata: serde_json::json!({}),
             resolved_assets: std::collections::HashMap::new(),
+            attachments: std::collections::HashMap::new(),
         },
         CellSnapshot {
             id: "new-cell".to_string(),
@@ -1494,6 +1525,7 @@ async fn test_apply_ipynb_changes_new_cell_with_outputs_while_kernel_running() {
             execution_count: "42".to_string(),
             metadata: serde_json::json!({}),
             resolved_assets: std::collections::HashMap::new(),
+            attachments: std::collections::HashMap::new(),
         },
     ];
     let mut external_outputs: HashMap<String, Vec<serde_json::Value>> = HashMap::new();
@@ -1575,6 +1607,7 @@ async fn test_apply_ipynb_changes_wholesale_replacement() {
             execution_count: "1".to_string(),
             metadata: serde_json::json!({}),
             resolved_assets: std::collections::HashMap::new(),
+            attachments: std::collections::HashMap::new(),
         },
         CellSnapshot {
             id: "new-2".to_string(),
@@ -1584,6 +1617,7 @@ async fn test_apply_ipynb_changes_wholesale_replacement() {
             execution_count: "2".to_string(),
             metadata: serde_json::json!({}),
             resolved_assets: std::collections::HashMap::new(),
+            attachments: std::collections::HashMap::new(),
         },
     ];
 
@@ -1648,6 +1682,7 @@ async fn test_apply_ipynb_changes_partial_overlap_preserves_unsaved() {
         execution_count: "null".to_string(),
         metadata: serde_json::json!({}),
         resolved_assets: std::collections::HashMap::new(),
+        attachments: std::collections::HashMap::new(),
     }];
 
     let changed = apply_ipynb_changes(
@@ -2118,6 +2153,105 @@ async fn test_load_notebook_from_disk_resolves_nbformat_attachments() {
 
     let bytes = blob_store.get(hash).await.unwrap().unwrap();
     assert_eq!(bytes, b"hello");
+
+    let attachment_ref = cells[0]
+        .attachments
+        .get("image.png")
+        .and_then(|bundle| bundle.get("image/png"))
+        .expect("attachment should be stored in the cell schema");
+    assert_eq!(attachment_ref.blob_hash, *hash);
+    assert_eq!(attachment_ref.encoding, "base64");
+}
+
+#[tokio::test]
+async fn test_load_notebook_from_disk_preserves_json_attachment_payloads() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let blob_store = test_blob_store(&tmp);
+
+    let expected_attachments = serde_json::json!({
+        "payload.json": {
+            "application/json": {"kind": "loaded"}
+        },
+        "label.json": {
+            "application/json": "loaded-string"
+        }
+    });
+    let notebook_json = serde_json::json!({
+        "nbformat": 4,
+        "nbformat_minor": 5,
+        "metadata": {},
+        "cells": [
+            {
+                "id": "raw-1",
+                "cell_type": "raw",
+                "source": ["attachment ref"],
+                "metadata": {},
+                "attachments": expected_attachments
+            }
+        ]
+    });
+
+    let ipynb_path = tmp.path().join("json-attachments.ipynb");
+    std::fs::write(
+        &ipynb_path,
+        serde_json::to_string_pretty(&notebook_json).unwrap(),
+    )
+    .unwrap();
+
+    let notebook_id = ipynb_path.to_string_lossy().to_string();
+    let mut doc = crate::notebook_doc::NotebookDoc::new(&notebook_id);
+    load_notebook_from_disk(&mut doc, &ipynb_path, &blob_store)
+        .await
+        .unwrap();
+
+    let cells = doc.get_cells();
+    assert_eq!(cells.len(), 1);
+    let reconstructed = attachment_refs_to_nbformat_value(&cells[0].attachments, &blob_store)
+        .await
+        .unwrap();
+    assert_eq!(reconstructed, expected_attachments);
+}
+
+#[tokio::test]
+async fn test_load_notebook_from_disk_rejects_invalid_attachment_payloads() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let blob_store = test_blob_store(&tmp);
+
+    let notebook_json = serde_json::json!({
+        "nbformat": 4,
+        "nbformat_minor": 5,
+        "metadata": {},
+        "cells": [
+            {
+                "id": "markdown-1",
+                "cell_type": "markdown",
+                "source": ["![inline](attachment:image.png)"],
+                "metadata": {},
+                "attachments": {
+                    "image.png": {
+                        "image/png": "not valid base64"
+                    }
+                }
+            }
+        ]
+    });
+
+    let ipynb_path = tmp.path().join("invalid-attachments.ipynb");
+    std::fs::write(
+        &ipynb_path,
+        serde_json::to_string_pretty(&notebook_json).unwrap(),
+    )
+    .unwrap();
+
+    let notebook_id = ipynb_path.to_string_lossy().to_string();
+    let mut doc = crate::notebook_doc::NotebookDoc::new(&notebook_id);
+    let error = load_notebook_from_disk(&mut doc, &ipynb_path, &blob_store)
+        .await
+        .expect_err("invalid attachment payload should fail load");
+    assert!(
+        error.contains("base64 payload is invalid"),
+        "unexpected error: {error}"
+    );
 }
 
 #[tokio::test]
@@ -2200,6 +2334,44 @@ async fn test_process_markdown_assets_rebuilds_stale_refs() {
 }
 
 #[tokio::test]
+async fn test_process_markdown_assets_resolves_existing_attachment_refs() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (room, notebook_path) = test_room_with_path(&tmp, "attachment-assets.ipynb");
+    std::fs::write(&notebook_path, "{}").unwrap();
+
+    let hash = room.blob_store.put(b"hello", "image/png").await.unwrap();
+    {
+        let mut doc = room.doc.write().await;
+        doc.add_cell(0, "markdown-1", "markdown").unwrap();
+        doc.update_source("markdown-1", "![inline](attachment:image.png)")
+            .unwrap();
+        let attachments = HashMap::from([(
+            "image.png".to_string(),
+            HashMap::from([(
+                "image/png".to_string(),
+                AttachmentRef {
+                    blob_hash: hash.clone(),
+                    encoding: "base64".to_string(),
+                },
+            )]),
+        )]);
+        doc.set_cell_attachments("markdown-1", &attachments)
+            .unwrap();
+    }
+
+    process_markdown_assets(&room).await;
+
+    let cells = room.doc.read().await.get_cells();
+    assert_eq!(
+        cells[0]
+            .resolved_assets
+            .get("attachment:image.png")
+            .map(String::as_str),
+        Some(hash.as_str())
+    );
+}
+
+#[tokio::test]
 async fn test_save_notebook_to_disk_with_target_path() {
     let tmp = tempfile::TempDir::new().unwrap();
     let (room, _original_path) = test_room_with_path(&tmp, "original.ipynb");
@@ -2227,26 +2399,29 @@ async fn test_save_notebook_to_disk_with_target_path() {
 }
 
 #[tokio::test]
-async fn test_save_notebook_to_disk_preserves_nbformat_attachments_from_cache() {
+async fn test_save_notebook_to_disk_preserves_nbformat_attachments_from_doc() {
     let tmp = tempfile::TempDir::new().unwrap();
     let (room, original_path) = test_room_with_path(&tmp, "original.ipynb");
 
     {
+        let hash = room.blob_store.put(b"hello", "image/png").await.unwrap();
+        let mut attachment_refs = HashMap::new();
+        attachment_refs.insert(
+            "image.png".to_string(),
+            HashMap::from([(
+                "image/png".to_string(),
+                AttachmentRef {
+                    blob_hash: hash,
+                    encoding: "base64".to_string(),
+                },
+            )]),
+        );
         let mut doc = room.doc.write().await;
         doc.add_cell(0, "markdown-1", "markdown").unwrap();
         doc.update_source("markdown-1", "![inline](attachment:image.png)")
             .unwrap();
-    }
-    {
-        let mut attachments = room.persistence.nbformat_attachments.write().await;
-        attachments.insert(
-            "markdown-1".to_string(),
-            serde_json::json!({
-                "image.png": {
-                    "image/png": "aGVsbG8="
-                }
-            }),
-        );
+        doc.set_cell_attachments("markdown-1", &attachment_refs)
+            .unwrap();
     }
 
     save_notebook_to_disk(&room, None).await.unwrap();
@@ -2264,7 +2439,7 @@ async fn test_save_notebook_to_disk_preserves_nbformat_attachments_from_cache() 
 }
 
 #[tokio::test]
-async fn test_save_notebook_to_disk_preserves_raw_cell_attachments_from_cache() {
+async fn test_save_notebook_to_disk_preserves_raw_cell_attachments_from_doc() {
     // The Jupyter v4.5 schema permits `attachments` on raw cells. nbformat
     // 2.2.0's `v4::Cell::Raw` has no slot for them, so the typed pipeline
     // drops them during conversion and `serialize_v4_notebook` re-injects
@@ -2273,20 +2448,40 @@ async fn test_save_notebook_to_disk_preserves_raw_cell_attachments_from_cache() 
     let (room, original_path) = test_room_with_path(&tmp, "raw.ipynb");
 
     {
+        let hash = room.blob_store.put(b"hello", "text/plain").await.unwrap();
+        let json_payload = serde_json::json!({"kind": "raw-attachment"});
+        let json_hash = room
+            .blob_store
+            .put(
+                &serde_json::to_vec(&json_payload).unwrap(),
+                "application/json",
+            )
+            .await
+            .unwrap();
+        let mut attachment_refs = HashMap::new();
+        attachment_refs.insert(
+            "snippet.txt".to_string(),
+            HashMap::from([
+                (
+                    "text/plain".to_string(),
+                    AttachmentRef {
+                        blob_hash: hash,
+                        encoding: "text".to_string(),
+                    },
+                ),
+                (
+                    "application/json".to_string(),
+                    AttachmentRef {
+                        blob_hash: json_hash,
+                        encoding: "json".to_string(),
+                    },
+                ),
+            ]),
+        );
         let mut doc = room.doc.write().await;
         doc.add_cell(0, "raw-1", "raw").unwrap();
         doc.update_source("raw-1", "attachment ref").unwrap();
-    }
-    {
-        let mut attachments = room.persistence.nbformat_attachments.write().await;
-        attachments.insert(
-            "raw-1".to_string(),
-            serde_json::json!({
-                "snippet.txt": {
-                    "text/plain": "hello"
-                }
-            }),
-        );
+        doc.set_cell_attachments("raw-1", &attachment_refs).unwrap();
     }
 
     save_notebook_to_disk(&room, None).await.unwrap();
@@ -2297,9 +2492,47 @@ async fn test_save_notebook_to_disk_preserves_raw_cell_attachments_from_cache() 
         notebook["cells"][0]["attachments"],
         serde_json::json!({
             "snippet.txt": {
+                "application/json": {"kind": "raw-attachment"},
                 "text/plain": "hello"
             }
         })
+    );
+}
+
+#[tokio::test]
+async fn test_save_notebook_to_disk_treats_missing_attachment_blob_as_unrecoverable() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (room, _original_path) = test_room_with_path(&tmp, "missing-attachment.ipynb");
+
+    {
+        let attachment_refs = HashMap::from([(
+            "missing.png".to_string(),
+            HashMap::from([(
+                "image/png".to_string(),
+                AttachmentRef {
+                    blob_hash: "missing-blob".to_string(),
+                    encoding: "base64".to_string(),
+                },
+            )]),
+        )]);
+        let mut doc = room.doc.write().await;
+        doc.add_cell(0, "markdown-1", "markdown").unwrap();
+        doc.update_source("markdown-1", "![inline](attachment:missing.png)")
+            .unwrap();
+        doc.set_cell_attachments("markdown-1", &attachment_refs)
+            .unwrap();
+    }
+
+    let error = save_notebook_to_disk(&room, None)
+        .await
+        .expect_err("missing attachment blob should fail save");
+    assert!(
+        matches!(error, SaveError::Unrecoverable(_)),
+        "missing blob should not be retried forever: {error}"
+    );
+    assert!(
+        error.to_string().contains("missing attachment blob"),
+        "unexpected error: {error}"
     );
 }
 
@@ -6389,7 +6622,7 @@ async fn test_clone_as_ephemeral_forks_cells_and_clears_outputs() {
     let tmp = tempfile::TempDir::new().unwrap();
     let (rooms, path_index, docs_dir, blob_store) = clone_test_scaffolding(&tmp);
 
-    // Build a file-backed source room with two cells + markdown attachments
+    // Build a file-backed source room with cells + markdown/raw attachments
     // + stamped trust, registered in the rooms map.
     let source_path = tmp.path().join("source.ipynb");
     let source_uuid = Uuid::new_v4();
@@ -6407,12 +6640,22 @@ async fn test_clone_as_ephemeral_forks_cells_and_clears_outputs() {
     )
     .await;
 
+    let attachment_hash = blob_store.put(b"hello", "image/png").await.unwrap();
+    let raw_attachment_hash = blob_store
+        .put(
+            &serde_json::to_vec(&serde_json::json!({"kind": "clone"})).unwrap(),
+            "application/json",
+        )
+        .await
+        .unwrap();
     {
         let mut doc = source_room.doc.write().await;
         doc.add_cell(0, "code-1", "code").unwrap();
         doc.update_source("code-1", "x = 1").unwrap();
         doc.add_cell(1, "md-1", "markdown").unwrap();
         doc.update_source("md-1", "# hello").unwrap();
+        doc.add_cell(2, "raw-1", "raw").unwrap();
+        doc.update_source("raw-1", "attachment ref").unwrap();
         // Seed resolved_assets on the markdown cell so we can verify the
         // clone carries them through (markdown cells render via
         // `cell.resolvedAssets` — asset ref -> blob hash — and an empty
@@ -6423,6 +6666,28 @@ async fn test_clone_as_ephemeral_forks_cells_and_clears_outputs() {
             "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef".to_string(),
         );
         doc.set_cell_resolved_assets("md-1", &assets).unwrap();
+        let attachments = HashMap::from([(
+            "image.png".to_string(),
+            HashMap::from([(
+                "image/png".to_string(),
+                AttachmentRef {
+                    blob_hash: attachment_hash.clone(),
+                    encoding: "base64".to_string(),
+                },
+            )]),
+        )]);
+        doc.set_cell_attachments("md-1", &attachments).unwrap();
+        let raw_attachments = HashMap::from([(
+            "payload.json".to_string(),
+            HashMap::from([(
+                "application/json".to_string(),
+                AttachmentRef {
+                    blob_hash: raw_attachment_hash.clone(),
+                    encoding: "json".to_string(),
+                },
+            )]),
+        )]);
+        doc.set_cell_attachments("raw-1", &raw_attachments).unwrap();
         // Stamp source metadata: env_id + trust signature + timestamp.
         let mut snap = snapshot_empty();
         snap.runt.env_id = Some("source-env-id".to_string());
@@ -6430,14 +6695,6 @@ async fn test_clone_as_ephemeral_forks_cells_and_clears_outputs() {
         snap.runt.trust_timestamp = Some("2026-04-25T00:00:00Z".to_string());
         doc.set_metadata_snapshot(&snap).unwrap();
     }
-    {
-        let mut cache = source_room.persistence.nbformat_attachments.write().await;
-        cache.insert(
-            "md-1".to_string(),
-            serde_json::json!({"image.png": {"image/png": "base64data"}}),
-        );
-    }
-
     // Dispatch clone handler.
     let response = crate::requests::clone_notebook::handle_inner(
         &rooms,
@@ -6489,10 +6746,11 @@ async fn test_clone_as_ephemeral_forks_cells_and_clears_outputs() {
 
     // Doc content: same cells, execution_count cleared on code cells.
     let clone_cells = clone_room.doc.read().await.get_cells();
-    assert_eq!(clone_cells.len(), 2);
+    assert_eq!(clone_cells.len(), 3);
     let cell_ids: Vec<&str> = clone_cells.iter().map(|c| c.id.as_str()).collect();
     assert!(cell_ids.contains(&"code-1"));
     assert!(cell_ids.contains(&"md-1"));
+    assert!(cell_ids.contains(&"raw-1"));
     let code_cell = clone_cells.iter().find(|c| c.id == "code-1").unwrap();
     assert_eq!(code_cell.execution_count, "null");
 
@@ -6518,11 +6776,32 @@ async fn test_clone_as_ephemeral_forks_cells_and_clears_outputs() {
         Some("2026-04-25T00:00:00Z")
     );
 
-    // Attachments copied (nbformat cache, used by save path).
-    let clone_attachments = clone_room.nbformat_attachments_snapshot().await;
+    // Attachments copied at the CRDT level for save/export.
+    let clone_attachments = clone_room
+        .doc
+        .read()
+        .await
+        .get_cell_attachments("md-1")
+        .expect("markdown cell should carry attachment refs");
     assert_eq!(
-        clone_attachments.get("md-1"),
-        Some(&serde_json::json!({"image.png": {"image/png": "base64data"}}))
+        clone_attachments
+            .get("image.png")
+            .and_then(|bundle| bundle.get("image/png"))
+            .map(|attachment_ref| attachment_ref.blob_hash.as_str()),
+        Some(attachment_hash.as_str())
+    );
+    let clone_raw_attachments = clone_room
+        .doc
+        .read()
+        .await
+        .get_cell_attachments("raw-1")
+        .expect("raw cell should carry attachment refs");
+    assert_eq!(
+        clone_raw_attachments
+            .get("payload.json")
+            .and_then(|bundle| bundle.get("application/json"))
+            .map(|attachment_ref| attachment_ref.blob_hash.as_str()),
+        Some(raw_attachment_hash.as_str())
     );
 
     // resolved_assets copied on the markdown cell (CRDT-level asset map,

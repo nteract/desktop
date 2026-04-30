@@ -128,7 +128,23 @@ pub(crate) async fn save_notebook_to_disk(
         })
         .unwrap_or_default();
 
-    let nbformat_attachments = room.nbformat_attachments_snapshot().await;
+    let mut nbformat_attachments = HashMap::new();
+    for cell in &cells {
+        if cell.attachments.is_empty() {
+            continue;
+        }
+        let attachments = attachment_refs_to_nbformat_value(&cell.attachments, &room.blob_store)
+            .await
+            .map_err(|e| match e {
+                AttachmentResolveError::MissingBlob(_)
+                | AttachmentResolveError::BlobReadFailed(_)
+                | AttachmentResolveError::InvalidPayload(_) => SaveError::Unrecoverable(format!(
+                    "Failed to resolve attachments for cell {}: {e}",
+                    cell.id
+                )),
+            })?;
+        nbformat_attachments.insert(cell.id.clone(), attachments);
+    }
 
     // Resolve outputs from the blob store. `resolve_cell_output` returns
     // Jupyter-shape JSON (daemon-runtime shape: includes `output_id`, etc.).
