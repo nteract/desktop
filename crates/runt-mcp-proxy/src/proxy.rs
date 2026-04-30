@@ -113,6 +113,15 @@ pub struct McpProxy {
 }
 
 impl McpProxy {
+    /// Outer timeout for tool calls forwarded to the child process.
+    ///
+    /// Set above the child's inner maximum (300 s for LaunchKernel /
+    /// SyncEnvironment) so inner timeouts fire first under normal operation.
+    /// This is a safety net for cases where the child's tool handler blocks
+    /// before reaching the request layer (e.g. `await_session_ready` when
+    /// the daemon is overloaded).
+    const TOOL_CALL_TIMEOUT: Duration = Duration::from_secs(360);
+
     /// Create a new proxy. Does not spawn the child yet — call `init_child()`
     /// or use the background init pattern.
     pub fn new(config: ProxyConfig, tool_list_changed_tx: Option<mpsc::Sender<()>>) -> Self {
@@ -667,10 +676,37 @@ impl McpProxy {
             .as_ref()
             .ok_or_else(|| McpError::internal_error("nteract MCP server not running", None))?;
 
-        client
-            .call_tool(params.clone())
-            .await
-            .map_err(|e| McpError::internal_error(format!("Child tool call failed: {e}"), None))
+        // Defense-in-depth timeout. The child's inner request layer has its
+        // own per-request-type timeouts (up to 300s for LaunchKernel /
+        // SyncEnvironment), but if the child's tool handler blocks before
+        // reaching the request layer (e.g. await_session_ready with no
+        // daemon response), the rmcp call_tool() would wait forever because
+        // PeerRequestOptions::no_options() sets timeout to None. This outer
+        // timeout is set above the inner maximum so inner timeouts fire first
+        // under normal operation.
+        match tokio::time::timeout(Self::TOOL_CALL_TIMEOUT, client.call_tool(params.clone())).await
+        {
+            Ok(result) => result.map_err(|e| {
+                McpError::internal_error(format!("Child tool call failed: {e}"), None)
+            }),
+            Err(_) => {
+                warn!(
+                    tool = %params.name,
+                    "Tool call to child timed out after {}s",
+                    Self::TOOL_CALL_TIMEOUT.as_secs()
+                );
+                Err(McpError::internal_error(
+                    format!(
+                        "Tool call '{}' timed out after {}s. The nteract daemon may be \
+                         overloaded or the session failed to initialize. Try again, or \
+                         use the 'reconnect' tool to restart the MCP connection.",
+                        params.name,
+                        Self::TOOL_CALL_TIMEOUT.as_secs()
+                    ),
+                    None,
+                ))
+            }
+        }
     }
 
     async fn try_forward_read_resource(
@@ -683,10 +719,20 @@ impl McpProxy {
             .as_ref()
             .ok_or_else(|| McpError::internal_error("nteract MCP server not running", None))?;
 
-        client
-            .read_resource(params.clone())
-            .await
-            .map_err(|e| McpError::internal_error(format!("Child resource read failed: {e}"), None))
+        match tokio::time::timeout(
+            Self::TOOL_CALL_TIMEOUT,
+            client.read_resource(params.clone()),
+        )
+        .await
+        {
+            Ok(result) => result.map_err(|e| {
+                McpError::internal_error(format!("Child resource read failed: {e}"), None)
+            }),
+            Err(_) => Err(McpError::internal_error(
+                "Resource read timed out. The nteract daemon may be overloaded.",
+                None,
+            )),
+        }
     }
 
     async fn track_session(&self, params: &CallToolRequestParams, result: &CallToolResult) {

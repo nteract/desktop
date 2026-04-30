@@ -30,6 +30,7 @@
 //! ```
 
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use automerge::{AutoCommit, ReadDoc, Value};
 use log::debug;
@@ -101,6 +102,13 @@ impl std::fmt::Debug for DocHandle {
 }
 
 impl DocHandle {
+    /// Default timeout for status-based waits (`await_session_ready`,
+    /// `await_notebook_interactive`, etc.). Prevents indefinite hangs when
+    /// the daemon is overloaded or the session never reaches the expected
+    /// state. 120 s is well above normal session setup time (~2-10 s) but
+    /// short enough to prevent permanent deadlocks under concurrent load.
+    const DEFAULT_STATUS_TIMEOUT: Duration = Duration::from_secs(120);
+
     /// Create a new `DocHandle` from shared state and channels.
     ///
     /// This is called by the connection/split logic, not by end users.
@@ -650,16 +658,34 @@ impl DocHandle {
     where
         F: Fn(&SyncStatus) -> bool,
     {
-        let mut rx = self.status_rx.clone();
-        loop {
-            let status = rx.borrow().clone();
-            if predicate(&status) {
-                return Ok(());
+        self.wait_for_status_timeout(predicate, Self::DEFAULT_STATUS_TIMEOUT)
+            .await
+    }
+
+    async fn wait_for_status_timeout<F>(
+        &self,
+        predicate: F,
+        timeout: Duration,
+    ) -> Result<(), SyncError>
+    where
+        F: Fn(&SyncStatus) -> bool,
+    {
+        let fut = async {
+            let mut rx = self.status_rx.clone();
+            loop {
+                let status = rx.borrow().clone();
+                if predicate(&status) {
+                    return Ok(());
+                }
+                if let Some(err) = Self::readiness_error(&status) {
+                    return Err(err);
+                }
+                rx.changed().await.map_err(|_| SyncError::Disconnected)?;
             }
-            if let Some(err) = Self::readiness_error(&status) {
-                return Err(err);
-            }
-            rx.changed().await.map_err(|_| SyncError::Disconnected)?;
+        };
+        match tokio::time::timeout(timeout, fut).await {
+            Ok(result) => result,
+            Err(_) => Err(SyncError::Timeout),
         }
     }
 
