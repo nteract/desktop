@@ -918,6 +918,10 @@ jobs:
       - name: Smoke DEB in Ubuntu
         run: |
           CHANNEL="${RUNT_BUILD_CHANNEL:-stable}"
+          if [ "$CHANNEL" = "nightly" ]; then
+            echo "::notice::Skipping nightly DEB smoke until Linux package-manager installs use channel-specific commands."
+            exit 0
+          fi
           DEB="artifacts/nteract-${CHANNEL}-linux-x64.deb"
           docker run --rm \
             -v "${PWD}:/workspace" \
@@ -945,6 +949,10 @@ jobs:
       - name: Smoke RPM in Fedora
         run: |
           CHANNEL="${RUNT_BUILD_CHANNEL:-stable}"
+          if [ "$CHANNEL" = "nightly" ]; then
+            echo "::notice::Skipping nightly RPM smoke until Linux package-manager installs use channel-specific commands."
+            exit 0
+          fi
           RPM="artifacts/nteract-${CHANNEL}-linux-x64.rpm"
           docker run --rm \
             -v "${PWD}:/workspace" \
@@ -1685,7 +1693,7 @@ jobs:
     name: Publish to APT Repository
     runs-on: blacksmith-4vcpu-ubuntu-2204
     needs: [build-notebook-linux-x64, smoke-ubuntu-deb]
-    if: github.event_name != 'pull_request'
+    if: github.event_name != 'pull_request' && inputs.version_suffix == 'stable'
     concurrency:
       group: apt-publish-${{ inputs.version_suffix }}
       cancel-in-progress: false
@@ -1736,7 +1744,7 @@ jobs:
     name: Smoke APT Repository
     runs-on: blacksmith-4vcpu-ubuntu-2204
     needs: [compute-version, publish-apt]
-    if: github.event_name != 'pull_request'
+    if: github.event_name != 'pull_request' && inputs.version_suffix == 'stable'
     steps:
       - name: Checkout
         uses: actions/checkout@v6
