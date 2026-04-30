@@ -53,6 +53,7 @@ import {
   type ExecutionState,
   diffExecutions,
 } from "./runtime-state";
+import { createTextAttributionEvent } from "./text-attribution-event";
 import { FrameType } from "./transport";
 import type { NotebookTransport } from "./transport";
 
@@ -468,10 +469,7 @@ export class SyncEngine {
           concatMap((e) => {
             // Attributions → broadcast
             if (e.attributions && e.attributions.length > 0) {
-              this._broadcasts$.next({
-                type: "text_attribution",
-                attributions: e.attributions,
-              });
+              this._broadcasts$.next(createTextAttributionEvent(e.attributions));
             }
 
             // Send inline sync reply

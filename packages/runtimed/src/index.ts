@@ -40,6 +40,14 @@ export type {
   TextAttribution,
 } from "./handle";
 
+// Text attribution events
+export {
+  createTextAttributionEvent,
+  isTextAttributionEvent,
+  TEXT_ATTRIBUTION_EVENT_TYPE,
+  type TextAttributionEvent,
+} from "./text-attribution-event";
+
 // Cell changeset
 export {
   classifyCellChangesetMaterialization,

@@ -17,6 +17,7 @@
 
 import type { Extension } from "@codemirror/state";
 import { createContext, type ReactNode, useContext, useEffect, useMemo, useRef } from "react";
+import { isTextAttributionEvent } from "runtimed";
 import { type CrdtBridge, createCrdtBridge, type RemoteChange } from "../lib/crdt-editor-bridge";
 import { logger } from "../lib/logger";
 import { updateCellById } from "../lib/notebook-cells";
@@ -108,28 +109,13 @@ export function useCrdtBridge(cellId: string): {
   // Subscribe to the frame bus for inbound text attributions.
   useEffect(() => {
     const unsubscribe = subscribeBroadcast((payload: unknown) => {
-      if (
-        !payload ||
-        typeof payload !== "object" ||
-        (payload as { type?: string }).type !== "text_attribution"
-      ) {
+      if (!isTextAttributionEvent(payload)) {
         return;
       }
 
-      const event = payload as {
-        type: "text_attribution";
-        attributions: Array<{
-          cell_id: string;
-          index: number;
-          text: string;
-          deleted: number;
-          actors: string[];
-        }>;
-      };
-
       logger.debug(
-        `[crdt-bridge] text_attribution broadcast received: ${event.attributions.length} attrs, looking for cell ${cellId.slice(0, 8)}`,
-        event.attributions.map(
+        `[crdt-bridge] text_attribution broadcast received: ${payload.attributions.length} attrs, looking for cell ${cellId.slice(0, 8)}`,
+        payload.attributions.map(
           (a) =>
             `${a.cell_id.slice(0, 8)}: idx=${a.index} del=${a.deleted} text="${a.text.slice(0, 20)}"`,
         ),
@@ -142,7 +128,7 @@ export function useCrdtBridge(cellId: string): {
       // changes, so applying them again would corrupt the editor state.
       const localActor = ctxRef.current.localActor;
       const changes: RemoteChange[] = [];
-      for (const attr of event.attributions) {
+      for (const attr of payload.attributions) {
         if (attr.cell_id !== cellId) continue;
         if (attr.actors.length === 1 && attr.actors[0] === localActor) {
           continue;
