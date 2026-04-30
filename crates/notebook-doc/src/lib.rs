@@ -2210,7 +2210,7 @@ fn read_attachment_refs(doc: &AutoCommit, attachments_id: &ObjId) -> CellAttachm
                 return None;
             }
             let bundle: AttachmentMediaBundle = doc
-                .map_range(&item.id(), ..)
+                .map_range(item.id(), ..)
                 .filter_map(|media_item| {
                     if matches!(media_item.value, automerge::ValueRef::Object(ObjType::Map)) {
                         let blob_hash = read_str(doc, media_item.id(), "blob_hash")?;
