@@ -1,6 +1,7 @@
 ---
 paths:
   - crates/notebook-wire/**
+  - crates/notebook-doc/**
   - crates/notebook-protocol/**
   - crates/notebook-sync/**
   - crates/runtime-doc/**
@@ -29,8 +30,10 @@ frontend transport flow.
   runtime-agent request/response envelopes.
 - `notebook-doc` owns the NotebookDoc Automerge schema. Bump
   `SCHEMA_VERSION` only with a migration plan that preserves real user data.
-- `runtime-doc` owns daemon-authored runtime state. The daemon/runtime agent are
-  the only writers; frontend and Python peers consume it as read-only sync.
+- `runtime-doc` owns runtime-state schema. Kernel lifecycle, queue, outputs,
+  env, trust, project, path, and save state are daemon/runtime-agent authored;
+  widget comm state under `comms/` has an intentional frontend write path via
+  the approved comm CRDT writer.
 - Protocol version and NotebookDoc schema version are independent integers.
   Bump `PROTOCOL_VERSION` for breaking framing, handshake, or serialization
   changes; bump `SCHEMA_VERSION` for document schema changes.

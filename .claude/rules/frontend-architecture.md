@@ -24,7 +24,8 @@ and file maps.
 - Cell editing mutates the WASM Automerge handle first for local responsiveness;
   flush pending source sync before execute/save.
 - Persistent runtime state comes from RuntimeStateDoc projections. Broadcasts
-  are for ephemeral events only.
+  are for ephemeral events only. Frontend writes to RuntimeStateDoc should stay
+  limited to the approved widget comm-state path.
 - Preserve split cell-store behavior: update individual cells by id when
   possible, and reserve full replacement for structural changes.
 - For notebook cell rendering, keep stable DOM order in `NotebookView.tsx` and

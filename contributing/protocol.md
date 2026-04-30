@@ -410,7 +410,13 @@ joiners, and ordering races between windows. `RuntimeStateDoc` is the
 daemon-authoritative, per-notebook Automerge document synced via frame type
 `0x05` on the existing notebook connection.
 
-The daemon writes kernel status, execution queue, environment progress, project context, and trust state. Clients receive updates via normal Automerge sync — read-only enforced by stripping client changes. The frontend reads via `useRuntimeState()` and the project runtime stores.
+The daemon writes kernel status, execution queue, environment progress, project
+context, trust state, path/save state, and outputs. Clients receive those fields
+via normal Automerge sync, with unexpected client changes stripped. Widget comm
+state is the intentional exception: frontend-originated widget state updates
+write under `doc.comms/` through the approved comm CRDT writer, and the runtime
+agent forwards those deltas to the kernel. The frontend reads runtime state via
+`useRuntimeState()` and the project runtime stores.
 
 **Key files:** `crates/runtime-doc/src/doc.rs` (schema + setters), `crates/runtime-doc/src/handle.rs` (handle), `apps/notebook/src/lib/runtime-state.ts` (frontend store + hook).
 
