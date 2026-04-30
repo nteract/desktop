@@ -1166,6 +1166,11 @@ async fn test_untitled_notebook_persists_through_eviction() {
         wait_for_session_ready(&client3, SESSION_READY_TIMEOUT).await,
         "reconnected client should reach session-ready state within 2s"
     );
+    assert!(
+        wait_for_cell_count(&client3, 2, SESSION_READY_TIMEOUT).await,
+        "reconnected client should receive persisted cells within {:?}",
+        SESSION_READY_TIMEOUT
+    );
 
     let cells = client3.get_cells();
     assert_eq!(
