@@ -14,7 +14,7 @@ use rmcp::model::{
     ListResourcesResult, ListToolsResult, ReadResourceRequestParams, ReadResourceResult,
     ServerCapabilities, ServerInfo, Tool,
 };
-use rmcp::service::{NotificationContext, RequestContext, RoleServer};
+use rmcp::service::{NotificationContext, Peer, RequestContext, RoleServer};
 use rmcp::{ErrorData as McpError, ServerHandler};
 use tokio::sync::{mpsc, Mutex, Notify, RwLock};
 use tracing::{error, info, warn};
@@ -28,6 +28,7 @@ use crate::version::ReconnectionEvent;
 /// Env var name passed to a freshly respawned child to seed its rejoin
 /// target. Must match `runt_mcp::daemon_watch::REJOIN_ENV_VAR`.
 const REJOIN_ENV_VAR: &str = "NTERACT_MCP_REJOIN_NOTEBOOK";
+const SLOW_CHILD_CALL: Duration = Duration::from_secs(30);
 
 /// Extract the daemon version from a freshly-initialized child's MCP
 /// `ServerInfo`. `runt mcp` stamps the daemon version into
@@ -73,6 +74,11 @@ pub struct ProxyConfig {
 pub struct ProxyState {
     /// rmcp client connected to the child process.
     pub child_client: Option<RunningChild>,
+    /// Monotonic generation for the child transport.
+    ///
+    /// Forwarded calls snapshot this with a cloned child peer so stale calls
+    /// cannot commit state after the proxy has restarted the child.
+    pub child_generation: u64,
     /// Number of times the child has been restarted.
     pub restart_count: u32,
     /// Circuit breaker for crash detection.
@@ -129,6 +135,7 @@ impl McpProxy {
         Self {
             state: Arc::new(RwLock::new(ProxyState {
                 child_client: None,
+                child_generation: 0,
                 restart_count: 0,
                 circuit_breaker: CircuitBreaker::new(),
                 cached_tools,
@@ -189,16 +196,16 @@ impl McpProxy {
         // crates/runt-mcp/src/lib.rs::get_info).
         let daemon_version = extract_daemon_version(&client);
 
-        let mut state = self.state.write().await;
-        state.child_client = Some(client);
-        state.child_spawn_time = Some(Instant::now());
+        let generation = {
+            let mut state = self.state.write().await;
+            state.child_generation = state.child_generation.wrapping_add(1);
+            state.child_client = Some(client);
+            state.child_spawn_time = Some(Instant::now());
+            state.last_daemon_version = daemon_version;
+            state.child_generation
+        };
 
-        // Refresh tool cache from the new child
-        self.refresh_tool_cache_locked(&mut state).await;
-
-        state.last_daemon_version = daemon_version;
-
-        drop(state);
+        self.refresh_tool_cache_for_generation(generation).await;
 
         // Spawn background task to monitor child lifecycle
         self.spawn_child_monitor();
@@ -224,12 +231,12 @@ impl McpProxy {
         drop(restart_lock);
 
         // Phase 1: Drop old client, check circuit breaker
-        let child_was_dead = {
+        let (child_was_dead, old_child) = {
             let mut state = self.state.write().await;
             let was_dead = state.child_client.is_none();
-
-            if let Some(old) = state.child_client.take() {
-                let _ = old.cancel().await;
+            let old_child = state.child_client.take();
+            if old_child.is_some() {
+                state.child_generation = state.child_generation.wrapping_add(1);
             }
 
             let uptime = state
@@ -252,12 +259,16 @@ impl McpProxy {
                            so a fresh MCP connection is established. You may also need to \
                            reinstall the nteract extension.";
                 state.reconnection_message = Some(msg.to_string());
-                *self.restart_in_progress.lock().await = false;
+                drop(state);
+                self.clear_restart_in_progress().await;
                 return Err(msg.to_string());
             }
 
-            was_dead
+            (was_dead, old_child)
         };
+        if let Some(old) = old_child {
+            let _ = old.cancel().await;
+        }
 
         // Phase 2: Backoff (skip for daemon upgrade exits)
         if !child_was_dead {
@@ -282,6 +293,8 @@ impl McpProxy {
                 error!("{msg}");
                 let mut state = self.state.write().await;
                 state.reconnection_message = Some(msg.clone());
+                drop(state);
+                self.clear_restart_in_progress().await;
                 return Err(msg);
             }
         };
@@ -318,77 +331,84 @@ impl McpProxy {
                 // ServerInfo.title before moving the client into state.
                 let new_version = extract_daemon_version(&client);
 
-                let mut state = self.state.write().await;
-                state.child_client = Some(client);
-                state.restart_count += 1;
-                state.child_spawn_time = Some(Instant::now());
-                state.last_restart_time = Some(Instant::now());
+                let (old_tools, generation) = {
+                    let mut state = self.state.write().await;
+                    state.child_generation = state.child_generation.wrapping_add(1);
+                    state.child_client = Some(client);
+                    state.restart_count += 1;
+                    state.child_spawn_time = Some(Instant::now());
+                    state.last_restart_time = Some(Instant::now());
+                    (state.cached_tools.clone(), state.child_generation)
+                };
 
                 // Refresh tool cache and check for divergence
-                let old_tools = state.cached_tools.clone();
-                self.refresh_tool_cache_locked(&mut state).await;
+                self.refresh_tool_cache_for_generation(generation).await;
 
-                if let (Some(ref old), Some(ref new)) = (&old_tools, &state.cached_tools) {
-                    match tools::detect_divergence(old, new) {
-                        ToolDivergence::Same => {}
-                        ToolDivergence::Superset { ref added } => {
-                            info!("New tools available after restart: {added:?}");
-                            if let Some(ref tx) = state.tool_list_changed_tx {
-                                let _ = tx.send(()).await;
+                let tool_list_changed_tx = {
+                    let mut state = self.state.write().await;
+                    let divergence_tx = if let (Some(ref old), Some(ref new)) =
+                        (&old_tools, &state.cached_tools)
+                    {
+                        match tools::detect_divergence(old, new) {
+                            ToolDivergence::Same => None,
+                            ToolDivergence::Superset { ref added } => {
+                                info!("New tools available after restart: {added:?}");
+                                state.tool_list_changed_tx.clone()
+                            }
+                            ToolDivergence::Incompatible {
+                                ref removed,
+                                ref added,
+                            } => {
+                                warn!(
+                                    "Tool list incompatible after restart — removed: {removed:?}, added: {added:?}. \
+                                     Exiting so the MCP client can restart with the new tool set."
+                                );
+                                state.should_exit = true;
+                                // Signal the exit so nteract-mcp can shut down
+                                self.exit_signal.notify_waiters();
+                                None
                             }
                         }
-                        ToolDivergence::Incompatible {
-                            ref removed,
-                            ref added,
-                        } => {
-                            warn!(
-                                "Tool list incompatible after restart — removed: {removed:?}, added: {added:?}. \
-                                 Exiting so the MCP client can restart with the new tool set."
-                            );
-                            state.should_exit = true;
-                            // Signal the exit so nteract-mcp can shut down
-                            self.exit_signal.notify_waiters();
-                        }
-                    }
-                }
+                    } else {
+                        None
+                    };
 
-                // The new child told us the daemon version it saw on its
-                // startup handshake. Compare it with what the previous
-                // child reported to detect a daemon upgrade across the
-                // restart. If either side is unknown we degrade to the
-                // generic ChildRestart banner below.
-                state.last_daemon_version = new_version.clone();
+                    // The new child told us the daemon version it saw on its
+                    // startup handshake. Compare it with what the previous
+                    // child reported to detect a daemon upgrade across the
+                    // restart. If either side is unknown we degrade to the
+                    // generic ChildRestart banner below.
+                    state.last_daemon_version = new_version.clone();
 
-                // Session rejoin is now the child's responsibility
-                // (`daemon_watch` consumes the seeded REJOIN env var on
-                // its first `Connected` event). We still record whether
-                // we handed off a target so reconnection messages are
-                // informative.
-                let session_rejoined = rejoin_target.is_some();
-                let reconnection_event = match (old_version.as_deref(), new_version.as_deref()) {
-                    (Some(old), Some(new)) if old != new => ReconnectionEvent::DaemonUpgrade {
-                        old_version: old.to_string(),
-                        new_version: new.to_string(),
-                        session_rejoined,
-                    },
-                    _ => ReconnectionEvent::ChildRestart { session_rejoined },
+                    // Session rejoin is now the child's responsibility
+                    // (`daemon_watch` consumes the seeded REJOIN env var on
+                    // its first `Connected` event). We still record whether
+                    // we handed off a target so reconnection messages are
+                    // informative.
+                    let session_rejoined = rejoin_target.is_some();
+                    let reconnection_event = match (old_version.as_deref(), new_version.as_deref())
+                    {
+                        (Some(old), Some(new)) if old != new => ReconnectionEvent::DaemonUpgrade {
+                            old_version: old.to_string(),
+                            new_version: new.to_string(),
+                            session_rejoined,
+                        },
+                        _ => ReconnectionEvent::ChildRestart { session_rejoined },
+                    };
+                    state.reconnection_message = Some(reconnection_event.message());
+                    state.tool_list_changed_tx.clone().or(divergence_tx)
                 };
-                state.reconnection_message = Some(reconnection_event.message());
-
-                drop(state);
 
                 // Spawn new monitor for the restarted child
                 self.spawn_child_monitor();
 
                 // Notify upstream client to keep connection alive
-                let state = self.state.read().await;
-                if let Some(ref tx) = state.tool_list_changed_tx {
+                if let Some(tx) = tool_list_changed_tx {
                     let _ = tx.send(()).await;
                     info!("Notified upstream client of tool list change to keep connection alive");
                 }
-                drop(state);
 
-                *self.restart_in_progress.lock().await = false;
+                self.clear_restart_in_progress().await;
                 self.child_ready.notify_waiters();
                 info!("Child restarted successfully");
                 Ok(())
@@ -397,7 +417,8 @@ impl McpProxy {
                 let mut state = self.state.write().await;
                 state.reconnection_message = Some(format!("Child restart failed: {e}"));
                 error!("Failed to restart child: {e}");
-                *self.restart_in_progress.lock().await = false;
+                drop(state);
+                self.clear_restart_in_progress().await;
                 Err(e)
             }
         }
@@ -580,20 +601,48 @@ impl McpProxy {
     /// a bare `runt mcp` against a missing daemon returns `{tools: []}`, and
     /// without the fallback the MCP client would see zero tools and stick.
     pub async fn child_tools(&self) -> Vec<Tool> {
-        let state = self.state.read().await;
-        if let Some(ref client) = state.child_client {
-            match client.list_tools(None).await {
-                Ok(result) if !result.tools.is_empty() => return result.tools,
+        if let Ok(snapshot) = self.child_peer_snapshot().await {
+            let start = Instant::now();
+            match snapshot.peer.list_tools(None).await {
+                Ok(result) if !result.tools.is_empty() => {
+                    self.log_child_call_if_slow(
+                        "list_tools",
+                        None,
+                        snapshot.generation,
+                        start.elapsed(),
+                    )
+                    .await;
+                    return result.tools;
+                }
                 Ok(_) => {
+                    self.log_child_call_if_slow(
+                        "list_tools",
+                        None,
+                        snapshot.generation,
+                        start.elapsed(),
+                    )
+                    .await;
                     warn!("Child returned empty tool list — falling back to cached tools");
                 }
                 Err(e) => {
+                    self.log_child_call_if_slow(
+                        "list_tools",
+                        None,
+                        snapshot.generation,
+                        start.elapsed(),
+                    )
+                    .await;
                     warn!("Failed to list child tools: {e}");
                 }
             }
         }
         // Fall back to cache
-        state.cached_tools.clone().unwrap_or_default()
+        self.state
+            .read()
+            .await
+            .cached_tools
+            .clone()
+            .unwrap_or_default()
     }
 
     /// List child resources (pass-through).
@@ -601,11 +650,29 @@ impl McpProxy {
         &self,
         request: Option<rmcp::model::PaginatedRequestParams>,
     ) -> ListResourcesResult {
-        let state = self.state.read().await;
-        if let Some(ref client) = state.child_client {
-            match client.list_resources(request).await {
-                Ok(result) => return result,
-                Err(e) => warn!("Failed to list child resources: {e}"),
+        if let Ok(snapshot) = self.child_peer_snapshot().await {
+            let start = Instant::now();
+            match snapshot.peer.list_resources(request).await {
+                Ok(result) => {
+                    self.log_child_call_if_slow(
+                        "list_resources",
+                        None,
+                        snapshot.generation,
+                        start.elapsed(),
+                    )
+                    .await;
+                    return result;
+                }
+                Err(e) => {
+                    self.log_child_call_if_slow(
+                        "list_resources",
+                        None,
+                        snapshot.generation,
+                        start.elapsed(),
+                    )
+                    .await;
+                    warn!("Failed to list child resources: {e}");
+                }
             }
         }
         ListResourcesResult::default()
@@ -616,11 +683,29 @@ impl McpProxy {
         &self,
         request: Option<rmcp::model::PaginatedRequestParams>,
     ) -> ListResourceTemplatesResult {
-        let state = self.state.read().await;
-        if let Some(ref client) = state.child_client {
-            match client.list_resource_templates(request).await {
-                Ok(result) => return result,
-                Err(e) => warn!("Failed to list child resource templates: {e}"),
+        if let Ok(snapshot) = self.child_peer_snapshot().await {
+            let start = Instant::now();
+            match snapshot.peer.list_resource_templates(request).await {
+                Ok(result) => {
+                    self.log_child_call_if_slow(
+                        "list_resource_templates",
+                        None,
+                        snapshot.generation,
+                        start.elapsed(),
+                    )
+                    .await;
+                    return result;
+                }
+                Err(e) => {
+                    self.log_child_call_if_slow(
+                        "list_resource_templates",
+                        None,
+                        snapshot.generation,
+                        start.elapsed(),
+                    )
+                    .await;
+                    warn!("Failed to list child resource templates: {e}");
+                }
             }
         }
         ListResourceTemplatesResult::default()
@@ -661,32 +746,47 @@ impl McpProxy {
         &self,
         params: &CallToolRequestParams,
     ) -> Result<CallToolResult, McpError> {
-        let state = self.state.read().await;
-        let client = state
-            .child_client
-            .as_ref()
-            .ok_or_else(|| McpError::internal_error("nteract MCP server not running", None))?;
+        let snapshot = self.child_peer_snapshot().await?;
+        let generation = snapshot.generation;
+        let start = Instant::now();
 
-        client
-            .call_tool(params.clone())
-            .await
-            .map_err(|e| McpError::internal_error(format!("Child tool call failed: {e}"), None))
+        let result =
+            snapshot.peer.call_tool(params.clone()).await.map_err(|e| {
+                McpError::internal_error(format!("Child tool call failed: {e}"), None)
+            });
+        self.log_child_call_if_slow(
+            "call_tool",
+            Some(params.name.as_ref()),
+            generation,
+            start.elapsed(),
+        )
+        .await;
+        result
     }
 
     async fn try_forward_read_resource(
         &self,
         params: &ReadResourceRequestParams,
     ) -> Result<ReadResourceResult, McpError> {
-        let state = self.state.read().await;
-        let client = state
-            .child_client
-            .as_ref()
-            .ok_or_else(|| McpError::internal_error("nteract MCP server not running", None))?;
+        let snapshot = self.child_peer_snapshot().await?;
+        let generation = snapshot.generation;
+        let start = Instant::now();
 
-        client
+        let result = snapshot
+            .peer
             .read_resource(params.clone())
             .await
-            .map_err(|e| McpError::internal_error(format!("Child resource read failed: {e}"), None))
+            .map_err(|e| {
+                McpError::internal_error(format!("Child resource read failed: {e}"), None)
+            });
+        self.log_child_call_if_slow(
+            "read_resource",
+            Some(params.uri.as_ref()),
+            generation,
+            start.elapsed(),
+        )
+        .await;
+        result
     }
 
     async fn track_session(&self, params: &CallToolRequestParams, result: &CallToolResult) {
@@ -706,30 +806,92 @@ impl McpProxy {
         }
     }
 
-    async fn refresh_tool_cache_locked(&self, state: &mut ProxyState) {
-        if let Some(ref client) = state.child_client {
-            match client.list_tools(None).await {
-                Ok(child_tools) => {
-                    // Never enshrine an empty list. An old/broken child that
-                    // transiently returns `{tools: []}` would otherwise poison
-                    // the on-disk cache — `load_cached_tools` treats an empty
-                    // file as valid, so every subsequent start would read
-                    // zero tools and skip the built-in fallback.
-                    if child_tools.tools.is_empty() {
-                        warn!("Child returned empty tool list — keeping prior cache");
-                    } else {
+    async fn refresh_tool_cache_for_generation(&self, generation: u64) {
+        let snapshot = match self.child_peer_snapshot().await {
+            Ok(snapshot) if snapshot.generation == generation => snapshot,
+            _ => return,
+        };
+        let start = Instant::now();
+        match snapshot.peer.list_tools(None).await {
+            Ok(child_tools) => {
+                // Never enshrine an empty list. An old/broken child that
+                // transiently returns `{tools: []}` would otherwise poison
+                // the on-disk cache — `load_cached_tools` treats an empty
+                // file as valid, so every subsequent start would read
+                // zero tools and skip the built-in fallback.
+                if child_tools.tools.is_empty() {
+                    warn!("Child returned empty tool list — keeping prior cache");
+                } else {
+                    let tools = child_tools.tools;
+                    let mut state = self.state.write().await;
+                    if state.child_generation == generation {
                         if let Some(ref cache_dir) = self.config.cache_dir {
-                            tools::save_tool_cache(cache_dir, &child_tools.tools);
+                            tools::save_tool_cache(cache_dir, &tools);
                         }
-                        state.cached_tools = Some(child_tools.tools);
+                        state.cached_tools = Some(tools);
                     }
                 }
-                Err(e) => {
-                    warn!("Failed to refresh tool cache: {e}");
-                }
+            }
+            Err(e) => {
+                warn!("Failed to refresh tool cache: {e}");
             }
         }
+        self.log_child_call_if_slow("refresh_tool_cache", None, generation, start.elapsed())
+            .await;
     }
+
+    async fn child_peer_snapshot(&self) -> Result<ChildPeerSnapshot, McpError> {
+        let state = self.state.read().await;
+        let client = state
+            .child_client
+            .as_ref()
+            .ok_or_else(|| McpError::internal_error("nteract MCP server not running", None))?;
+        Ok(ChildPeerSnapshot {
+            peer: client.peer().clone(),
+            generation: state.child_generation,
+        })
+    }
+
+    async fn log_child_call_if_slow(
+        &self,
+        operation: &str,
+        target: Option<&str>,
+        generation: u64,
+        elapsed: Duration,
+    ) {
+        if elapsed < SLOW_CHILD_CALL {
+            return;
+        }
+        let (transport_closed, restart_count) = {
+            let state = self.state.read().await;
+            (
+                if state.child_generation == generation {
+                    state.child_client.as_ref().map(|c| c.is_transport_closed())
+                } else {
+                    None
+                },
+                state.restart_count,
+            )
+        };
+        warn!(
+            operation,
+            target,
+            generation,
+            elapsed_ms = elapsed.as_millis(),
+            ?transport_closed,
+            restart_count,
+            "Slow child MCP call"
+        );
+    }
+
+    async fn clear_restart_in_progress(&self) {
+        *self.restart_in_progress.lock().await = false;
+    }
+}
+
+struct ChildPeerSnapshot {
+    peer: Peer<child::RoleChild>,
+    generation: u64,
 }
 
 // ---------------------------------------------------------------------------

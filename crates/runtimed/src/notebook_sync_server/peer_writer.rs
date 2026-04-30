@@ -11,6 +11,7 @@ use crate::requests::{handle_notebook_request, request_label};
 
 pub(super) const PEER_OUTBOUND_QUEUE_CAPACITY: usize = 1024;
 const PEER_REQUEST_QUEUE_CAPACITY: usize = 64;
+const SLOW_PEER_REQUEST: std::time::Duration = std::time::Duration::from_secs(30);
 
 struct OutboundFrame {
     frame_type: NotebookFrameType,
@@ -157,6 +158,19 @@ pub(super) fn spawn_peer_request_worker(
             let start = std::time::Instant::now();
             let response = handle_notebook_request(&room, envelope.request, daemon.clone()).await;
             let elapsed = start.elapsed();
+            if elapsed >= SLOW_PEER_REQUEST {
+                let response_kind = std::mem::discriminant(&response);
+                warn!(
+                    request = label,
+                    id = req_id,
+                    peer = %peer_id,
+                    notebook = %notebook_id,
+                    elapsed_ms = elapsed.as_millis(),
+                    writer_queue_depth,
+                    ?response_kind,
+                    "Slow notebook peer request"
+                );
+            }
             debug!(
                 "[notebook-sync] Request {} id={} completed in {:?}",
                 label, req_id, elapsed,

@@ -38,6 +38,7 @@ pub const REJOIN_ENV_VAR: &str = "NTERACT_MCP_REJOIN_NOTEBOOK";
 
 const REJOIN_RETRY_DELAY: Duration = Duration::from_secs(1);
 const REJOIN_MAX_RETRIES: u32 = 3;
+const REJOIN_INITIAL_LOAD_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// What the watch loop should do in response to a `DaemonEvent`.
 #[derive(Debug, PartialEq, Eq)]
@@ -315,7 +316,10 @@ async fn rejoin(
                 Ok(r) => {
                     let handle = r.handle;
                     let broadcast_rx = r.broadcast_rx;
-                    if let Err(e) = handle.await_initial_load_ready().await {
+                    if let Err(e) = handle
+                        .await_initial_load_ready_timeout(REJOIN_INITIAL_LOAD_TIMEOUT)
+                        .await
+                    {
                         Err(e)
                     } else {
                         let cell_count = handle.get_cells().len();
@@ -335,7 +339,10 @@ async fn rejoin(
                 Ok(r) => {
                     let handle = r.handle;
                     let broadcast_rx = r.broadcast_rx;
-                    if let Err(e) = handle.await_initial_load_ready().await {
+                    if let Err(e) = handle
+                        .await_initial_load_ready_timeout(REJOIN_INITIAL_LOAD_TIMEOUT)
+                        .await
+                    {
                         Err(e)
                     } else {
                         let cell_count = handle.get_cells().len();
