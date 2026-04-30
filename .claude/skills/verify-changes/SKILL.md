@@ -16,6 +16,7 @@ Run `git diff --name-only` to see changed files and match them to the table belo
 | Files changed | Test command |
 |---|---|
 | `crates/runtimed/src/**` | `cargo test -p runtimed` |
+| `crates/notebook-wire/src/**` | `cargo test -p notebook-wire && cargo test -p notebook-protocol` |
 | `crates/notebook-doc/src/**` | `cargo test -p notebook-doc` |
 | `crates/notebook-protocol/src/**` | `cargo test -p notebook-protocol` |
 | `crates/notebook-sync/src/**` | `cargo test -p notebook-sync` |

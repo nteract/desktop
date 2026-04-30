@@ -1,0 +1,13 @@
+[package]
+name = "notebook-wire"
+version = "0.2.7"
+edition.workspace = true
+description = "Low-level notebook wire constants, frame limits, and session-control types"
+repository.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+serde = { workspace = true }

@@ -42,11 +42,11 @@ These are settled decisions. Treat them as given:
 
 ## What Currently Exists
 
-The system is split into 16 Rust crates, a React/TypeScript frontend, and 3
+The system is split into multiple Rust crates, a React/TypeScript frontend, and
 Python packages. The major architectural seams are:
 
 ### Daemon ↔ Client Protocol
-- Unix socket, length-prefixed typed frames (7 frame types)
+- Unix socket, length-prefixed typed frames (`notebook-wire` owns frame bytes, caps, preamble constants, and connection-local status shapes)
 - Preamble (magic + version) → JSON handshake → Automerge initial sync → steady state
 - Frame types: AutomergeSync (0x00), Request (0x01), Response (0x02),
   Broadcast (0x03), Presence (0x04), RuntimeStateSync (0x05),
@@ -68,6 +68,7 @@ Python packages. The major architectural seams are:
 - Rule: never write to CRDT in response to a daemon broadcast (daemon already wrote)
 
 ### Crate Boundaries
+- `notebook-wire`: Frame bytes, preamble constants, frame caps, typed-frame enum, session-control status shapes
 - `notebook-doc`: Automerge schema, cell CRUD, nbformat fallback fields, per-cell accessors, diffing
 - `notebook-protocol`: Wire types (Request, Response, Broadcast)
 - `notebook-sync`: DocHandle, sync infrastructure, Python-side per-cell accessors
@@ -193,6 +194,7 @@ Start with these to understand the actual implementation:
 - `crates/notebook-doc/src/diff.rs`
 - `crates/notebook-protocol/src/protocol.rs`
 - `crates/notebook-protocol/src/connection.rs`
+- `crates/notebook-wire/src/lib.rs`
 
 **WASM bindings:**
 - `crates/runtimed-wasm/src/lib.rs`

@@ -11,7 +11,7 @@
 // ── Frame type constants ─────────────────────────────────────────────
 
 /**
- * Frame type constants matching `notebook_doc::frame_types` in Rust.
+ * Frame type constants matching `notebook_wire::frame_types` in Rust.
  *
  * These correspond to the first byte of each typed frame payload on
  * notebook sync connections.

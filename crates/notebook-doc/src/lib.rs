@@ -43,7 +43,6 @@
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 
 pub mod diff;
-pub mod frame_types;
 pub mod metadata;
 pub mod mime;
 pub mod pep723;

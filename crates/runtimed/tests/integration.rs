@@ -9,10 +9,10 @@ use std::time::Duration;
 
 use notebook_protocol::connection::LaunchSpec;
 use notebook_sync::connect;
+use notebook_wire::frame_types;
 use runtime_doc::RuntimeLifecycle;
 use runtimed::client::PoolClient;
 use runtimed::daemon::{Daemon, DaemonConfig};
-use runtimed::notebook_doc::frame_types;
 use runtimed::protocol::{DependencyGuard, NotebookRequest, NotebookResponse};
 use runtimed::EnvType;
 use tempfile::TempDir;

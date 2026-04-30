@@ -18,7 +18,9 @@ graph TD
     end
 
     subgraph "Rust Crates (Cargo workspace)"
+        NW["notebook-wire<br/><i>wire constants/status shapes</i>"]
         ND["notebook-doc<br/><i>shared Automerge doc ops</i>"]
+        NP["notebook-protocol<br/><i>request/response protocol</i>"]
         RTC["runtimed-client<br/><i>shared client/runtime helpers</i>"]
         RD["runtimed (lib + bin)<br/><i>daemon</i>"]
         RC["runt (bin: runt)<br/><i>CLI</i>"]
@@ -38,6 +40,14 @@ graph TD
     RWASM -->|"wasm-pack output in<br/>apps/notebook/src/wasm/"| NUI
 
     %% Rust crate dependencies (path deps in Cargo.toml)
+    NW -->|"path dep"| NP
+    NW -->|"path dep"| RD
+    NW -->|"path dep"| NB
+    NW -->|"path dep"| RWASM
+    NP -->|"path dep"| RD
+    NP -->|"path dep"| NB
+    NP -->|"path dep"| RTC
+    NP -->|"path dep"| RDPY
     ND -->|"path dep"| RD
     ND -->|"path dep"| RWASM
     ND -->|"path dep"| RDPY
@@ -64,7 +74,7 @@ graph TD
     classDef artifact fill:#e8f5e9,stroke:#2e7d32
 
     class NUI frontend
-    class ND,RTC,RD,RC,NB,XT,RWASM,RDPY rust
+    class NW,ND,NP,RTC,RD,RC,NB,XT,RWASM,RDPY rust
     class APP,PY artifact
 ```
 
@@ -95,6 +105,7 @@ graph BT
     RTC["runtimed-client"]
     RC["runt"]
     NB["notebook"]
+    NW["notebook-wire"]
     ND["notebook-doc"]
     NP["notebook-protocol"]
     NS["notebook-sync"]
@@ -107,6 +118,7 @@ graph BT
     RWASM["runtimed-wasm"]
 
     NB -->|"depends on"| RTC
+    NB -->|"depends on"| NW
     NB -->|"depends on"| ND
     NB -->|"depends on"| NP
     NB -->|"depends on"| NS
@@ -117,6 +129,7 @@ graph BT
     RC -->|"depends on"| RW
     RC -->|"depends on"| KE
     RD -->|"depends on"| ND
+    RD -->|"depends on"| NW
     RD -->|"depends on"| NP
     RD -->|"depends on"| RTC
     RD -->|"depends on"| KL
@@ -130,7 +143,8 @@ graph BT
     RDPY -->|"depends on"| RW
     RDPY -->|"depends on"| KE
     RWASM -->|"depends on"| ND
-    NP -->|"depends on"| ND
+    RWASM -->|"depends on"| NW
+    NP -->|"depends on"| NW
     NP -->|"depends on"| KE
     NS -->|"depends on"| ND
     NS -->|"depends on"| NP
@@ -143,7 +157,7 @@ graph BT
     classDef leaf fill:#c8e6c9,stroke:#388e3c
     classDef shared fill:#e3f2fd,stroke:#1976d2
 
-    class KL,KE,RT,RW,RWASM standalone
+    class KL,KE,RT,RW,RWASM,NW standalone
     class XT standalone
     class NB,RC,RDPY leaf
     class RD,RTC,ND,NP,NS shared
@@ -159,4 +173,5 @@ graph BT
 | `xtask` depends on `dirs`, `runt-workspace`, `serde_json` | It shells out to `cargo build`, `pnpm`, and `cargo tauri` but also reads workspace config via `runt-workspace` and resolves paths via `dirs` |
 | `runtimed-wasm` must build before `notebook-ui` | wasm-pack output lands in `apps/notebook/src/wasm/runtimed-wasm/`; Vite imports it at build time. Artifacts are committed to the repo, so this step is only needed when changing `crates/runtimed-wasm/`. |
 | Python wheel uses maturin | `python/runtimed/pyproject.toml` points `maturin` at `crates/runtimed-py/Cargo.toml` with `bindings = "pyo3"` |
+| `notebook-wire` is shared | `crates/notebook-wire/` provides frame bytes, preamble constants, frame caps, typed-frame enum, and session-control status shapes for protocol, daemon, Tauri relay, and WASM consumers |
 | `notebook-doc` is shared | `crates/notebook-doc/` provides Automerge document operations used by `runtimed`, `runtimed-wasm`, and `runtimed-py` — the single source of truth for cell mutations |

@@ -198,11 +198,12 @@ Three crates share "notebook" in the name but have distinct responsibilities:
 
 | Crate | Owns | Consumers |
 |-------|------|-----------|
-| `notebook-doc` | Automerge document schema, cell CRUD, nbformat fallback fields, per-cell accessors, `CellChangeset` diffing, fractional indexing, presence encoding, frame type constants | daemon, WASM, Python bindings |
+| `notebook-wire` | Frame bytes, preamble constants, frame caps, typed-frame enum, session-control status shapes | daemon, WASM, Tauri relay, `notebook-protocol` |
+| `notebook-doc` | Automerge document schema, cell CRUD, nbformat fallback fields, per-cell accessors, `CellChangeset` diffing, fractional indexing, presence encoding | daemon, WASM, Python bindings |
 | `notebook-protocol` | Wire protocol types (`NotebookRequest`, `NotebookResponse`, `NotebookBroadcast`), connection handshake, frame parsing | daemon, `notebook-sync`, Python bindings |
 | `notebook-sync` | Sync infrastructure (`DocHandle`), snapshot watch channel, per-cell accessors for Python clients, sync task management | Python bindings (`runtimed-py`) |
 
-**Rule of thumb:** Document schema or cell operations → `notebook-doc`. New request/response/broadcast type → `notebook-protocol`. Python client sync behavior → `notebook-sync`.
+**Rule of thumb:** Frame bytes, caps, and connection-local readiness shapes → `notebook-wire`. Document schema or cell operations → `notebook-doc`. New request/response/broadcast type → `notebook-protocol`. Python client sync behavior → `notebook-sync`.
 
 The Tauri app crate (`crates/notebook/`) is glue — it wires Tauri commands to daemon requests and manages the socket relay. It does not own protocol types or document operations.
 
@@ -277,7 +278,7 @@ The frontend now owns a local Automerge doc via `runtimed-wasm` WASM bindings, m
 - `crates/notebook-sync/src/connect.rs` — `connect_open_relay()`, `connect_create_relay()`: transparent byte pipe setup
 - `crates/runtimed-wasm/src/lib.rs` — WASM bindings: local Automerge peer, frame demux, per-cell accessors, `CellChangeset`
 - `crates/notebook/src/lib.rs` — Tauri commands and relay tasks (`send_frame` accepts raw binary via `tauri::ipc::Request`, `setup_sync_receivers`)
-- `crates/notebook-doc/src/frame_types.rs` — Shared frame type constants (0x00–0x07)
+- `crates/notebook-wire/src/lib.rs` — Shared frame type constants (0x00–0x07), preamble bytes, caps, typed-frame enum, session-control status shapes
 - `packages/runtimed/src/transport.ts` — TypeScript `FrameType` constants and transport boundary
 - `apps/notebook/src/hooks/useAutomergeNotebook.ts` — WASM handle owner, `scheduleMaterialize`, `CellChangeset` dispatch
 - `apps/notebook/src/lib/materialize-cells.ts` — `materializeCellFromWasm()` (per-cell) + `cellSnapshotsToNotebookCells()` (full)
