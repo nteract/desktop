@@ -335,6 +335,36 @@ export class NotebookClient {
     }
   }
 
+  /**
+   * Clone an existing room into a new in-memory notebook.
+   *
+   * The daemon owns the fork. Host shells decide what to do with the
+   * returned room id, such as opening a new window or route.
+   */
+  async cloneAsEphemeral(
+    sourceNotebookId: string,
+  ): Promise<{ notebookId: string; workingDir?: string | null }> {
+    let response: NotebookResponse;
+    try {
+      response = await this.sendRequest({
+        type: "clone_as_ephemeral",
+        source_notebook_id: sourceNotebookId,
+      });
+    } catch (e) {
+      this.log.error("[notebook-client] Clone request failed:", e);
+      throw e;
+    }
+
+    switch (response.result) {
+      case "notebook_cloned":
+        return { notebookId: response.notebook_id, workingDir: response.working_dir };
+      case "error":
+        throw new Error(`Daemon clone failed: ${response.error}`);
+      default:
+        throw new Error(`Unexpected clone_as_ephemeral response: ${JSON.stringify(response)}`);
+    }
+  }
+
   /** Send a comm message to the kernel (for widget interactions). */
   async sendComm(message: {
     header: Record<string, unknown>;

@@ -1,4 +1,3 @@
-import { invoke } from "@tauri-apps/api/core";
 import { useNotebookHost } from "@nteract/notebook-host";
 import { useCallback, useEffect, useState } from "react";
 import { logger } from "../lib/logger";
@@ -47,12 +46,12 @@ export function useUpdater() {
   const restartToUpdate = useCallback(async () => {
     try {
       logger.info("[updater] opening upgrade screen");
-      await invoke("begin_upgrade");
+      await host.updater.beginUpgrade();
     } catch (e) {
       logger.error("[updater] failed to open upgrade screen:", e);
       setState((prev) => ({ ...prev, status: "available" }));
     }
-  }, []);
+  }, [host]);
 
   useEffect(() => {
     const timer = setTimeout(() => checkForUpdate(), 5000);

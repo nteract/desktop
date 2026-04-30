@@ -35,6 +35,10 @@ vi.mock("@tauri-apps/api/core", () => ({
           notebook_path: null,
           runtime: "python",
         });
+      case "get_default_save_directory":
+        return Promise.resolve("/tmp/notebooks");
+      case "clone_notebook_to_ephemeral":
+        return Promise.resolve("clone-1");
       default:
         return Promise.resolve(undefined);
     }
@@ -227,6 +231,35 @@ describe("createTauriHost()", () => {
     expect(capturedInvokes[0].args).toEqual({ path: "/tmp/nb.ipynb" });
   });
 
+  it("routes notebook file/window operations through host commands", async () => {
+    const host = createTauriHost({ transport: stubTransport });
+    await expect(host.notebook.getDefaultSaveDirectory()).resolves.toBe("/tmp/notebooks");
+    await host.notebook.saveAs("/tmp/notebooks/a.ipynb");
+    await host.notebook.openInNewWindow("/tmp/notebooks/a.ipynb");
+    await expect(host.notebook.cloneToEphemeral()).resolves.toBe("clone-1");
+
+    expect(capturedInvokes.map((x) => x.cmd)).toEqual([
+      "get_default_save_directory",
+      "save_notebook_as",
+      "open_notebook_in_new_window",
+      "clone_notebook_to_ephemeral",
+    ]);
+    expect(capturedInvokes[1].args).toEqual({ path: "/tmp/notebooks/a.ipynb" });
+    expect(capturedInvokes[2].args).toEqual({ path: "/tmp/notebooks/a.ipynb" });
+  });
+
+  it("notebook.onOutputsCleared subscribes to cells:outputs_cleared", async () => {
+    const host = createTauriHost({ transport: stubTransport });
+    const received: string[][] = [];
+    const unlisten = host.notebook.onOutputsCleared((cellIds) => received.push(cellIds));
+    await Promise.resolve();
+    const entry = capturedListens.find((x) => x.event === "cells:outputs_cleared");
+    expect(entry).toBeTruthy();
+    entry?.cb({ payload: ["c1", "c2"] });
+    expect(received).toEqual([["c1", "c2"]]);
+    unlisten();
+  });
+
   it("system.getGitInfo and getUsername route to the correct commands", async () => {
     const host = createTauriHost({ transport: stubTransport });
     await expect(host.system.getGitInfo()).resolves.toEqual({
@@ -254,6 +287,19 @@ describe("createTauriHost()", () => {
     unlisten();
     await Promise.resolve();
     expect(mockUnlisten).toHaveBeenCalledTimes(1);
+  });
+
+  it("daemonEvents.onReadyLive subscribes without cached backfill", async () => {
+    const host = createTauriHost({ transport: stubTransport });
+    const received: unknown[] = [];
+    host.daemonEvents.onReadyLive((p) => received.push(p));
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(capturedInvokes.map((x) => x.cmd)).not.toContain("get_daemon_ready_info");
+
+    const entry = capturedListens.find((x) => x.event === "daemon:ready");
+    entry?.cb({ payload: { runtime: "python" } });
+    expect(received).toEqual([{ runtime: "python" }]);
   });
 
   it("daemonEvents.onReady also backfills cached payload from get_daemon_ready_info", async () => {
@@ -442,6 +488,13 @@ describe("createTauriHost()", () => {
     updateCheckResult = null;
     const host = createTauriHost({ transport: stubTransport });
     await expect(host.updater.check()).resolves.toBe(null);
+  });
+
+  it("updater.beginUpgrade and settings.openWindow invoke host-owned windows", async () => {
+    const host = createTauriHost({ transport: stubTransport });
+    await host.updater.beginUpgrade();
+    await host.settings.openWindow();
+    expect(capturedInvokes.map((x) => x.cmd)).toEqual(["begin_upgrade", "open_settings_window"]);
   });
 
   it("host.log forwards each level to plugin-log", () => {

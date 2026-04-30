@@ -6,8 +6,7 @@
  * daemon's RuntimeStateDoc. Broadcasts are only used for event callbacks.
  */
 
-import { invoke } from "@tauri-apps/api/core";
-import { getCurrentWebview } from "@tauri-apps/api/webview";
+import { useNotebookHost } from "@nteract/notebook-host";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   type DaemonQueueState,
@@ -61,6 +60,7 @@ export function useDaemonKernel({
   onStatusChange,
   onQueueChange,
 }: UseDaemonKernelOptions) {
+  const host = useNotebookHost();
   // ── State from RuntimeStateDoc (daemon-authoritative) ─────────────
   const runtimeState = useRuntimeState();
 
@@ -199,7 +199,6 @@ export function useDaemonKernel({
   // ── Broadcast listener (events only — no state) ──────────────────
   useEffect(() => {
     let cancelled = false;
-    const webview = getCurrentWebview();
     refreshBlobPort();
 
     const unsubscribeBroadcast = subscribeBroadcast((payload) => {
@@ -226,14 +225,13 @@ export function useDaemonKernel({
       }
     });
 
-    // Listen for daemon disconnection
-    const unlistenDisconnect = webview.listen("daemon:disconnected", async () => {
+    const unlistenDisconnect = host.daemonEvents.onDisconnected(async () => {
       if (cancelled) return;
       logger.warn("[daemon-kernel] Daemon disconnected, resetting state");
       resetRuntimeState();
       resetBlobPort();
       try {
-        await invoke("reconnect_to_daemon");
+        await host.daemon.reconnect();
         logger.debug("[daemon-kernel] Reconnected to daemon");
         refreshBlobPort();
       } catch (e) {
@@ -241,7 +239,7 @@ export function useDaemonKernel({
       }
     });
 
-    const unlistenReady = webview.listen("daemon:ready", () => {
+    const unlistenReady = host.daemonEvents.onReadyLive(() => {
       if (cancelled) return;
       logger.debug("[daemon-kernel] Daemon ready");
       refreshBlobPort();
@@ -254,10 +252,10 @@ export function useDaemonKernel({
         busyTimerRef.current = null;
       }
       unsubscribeBroadcast();
-      unlistenDisconnect.then((fn) => fn()).catch(() => {});
-      unlistenReady.then((fn) => fn()).catch(() => {});
+      unlistenDisconnect();
+      unlistenReady();
     };
-  }, []);
+  }, [host]);
 
   // Comm state projection is now handled by SyncEngine.commChanges$
   // (subscribed in App.tsx). No Jupyter message synthesis needed.

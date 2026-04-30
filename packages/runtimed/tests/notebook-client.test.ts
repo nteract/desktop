@@ -50,4 +50,22 @@ describe("NotebookClient", () => {
       project_file_path: "/tmp/project/environment.yml",
     });
   });
+
+  it("clones a notebook as an ephemeral room", async () => {
+    const { client, sendRequest } = stubClient();
+    sendRequest.mockResolvedValueOnce({
+      result: "notebook_cloned",
+      notebook_id: "clone-1",
+      working_dir: "/tmp/project",
+    });
+
+    await expect(client.cloneAsEphemeral("source-1")).resolves.toEqual({
+      notebookId: "clone-1",
+      workingDir: "/tmp/project",
+    });
+    expect(sendRequest).toHaveBeenCalledWith({
+      type: "clone_as_ephemeral",
+      source_notebook_id: "source-1",
+    });
+  });
 });

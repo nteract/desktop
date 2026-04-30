@@ -1,4 +1,3 @@
-import { invoke } from "@tauri-apps/api/core";
 import type { NotebookHost } from "@nteract/notebook-host";
 import { NotebookClient, SaveNotebookError } from "runtimed";
 import { logger } from "./logger";
@@ -6,10 +5,9 @@ import { logger } from "./logger";
 /**
  * Notebook file operations — save, open, clone.
  *
- * In-place save goes straight to the daemon via `host.transport`. Save-as
- * and clone still route through Tauri commands because they have
- * Tauri-only side effects (file dialog, recent-menu updates, window
- * creation, kernel relaunch).
+ * In-place save goes straight to the daemon via `host.transport`. Save-as,
+ * open, and clone go through `NotebookHost` because they include host-shell
+ * side effects such as file dialogs, recent-menu updates, and window creation.
  */
 
 const IPYNB_FILTER = { name: "Jupyter Notebook", extensions: ["ipynb"] };
@@ -43,13 +41,13 @@ export async function saveNotebook(
       const client = new NotebookClient({ transport: host.transport });
       await client.saveNotebook({ formatCells: true });
     } else {
-      const defaultDir = await invoke<string>("get_default_save_directory");
+      const defaultDir = await host.notebook.getDefaultSaveDirectory();
       const filePath = await host.dialog.saveFile({
         filters: [IPYNB_FILTER],
         defaultPath: `${defaultDir}/Untitled.ipynb`,
       });
       if (!filePath) return false;
-      await invoke("save_notebook_as", { path: filePath });
+      await host.notebook.saveAs(filePath);
     }
 
     return true;
@@ -72,7 +70,7 @@ export async function openNotebookFile(host: NotebookHost): Promise<void> {
       filters: [IPYNB_FILTER],
     });
     if (!filePath) return;
-    await invoke("open_notebook_in_new_window", { path: filePath });
+    await host.notebook.openInNewWindow(filePath);
   } catch (e) {
     logger.error("[notebook-file-ops] Open failed:", e);
   }
@@ -84,13 +82,12 @@ export async function openNotebookFile(host: NotebookHost): Promise<void> {
  * from the current doc, the window attaches to it. User can Save-As to
  * persist later.
  *
- * The `host` parameter is retained for signature compatibility with the
- * other file ops (save/open) but is currently unused; all state lookups
- * happen server-side in the Tauri command.
+ * The host shell handles the new-window attachment after the daemon creates
+ * the ephemeral room.
  */
-export async function cloneNotebookFile(_host: NotebookHost): Promise<void> {
+export async function cloneNotebookFile(host: NotebookHost): Promise<void> {
   try {
-    await invoke("clone_notebook_to_ephemeral");
+    await host.notebook.cloneToEphemeral();
   } catch (e) {
     logger.error("[notebook-file-ops] Clone failed:", e);
   }

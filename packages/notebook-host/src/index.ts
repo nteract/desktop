@@ -16,6 +16,7 @@ export type {
   HostLog,
   HostNotebook,
   HostRelay,
+  HostSettings,
   HostSystem,
   HostTrust,
   HostUpdateInfo,

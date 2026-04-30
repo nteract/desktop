@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { useNotebookHost } from "@nteract/notebook-host";
 import { AlertTriangle, Clock, Settings, X } from "lucide-react";
 import type { PoolErrorWithTimestamp } from "../hooks/usePoolState";
 
@@ -30,8 +30,9 @@ function showSettingsButton(error: PoolErrorWithTimestamp): boolean {
 }
 
 function PoolErrorItem({ envType, error, onDismiss }: PoolErrorItemProps) {
+  const host = useNotebookHost();
   const openSettings = () => {
-    invoke("open_settings_window").catch((e) => {
+    host.settings.openWindow().catch((e) => {
       console.error("Failed to open settings:", e);
     });
   };

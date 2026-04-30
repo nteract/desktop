@@ -51,7 +51,6 @@ import {
   setRuntimeState,
   useRuntimeState,
 } from "../lib/runtime-state";
-import { fromTauriEvent } from "../lib/tauri-rx";
 import type { JupyterOutput } from "../types";
 import init, { NotebookHandle } from "../wasm/runtimed-wasm/runtimed_wasm.js";
 
@@ -407,7 +406,9 @@ export function useAutomergeNotebook() {
 
     // ── Daemon lifecycle ─────────────────────────────────────────
 
-    const lifecycleSub = fromTauriEvent("daemon:ready")
+    const lifecycleSub = new Observable<void>((subscriber) =>
+      host.daemonEvents.onReadyLive(() => subscriber.next()),
+    )
       .pipe(
         switchMap(() => {
           logger.info("[automerge-notebook] daemon:ready — re-bootstrapping");
@@ -430,25 +431,25 @@ export function useAutomergeNotebook() {
 
     // ── Bulk output clearing ──────────────────────────────────────
 
-    const clearOutputsSub = fromTauriEvent<string[]>("cells:outputs_cleared").subscribe(
-      (payload) => {
-        const clearedIds = new Set(payload);
-        updateNotebookCells((prev) =>
-          prev.map((c) =>
-            clearedIds.has(c.id) && c.cell_type === "code"
-              ? { ...c, outputs: [], execution_count: null }
-              : c,
-          ),
-        );
-        // Phase C-lite: <OutputArea> reads from the per-output / per-
-        // execution stores now. Clear those immediately for each cell so
-        // the UI reacts without waiting for the next RuntimeStateDoc
-        // snapshot tick.
-        for (const cellId of payload) {
-          clearCellOutputsStore(cellId);
-        }
-      },
-    );
+    const clearOutputsSub = new Observable<string[]>((subscriber) =>
+      host.notebook.onOutputsCleared((cellIds) => subscriber.next(cellIds)),
+    ).subscribe((payload) => {
+      const clearedIds = new Set(payload);
+      updateNotebookCells((prev) =>
+        prev.map((c) =>
+          clearedIds.has(c.id) && c.cell_type === "code"
+            ? { ...c, outputs: [], execution_count: null }
+            : c,
+        ),
+      );
+      // Phase C-lite: <OutputArea> reads from the per-output / per-
+      // execution stores now. Clear those immediately for each cell so
+      // the UI reacts without waiting for the next RuntimeStateDoc
+      // snapshot tick.
+      for (const cellId of payload) {
+        clearCellOutputsStore(cellId);
+      }
+    });
 
     return () => {
       cancelled = true;
