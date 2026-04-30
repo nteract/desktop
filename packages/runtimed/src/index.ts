@@ -50,6 +50,16 @@ export {
   mergeChangesets,
 } from "./cell-changeset";
 
+// Execution projection
+export {
+  buildRuntimeExecutionSnapshot,
+  collectExecutionOutputIds,
+  collectOutputIds,
+  executionFingerprint,
+  extractOutputId,
+  type RuntimeExecutionSnapshot,
+} from "./execution-projection";
+
 // Runtime state
 export {
   type CommDocEntry,

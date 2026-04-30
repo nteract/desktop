@@ -12,7 +12,12 @@
  * there is no synthetic `legacy:<eid>:<idx>` key in these stores.
  */
 
-import type { ExecutionState, RuntimeState } from "runtimed";
+import {
+  buildRuntimeExecutionSnapshot,
+  collectOutputIds,
+  executionFingerprint,
+  type RuntimeState,
+} from "runtimed";
 import type { NotebookHandle } from "../wasm/runtimed-wasm/runtimed_wasm.js";
 import { getBlobPort, refreshBlobPort } from "./blob-port";
 import { logger } from "./logger";
@@ -23,7 +28,6 @@ import {
 } from "./manifest-resolution";
 import { isOutputManifest } from "./materialize-cells";
 import {
-  type ExecutionSnapshot,
   deleteExecutions,
   resetNotebookExecutions,
   setCellExecutionPointer,
@@ -55,42 +59,6 @@ let _knownExecutionIds: Set<string> = new Set();
  */
 const _prevExecutionFingerprint: Map<string, string> = new Map();
 
-function extractOutputId(output: unknown): string | null {
-  if (!output || typeof output !== "object") return null;
-  const oid = (output as { output_id?: unknown }).output_id;
-  return typeof oid === "string" && oid.length > 0 ? oid : null;
-}
-
-function collectExecutionOutputIds(raw: ExecutionState): string[] {
-  const ids: string[] = [];
-  if (!raw.outputs) return ids;
-  for (const output of raw.outputs) {
-    const oid = extractOutputId(output);
-    if (oid) ids.push(oid);
-  }
-  return ids;
-}
-
-function executionFingerprint(raw: ExecutionState): string {
-  // Include the ordered `output_id` list so same-length replacements
-  // (e.g. `clear_output(wait=True)` or a remove+add that keeps the list
-  // length constant) still invalidate the snapshot. Without this, the
-  // outputs store drifts past the execution's canonical pointer list and
-  // `useCellOutputs` resolves stale entries.
-  const ids = collectExecutionOutputIds(raw);
-  return `${raw.cell_id}|${raw.execution_count ?? ""}|${raw.status}|${raw.success ?? ""}|${ids.join(",")}`;
-}
-
-function buildExecutionSnapshot(raw: ExecutionState): ExecutionSnapshot {
-  return {
-    cell_id: raw.cell_id,
-    execution_count: raw.execution_count,
-    status: raw.status,
-    success: raw.success,
-    output_ids: collectExecutionOutputIds(raw),
-  };
-}
-
 /**
  * Project the current RuntimeState into the executions store.
  *
@@ -113,7 +81,7 @@ export function projectRuntimeStateToExecutions(state: RuntimeState): void {
     const fp = executionFingerprint(entry);
     if (_prevExecutionFingerprint.get(execution_id) === fp) continue;
     _prevExecutionFingerprint.set(execution_id, fp);
-    setExecution(execution_id, buildExecutionSnapshot(entry));
+    setExecution(execution_id, buildRuntimeExecutionSnapshot(entry));
   }
 
   // Evict executions the daemon dropped. Keeps the store from drifting
@@ -149,12 +117,7 @@ export function seedOutputStoresFromHandle(
     const rawOutputs = (handle.get_cell_outputs(cellId) as unknown[]) ?? [];
     if (rawOutputs.length === 0) continue;
 
-    const output_ids: string[] = [];
-    for (const output of rawOutputs) {
-      if (!output || typeof output !== "object") continue;
-      const oid = (output as { output_id?: unknown }).output_id;
-      if (typeof oid === "string" && oid.length > 0) output_ids.push(oid);
-    }
+    const output_ids = collectOutputIds(rawOutputs);
     if (output_ids.length === 0) continue;
 
     // Build a minimal execution snapshot. We don't have status / success
