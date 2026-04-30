@@ -346,14 +346,11 @@ impl McpProxy {
 
                 let tool_list_changed_tx = {
                     let mut state = self.state.write().await;
-                    let divergence_tx = if let (Some(ref old), Some(ref new)) =
-                        (&old_tools, &state.cached_tools)
-                    {
+                    if let (Some(ref old), Some(ref new)) = (&old_tools, &state.cached_tools) {
                         match tools::detect_divergence(old, new) {
-                            ToolDivergence::Same => None,
+                            ToolDivergence::Same => {}
                             ToolDivergence::Superset { ref added } => {
                                 info!("New tools available after restart: {added:?}");
-                                state.tool_list_changed_tx.clone()
                             }
                             ToolDivergence::Incompatible {
                                 ref removed,
@@ -366,12 +363,9 @@ impl McpProxy {
                                 state.should_exit = true;
                                 // Signal the exit so nteract-mcp can shut down
                                 self.exit_signal.notify_waiters();
-                                None
                             }
                         }
-                    } else {
-                        None
-                    };
+                    }
 
                     // The new child told us the daemon version it saw on its
                     // startup handshake. Compare it with what the previous
@@ -396,7 +390,7 @@ impl McpProxy {
                         _ => ReconnectionEvent::ChildRestart { session_rejoined },
                     };
                     state.reconnection_message = Some(reconnection_event.message());
-                    state.tool_list_changed_tx.clone().or(divergence_tx)
+                    state.tool_list_changed_tx.clone()
                 };
 
                 // Spawn new monitor for the restarted child
@@ -1127,6 +1121,7 @@ mod tests {
         let proxy = McpProxy::new(test_config(), None);
         let state = proxy.state.read().await;
         assert!(state.child_client.is_none());
+        assert_eq!(state.child_generation, 0);
         assert_eq!(state.restart_count, 0);
         assert!(state.last_notebook_id.is_none());
         assert!(state.reconnection_message.is_none());
@@ -1422,6 +1417,39 @@ mod tests {
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(err.message.contains("not running"));
+    }
+
+    #[tokio::test]
+    async fn child_peer_snapshot_fails_without_child() {
+        let proxy = McpProxy::new(test_config(), None);
+
+        let result = proxy.child_peer_snapshot().await;
+
+        match result {
+            Ok(_) => panic!("snapshot should fail without a child"),
+            Err(err) => assert!(err.message.contains("not running")),
+        }
+    }
+
+    #[tokio::test]
+    async fn stale_tool_cache_refresh_without_child_is_noop() {
+        let proxy = McpProxy::new(test_config(), None);
+        let cached = vec![rmcp::model::Tool::new(
+            "cached_tool".to_string(),
+            "A cached tool".to_string(),
+            serde_json::Map::new(),
+        )];
+        proxy.state.write().await.cached_tools = Some(cached);
+
+        proxy.refresh_tool_cache_for_generation(42).await;
+
+        let state = proxy.state.read().await;
+        let tools = state
+            .cached_tools
+            .as_ref()
+            .expect("cache should remain set");
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].name.as_ref(), "cached_tool");
     }
 
     // ── child_tools falls back to cache ───────────────────────────────
