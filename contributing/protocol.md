@@ -409,7 +409,9 @@ Widget state now lives in `doc.comms/` in RuntimeStateDoc. The daemon writes com
 | `crates/notebook-sync/src/connect.rs` | Connection setup (`connect_open_relay`, `connect_create_relay`) |
 | `crates/notebook-sync/src/handle.rs` | `DocHandle` — sync infrastructure, per-cell accessors for Python clients |
 | `crates/runtimed/src/notebook_sync_server/mod.rs` | Notebook sync server module facade |
+| `crates/runtimed/src/notebook_sync_server/catalog.rs` | Room lookup and creation |
 | `crates/runtimed/src/notebook_sync_server/room.rs` | `NotebookRoom` and room-owned state |
+| `crates/runtimed/src/notebook_sync_server/peer_connection.rs` | Notebook sync connection handler |
 | `crates/runtimed/src/notebook_sync_server/peer_loop.rs` | Main peer sync loop and frame dispatch |
 | `crates/runtimed/src/notebook_sync_server/peer_session.rs` | Initial readiness/session-control state |
 | `crates/runtimed/src/notebook_sync_server/peer_writer.rs` | Bounded peer writer |

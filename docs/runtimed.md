@@ -171,7 +171,9 @@ Auto-upgrade: the client detects version mismatches and replaces the binary.
 |------|------|
 | `daemon.rs` | Daemon state, pool management, warming loops, connection routing |
 | `crates/notebook-protocol/src/protocol.rs` | Notebook request/response/broadcast wire types |
-| `crates/notebook-protocol/src/connection.rs` | Unified framing, handshake enum, send/recv helpers |
+| `crates/notebook-protocol/src/connection/handshake.rs` | Handshake enum, protocol version, channel compatibility |
+| `crates/notebook-protocol/src/connection/framing.rs` | Length-prefixed frame send/recv helpers |
+| `crates/notebook-protocol/src/connection.rs` | Compatibility re-exports for connection helpers |
 | `crates/runtimed-client/src/client.rs` | Client library (`PoolClient`, notebook clients) |
 | `crates/runtimed-client/src/singleton.rs` | File locking, `DaemonInfo` discovery |
 | `crates/runtimed-client/src/service.rs` | Platform-specific install/start/stop helpers |
@@ -452,7 +454,9 @@ pub enum BlobResponse {
 
 | File | Role |
 |------|------|
-| `crates/notebook-protocol/src/connection.rs` | Unified framing, handshake enum, send/recv helpers |
+| `crates/notebook-protocol/src/connection/handshake.rs` | Handshake enum, protocol version, channel compatibility |
+| `crates/notebook-protocol/src/connection/framing.rs` | Length-prefixed frame send/recv helpers |
+| `crates/notebook-protocol/src/connection.rs` | Compatibility re-exports for connection helpers |
 | `daemon.rs` | Single accept loop, `route_connection()` dispatcher |
 | `crates/runtimed-client/src/client.rs` | Uses `Handshake::Pool` |
 | `crates/runtimed-client/src/sync_client.rs` | Uses `Handshake::SettingsSync` |
