@@ -28,7 +28,7 @@ paths:
 
 | Crate | Owns | Consumers |
 |-------|------|-----------|
-| `notebook-doc` | Automerge schema, cell CRUD, output writes, per-cell accessors, `CellChangeset` diffing, fractional indexing, presence encoding, frame type constants | daemon, WASM, Python bindings |
+| `notebook-doc` | Automerge schema, cell CRUD, nbformat fallback fields, per-cell accessors, `CellChangeset` diffing, fractional indexing, presence encoding, frame type constants | daemon, WASM, Python bindings |
 | `notebook-protocol` | Wire types (`NotebookRequest`, `NotebookResponse`, `NotebookBroadcast`), connection handshake, frame parsing | daemon, `notebook-sync`, Python bindings |
 | `notebook-sync` | Sync infrastructure (`DocHandle`), snapshot watch channel, per-cell accessors for Python clients, sync task management | Python bindings (`runtimed-py`) |
 
@@ -159,12 +159,12 @@ Never pass code directly in execution requests. The correct flow: write to the C
 
 | File | Role |
 |------|------|
-| `crates/notebook-doc/src/lib.rs` | `NotebookDoc` -- Automerge schema, cell CRUD, output writes |
+| `crates/notebook-doc/src/lib.rs` | `NotebookDoc` -- Automerge schema, cell CRUD, nbformat fallback fields |
 | `crates/notebook-doc/src/diff.rs` | `CellChangeset` -- structural diff from Automerge patches |
 | `crates/notebook-doc/src/mime.rs` | Canonical MIME classification (`is_binary_mime`, `mime_kind`, `MimeKind`) |
 | `crates/notebook-protocol/src/protocol.rs` | Wire types: requests, responses, broadcasts |
 | `crates/notebook-sync/src/handle.rs` | `DocHandle` -- sync infrastructure, per-cell accessors |
-| `crates/runtimed/src/notebook_sync_server.rs` | `NotebookRoom`, room lifecycle, autosave, path_index |
+| `crates/runtimed/src/notebook_sync_server/` | `NotebookRoom`, room lifecycle, peer sync loops, persistence, metadata/trust/project context |
 | `crates/runtimed/src/output_prep.rs` | IOPub output-prep helpers (conversion, widget buffers, blob-store offload) |
 | `crates/runtimed/src/output_store.rs` | Manifest creation/resolution, `ContentRef` |
 | `crates/runtimed/src/blob_store.rs` | Content-addressed storage |

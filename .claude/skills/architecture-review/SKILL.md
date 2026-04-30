@@ -49,25 +49,26 @@ Python packages. The major architectural seams are:
 - Unix socket, length-prefixed typed frames (7 frame types)
 - Preamble (magic + version) → JSON handshake → Automerge initial sync → steady state
 - Frame types: AutomergeSync (0x00), Request (0x01), Response (0x02),
-  Broadcast (0x03), Presence (0x04), RuntimeStateSync (0x05), PoolStateSync (0x06)
+  Broadcast (0x03), Presence (0x04), RuntimeStateSync (0x05),
+  PoolStateSync (0x06), SessionControl (0x07)
 - Requests are fire-and-forget style (ExecuteCell, LaunchKernel, etc.)
-- Broadcasts push state changes to all connected clients
+- Broadcasts carry ephemeral events; persistent runtime state syncs through RuntimeStateDoc
 
 ### Document Model
-- Automerge doc is the live notebook state; `.ipynb` on disk is a checkpoint
-- Two peers: frontend WASM peer (local-first edits) and daemon peer (execution, outputs)
-- Cell outputs stored as manifest hashes (content refs → blob store)
-- Separate RuntimeStateDoc (frame 0x05) for kernel status, queue, env sync, trust
+- NotebookDoc is the live notebook content/structure state; `.ipynb` on disk is a checkpoint
+- Two NotebookDoc peers: frontend WASM peer (local-first edits) and daemon peer (persistence/import/export)
+- Live cell outputs are RuntimeStateDoc execution manifests with content refs to the blob store
+- Separate RuntimeStateDoc (frame 0x05) for kernel status, queue, outputs, comms, env progress, trust, and project context
 - Per-cell O(1) accessors in WASM, Rust, and Python (three implementations)
 - CellChangeset for incremental field-level diffs (source, outputs, metadata, position...)
 
 ### CRDT Ownership Rules
 - Frontend WASM writes: cell source, position, type, metadata, notebook metadata
-- Daemon writes: cell outputs (manifest hashes), execution count, RuntimeStateDoc
+- Daemon writes: RuntimeStateDoc, including outputs, live execution counts, comms, trust, env progress, and project context
 - Rule: never write to CRDT in response to a daemon broadcast (daemon already wrote)
 
 ### Crate Boundaries
-- `notebook-doc`: Automerge schema, cell CRUD, output writes, per-cell accessors, diffing
+- `notebook-doc`: Automerge schema, cell CRUD, nbformat fallback fields, per-cell accessors, diffing
 - `notebook-protocol`: Wire types (Request, Response, Broadcast)
 - `notebook-sync`: DocHandle, sync infrastructure, Python-side per-cell accessors
 - `runtimed`: Central daemon (kernel lifecycle, pools, notebook rooms, blob store, autosave)
@@ -182,7 +183,7 @@ Start with these to understand the actual implementation:
 
 **Core daemon:**
 - `crates/runtimed/src/daemon.rs`
-- `crates/runtimed/src/notebook_sync_server.rs`
+- `crates/runtimed/src/notebook_sync_server/`
 - `crates/runtimed/src/output_prep.rs`
 - `crates/runtimed/src/output_store.rs`
 - `crates/runtimed/src/blob_store.rs`

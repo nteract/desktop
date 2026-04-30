@@ -205,7 +205,7 @@ Integration tests use temp directories for socket and lock files to avoid confli
 
 ## Notebook Room Lifecycle
 
-Each open notebook has a **room** (`NotebookRoom` in `notebook_sync_server.rs`), always keyed by UUID. A secondary `path_index: HashMap<PathBuf, Uuid>` maps canonical file paths to room UUIDs for path-based lookups.
+Each open notebook has a **room** (`NotebookRoom` in `notebook_sync_server/room.rs`), keyed by UUID in `NotebookRooms`. A secondary `PathIndex` maps canonical `.ipynb` paths to room UUIDs for path-based lookups.
 
 ### Autosave
 
@@ -264,12 +264,13 @@ crates/runtimed/
 │   ├── lib.rs                   # Daemon crate + backward-compatible re-exports from runtimed-client
 │   ├── main.rs                  # Daemon CLI entry point
 │   ├── daemon.rs                # Daemon state, pool management, connection routing
-│   ├── notebook_sync_server.rs  # NotebookRoom, room lifecycle, autosave, path_index, sync loop
+│   ├── notebook_sync_server/    # Room lifecycle, peer sync loops, persistence, metadata/trust/project context
 │   ├── runtime_agent.rs         # Runtime agent subprocess: Unix socket peer, CRDT queue watching, kernel ownership
 │   ├── runtime_agent_handle.rs  # Coordinator-side runtime agent process management (spawn + monitor)
 │   ├── jupyter_kernel.rs        # JupyterKernel: process spawn, ZMQ socket wiring, IOPub output routing
 │   ├── output_prep.rs           # Output-prep helpers: QueueCommand, KernelStatus, QueuedCell, iopub → nbformat conversion, widget buffers, blob-store offload
-│   ├── kernel_pids.rs           # Kernel PID tracking and orphan reaping
+│   ├── kernel_ports.rs          # Daemon-owned five-port kernel reservations
+│   ├── process_groups.rs        # Cross-platform process-group cleanup helpers
 │   ├── singleton.rs             # Daemon locking/singleton management
 │   ├── sync_server.rs           # Settings Automerge sync handler
 │   ├── output_store.rs          # Output manifest creation, blob inlining threshold

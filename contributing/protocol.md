@@ -362,7 +362,7 @@ After WASM `receive_frame()` demuxes typed frames, broadcast and presence payloa
 | Function | Purpose |
 |----------|---------|
 | `emitBroadcast(payload)` | Called by `useAutomergeNotebook` after WASM demux for type `0x03` frames |
-| `subscribeBroadcast(cb)` | Used by `useDaemonKernel`, `useEnvProgress` to receive kernel/env broadcasts |
+| `subscribeBroadcast(cb)` | Used by `useDaemonKernel` for ephemeral runtime events; persistent env state is RuntimeStateDoc-backed |
 | `emitPresence(payload)` | Called by `useAutomergeNotebook` after WASM CBOR decode for type `0x04` frames |
 | `subscribePresence(cb)` | Used by `usePresence`, `cursor-registry` to receive remote cursor updates |
 
@@ -398,7 +398,7 @@ Stream outputs (stdout/stderr) are special: text is fed through a terminal emula
 
 Several broadcast variants carry **state** (kernel status, env sync diff, queue) rather than **events**. State-carrying broadcasts suffer from silent drops, no initial state for late joiners, and ordering races between windows. The `RuntimeStateDoc` replaces these with a daemon-authoritative, per-notebook Automerge document synced via frame type `0x05` on the existing notebook connection.
 
-The daemon writes kernel status, execution queue, and environment sync drift. Clients receive updates via normal Automerge sync — read-only enforced by stripping client changes. The frontend reads via `useRuntimeState()`. See `.context/plans/daemon-state-doc.md` for the full phased plan.
+The daemon writes kernel status, execution queue, environment progress, project context, and trust state. Clients receive updates via normal Automerge sync — read-only enforced by stripping client changes. The frontend reads via `useRuntimeState()` and the project runtime stores.
 
 **Key files:** `crates/notebook-doc/src/runtime_state.rs` (schema + setters), `apps/notebook/src/lib/runtime-state.ts` (frontend store + hook).
 
@@ -421,19 +421,26 @@ Widget state now lives in `doc.comms/` in RuntimeStateDoc. The daemon writes com
 | `crates/notebook-sync/src/relay.rs` | Relay handle for notebook sync connections |
 | `crates/notebook-sync/src/connect.rs` | Connection setup (`connect_open_relay`, `connect_create_relay`) |
 | `crates/notebook-sync/src/handle.rs` | `DocHandle` — sync infrastructure, per-cell accessors for Python clients |
-| `crates/runtimed/src/notebook_sync_server.rs` | `NotebookRoom`, room lifecycle, autosave debouncer, sync loop |
+| `crates/runtimed/src/notebook_sync_server/mod.rs` | Notebook sync server module facade |
+| `crates/runtimed/src/notebook_sync_server/room.rs` | `NotebookRoom` and room-owned state |
+| `crates/runtimed/src/notebook_sync_server/peer_loop.rs` | Main peer sync loop and frame dispatch |
+| `crates/runtimed/src/notebook_sync_server/peer_session.rs` | Initial readiness/session-control state |
+| `crates/runtimed/src/notebook_sync_server/peer_writer.rs` | Bounded peer writer |
+| `crates/runtimed/src/notebook_sync_server/metadata.rs` | Metadata, trust, project-file, and environment detection helpers |
+| `crates/runtimed/src/requests/` | Notebook request routing handlers |
 | `crates/runtimed/src/output_prep.rs` | IOPub output-prep helpers: message-to-nbformat conversion, widget buffers, blob-store offload |
-| `crates/runtimed/src/comm_state.rs` | Widget comm state + Output widget capture routing |
+| `crates/runtimed/src/runtime_agent.rs` | Runtime-agent peer loop, kernel lifecycle, comm-state diff forwarding, RuntimeStateDoc writes |
 | `crates/runtimed/src/output_store.rs` | Output manifest creation, blob inlining threshold |
 | `crates/runtimed/src/blob_store.rs` | Content-addressed blob storage |
 | `crates/notebook/src/lib.rs` | Tauri commands and relay tasks (transparent byte pipe) |
 | `crates/runtimed-wasm/src/lib.rs` | WASM bindings: cell mutations, sync, per-cell accessors, `CellChangeset` |
-| `crates/notebook-doc/src/lib.rs` | `NotebookDoc`: Automerge schema, cell CRUD, output writes, per-cell accessors |
+| `crates/notebook-doc/src/lib.rs` | `NotebookDoc`: Automerge schema, cell CRUD, nbformat fallback fields, per-cell accessors |
 | `crates/notebook-doc/src/diff.rs` | `CellChangeset`: structural diff from Automerge patches |
 | `crates/notebook-doc/src/frame_types.rs` | Shared frame type constants (0x00–0x07) |
 | `crates/notebook-doc/src/runtime_state.rs` | `RuntimeStateDoc`: per-notebook daemon-authoritative state (kernel, queue, env sync) |
 | `apps/notebook/src/lib/runtime-state.ts` | Frontend runtime state store + `useRuntimeState()` hook |
-| `apps/notebook/src/lib/frame-types.ts` | Frame type constants + `sendFrame()` binary IPC helper |
+| `packages/runtimed/src/transport.ts` | TypeScript `FrameType` constants and transport boundary |
+| `apps/notebook/src/lib/frame-pipeline.ts` | App-side frame event processing and materialization planning |
 | `apps/notebook/src/hooks/useAutomergeNotebook.ts` | WASM handle owner, `scheduleMaterialize`, `CellChangeset` dispatch |
 | `apps/notebook/src/hooks/useDaemonKernel.ts` | Kernel execution, widget comm routing, broadcast handling |
 | `apps/notebook/src/lib/materialize-cells.ts` | `materializeCellFromWasm()` (per-cell) + `cellSnapshotsToNotebookCells()` (full) |

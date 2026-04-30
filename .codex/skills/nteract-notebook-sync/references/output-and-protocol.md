@@ -5,7 +5,7 @@
 When changing frame handling, keep the following aligned:
 
 - `crates/notebook-doc/src/frame_types.rs`
-- `apps/notebook/src/lib/frame-types.ts`
+- `packages/runtimed/src/transport.ts`
 - Any relay or sync code that assumes a specific frame layout
 
 When changing the wire handshake or typed frame semantics, also inspect:

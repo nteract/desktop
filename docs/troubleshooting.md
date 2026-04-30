@@ -109,7 +109,7 @@ If `doctor --fix` doesn't resolve your issue, try these manual steps.
 | Daemon binary | `~/Library/Application Support/runt/bin/runtimed` |
 | Service config | `~/Library/LaunchAgents/io.nteract.runtimed.plist` |
 | Socket | `~/Library/Caches/runt/runtimed.sock` |
-| State file | `~/Library/Caches/runt/daemon.json` |
+| Legacy info fallback | `~/Library/Caches/runt/daemon.json` |
 | Logs | `~/Library/Caches/runt/runtimed.log` |
 
 **Full reset:**
@@ -136,7 +136,7 @@ launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/io.nteract.runtimed.plis
 | Daemon binary | `~/.local/share/runt/bin/runtimed` |
 | Service config | `~/.config/systemd/user/runtimed.service` |
 | Socket | `~/.cache/runt/runtimed.sock` |
-| State file | `~/.cache/runt/daemon.json` |
+| Legacy info fallback | `~/.cache/runt/daemon.json` |
 | Logs | `~/.cache/runt/runtimed.log` |
 
 **Full reset:**

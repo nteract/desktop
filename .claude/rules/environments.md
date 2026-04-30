@@ -109,7 +109,7 @@ The daemon maintains a pool of pre-created environments with `ipykernel` and `ip
 
 ## Project File Discovery
 
-Unified detection in `project_file.rs`, used by daemon's `auto_launch_kernel()`:
+Unified detection in `project_file.rs`, used by daemon auto-launch helpers:
 
 | Module | Purpose |
 |--------|---------|
@@ -156,7 +156,7 @@ Changes to dependency metadata structure require updating `crates/runt-trust/src
 
 1. Create `crates/notebook/src/{format}.rs` with `find_{format}()` (directory walk) and `parse_{format}()` functions
 2. Add Tauri commands in `lib.rs`: `detect_{format}`, `get_{format}_dependencies`, `import_{format}_dependencies`
-3. Wire detection into daemon's `auto_launch_kernel()` in `notebook_sync_server.rs` at the correct priority position
+3. Wire detection into the daemon auto-launch helpers in `notebook_sync_server/metadata.rs` at the correct priority position
 4. Add frontend detection in `useDaemonKernel.ts` and the appropriate dependencies hook
 5. Add test fixture in `crates/notebook/fixtures/audit-test/`
 
@@ -183,7 +183,8 @@ Changes to dependency metadata structure require updating `crates/runt-trust/src
 | File | Role |
 |------|------|
 | `crates/runtimed/src/daemon.rs` | Pool management |
-| `crates/runtimed/src/notebook_sync_server.rs` | `auto_launch_kernel()` -- detection and resolution |
+| `crates/runtimed/src/notebook_sync_server/metadata.rs` | auto-launch detection and resolution helpers |
+| `crates/runtimed/src/requests/launch_kernel.rs` | manual launch request handling |
 | `crates/runtimed/src/runtime_agent.rs` | Spawned as a subprocess by `RuntimeAgentHandle::spawn()`. `run_runtime_agent()` is the per-notebook event loop owning sockets, `QueueCommand` channels, and RuntimeStateDoc writes; `handle_runtime_agent_request()` dispatches each `LaunchKernel`/`RestartKernel`/etc. RPC |
 | `crates/runtimed/src/jupyter_kernel.rs` | `JupyterKernel::launch()` -- spawns the kernel process and wires ZMQ sockets |
 | `crates/runtimed/src/output_prep.rs` | Output-prep helpers — `QueueCommand`, `KernelStatus`, `QueuedCell`, iopub → nbformat conversion + display-update helpers, widget-buffer offload to the blob store. Imported by `runtime_agent.rs`, `jupyter_kernel.rs`, and `kernel_state.rs` |

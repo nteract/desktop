@@ -64,13 +64,13 @@ Editing is local-first for responsiveness. Execution is always against synced st
 
 ### 5. Binary Separation via Manifests
 
-Cell outputs are stored as content-addressed blobs with manifest references. This keeps large binary data (images, plots) out of the sync protocol.
+Live cell outputs are stored as RuntimeStateDoc manifests with content-addressed blob references. This keeps large binary data (images, plots) out of NotebookDoc while still giving late joiners the daemon-authored output state.
 
 **Implications:**
-- Output broadcasts contain blob hashes, not inline data
+- Output rendering is driven by RuntimeStateDoc sync, not output broadcasts
 - Clients resolve blobs from the blob store (disk or HTTP)
 - Manifest format allows lazy loading and deduplication
-- Large outputs don't block document sync
+- Large outputs don't block NotebookDoc editing sync
 
 **On `.ipynb` save** the daemon still inlines most outputs as base64 — the same as vanilla Jupyter — so other tools can read the file. A small whitelist of nteract-specific MIMEs (currently just `application/vnd.apache.parquet`, the format the Sift dataframe viewer round-trips through) is externalized as a `BLOB_REF_MIME` entry pointing at the local blob store, keeping `.ipynb` size bounded for outputs that would otherwise serialize tens or hundreds of MiB. The Python `nteract/dx` package is the helper that produces those parquet payloads from a kernel. See `crates/runtimed/src/output_store.rs` (`should_externalize_mime_on_save`) and `docs/superpowers/specs/2026-04-14-ipynb-save-blob-refs-design.md`.
 
@@ -198,7 +198,7 @@ Three crates share "notebook" in the name but have distinct responsibilities:
 
 | Crate | Owns | Consumers |
 |-------|------|-----------|
-| `notebook-doc` | Automerge document schema, cell CRUD, output writes, per-cell accessors, `CellChangeset` diffing, fractional indexing, presence encoding, frame type constants | daemon, WASM, Python bindings |
+| `notebook-doc` | Automerge document schema, cell CRUD, nbformat fallback fields, per-cell accessors, `CellChangeset` diffing, fractional indexing, presence encoding, frame type constants | daemon, WASM, Python bindings |
 | `notebook-protocol` | Wire protocol types (`NotebookRequest`, `NotebookResponse`, `NotebookBroadcast`), connection handshake, frame parsing | daemon, `notebook-sync`, Python bindings |
 | `notebook-sync` | Sync infrastructure (`DocHandle`), snapshot watch channel, per-cell accessors for Python clients, sync task management | Python bindings (`runtimed-py`) |
 
@@ -263,11 +263,12 @@ The frontend now owns a local Automerge doc via `runtimed-wasm` WASM bindings, m
 ## References
 
 - `crates/notebook-protocol/src/protocol.rs` — Canonical wire types: `NotebookRequest`, `NotebookResponse`, `NotebookBroadcast`, `RuntimeAgentRequest`, `RuntimeAgentResponse`
-- `crates/notebook-doc/src/lib.rs` — `NotebookDoc`: Automerge schema, cell CRUD, output writes, per-cell accessors
+- `crates/notebook-doc/src/lib.rs` — `NotebookDoc`: Automerge schema, cell CRUD, nbformat fallback fields, per-cell accessors
 - `crates/notebook-doc/src/diff.rs` — `CellChangeset`: structural diff from Automerge patches
 - `crates/notebook-doc/src/runtime_state.rs` — `RuntimeStateDoc`: kernel status, execution queue/lifecycle, env sync, comms
 - `crates/notebook-sync/src/handle.rs` — `DocHandle`: sync infrastructure, per-cell accessors for Python clients
-- `crates/runtimed/src/notebook_sync_server.rs` — `NotebookRoom`, room lifecycle, runtime agent sync handler, CRDT execution queue
+- `crates/runtimed/src/notebook_sync_server/` — room lifecycle, peer sync loops, session-control readiness, persistence, metadata/trust/project-file helpers
+- `crates/runtimed/src/requests/` — daemon-side notebook request routing handlers
 - `crates/runtimed/src/runtime_agent.rs` — Runtime agent subprocess: Unix socket peer, CRDT queue watching, comm state diffing, kernel ownership
 - `crates/runtimed/src/runtime_agent_handle.rs` — Coordinator-side runtime agent process management (spawn + monitor)
 - `crates/runtimed/src/jupyter_kernel.rs` — `JupyterKernel`: kernel process spawn, ZMQ socket wiring, IOPub output routing
@@ -278,8 +279,8 @@ The frontend now owns a local Automerge doc via `runtimed-wasm` WASM bindings, m
 - `crates/notebook-sync/src/connect.rs` — `connect_open_relay()`, `connect_create_relay()`: transparent byte pipe setup
 - `crates/runtimed-wasm/src/lib.rs` — WASM bindings: local Automerge peer, frame demux, per-cell accessors, `CellChangeset`
 - `crates/notebook/src/lib.rs` — Tauri commands and relay tasks (`send_frame` accepts raw binary via `tauri::ipc::Request`, `setup_sync_receivers`)
-- `crates/notebook-doc/src/frame_types.rs` — Shared frame type constants (0x00–0x06)
-- `apps/notebook/src/lib/frame-types.ts` — Frame type constants + `sendFrame()` binary IPC helper
+- `crates/notebook-doc/src/frame_types.rs` — Shared frame type constants (0x00–0x07)
+- `packages/runtimed/src/transport.ts` — TypeScript `FrameType` constants and transport boundary
 - `apps/notebook/src/hooks/useAutomergeNotebook.ts` — WASM handle owner, `scheduleMaterialize`, `CellChangeset` dispatch
 - `apps/notebook/src/lib/materialize-cells.ts` — `materializeCellFromWasm()` (per-cell) + `cellSnapshotsToNotebookCells()` (full)
 - `apps/notebook/src/lib/notebook-cells.ts` — Split cell store: `useCell(id)`, `useCellIds()`, per-cell subscriptions

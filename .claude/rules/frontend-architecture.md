@@ -63,7 +63,7 @@ The frontend goes through `@nteract/notebook-host` for every host-platform
 side effect. **Do not import `@tauri-apps/*` directly** — that's what the
 host abstraction exists to prevent. The only places that may import
 `@tauri-apps/*` are `packages/notebook-host/src/tauri/` and the daemon
-relay glue in `apps/notebook/src/lib/` (frame-types.ts, tauri-transport).
+relay glue in `apps/notebook/src/lib/` (frame pipeline, Tauri transport).
 
 | Namespace | Role |
 |-----------|------|
@@ -157,7 +157,7 @@ The frontend has a single ingress point for daemon frames. All data flows throug
    - `updateCellById()` -- O(1) map update, notifies only that cell's subscribers
    - `replaceNotebookCells()` -- full replacement with `cellsEqual()` diffing
 
-4. **useDaemonKernel / useEnvProgress** -- Subscribe via `subscribeBroadcast()` from frame bus
+4. **Runtime state projection** -- `useDaemonKernel` consumes ephemeral broadcast events; persistent kernel/env/project state is projected from RuntimeStateDoc through runtime-state stores and hooks such as `useEnvProgress`
 
 5. **usePresence** -- Subscribes via `subscribePresence()` from frame bus. Maintains peer map.
 
@@ -185,7 +185,8 @@ Defined in `notebook-doc/src/diff.rs`, with TypeScript types in `packages/runtim
 | `apps/notebook/src/lib/materialize-cells.ts` | WASM -> React conversion |
 | `apps/notebook/src/lib/notebook-cells.ts` | Split cell store, per-cell subscriptions |
 | `apps/notebook/src/lib/notebook-frame-bus.ts` | In-memory pub/sub for broadcasts and presence |
-| `apps/notebook/src/lib/frame-types.ts` | Frame type constants + `sendFrame()` binary IPC |
+| `packages/runtimed/src/transport.ts` | Shared `FrameType` constants and transport interface |
+| `apps/notebook/src/lib/frame-pipeline.ts` | App-side frame event processing and materialization planning |
 | `apps/notebook/src/hooks/useDaemonKernel.ts` | Kernel execution, broadcast handling |
 | `apps/notebook/src/hooks/usePresence.ts` | Remote presence tracking |
 | `src/components/outputs/media-router.tsx` | Output type dispatch |

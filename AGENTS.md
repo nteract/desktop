@@ -48,7 +48,7 @@ If `nteract-dev` is unavailable, fall back to `cargo xtask` (it derives the work
 | `runtimed-py` | Python bindings (PyO3/maturin) |
 | `runtimed-wasm` | WASM bindings for the notebook doc |
 | `notebook` | Tauri desktop app |
-| `notebook-doc` | Automerge schema, cell CRUD, output writes, MIME classification, `CellChangeset` |
+| `notebook-doc` | Automerge schema, cell CRUD, nbformat fallback fields, MIME classification, `CellChangeset` |
 | `notebook-protocol` | Wire types (requests, responses, broadcasts) |
 | `notebook-sync` | `DocHandle`, sync infrastructure, per-cell Python accessors |
 | `runt` | CLI - daemon mgmt, kernel control, `runt mcp` |
