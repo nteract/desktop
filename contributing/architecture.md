@@ -32,14 +32,14 @@ The `.ipynb` file on disk is a checkpoint/snapshot. The Automerge document is th
 - Daemon autosaves `.ipynb` on a debounce (2s quiet period, 10s max interval) via `spawn_autosave_debouncer` — no user action required
 - Explicit save (Cmd+S) additionally runs cell formatting (ruff/deno fmt) before writing
 - Unknown metadata keys in `.ipynb` are preserved through round-trips
-- `NotebookAutosaved` broadcast clears the frontend dirty flag; `NotebookSaved` response confirms explicit saves
+- Autosave and explicit save completion are reflected through daemon save state/confirmations; `NotebookSaved` response confirms explicit saves
 
 **Crash recovery:**
 - Untitled notebooks (UUID-keyed rooms) persist their Automerge doc to `notebook-docs/{hash}.automerge` in the cache directory. On daemon restart, the room loads from this file.
 - Saved notebooks reload from `.ipynb` (which autosave keeps current). Before deleting a persisted Automerge doc on reopen, the daemon snapshots it to `notebook-docs/snapshots/` (max 5 per notebook).
 - Outputs are ephemeral. They live in the per-notebook RuntimeStateDoc and are not persisted.
 
-**UUID-stable rooms:** Room keys are always UUIDs. When an untitled notebook is first saved, the daemon updates a secondary `path_index` map and broadcasts `PathChanged { path }` so peers can update local path tracking. The UUID never changes.
+**UUID-stable rooms:** Room keys are always UUIDs. When an untitled notebook is first saved, the daemon updates a secondary `path_index` map and room path state so peers can update local path tracking. The UUID never changes.
 
 ### 4. Local-First Editing, Synced Execution
 
@@ -221,9 +221,7 @@ Client                              Daemon
   |-- ExecuteCell { cell_id } ------->|  // No code parameter
   |<-- CellQueued --------------------|
   |                                   |
-  |<-- ExecutionStarted --------------|  // broadcast via notebook:frame
-  |<-- Output -------------------------|  // broadcast via notebook:frame
-  |<-- ExecutionDone -----------------|
+  |<-- RuntimeStateDoc sync ----------|  // execution lifecycle + output manifests
 ```
 
 **Incorrect flow (anti-pattern):**

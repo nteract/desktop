@@ -131,9 +131,9 @@ graph TB
     UD -->|"invoke(detect_pyproject)"| DETP
     UCD -->|"invoke(detect_pixi_toml)"| DETP
 
-    %% Daemon → relay → frontend (notebook:frame, re-emitted as notebook:broadcast after WASM demux)
-    NSS -.->|"notebook:frame → notebook:broadcast {KernelLaunched, env_source}"| UDK
-    JK -.->|"notebook:frame → notebook:broadcast {KernelStatus, ExecutionStarted, ExecutionDone}"| UDK
+    %% Daemon → relay → frontend (typed notebook frames)
+    NSS -.->|"notebook:frame → RuntimeStateDoc {kernel, env_source}"| UDK
+    JK -.->|"notebook:frame → RuntimeStateDoc {lifecycle, queue, outputs}"| UDK
     VNT -.->|trust status| UD
 
     %% Environment creation → external tools

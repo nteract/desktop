@@ -556,6 +556,8 @@ Outputs are structured manifests in RuntimeStateDoc. Manifest fields use `Conten
 
 **Level 2 — Output manifests** (RuntimeStateDoc): Jupyter-aware structured objects describing output type, available representations, metadata, execution count, and `ContentRef` payloads. Used by frontend, Python, and MCP consumers to understand what to render or summarize.
 
+There is no separate `GET /output/{id}` rendering endpoint in the current design; output identity and structure live in RuntimeStateDoc manifests, and any large payloads are fetched by blob hash.
+
 ### ContentRef
 
 The fundamental type for "content that might be inlined or might be in the blob store":
@@ -764,12 +766,11 @@ runtimed (daemon)
 **Why all three?** NotebookDoc sync provides local-first editing and persistence. RuntimeStateDoc sync gives late joiners the current daemon-owned state without replaying historical broadcasts. Broadcasts remain only for event-like messages that should not become durable state.
 
 Broadcast types (see `NotebookBroadcast` in `crates/notebook-protocol/src/protocol.rs`):
-- `OutputsCleared { cell_id }` — outputs cleared for a cell
-- `KernelError { error }` — launch failure or crash
 - `Comm { msg_type, content, buffers }` — ephemeral custom comm messages; widget state updates flow through RuntimeStateDoc
+- `EnvProgress { env_type, phase }` — environment setup progress; RuntimeStateDoc remains authoritative for durable env state
 - ~~`CommSync`~~ — removed; widget state syncs via RuntimeStateDoc CRDT
 
-Several formerly state-carrying broadcasts are filtered at the relay stage and never reach clients: `KernelStatus`, `ExecutionStarted`, `ExecutionDone`, `QueueChanged`, and `EnvSyncState`. Outputs are rendered from RuntimeStateDoc manifests and resolved through the blob/content-ref layer.
+The old state-carrying broadcast variants were removed after RuntimeStateDoc became authoritative: kernel state, execution lifecycle, queue, outputs/display updates, path/autosave, and env sync state now flow through CRDT sync. Outputs are rendered from RuntimeStateDoc manifests and resolved through the blob/content-ref layer.
 
 ### Project file auto-detection
 
@@ -858,9 +859,9 @@ Localhost-only binding, content-addressed with 256-bit hashes (unguessable), non
 
 ### Multi-window sync latency targets
 
-Source edits: sub-200ms perceived. The `sync_to_daemon` round-trip is ~1-5ms locally (Unix socket). The daemon broadcasts immediately. The bottleneck is React re-render, not sync.
+Source edits: sub-200ms perceived. The `sync_to_daemon` round-trip is ~1-5ms locally (Unix socket). The daemon relays sync frames immediately. The bottleneck is React re-render, not sync.
 
-Outputs during execution: the dual delivery path (iopub events for speed, automerge for durability) means the executing window sees outputs instantly. Other windows see them after the automerge round-trip (<50ms). Acceptable for outputs which are inherently asynchronous.
+Outputs during execution: the daemon writes RuntimeStateDoc output manifests as iopub messages arrive, then relays the resulting sync frames to every peer. Latency is the RuntimeStateDoc sync round-trip plus frontend materialization, which is acceptable for outputs that are inherently asynchronous.
 
 If latency becomes an issue during rapid output bursts (e.g., training loops), the first optimization is batching sync messages rather than syncing per-output.
 

@@ -5,6 +5,7 @@ paths:
   - packages/runtimed/src/transport.ts
   - packages/runtimed/src/protocol-contract.ts
   - packages/runtimed/src/request-types.ts
+  - apps/notebook/src/lib/frame-pipeline.ts
   - apps/notebook/src/lib/notebook-frame-bus*
 ---
 

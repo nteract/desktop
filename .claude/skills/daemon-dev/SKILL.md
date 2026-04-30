@@ -81,7 +81,7 @@ Each open notebook has a **room** (`NotebookRoom` in `notebook_sync_server/room.
 
 ### Autosave
 
-Debounced: 2s quiet period, 10s max interval via `spawn_autosave_debouncer`. `NotebookAutosaved` broadcast clears frontend dirty flag. Explicit Cmd+S also runs cell formatting (ruff/deno fmt). Skips untitled notebooks and notebooks mid-load.
+Debounced: 2s quiet period, 10s max interval via `spawn_autosave_debouncer`. Frontend dirty state is cleared from save state/confirmations, not a room broadcast. Explicit Cmd+S also runs cell formatting (ruff/deno fmt). Skips untitled notebooks and notebooks mid-load.
 
 ### Saving an untitled notebook
 
@@ -91,7 +91,7 @@ Room keys are always UUIDs (never change). When an untitled notebook is first sa
 3. Inserts into `path_index: HashMap<PathBuf, Uuid>`
 4. Updates room's `path: RwLock<Option<PathBuf>>`
 5. Spawns file watcher for new path
-6. Broadcasts `PathChanged { path }` so peers update local path tracking
+6. Updates room path state so peers update local path tracking
 
 ### Crash Recovery
 

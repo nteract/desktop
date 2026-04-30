@@ -56,7 +56,7 @@ The notebook app communicates with runtimed over a Unix socket (named pipe on Wi
 1. **Automerge sync** — binary CRDT sync messages that keep the notebook document consistent between the frontend WASM peer and the daemon peer
 2. **Request/response** — JSON messages where a client asks the daemon to do something (execute a cell, launch a kernel) and gets a reply
 3. **Runtime and pool state sync** — binary Automerge sync for daemon-authored state documents
-4. **Broadcasts** — JSON messages the daemon pushes to all connected clients for comm messages and environment progress
+4. **Broadcasts** — JSON messages the daemon pushes to all connected clients for ephemeral comm messages and environment progress
 5. **Presence and session control** — binary presence updates plus daemon-originated readiness/status frames
 
 ## Connection Topology
@@ -311,35 +311,22 @@ Broadcasts are daemon-initiated messages pushed to all connected clients for a n
 
 | Broadcast | Purpose |
 |-----------|---------|
-| `KernelStatus { status, cell_id }` | Kernel state changed: `"starting"`, `"idle"`, `"busy"`, `"error"`, `"shutdown"` |
-| `ExecutionStarted { cell_id, execution_count }` | A cell began executing |
-| `Output { cell_id, output_type, output_json, output_index }` | Cell produced output (stdout, display data, error) |
-| `DisplayUpdate { display_id, data, metadata }` | Update an existing output by display ID |
-| `ExecutionDone { cell_id }` | Cell execution completed |
-| `QueueChanged { executing, queued }` | Execution queue state changed |
-| `KernelError { error }` | Kernel crashed or failed to launch |
-| `OutputsCleared { cell_id }` | Cell outputs cleared |
-| `Comm { msg_type, content, buffers }` | Jupyter comm message (widget open/msg/close) |
+| `Comm { msg_type, content, buffers }` | Jupyter comm message (widget open/msg/close). Custom one-shot events; widget state syncs via RuntimeStateDoc. |
+| `EnvProgress { env_type, phase }` | Environment setup progress (`phase` is a flattened `EnvProgressPhase`). RuntimeStateDoc remains authoritative for durable env state. |
 | ~~`CommSync`~~ | Removed — widget state syncs via RuntimeStateDoc CRDT |
-| `EnvProgress { env_type, phase }` | Environment setup progress (`phase` is a flattened `EnvProgressPhase`) |
-| `EnvSyncState { in_sync, diff }` | Notebook dependencies drifted from launched kernel config |
-| `PathChanged { path }` | Room's `.ipynb` path changed (e.g. untitled notebook saved) — UUID is stable; peers update local path tracking |
-| `NotebookAutosaved { path }` | Daemon autosaved `.ipynb` to disk — frontend clears dirty flag |
 
-Several broadcast variants have been superseded by RuntimeStateDoc CRDT sync: `CommSync` (removed), `KernelStatus`, `ExecutionStarted`, `ExecutionDone`, `QueueChanged`, and `EnvSyncState` are filtered at the relay stage and never reach clients. The `Comm` variant is now limited to custom messages (`method != "update"`) — state updates flow through the CRDT instead.
+The old state-carrying broadcast variants were removed after RuntimeStateDoc became authoritative: kernel state, execution lifecycle, queue, outputs/display updates, path/autosave, and env sync state now flow through CRDT sync. The `Comm` variant is limited to custom messages (`method != "update"`) — state updates flow through RuntimeStateDoc instead.
 
-### Broadcast flow
+### Output sync flow
 
 ```
 Kernel produces output
   → Daemon intercepts Jupyter IOPub message
-  → Daemon writes output to Automerge doc (as blob manifest)
-  → Daemon sends NotebookBroadcast::Output on broadcast channel
-  → Frame type 0x03 sent to all connected clients
+  → Daemon writes output manifest to RuntimeStateDoc
+  → RuntimeStateDoc sync produces a frame type 0x05 message
   → Relay receives, emits "notebook:frame" Tauri event
-  → WASM handle.receive_frame() demuxes → Broadcast event
-  → useAutomergeNotebook dispatches via emitBroadcast() (in-memory frame bus)
-  → useDaemonKernel subscribeBroadcast() callback processes the broadcast
+  → WASM handle.receive_frame() demuxes → RuntimeStateDoc merge
+  → frame-pipeline.ts plans output materialization
   → UI updates
 ```
 
@@ -384,9 +371,9 @@ Stream outputs (stdout/stderr) are special: text is fed through a terminal emula
 
 ## Notebook Lifecycle
 
-**Autosave:** The daemon autosaves `.ipynb` on a debounce (2s quiet, 10s max). `NotebookAutosaved` broadcast clears the frontend dirty flag. Explicit save (Cmd+S) additionally formats cells.
+**Autosave:** The daemon autosaves `.ipynb` on a debounce (2s quiet, 10s max). Explicit save (Cmd+S) additionally formats cells; frontend dirty state is derived from sync/save confirmations rather than a room broadcast.
 
-**UUID-stable rooms:** Room keys are always UUIDs. Saving an untitled notebook updates a secondary `path_index` map and broadcasts `PathChanged { path }` so peers can update their local path tracking. The UUID never changes.
+**UUID-stable rooms:** Room keys are always UUIDs. Saving an untitled notebook updates a secondary `path_index` map and the daemon-authored room state so peers can update their local path tracking. The UUID never changes.
 
 **Crash recovery:** Untitled notebooks persist their Automerge doc to `notebook-docs/{hash}.automerge`. Before overwriting on reopen, the daemon snapshots to `notebook-docs/snapshots/`. Outputs are ephemeral (RuntimeStateDoc, not persisted), so snapshots hold source and metadata only.
 
