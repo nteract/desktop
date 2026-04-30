@@ -95,7 +95,7 @@ export function getEnvProgressStatusText(event: EnvProgressEvent): string {
   }
 }
 
-export const EMPTY_ENV_PROGRESS: EnvProgressState = {
+export const EMPTY_ENV_PROGRESS: Readonly<EnvProgressState> = Object.freeze({
   isActive: false,
   phase: null,
   envType: null,
@@ -105,7 +105,7 @@ export const EMPTY_ENV_PROGRESS: EnvProgressState = {
   progress: null,
   bytesPerSecond: null,
   currentPackage: null,
-};
+});
 
 function extractProgress(event: EnvProgressEvent): { completed: number; total: number } | null {
   const phase = event.phase;
