@@ -128,9 +128,7 @@ export function cellChangesetTouchesChrome(fields: ChangedFields): boolean {
 }
 
 export function summarizeChangedFields(fields: ChangedFields): string[] {
-  return FIELD_SUMMARY_LABELS.flatMap(([key, label]) =>
-    fields[key] === true ? [label] : [],
-  );
+  return FIELD_SUMMARY_LABELS.flatMap(([key, label]) => (fields[key] === true ? [label] : []));
 }
 
 /**
@@ -167,9 +165,7 @@ export function planCellChangesetProjection(
  * materialization pass. Incremental non-structural changes only need touched
  * cells; full/structural materialization refreshes the whole document.
  */
-export function planCellPointerRefresh(
-  changeset: CellChangeset | null,
-): CellPointerRefreshPlan {
+export function planCellPointerRefresh(changeset: CellChangeset | null): CellPointerRefreshPlan {
   if (!changeset || changeset.added.length > 0) {
     return { kind: "all" };
   }

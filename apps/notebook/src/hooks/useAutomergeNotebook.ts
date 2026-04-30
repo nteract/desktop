@@ -355,9 +355,7 @@ export function useAutomergeNotebook() {
                 if (pointerRefresh.kind === "touched") {
                   updateCellExecutionPointersFromHandle(handle, pointerRefresh.cell_ids);
                 } else if (pointerRefresh.kind === "all") {
-                  updateCellExecutionPointersFromHandle(handle, [
-                    ...handle.get_cell_ids(),
-                  ]);
+                  updateCellExecutionPointersFromHandle(handle, [...handle.get_cell_ids()]);
                 }
               })
               .catch((err: unknown) =>
