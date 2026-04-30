@@ -211,7 +211,7 @@ pub(super) async fn persist_terminal_execution_records(
     persisted_records: &mut PersistedExecutionRecords,
 ) {
     let notebook_path = room
-        .identity
+        .file_binding
         .path
         .read()
         .await

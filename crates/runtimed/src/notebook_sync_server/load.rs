@@ -460,7 +460,7 @@ where
         start.elapsed()
     );
     let notebook_path = room
-        .identity
+        .file_binding
         .path
         .read()
         .await
@@ -1099,7 +1099,7 @@ pub(crate) async fn apply_ipynb_changes(
         }
         map
     };
-    let notebook_path_for_assets = room.identity.path.read().await.clone();
+    let notebook_path_for_assets = room.file_binding.path.read().await.clone();
     let converted_assets: HashMap<String, ResolvedAssets> = {
         let mut map = HashMap::new();
         for cell in external_cells {

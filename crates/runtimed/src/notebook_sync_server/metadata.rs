@@ -618,7 +618,7 @@ pub(crate) fn compute_env_sync_diff(
 /// isolated markdown rendering can rewrite those refs to blob URLs.
 pub(crate) async fn process_markdown_assets(room: &NotebookRoom) {
     let notebook_path = room
-        .identity
+        .file_binding
         .path
         .read()
         .await

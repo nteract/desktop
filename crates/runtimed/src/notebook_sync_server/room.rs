@@ -1,20 +1,12 @@
 use super::*;
 
-/// Per-room identity and filesystem bindings.
+/// Per-room identity.
 ///
-/// Groups the four fields that describe *which* notebook this room represents,
-/// separate from its document state, broadcasts, or kernel lifecycle. These
-/// fields are read from most code paths but mutated rarely (path changes when
-/// an untitled notebook is saved; working_dir is set once at create time).
+/// Holds immutable identity and untitled working-directory context. The
+/// mutable file-backed binding lives in `NotebookFileBinding`.
 pub struct RoomIdentity {
     /// Persistence path for this room's Automerge document (not the .ipynb).
     pub persist_path: PathBuf,
-    /// Whether this notebook is ephemeral (in-memory only, no .ipynb on disk).
-    pub is_ephemeral: AtomicBool,
-    /// The `.ipynb` path, when this room is file-backed. `None` for untitled
-    /// and ephemeral rooms. Mutated when an untitled room is saved to disk
-    /// (see `handle_save_notebook`).
-    pub path: RwLock<Option<PathBuf>>,
     /// Working directory for untitled notebooks (used for project file detection).
     /// When the notebook_id is a UUID (untitled), this provides the directory
     /// context for finding pyproject.toml, pixi.toml, or environment.yaml.
@@ -22,12 +14,185 @@ pub struct RoomIdentity {
 }
 
 impl RoomIdentity {
-    pub fn new(persist_path: PathBuf, path: Option<PathBuf>, ephemeral: bool) -> Self {
+    pub fn new(persist_path: PathBuf) -> Self {
         Self {
             persist_path,
-            is_ephemeral: AtomicBool::new(ephemeral),
-            path: RwLock::new(path),
             working_dir: RwLock::new(None),
+        }
+    }
+}
+
+/// Owns the mutable relationship between a room and its `.ipynb` file.
+///
+/// This is the single daemon-side owner for canonical path state, file-backed
+/// lifecycle handles, and the runtime-state `path` projection. Callers should
+/// go through this type when a notebook is opened, promoted from untitled, or
+/// saved-as to a new path.
+pub struct NotebookFileBinding {
+    /// The canonical `.ipynb` path, when this room is file-backed.
+    pub path: RwLock<Option<PathBuf>>,
+    /// Whether this notebook is ephemeral (in-memory only, no .ipynb on disk).
+    pub is_ephemeral: AtomicBool,
+    /// Shutdown signal for the `.ipynb` file watcher task.
+    pub watcher_shutdown_tx: Mutex<Option<oneshot::Sender<()>>>,
+    /// Shutdown signal for the project-file watcher task.
+    ///
+    /// This watcher is derived from the bound notebook path and is rearmed when
+    /// the binding moves to a new path.
+    pub project_file_watcher_shutdown_tx: Mutex<Option<oneshot::Sender<()>>>,
+    /// Shutdown/flush request channel for the `.ipynb` autosave task.
+    pub autosave_shutdown_tx: Mutex<Option<mpsc::UnboundedSender<AutosaveShutdownRequest>>>,
+}
+
+impl NotebookFileBinding {
+    pub fn new(path: Option<PathBuf>, ephemeral: bool) -> Self {
+        Self {
+            path: RwLock::new(path),
+            is_ephemeral: AtomicBool::new(ephemeral),
+            watcher_shutdown_tx: Mutex::new(None),
+            project_file_watcher_shutdown_tx: Mutex::new(None),
+            autosave_shutdown_tx: Mutex::new(None),
+        }
+    }
+
+    pub async fn claim_path(
+        path_index: &Arc<tokio::sync::Mutex<PathIndex>>,
+        canonical: &Path,
+        uuid: uuid::Uuid,
+    ) -> Result<(), notebook_protocol::protocol::SaveErrorKind> {
+        try_claim_path(path_index, canonical, uuid).await
+    }
+
+    pub async fn release_path(path_index: &Arc<tokio::sync::Mutex<PathIndex>>, canonical: &Path) {
+        path_index.lock().await.remove(canonical);
+    }
+
+    pub async fn replace_claim(
+        path_index: &Arc<tokio::sync::Mutex<PathIndex>>,
+        old: &Path,
+        new: PathBuf,
+        uuid: uuid::Uuid,
+    ) {
+        let mut idx = path_index.lock().await;
+        idx.remove(old);
+        if let Err(e) = idx.insert(new.clone(), uuid) {
+            warn!(
+                "[notebook-sync] post-write path_index reinsert failed for {:?}: {} \
+                 — room {} may be orphaned from path lookup",
+                new, e, uuid
+            );
+        }
+    }
+
+    pub async fn set_runtime_path(room: &NotebookRoom, canonical: &Path) {
+        let path_str = canonical.to_string_lossy().into_owned();
+        if let Err(e) = room.state.with_doc(|sd| sd.set_path(Some(&path_str))) {
+            warn!("[notebook-sync] set_path failed for {:?}: {}", canonical, e);
+        }
+    }
+
+    pub async fn bind_existing(room: &Arc<NotebookRoom>, canonical: &Path) {
+        Self::set_runtime_path(room, canonical).await;
+        room.file_binding
+            .start_file_lifecycle(room, canonical)
+            .await;
+    }
+
+    pub async fn promote_after_save(room: &Arc<NotebookRoom>, canonical: PathBuf) {
+        *room.file_binding.path.write().await = Some(canonical.clone());
+        room.file_binding
+            .is_ephemeral
+            .store(false, Ordering::Relaxed);
+        Self::set_runtime_path(room, &canonical).await;
+        room.file_binding
+            .start_file_lifecycle(room, &canonical)
+            .await;
+        super::project_context::refresh_project_context_async(room, Some(canonical.as_path()))
+            .await;
+    }
+
+    pub async fn rebind_after_save_as(room: &Arc<NotebookRoom>, canonical: PathBuf) {
+        *room.file_binding.path.write().await = Some(canonical.clone());
+        Self::set_runtime_path(room, &canonical).await;
+        room.file_binding
+            .start_file_lifecycle(room, &canonical)
+            .await;
+        super::project_context::refresh_project_context_async(room, Some(canonical.as_path()))
+            .await;
+    }
+
+    async fn start_file_lifecycle(&self, room: &Arc<NotebookRoom>, canonical: &Path) {
+        if canonical.extension().is_some_and(|ext| ext == "ipynb") {
+            let shutdown_tx =
+                spawn_notebook_file_watcher(canonical.to_path_buf(), Arc::clone(room));
+            if let Some(previous_tx) = self.watcher_shutdown_tx.lock().await.replace(shutdown_tx) {
+                let _ = previous_tx.send(());
+            }
+        }
+
+        let shutdown_tx =
+            spawn_autosave_debouncer(canonical.to_string_lossy().into_owned(), Arc::clone(room));
+        self.install_autosave_shutdown_tx(shutdown_tx).await;
+    }
+
+    pub async fn install_autosave_shutdown_tx(
+        &self,
+        shutdown_tx: mpsc::UnboundedSender<AutosaveShutdownRequest>,
+    ) {
+        let previous_tx = self.autosave_shutdown_tx.lock().await.replace(shutdown_tx);
+
+        if let Some(previous_tx) = previous_tx {
+            let (ack_tx, ack_rx) = oneshot::channel::<bool>();
+            if previous_tx.send(ack_tx).is_err() {
+                return;
+            }
+            match tokio::time::timeout(std::time::Duration::from_secs(5), ack_rx).await {
+                Ok(Ok(true)) => {}
+                Ok(Ok(false)) => {
+                    warn!("[autosave] Replaced autosave task reported failed shutdown");
+                }
+                Ok(Err(_)) => {
+                    warn!("[autosave] Replaced autosave task dropped shutdown ack");
+                }
+                Err(_) => {
+                    warn!("[autosave] Timed out waiting for replaced autosave task shutdown");
+                }
+            }
+        }
+    }
+
+    pub async fn shutdown_autosave(&self, notebook_id: &str, timeout: std::time::Duration) -> bool {
+        let shutdown_tx = self.autosave_shutdown_tx.lock().await.take();
+        let Some(shutdown_tx) = shutdown_tx else {
+            return true;
+        };
+
+        let (ack_tx, ack_rx) = oneshot::channel::<bool>();
+        if shutdown_tx.send(ack_tx).is_err() {
+            debug!(
+                "[autosave] Shutdown skipped for {} (autosave task already exited)",
+                notebook_id
+            );
+            return true;
+        }
+
+        match tokio::time::timeout(timeout, ack_rx).await {
+            Ok(Ok(true)) => true,
+            Ok(Ok(false)) => false,
+            Ok(Err(_)) => {
+                warn!(
+                    "[autosave] Shutdown ack dropped for {} before final save completed",
+                    notebook_id
+                );
+                false
+            }
+            Err(_) => {
+                warn!(
+                    "[autosave] Timed out waiting for final save during shutdown of {}",
+                    notebook_id
+                );
+                false
+            }
         }
     }
 }
@@ -76,15 +241,9 @@ impl Default for RoomBroadcasts {
 ///
 /// Always present on every room. The optional `debouncer` field nests the
 /// two debouncer channels that only exist for non-ephemeral rooms
-/// (untitled-saved or file-backed); everything else (save-baseline
-/// snapshots, file-watcher shutdown, streaming-load gate, attachment
-/// cache) is needed whether the room is ephemeral today or will be
-/// promoted to file-backed later.
-///
-/// When an ephemeral room is saved via `finalize_untitled_promotion`, the
-/// watcher shutdown sender and save baselines start getting populated
-/// without any struct-level resurrection — the fields were waiting for
-/// the file-backed state to arrive.
+/// (untitled-saved or file-backed); save-baseline snapshots, streaming-load
+/// gate, and attachment cache are needed whether the room is ephemeral today
+/// or will be promoted to file-backed later.
 pub struct RoomPersistence {
     /// Debouncer channels — present only when the room writes to a
     /// persisted Automerge doc (`notebook-docs/*.automerge`). Ephemeral
@@ -101,23 +260,6 @@ pub struct RoomPersistence {
     /// Timestamp (ms since epoch) of last self-write to the .ipynb file.
     /// Used to skip file watcher events triggered by our own saves.
     pub last_self_write: AtomicU64,
-    /// Shutdown signal for the file watcher task.
-    /// Sent when the room is evicted to stop the watcher.
-    pub watcher_shutdown_tx: Mutex<Option<oneshot::Sender<()>>>,
-    /// Shutdown/flush request channel for the `.ipynb` autosave task.
-    ///
-    /// The autosave task owns an `Arc<NotebookRoom>`, so broadcast-channel
-    /// closure is not a reliable room-lifecycle signal. Eviction uses this
-    /// channel to request one acknowledged final save before the task exits.
-    pub autosave_shutdown_tx: Mutex<Option<mpsc::UnboundedSender<AutosaveShutdownRequest>>>,
-    /// Shutdown signal for the project-file watcher task.
-    ///
-    /// Separate from `watcher_shutdown_tx` (which watches the `.ipynb`)
-    /// because the project-file watcher is pinned to a different path
-    /// and can be swapped on save-as without bouncing the notebook
-    /// watcher. `None` until `refresh_project_context` finds a project
-    /// file and the watcher gets armed.
-    pub project_file_watcher_shutdown_tx: Mutex<Option<oneshot::Sender<()>>>,
     /// Raw nbformat attachments preserved from disk, keyed by cell ID.
     ///
     /// Populated only by `.ipynb` load paths. Resolved image data already
@@ -155,9 +297,6 @@ impl RoomPersistence {
             debouncer: None,
             last_save_sources: RwLock::new(HashMap::new()),
             last_self_write: AtomicU64::new(0),
-            watcher_shutdown_tx: Mutex::new(None),
-            autosave_shutdown_tx: Mutex::new(None),
-            project_file_watcher_shutdown_tx: Mutex::new(None),
             nbformat_attachments: RwLock::new(HashMap::new()),
             is_loading: AtomicBool::new(false),
         }
@@ -175,9 +314,6 @@ impl RoomPersistence {
             }),
             last_save_sources: RwLock::new(HashMap::new()),
             last_self_write: AtomicU64::new(0),
-            watcher_shutdown_tx: Mutex::new(None),
-            autosave_shutdown_tx: Mutex::new(None),
-            project_file_watcher_shutdown_tx: Mutex::new(None),
             nbformat_attachments: RwLock::new(HashMap::new()),
             is_loading: AtomicBool::new(false),
         }
@@ -233,11 +369,11 @@ pub struct NotebookRoom {
     pub doc: Arc<RwLock<NotebookDoc>>,
     /// Broadcast channels + presence state for fan-out to peer sync loops.
     pub broadcasts: RoomBroadcasts,
-    /// Disk persistence state. Always present; ephemeral rooms carry an
-    /// `ephemeral()` instance with no active debouncer, and gain the
-    /// file watcher + save-baseline tracking when promoted via Save.
+    /// Disk persistence state for Automerge/doc save bookkeeping.
     pub persistence: RoomPersistence,
-    /// Notebook identity: persist_path, is_ephemeral, .ipynb path, working_dir.
+    /// File binding owner: canonical .ipynb path, file watcher, autosave.
+    pub file_binding: NotebookFileBinding,
+    /// Notebook identity: persist_path and working_dir.
     pub identity: RoomIdentity,
     /// Per-connection accounting: active_peers + had_peers.
     pub connections: RoomConnections,
@@ -441,7 +577,8 @@ impl NotebookRoom {
             doc: Arc::new(RwLock::new(doc)),
             broadcasts: RoomBroadcasts::default(),
             persistence,
-            identity: RoomIdentity::new(persist_path, path, ephemeral),
+            file_binding: NotebookFileBinding::new(path, ephemeral),
+            identity: RoomIdentity::new(persist_path),
             connections: RoomConnections::default(),
             blob_store,
             trust_state: Arc::new(RwLock::new(trust_state)),
@@ -522,7 +659,8 @@ impl NotebookRoom {
             doc: Arc::new(RwLock::new(doc)),
             broadcasts: RoomBroadcasts::default(),
             persistence: RoomPersistence::with_debouncer(persist_tx, flush_request_tx),
-            identity: RoomIdentity::new(persist_path, path, false),
+            file_binding: NotebookFileBinding::new(path, false),
+            identity: RoomIdentity::new(persist_path),
             connections: RoomConnections::default(),
             blob_store,
             trust_state: Arc::new(RwLock::new(trust_state)),

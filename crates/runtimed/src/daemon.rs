@@ -2414,7 +2414,7 @@ impl Daemon {
         let (reader, mut writer) = tokio::io::split(stream);
         let (proto_str, proto_ver) = (PROTOCOL_V4, PROTOCOL_VERSION);
         let notebook_path = room
-            .identity
+            .file_binding
             .path
             .read()
             .await
@@ -2963,7 +2963,7 @@ impl Daemon {
                         .unwrap_or((None, None, None));
 
                     let notebook_path = room
-                        .identity
+                        .file_binding
                         .path
                         .read()
                         .await
@@ -2985,7 +2985,7 @@ impl Daemon {
                         env_source,
                         kernel_status,
                         ephemeral: room
-                            .identity
+                            .file_binding
                             .is_ephemeral
                             .load(std::sync::atomic::Ordering::Relaxed),
                         notebook_path,
@@ -3011,7 +3011,7 @@ impl Daemon {
                 };
                 // Clean up path_index if the room had a path.
                 if let Some(ref room) = maybe_room {
-                    let path = room.identity.path.read().await.clone();
+                    let path = room.file_binding.path.read().await.clone();
                     if let Some(p) = path {
                         self.path_index.lock().await.remove(&p);
                     }

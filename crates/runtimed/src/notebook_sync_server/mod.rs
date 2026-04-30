@@ -81,7 +81,6 @@ pub(crate) use peer_presence::sanitize_peer_label;
 pub(crate) use peer_runtime_agent::handle_runtime_agent_sync_connection;
 pub(crate) use peer_runtime_sync::notebook_execution_context_id;
 pub(crate) use persist::*;
-pub(crate) use project_context::refresh_project_context_on_save_as;
 pub(crate) use room::*;
 pub(crate) use runtime_bridge::*;
 

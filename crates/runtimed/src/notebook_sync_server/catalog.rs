@@ -90,20 +90,8 @@ pub async fn get_or_create_room(
         }
     }
 
-    // Spawn file watcher for .ipynb files (not for untitled notebooks).
     if let Some(ref notebook_path) = options.path {
-        if notebook_path.extension().is_some_and(|ext| ext == "ipynb") {
-            let shutdown_tx = spawn_notebook_file_watcher(notebook_path.clone(), room.clone());
-            // Blocking lock is OK here — room is brand new, no contention.
-            if let Ok(mut guard) = room.persistence.watcher_shutdown_tx.try_lock() {
-                *guard = Some(shutdown_tx);
-            }
-        }
-
-        // Spawn autosave debouncer to keep .ipynb on disk current.
-        let path_str = notebook_path.to_string_lossy().to_string();
-        let shutdown_tx = spawn_autosave_debouncer(path_str, room.clone());
-        install_autosave_shutdown_tx(&room, shutdown_tx).await;
+        NotebookFileBinding::bind_existing(&room, notebook_path).await;
     }
 
     room

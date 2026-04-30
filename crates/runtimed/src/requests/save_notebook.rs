@@ -9,7 +9,7 @@ use tracing::warn;
 use crate::daemon::Daemon;
 use crate::notebook_sync_server::{
     canonical_target_path, finalize_untitled_promotion, format_notebook_cells,
-    persist_notebook_bytes, save_notebook_to_disk, try_claim_path, NotebookRoom, SaveError,
+    persist_notebook_bytes, save_notebook_to_disk, NotebookFileBinding, NotebookRoom, SaveError,
 };
 use crate::protocol::NotebookResponse;
 
@@ -29,7 +29,7 @@ pub(crate) async fn handle(
     // Capture was_untitled and old_path in a single critical section to
     // avoid a TOCTOU race between the two reads.
     let (was_untitled, old_path) = {
-        let p = room.identity.path.read().await;
+        let p = room.file_binding.path.read().await;
         (p.is_none(), p.clone())
     };
 
@@ -41,7 +41,7 @@ pub(crate) async fn handle(
     //
     // Compute the pre-write canonical target. For untitled rooms a path
     // is required; for file-backed rooms we only need a pre-write claim
-    // if the caller specified a path different from room.identity.path.
+    // if the caller specified a path different from room.file_binding.path.
     let target_for_claim: Option<PathBuf> = match (&path, was_untitled) {
         (Some(p), _) => match crate::paths::normalize_save_target(p) {
             Ok(normalized) => Some(canonical_target_path(&normalized).await),
@@ -70,7 +70,9 @@ pub(crate) async fn handle(
     };
 
     if let Some(ref canonical_pre) = pre_claim {
-        if let Err(kind) = try_claim_path(&daemon.path_index, canonical_pre, room.id).await {
+        if let Err(kind) =
+            NotebookFileBinding::claim_path(&daemon.path_index, canonical_pre, room.id).await
+        {
             return NotebookResponse::SaveError { error: kind };
         }
     }
@@ -81,11 +83,11 @@ pub(crate) async fn handle(
             // Rollback the path_index claim we just made so the room
             // stays untitled / its old path stays claimed.
             if let Some(ref canonical_pre) = pre_claim {
-                daemon.path_index.lock().await.remove(canonical_pre);
+                NotebookFileBinding::release_path(&daemon.path_index, canonical_pre).await;
             }
             // Emergency persist for ephemeral rooms: if saving to .ipynb
             // failed, at least write the Automerge doc so data isn't lost.
-            if room.identity.is_ephemeral.load(Ordering::Relaxed)
+            if room.file_binding.is_ephemeral.load(Ordering::Relaxed)
                 && room.persistence.debouncer.is_none()
             {
                 let bytes = room.doc.write().await.save();
@@ -121,16 +123,13 @@ pub(crate) async fn handle(
 
     if let Some(ref canonical_pre) = pre_claim {
         if canonical_pre != &canonical {
-            let mut idx = daemon.path_index.lock().await;
-            idx.remove(canonical_pre);
-            // Best-effort reinsert under the post-write canonical.
-            if let Err(e) = idx.insert(canonical.clone(), room.id) {
-                warn!(
-                    "[notebook-sync] post-write path_index reinsert failed for {:?}: {} \
-                     — room {} may be orphaned from path lookup",
-                    canonical, e, room.id
-                );
-            }
+            NotebookFileBinding::replace_claim(
+                &daemon.path_index,
+                canonical_pre,
+                canonical.clone(),
+                room.id,
+            )
+            .await;
         }
     }
 
@@ -140,23 +139,9 @@ pub(crate) async fn handle(
         let path_changed = old != &canonical;
         if path_changed {
             // Save-as rename: new path already claimed above; remove
-            // the old path_index entry and update room.identity.path.
-            {
-                let mut idx = daemon.path_index.lock().await;
-                idx.remove(old);
-            }
-            *room.identity.path.write().await = Some(canonical.clone());
-            let path_str = canonical.to_string_lossy().into_owned();
-            if let Err(e) = room.state.with_doc(|sd| sd.set_path(Some(&path_str))) {
-                tracing::warn!("[save_notebook] set_path failed: {}", e);
-            }
-            // Walk up from the new location; the previous project_context
-            // reflected the old parent directory and is now stale.
-            crate::notebook_sync_server::refresh_project_context_on_save_as(
-                room,
-                canonical.as_path(),
-            )
-            .await;
+            // the old path_index entry and update room.file_binding.path.
+            NotebookFileBinding::release_path(&daemon.path_index, old).await;
+            NotebookFileBinding::rebind_after_save_as(room, canonical.clone()).await;
         }
         // If path didn't change, this is save-in-place: nothing else.
     }
