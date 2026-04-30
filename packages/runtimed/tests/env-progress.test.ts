@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vite-plus/test";
-import type { EnvProgressEvent } from "runtimed";
-import { getStatusText, progressKey, projectEnvProgress } from "../useEnvProgress";
+import type { EnvProgressEvent } from "../src/runtime-state";
+import { envProgressKey, getEnvProgressStatusText, projectEnvProgress } from "../src/env-progress";
 
-describe("getStatusText", () => {
+describe("env progress projection", () => {
   it("keeps error status concise for inline toolbar display", () => {
     const event: EnvProgressEvent = {
       env_type: "uv",
@@ -10,7 +10,7 @@ describe("getStatusText", () => {
       message: "Failed to install dependencies: numpy build error",
     };
 
-    expect(getStatusText(event)).toBe("Environment error");
+    expect(getEnvProgressStatusText(event)).toBe("Environment error");
   });
 
   it("projects daemon-authored offline hits as inactive progress", () => {
@@ -73,6 +73,6 @@ describe("getStatusText", () => {
     } satisfies EnvProgressEvent;
 
     expect(JSON.stringify(eventA)).not.toBe(JSON.stringify(eventB));
-    expect(progressKey(eventA)).toBe(progressKey(eventB));
+    expect(envProgressKey(eventA)).toBe(envProgressKey(eventB));
   });
 });

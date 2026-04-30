@@ -12,9 +12,8 @@ import {
 import { useCallback, useEffect, useState, type ReactElement, type ReactNode } from "react";
 import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card";
 import { cn } from "@/lib/utils";
-import type { EnvProgressState } from "../hooks/useEnvProgress";
 import type { UpdateStatus } from "../hooks/useUpdater";
-import { KERNEL_ERROR_REASON } from "runtimed";
+import { KERNEL_ERROR_REASON, type EnvProgressState } from "runtimed";
 import {
   getStatusKeyLabel,
   KERNEL_STATUS,

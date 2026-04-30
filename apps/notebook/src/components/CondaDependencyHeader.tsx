@@ -1,12 +1,12 @@
 import { AlertCircle, Check, FileText, Info, Plus, RefreshCw, X } from "lucide-react";
 import { type KeyboardEvent, useCallback, useState } from "react";
 import { Progress } from "@/components/ui/progress";
+import type { EnvProgressState } from "runtimed";
 import type {
   CondaSyncState,
   EnvironmentYmlDeps,
   EnvironmentYmlInfo,
 } from "../hooks/useCondaDependencies";
-import type { EnvProgressState } from "../hooks/useEnvProgress";
 
 interface CondaDependencyHeaderProps {
   dependencies: string[];

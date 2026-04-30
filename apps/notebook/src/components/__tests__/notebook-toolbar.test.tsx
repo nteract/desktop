@@ -11,8 +11,7 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vite-plus/test";
-import type { EnvProgressState } from "../../hooks/useEnvProgress";
-import { KERNEL_ERROR_REASON } from "runtimed";
+import { KERNEL_ERROR_REASON, type EnvProgressState } from "runtimed";
 import {
   KERNEL_STATUS,
   type KernelStatus,
