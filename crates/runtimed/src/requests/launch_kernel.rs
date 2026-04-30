@@ -547,16 +547,24 @@ pub(crate) async fn handle(
                 )
                 .await
                 {
-                    Some(Some(env)) => {
+                    Ok(Some(env)) => {
                         info!(
                             "[notebook-sync] LaunchKernel: acquired {} env: {:?}",
                             resolved_env_source.as_str(),
                             env.python_path
                         );
+                        // Set the active runtime owner now so the env is
+                        // protected by `runtime_agent_env_path` through
+                        // the rest of the launch flow. (The pool lease
+                        // was already released inside
+                        // `acquire_prewarmed_env_with_capture`.)
+                        let mut ep = room.runtime_agent_env_path.write().await;
+                        *ep = Some(env.venv_path.clone());
+                        drop(ep);
                         Some(env)
                     }
-                    Some(None) => None,
-                    None => {
+                    Ok(None) => None,
+                    Err(()) => {
                         // `acquire_prewarmed_env_with_capture`
                         // already broadcast the error; bail out.
                         reset_starting_state(room, None).await;
@@ -586,10 +594,12 @@ pub(crate) async fn handle(
                 None
             }
             other => {
-                // For remaining conda sources, route to conda pool
-                if other.starts_with("conda:") {
+                // For remaining conda sources, route to conda pool. Set
+                // runtime_agent_env_path BEFORE releasing the lease so the
+                // env is never momentarily unprotected.
+                let (env, guard) = if other.starts_with("conda:") {
                     match daemon.take_conda_env().await {
-                        Some(env) => Some(env),
+                        Some(taken) => taken,
                         None => {
                             reset_starting_state(room, None).await;
                             return NotebookResponse::Error {
@@ -600,7 +610,7 @@ pub(crate) async fn handle(
                 } else {
                     // Prewarmed UV
                     match daemon.take_uv_env().await {
-                        Some(env) => Some(env),
+                        Some(taken) => taken,
                         None => {
                             reset_starting_state(room, None).await;
                             return NotebookResponse::Error {
@@ -608,7 +618,13 @@ pub(crate) async fn handle(
                             };
                         }
                     }
+                };
+                {
+                    let mut ep = room.runtime_agent_env_path.write().await;
+                    *ep = Some(env.venv_path.clone());
                 }
+                guard.release().await;
+                Some(env)
             }
         }
     };
@@ -718,6 +734,7 @@ pub(crate) async fn handle(
                     &deps,
                     bootstrap_dx,
                     daemon,
+                    room,
                     launch_progress_handler.clone(),
                 )
                 .await
@@ -819,6 +836,7 @@ pub(crate) async fn handle(
                     &deps,
                     &channels,
                     daemon,
+                    room,
                     launch_progress_handler.clone(),
                 )
                 .await
@@ -1179,16 +1197,14 @@ pub(crate) async fn handle(
         }
     }
 
-    // Register the env path for GC protection immediately after pool.take(),
-    // BEFORE any async work (agent spawn, connect timeout, delta install).
+    // For prewarmed pool envs the active path was set above (right at
+    // `transfer_to_runtime`); for inline / PEP 723 / env_yml flows that
+    // built their own env, set it here so the env directory is in
+    // `runtime_agent_env_path` before any further async work (agent spawn,
+    // connect timeout).
     if let Some(ref env) = pooled_env {
-        {
-            let mut ep = room.runtime_agent_env_path.write().await;
-            *ep = Some(env.venv_path.clone());
-        }
-        daemon
-            .release_pool_lease(env.env_type, &env.venv_path)
-            .await;
+        let mut ep = room.runtime_agent_env_path.write().await;
+        *ep = Some(env.venv_path.clone());
     }
 
     // Build LaunchedEnvConfig to track what config the kernel was launched with.
