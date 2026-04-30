@@ -79,6 +79,8 @@ export {
   collectOutputIds,
   executionFingerprint,
   extractOutputId,
+  RuntimeExecutionProjector,
+  type RuntimeExecutionProjection,
   type RuntimeExecutionSnapshot,
 } from "./execution-projection";
 
