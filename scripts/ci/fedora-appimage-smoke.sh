@@ -71,11 +71,6 @@ echo "=== nteract-mcp stderr ==="
 cat nteract-mcp.stderr
 echo
 
-if [[ "$mcp_status" -ne 0 && "$mcp_status" -ne 124 ]]; then
-  echo "nteract-mcp failed with status $mcp_status" >&2
-  exit "$mcp_status"
-fi
-
 if grep -Eq "runt(-nightly)? not found" nteract-mcp.stderr; then
   echo "nteract-mcp could not find the bundled runt sidecar" >&2
   exit 1
@@ -84,6 +79,16 @@ fi
 if ! grep -Eq "Validated runt(-nightly)? is available" nteract-mcp.stderr; then
   echo "nteract-mcp did not validate the bundled runt sidecar" >&2
   exit 1
+fi
+
+if [[ "$mcp_status" -ne 0 && "$mcp_status" -ne 124 ]]; then
+  # nteract-mcp is a JSON-RPC stdio server. This packaging smoke probe
+  # intentionally does not run a full MCP client, so EOF before initialize is
+  # acceptable after the binary has started and validated its bundled runt.
+  if ! grep -Eq "connection closed: initialize request" nteract-mcp.stderr; then
+    echo "nteract-mcp failed with status $mcp_status" >&2
+    exit "$mcp_status"
+  fi
 fi
 
 # Simulate the environment AppRun gives child processes. The daemon doctor
