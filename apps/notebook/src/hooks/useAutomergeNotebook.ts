@@ -7,6 +7,7 @@ import {
   isDisplayCapableJupyterOutput,
   isInitialLoadFailed,
   isInitialLoadStreaming,
+  planCellPointerRefresh,
 } from "runtimed";
 import { concatMap, from, Observable, switchMap } from "rxjs";
 import { needsPlugin, preWarmForMimes } from "@/components/isolated/iframe-libraries";
@@ -350,13 +351,10 @@ export function useAutomergeNotebook() {
                 // RuntimeStateDoc entry happened to land last.
                 const handle = handleRef.current;
                 if (!handle) return;
-                if (changeset && changeset.added.length === 0) {
-                  const touched = new Set<string>(changeset.changed.map((c) => c.cell_id));
-                  if (touched.size > 0) {
-                    updateCellExecutionPointersFromHandle(handle, [...touched]);
-                  }
-                } else {
-                  // Full materialization or added cells — refresh all.
+                const pointerRefresh = planCellPointerRefresh(changeset);
+                if (pointerRefresh.kind === "touched") {
+                  updateCellExecutionPointersFromHandle(handle, pointerRefresh.cell_ids);
+                } else if (pointerRefresh.kind === "all") {
                   updateCellExecutionPointersFromHandle(handle, [...handle.get_cell_ids()]);
                 }
               })
