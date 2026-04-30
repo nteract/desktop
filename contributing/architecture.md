@@ -265,7 +265,7 @@ The frontend now owns a local Automerge doc via `runtimed-wasm` WASM bindings, m
 - `crates/notebook-protocol/src/protocol.rs` — Canonical wire types: `NotebookRequest`, `NotebookResponse`, `NotebookBroadcast`, `RuntimeAgentRequest`, `RuntimeAgentResponse`
 - `crates/notebook-doc/src/lib.rs` — `NotebookDoc`: Automerge schema, cell CRUD, nbformat fallback fields, per-cell accessors
 - `crates/notebook-doc/src/diff.rs` — `CellChangeset`: structural diff from Automerge patches
-- `crates/notebook-doc/src/runtime_state.rs` — `RuntimeStateDoc`: kernel status, execution queue/lifecycle, env sync, comms
+- `crates/runtime-doc/src/doc.rs` — `RuntimeStateDoc`: kernel status, execution queue/lifecycle, env sync, comms
 - `crates/notebook-sync/src/handle.rs` — `DocHandle`: sync infrastructure, per-cell accessors for Python clients
 - `crates/runtimed/src/notebook_sync_server/` — room lifecycle, peer sync loops, session-control readiness, persistence, metadata/trust/project-file helpers
 - `crates/runtimed/src/requests/` — daemon-side notebook request routing handlers

@@ -517,7 +517,7 @@ Dependencies are signed with HMAC-SHA256 to prevent untrusted code execution on 
 - **Machine-specific**: The key is per-machine, so every shared notebook is untrusted on the recipient's machine
 - **Verification**: `trust.rs:verify_signature()` returns `bool`. The higher-level `verify_notebook_trust()` returns `TrustInfo` (containing a `TrustStatus`: Trusted, Untrusted, SignatureInvalid, or NoDependencies)
 
-Changes to the dependency metadata structure require updating the signing logic in `crates/runt-trust/src/lib.rs` (re-exported by `crates/notebook/src/trust.rs`).
+Changes to the dependency metadata structure require updating `crates/notebook-doc/src/metadata.rs` and the signing logic in `crates/runt-trust/src/lib.rs`.
 
 ## Frontend Architecture
 
@@ -577,14 +577,10 @@ The kernel lifecycle is managed by `useDaemonKernel.ts`, which:
 | File | Role |
 |------|------|
 | `crates/notebook/src/lib.rs` | Tauri commands (save, format, kernel, env), sync pipe setup, `launch_kernel_via_daemon` |
-| `crates/notebook/src/uv_env.rs` | UV dependency metadata (set/get deps in notebook JSON) |
-| `crates/notebook/src/conda_env.rs` | Conda dependency metadata (set/get deps in notebook JSON) |
-| `crates/notebook/src/pyproject.rs` | pyproject.toml discovery and parsing |
-| `crates/notebook/src/pixi.rs` | pixi.toml discovery and parsing |
-| `crates/notebook/src/environment_yml.rs` | environment.yml discovery and parsing |
-| `crates/notebook/src/deno_env.rs` | Deno config detection |
+| `crates/notebook-doc/src/metadata.rs` | Notebook dependency metadata schema and accessors |
+| `crates/runtimed/src/project_file.rs` | Unified closest-wins project file detection |
 | `crates/notebook/src/settings.rs` | User preferences (default runtime, env type) |
-| `crates/notebook/src/trust.rs` | HMAC trust verification (re-exports from `runt-trust` crate) |
+| `crates/runt-trust/src/lib.rs` | HMAC trust verification |
 
 ### Frontend
 

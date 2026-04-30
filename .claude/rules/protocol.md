@@ -142,7 +142,7 @@ Inline manifest system with blob offload for large payloads. When daemon receive
 
 State-carrying broadcasts (kernel status, queue, env sync, trust) have been replaced by a **daemon-authoritative, per-notebook Automerge document** synced via frame type `0x05`. Clients read via `useRuntimeState()`.
 
-Schema (in `crates/notebook-doc/src/runtime_state.rs`):
+Schema (in `crates/runtime-doc/src/doc.rs`):
 
 | Path | Type | Description |
 |------|------|-------------|
@@ -183,7 +183,7 @@ Each cell execution is assigned a unique `execution_id` (UUID). The `QueueEntry`
 | `crates/notebook-sync/src/connect.rs` | Connection setup |
 | `crates/notebook-sync/src/handle.rs` | `DocHandle` -- sync, per-cell accessors |
 | `crates/notebook-doc/src/frame_types.rs` | Shared frame type constants (0x00-0x07) |
-| `crates/notebook-doc/src/runtime_state.rs` | `RuntimeStateDoc` schema |
+| `crates/runtime-doc/src/doc.rs` | `RuntimeStateDoc` schema |
 | `packages/runtimed/src/transport.ts` | TypeScript `FrameType` constants and transport boundary |
 | `apps/notebook/src/lib/notebook-frame-bus.ts` | In-memory pub/sub |
 | `apps/notebook/src/lib/runtime-state.ts` | Frontend runtime state store + hook |

@@ -231,7 +231,7 @@ ROOT/
 - **Frontend reads only** via `useRuntimeState()` hook in `apps/notebook/src/lib/runtime-state.ts`
 - **Python reads** via `notebook.runtime` property (`RuntimeState` class)
 
-Key files: `crates/notebook-doc/src/runtime_state.rs` (schema), `apps/notebook/src/lib/runtime-state.ts` (frontend).
+Key files: `crates/runtime-doc/src/doc.rs` (schema), `crates/runtime-doc/src/handle.rs` (handle), `apps/notebook/src/lib/runtime-state.ts` (frontend).
 
 ## Execution Lifecycle
 

@@ -400,7 +400,7 @@ Several broadcast variants carry **state** (kernel status, env sync diff, queue)
 
 The daemon writes kernel status, execution queue, environment progress, project context, and trust state. Clients receive updates via normal Automerge sync — read-only enforced by stripping client changes. The frontend reads via `useRuntimeState()` and the project runtime stores.
 
-**Key files:** `crates/notebook-doc/src/runtime_state.rs` (schema + setters), `apps/notebook/src/lib/runtime-state.ts` (frontend store + hook).
+**Key files:** `crates/runtime-doc/src/doc.rs` (schema + setters), `crates/runtime-doc/src/handle.rs` (handle), `apps/notebook/src/lib/runtime-state.ts` (frontend store + hook).
 
 ### Comms in doc (#761) — Done
 
@@ -437,7 +437,7 @@ Widget state now lives in `doc.comms/` in RuntimeStateDoc. The daemon writes com
 | `crates/notebook-doc/src/lib.rs` | `NotebookDoc`: Automerge schema, cell CRUD, nbformat fallback fields, per-cell accessors |
 | `crates/notebook-doc/src/diff.rs` | `CellChangeset`: structural diff from Automerge patches |
 | `crates/notebook-doc/src/frame_types.rs` | Shared frame type constants (0x00–0x07) |
-| `crates/notebook-doc/src/runtime_state.rs` | `RuntimeStateDoc`: per-notebook daemon-authoritative state (kernel, queue, env sync) |
+| `crates/runtime-doc/src/doc.rs` | `RuntimeStateDoc`: per-notebook daemon-authoritative state (kernel, queue, env sync) |
 | `apps/notebook/src/lib/runtime-state.ts` | Frontend runtime state store + `useRuntimeState()` hook |
 | `packages/runtimed/src/transport.ts` | TypeScript `FrameType` constants and transport boundary |
 | `apps/notebook/src/lib/frame-pipeline.ts` | App-side frame event processing and materialization planning |

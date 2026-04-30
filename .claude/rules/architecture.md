@@ -62,7 +62,7 @@ Each notebook room has a daemon-authoritative **RuntimeStateDoc** — a separate
 
 **The daemon is the sole writer.** Frontend reads via `useRuntimeState()`. Python reads via `notebook.runtime`.
 
-Key files: `crates/notebook-doc/src/runtime_state.rs`, `apps/notebook/src/lib/runtime-state.ts`.
+Key files: `crates/runtime-doc/src/doc.rs`, `crates/runtime-doc/src/handle.rs`, `apps/notebook/src/lib/runtime-state.ts`.
 
 ## Binary vs Text Content -- CRITICAL DISTINCTION
 
