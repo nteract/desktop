@@ -699,6 +699,25 @@ jobs:
           cp target/release/runt.exe "crates/notebook/binaries/runt-$TARGET.exe"
           cp target/release/nteract-mcp.exe "crates/notebook/binaries/nteract-mcp-$TARGET.exe"
 
+      - name: Locate signing tools
+        shell: pwsh
+        run: |
+          # Find signtool.exe from the Windows SDK
+          $sdkRoot = (Get-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows Kits\Installed Roots" -Name KitsRoot10).KitsRoot10
+          $signtool = Get-ChildItem -Path "$sdkRoot\bin" -Recurse -Filter "signtool.exe" |
+            Where-Object { $_.FullName -match "\\x64\\" } |
+            Sort-Object { [version]($_.FullName -replace '.*\\(\d+\.\d+\.\d+\.\d+)\\.*','$1') } -Descending |
+            Select-Object -First 1
+          if (-not $signtool) { throw "signtool.exe not found" }
+          Write-Host "Found signtool: $($signtool.FullName)"
+          "SIGNTOOL_PATH=$($signtool.FullName)" | Out-File -Append -FilePath $env:GITHUB_ENV -Encoding utf8
+
+          # Find Azure CLI
+          $azCmd = (Get-Command az -ErrorAction SilentlyContinue).Source
+          if (-not $azCmd) { throw "Azure CLI not found" }
+          Write-Host "Found Azure CLI: $azCmd"
+          "AZURE_CLI_PATH=$azCmd" | Out-File -Append -FilePath $env:GITHUB_ENV -Encoding utf8
+
       - name: Build with tauri-action
         uses: tauri-apps/tauri-action@v0
         env:
