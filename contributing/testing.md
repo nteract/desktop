@@ -65,8 +65,7 @@ describe("AnsiOutput", () => {
 - `src/components/outputs/__tests__/` — Output renderers
 - `src/components/widgets/__tests__/` — Widget store, registry
 - `src/lib/__tests__/` — ErrorBoundary
-- `apps/notebook/src/hooks/__tests__/` — useEnvProgress
-- `apps/notebook/src/lib/__tests__/` — Cursor registry, manifest resolution, materialize cells, kernel status, markdown assets, and more
+- `apps/notebook/src/lib/__tests__/` — Cursor registry, manifest resolution, materialize cells, runtime/project stores, kernel status, markdown assets, and more
 
 ## Rust Unit Tests
 

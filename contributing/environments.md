@@ -78,7 +78,7 @@ graph TB
     end
 
     subgraph Daemon ["runtimed Daemon (owns kernels)"]
-        NSS[notebook_sync_server.rs<br/>auto_launch_kernel]
+        NSS[notebook_sync_server/metadata.rs<br/>auto-launch helpers]
         RA[runtime_agent.rs<br/>(spawned as subprocess)<br/>run_runtime_agent]
         JK[jupyter_kernel.rs<br/>JupyterKernel::launch<br/>(in runtime-agent process)]
 
@@ -131,9 +131,9 @@ graph TB
     UD -->|"invoke(detect_pyproject)"| DETP
     UCD -->|"invoke(detect_pixi_toml)"| DETP
 
-    %% Daemon → relay → frontend (notebook:frame, re-emitted as notebook:broadcast after WASM demux)
-    NSS -.->|"notebook:frame → notebook:broadcast {KernelLaunched, env_source}"| UDK
-    JK -.->|"notebook:frame → notebook:broadcast {KernelStatus, ExecutionStarted, ExecutionDone}"| UDK
+    %% Daemon → relay → frontend (typed notebook frames)
+    NSS -.->|"notebook:frame → RuntimeStateDoc {kernel, env_source}"| UDK
+    JK -.->|"notebook:frame → RuntimeStateDoc {lifecycle, queue, outputs}"| UDK
     VNT -.->|trust status| UD
 
     %% Environment creation → external tools
@@ -165,7 +165,7 @@ graph TB
 sequenceDiagram
     participant FE as Frontend<br/>useDaemonKernel.ts
     participant TC as Tauri Backend<br/>lib.rs
-    participant DM as runtimed Daemon<br/>notebook_sync_server.rs
+    participant DM as runtimed Daemon<br/>notebook_sync_server/
     participant PF as Project File<br/>Detection
     participant IE as inline_env.rs
     participant RA as runtime_agent.rs
@@ -176,7 +176,7 @@ sequenceDiagram
     FE->>TC: invoke("launch_kernel_via_daemon")
     TC->>DM: LaunchKernel request via IPC
 
-    DM->>DM: auto_launch_kernel()
+    DM->>DM: auto-launch helpers
 
     alt Has inline UV deps (metadata.uv.dependencies)
         DM->>IE: prepare_uv_inline_env(deps)
@@ -306,7 +306,7 @@ graph TB
 
 The diagrams show two main layers:
 
-1. **Frontend** (blue) — React hooks that invoke Tauri commands and listen for `notebook:broadcast` events (kernel status, execution lifecycle) and `notebook:frame` events (document state including outputs via Automerge sync, demuxed by WASM). `useDaemonKernel.ts` handles kernel lifecycle via the daemon. The daemon sends `Output` broadcasts and `useDaemonKernel.ts` processes them (blob resolution), but the `onOutput` rendering callback is a no-op — output **rendering** is driven by Automerge sync (`materializeCells`).
+1. **Frontend** (blue) — React hooks that invoke Tauri commands, listen for typed notebook frames, and project daemon-authored runtime state from RuntimeStateDoc. `useDaemonKernel.ts` handles kernel actions and ephemeral runtime events. Output **rendering** is driven by RuntimeStateDoc manifests (`materialize-cells.ts`, `notebook-outputs.ts`, and `manifest-resolution.ts`), not output broadcasts.
 
 2. **runtimed Daemon** (indigo) — A singleton background process that owns kernel processes and manages prewarmed UV and Conda environment pools. The daemon runs the detection priority chain: metadata inline deps first, then PEP 723 cell metadata (`uv:pep723`), then closest project file, then prewarmed pool. Communicates via length-prefixed JSON over Unix domain sockets (or Windows named pipes). Also runs an Automerge CRDT sync server for cross-window settings and notebook state.
 
@@ -419,7 +419,7 @@ A notebook is "captured" on first launch out of the pool. The daemon:
 
 After this, the notebook is indistinguishable from an inline-deps notebook — the pool is a bootstrap optimisation, not a runtime dependency.
 
-`capture_env_into_metadata` in `notebook_sync_server.rs` is idempotent and write-once: it only populates empty sections. User-edited deps are not clobbered.
+`capture_env_into_metadata` in `notebook_sync_server/metadata.rs` is idempotent and write-once: it only populates empty sections. User-edited deps are not clobbered.
 
 ### Reopen: cache-hit via `unified_env_on_disk`
 
@@ -447,7 +447,7 @@ Kernel is guaranteed dead at this point, so renaming is safe (no process holds t
 
 ## Project File Discovery
 
-The unified project file detection lives in `project_file.rs` and is used by the daemon's `auto_launch_kernel()` for kernel launch decisions:
+The unified project file detection lives in `project_file.rs` and is used by the daemon's auto-launch helpers for kernel launch decisions:
 
 | Module | Purpose |
 |--------|---------|
@@ -517,7 +517,7 @@ Dependencies are signed with HMAC-SHA256 to prevent untrusted code execution on 
 - **Machine-specific**: The key is per-machine, so every shared notebook is untrusted on the recipient's machine
 - **Verification**: `trust.rs:verify_signature()` returns `bool`. The higher-level `verify_notebook_trust()` returns `TrustInfo` (containing a `TrustStatus`: Trusted, Untrusted, SignatureInvalid, or NoDependencies)
 
-Changes to the dependency metadata structure require updating the signing logic in `crates/runt-trust/src/lib.rs` (re-exported by `crates/notebook/src/trust.rs`).
+Changes to the dependency metadata structure require updating `crates/notebook-doc/src/metadata.rs` and the signing logic in `crates/runt-trust/src/lib.rs`.
 
 ## Frontend Architecture
 
@@ -530,11 +530,10 @@ Three UI components manage dependencies for different runtimes:
 | `DenoDependencyHeader.tsx` | `useDenoConfig.ts` | Deno configuration and deno.json detection |
 
 The kernel lifecycle is managed by `useDaemonKernel.ts`, which:
-- Listens for `notebook:broadcast` events (re-emitted by `useAutomergeNotebook` after WASM frame demux)
-- Captures the `env_source` string (e.g. `"uv:pyproject"`, `"pixi:toml"`) from `KernelLaunched` responses
-- Tracks kernel status and execution queue
+- Derives kernel status, execution queue, and env sync state from RuntimeStateDoc
+- Listens for ephemeral runtime event callbacks from typed notebook frames
 - Provides `launchKernel()`, `executeCell()`, `syncEnvironment()` methods
-- Runs auto-launch detection on notebook open
+- Leaves project-file detection and auto-launch decisions to the daemon
 
 ## Testing
 
@@ -565,7 +564,8 @@ The kernel lifecycle is managed by `useDaemonKernel.ts`, which:
 | File | Role |
 |------|------|
 | `crates/runtimed/src/daemon.rs` | Background daemon pool management, passes settings to handlers |
-| `crates/runtimed/src/notebook_sync_server.rs` | `auto_launch_kernel()` — runtime detection and environment resolution |
+| `crates/runtimed/src/notebook_sync_server/metadata.rs` | runtime detection and environment resolution helpers used by auto-launch |
+| `crates/runtimed/src/requests/launch_kernel.rs` | manual launch request handling |
 | `crates/runtimed/src/runtime_agent.rs` | Spawned as a subprocess by `RuntimeAgentHandle::spawn()`. `run_runtime_agent()` is the per-notebook event loop owning sockets, `QueueCommand` channels, and RuntimeStateDoc writes; `handle_runtime_agent_request()` dispatches each `LaunchKernel`/`RestartKernel`/etc. RPC |
 | `crates/runtimed/src/jupyter_kernel.rs` | `JupyterKernel::launch()` — spawns Python or Deno kernel processes, wires ZMQ sockets |
 | `crates/runtimed/src/output_prep.rs` | Output-prep helpers — `QueueCommand`, `KernelStatus`, `QueuedCell`, iopub → nbformat conversion + display-update helpers, widget-buffer offload. Imported by `runtime_agent.rs`, `jupyter_kernel.rs`, and `kernel_state.rs` |
@@ -576,14 +576,10 @@ The kernel lifecycle is managed by `useDaemonKernel.ts`, which:
 | File | Role |
 |------|------|
 | `crates/notebook/src/lib.rs` | Tauri commands (save, format, kernel, env), sync pipe setup, `launch_kernel_via_daemon` |
-| `crates/notebook/src/uv_env.rs` | UV dependency metadata (set/get deps in notebook JSON) |
-| `crates/notebook/src/conda_env.rs` | Conda dependency metadata (set/get deps in notebook JSON) |
-| `crates/notebook/src/pyproject.rs` | pyproject.toml discovery and parsing |
-| `crates/notebook/src/pixi.rs` | pixi.toml discovery and parsing |
-| `crates/notebook/src/environment_yml.rs` | environment.yml discovery and parsing |
-| `crates/notebook/src/deno_env.rs` | Deno config detection |
+| `crates/notebook-doc/src/metadata.rs` | Notebook dependency metadata schema and accessors |
+| `crates/runtimed/src/project_file.rs` | Unified closest-wins project file detection |
 | `crates/notebook/src/settings.rs` | User preferences (default runtime, env type) |
-| `crates/notebook/src/trust.rs` | HMAC trust verification (re-exports from `runt-trust` crate) |
+| `crates/runt-trust/src/lib.rs` | HMAC trust verification |
 
 ### Frontend
 

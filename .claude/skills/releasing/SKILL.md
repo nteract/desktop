@@ -22,7 +22,7 @@ All published artifacts share the same version (semver). Five sources must stay 
 
 Two independent version numbers (incrementing integers, not semver):
 
-- **Protocol version** (`PROTOCOL_VERSION` in `crates/notebook-protocol/src/connection.rs`) — Wire compatibility. Validated by magic bytes preamble at connection time.
+- **Protocol version** (`PROTOCOL_VERSION` in `crates/notebook-protocol/src/connection/handshake.rs`, re-exported by `connection.rs`) — Wire compatibility. Validated by magic bytes preamble at connection time.
 - **Schema version** (`SCHEMA_VERSION` in `notebook-doc/src/lib.rs`) — Automerge document compatibility. Stored in doc root.
 
 These evolve independently from each other and from the artifact version.
@@ -96,7 +96,7 @@ Builds macOS + Linux wheels and publishes to PyPI.
 
 ## Protocol Version Change Procedure
 
-1. Bump `PROTOCOL_VERSION` in `crates/notebook-protocol/src/connection.rs`
+1. Bump `PROTOCOL_VERSION` in `crates/notebook-protocol/src/connection/handshake.rs`
 2. Update the `PROTOCOL_V*` string constant if the version string changes
 3. Update `contributing/protocol.md`
 4. Decide version bump type based on user impact

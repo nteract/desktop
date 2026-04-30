@@ -2,8 +2,11 @@
 paths:
   - crates/notebook-protocol/**
   - crates/notebook-sync/**
-  - apps/notebook/src/lib/frame-types*
-  - apps/notebook/src/lib/notebook-frame-bus*
+  - packages/runtimed/src/transport.ts
+  - packages/runtimed/src/protocol-contract.ts
+  - packages/runtimed/src/request-types.ts
+  - apps/notebook/src/lib/frame-pipeline.ts
+  - apps/notebook/src/lib/notebook-frame-bus.ts
 ---
 
 # Wire Protocol
@@ -12,7 +15,7 @@ paths:
 
 Two independent version numbers, separate from the artifact version:
 
-- **Protocol version** (`PROTOCOL_VERSION` in `connection.rs`, currently `4`) -- governs wire compatibility. Validated by the 5-byte magic preamble at connection start. Bump when framing, handshake shape, or serialization format changes. v4 removes legacy environment-sync request/response variants and requires current clients.
+- **Protocol version** (`PROTOCOL_VERSION` in `connection/handshake.rs`, re-exported by `connection.rs`, currently `4`) -- governs wire compatibility. Validated by the 5-byte magic preamble at connection start. Bump when framing, handshake shape, or serialization format changes. v4 removes legacy environment-sync request/response variants and requires current clients.
 - **Schema version** (`SCHEMA_VERSION` in `notebook-doc/src/lib.rs`, currently `4`) -- governs Automerge document compatibility. Bump when document structure changes.
 
 These are just incrementing integers that evolve independently from each other and from the artifact version.
@@ -123,7 +126,7 @@ After WASM `receive_frame()` demuxes frames, broadcasts and presence are dispatc
 | Function | Purpose |
 |----------|---------|
 | `emitBroadcast(payload)` | Called after WASM demux for type `0x03` frames |
-| `subscribeBroadcast(cb)` | Used by `useDaemonKernel`, `useEnvProgress` |
+| `subscribeBroadcast(cb)` | Used by `useDaemonKernel` for ephemeral runtime events; persistent env state is RuntimeStateDoc-backed |
 | `emitPresence(payload)` | Called after WASM CBOR decode for type `0x04` frames |
 | `subscribePresence(cb)` | Used by `usePresence`, `cursor-registry` |
 
@@ -140,7 +143,7 @@ Inline manifest system with blob offload for large payloads. When daemon receive
 
 State-carrying broadcasts (kernel status, queue, env sync, trust) have been replaced by a **daemon-authoritative, per-notebook Automerge document** synced via frame type `0x05`. Clients read via `useRuntimeState()`.
 
-Schema (in `crates/notebook-doc/src/runtime_state.rs`):
+Schema (in `crates/runtime-doc/src/doc.rs`):
 
 | Path | Type | Description |
 |------|------|-------------|
@@ -173,13 +176,15 @@ Each cell execution is assigned a unique `execution_id` (UUID). The `QueueEntry`
 
 | File | Role |
 |------|------|
-| `crates/notebook-protocol/src/connection.rs` | Frame protocol, handshake, preamble |
+| `crates/notebook-protocol/src/connection.rs` | Public connection API facade and compatibility re-exports |
+| `crates/notebook-protocol/src/connection/framing.rs` | Frame protocol, preamble, typed frames, frame caps |
+| `crates/notebook-protocol/src/connection/handshake.rs` | Protocol version, handshake, capabilities, connection info |
 | `crates/notebook-protocol/src/protocol.rs` | Wire types: requests, responses, broadcasts |
 | `crates/notebook-sync/src/relay.rs` | Relay handle for sync connections |
 | `crates/notebook-sync/src/connect.rs` | Connection setup |
 | `crates/notebook-sync/src/handle.rs` | `DocHandle` -- sync, per-cell accessors |
-| `crates/notebook-doc/src/frame_types.rs` | Shared frame type constants (0x00-0x06) |
-| `crates/notebook-doc/src/runtime_state.rs` | `RuntimeStateDoc` schema |
-| `apps/notebook/src/lib/frame-types.ts` | Frame type constants + `sendFrame()` |
+| `crates/notebook-doc/src/frame_types.rs` | Shared frame type constants (0x00-0x07) |
+| `crates/runtime-doc/src/doc.rs` | `RuntimeStateDoc` schema |
+| `packages/runtimed/src/transport.ts` | TypeScript `FrameType` constants and transport boundary |
 | `apps/notebook/src/lib/notebook-frame-bus.ts` | In-memory pub/sub |
 | `apps/notebook/src/lib/runtime-state.ts` | Frontend runtime state store + hook |

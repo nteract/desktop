@@ -165,9 +165,9 @@ Security boundary for untrusted HTML/widget outputs. See [iframe-isolation.md](i
 | Hook | Role |
 |------|------|
 | `useAutomergeNotebook` | Owns WASM NotebookHandle, `scheduleMaterialize`, `CellChangeset` dispatch |
-| `useDaemonKernel` | Kernel execution, status broadcasts, widget comm routing |
+| `useDaemonKernel` | Kernel execution and ephemeral runtime event callbacks |
 | `usePresence` | Remote cursor/selection tracking via presence frames |
-| `useEnvProgress` | Environment setup progress tracking |
+| `useEnvProgress` | RuntimeStateDoc-backed environment progress projection |
 | `useDependencies` | UV dependency management |
 | `useCondaDependencies` | Conda dependency management |
 | `useDenoConfig` | Deno config detection plus flexible-npm-imports toggle |
@@ -237,7 +237,7 @@ Security boundary for untrusted HTML/widget outputs. See [iframe-isolation.md](i
    - `updateCellById()` — O(1) map update, notifies only that cell's subscribers
    - `replaceNotebookCells()` — full replacement with `cellsEqual()` diffing to preserve object identity for unchanged cells
 
-4. **useDaemonKernel / useEnvProgress** — Subscribe via `subscribeBroadcast()` from the frame bus for kernel status, execution events, and environment progress
+4. **Runtime state projection** — `useDaemonKernel` still consumes ephemeral broadcast events, while persistent kernel/env/project state is projected from RuntimeStateDoc through `runtime-state.ts`, `project-runtime-stores.ts`, and hooks such as `useEnvProgress`.
 
 5. **usePresence** — Subscribes via `subscribePresence()` from the frame bus. Maintains a React-accessible peer map with `cursorsForCell()`/`selectionsForCell()` queries.
 
@@ -269,6 +269,7 @@ and `apps/notebook/src/lib/frame-pipeline.ts`:
 | `apps/notebook/src/lib/materialize-cells.ts` | WASM → React conversion |
 | `apps/notebook/src/lib/notebook-frame-bus.ts` | In-memory pub/sub for broadcast and presence dispatch |
 | `apps/notebook/src/hooks/usePresence.ts` | Remote presence tracking |
-| `apps/notebook/src/lib/frame-types.ts` | Frame type constants + `sendFrame()` binary IPC helper |
+| `packages/runtimed/src/transport.ts` | Shared `FrameType` constants and transport interface |
+| `apps/notebook/src/lib/frame-pipeline.ts` | App-side frame event processing and materialization planning |
 | `src/components/outputs/media-router.tsx` | Output type dispatch |
 | `src/components/editor/codemirror-editor.tsx` | Main editor |

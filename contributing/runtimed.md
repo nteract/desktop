@@ -205,13 +205,13 @@ Integration tests use temp directories for socket and lock files to avoid confli
 
 ## Notebook Room Lifecycle
 
-Each open notebook has a **room** (`NotebookRoom` in `notebook_sync_server.rs`), always keyed by UUID. A secondary `path_index: HashMap<PathBuf, Uuid>` maps canonical file paths to room UUIDs for path-based lookups.
+Each open notebook has a **room** (`NotebookRoom` in `notebook_sync_server/room.rs`), keyed by UUID in `NotebookRooms`. A secondary `PathIndex` maps canonical `.ipynb` paths to room UUIDs for path-based lookups.
 
 ### Autosave
 
-The daemon autosaves `.ipynb` on a debounce (2s quiet period, 10s max interval) via `spawn_autosave_debouncer`. No user action required. `NotebookAutosaved` broadcast clears the frontend dirty flag. Explicit Cmd+S additionally runs cell formatting (ruff/deno fmt).
+The daemon autosaves `.ipynb` on a debounce (2s quiet period, 10s max interval) via `spawn_autosave_debouncer`. No user action required. Frontend dirty state is cleared from save state/confirmations, not a room broadcast. Explicit Cmd+S additionally runs cell formatting (ruff/deno fmt).
 
-Autosave skips untitled notebooks (no file path) and notebooks mid-load (`is_loading` flag). After saving, the debouncer drains the change channel to detect mutations during the async write — the `NotebookAutosaved` broadcast only fires when the file is truly caught up.
+Autosave skips untitled notebooks (no file path) and notebooks mid-load (`is_loading` flag). After saving, the debouncer drains the change channel to detect mutations during the async write so clients only observe a caught-up save state.
 
 ### Saving an untitled notebook
 
@@ -222,7 +222,7 @@ Room keys are always UUIDs — they never change after a room is created. When a
 3. Inserts into `path_index: HashMap<PathBuf, Uuid>` (secondary map for path → UUID lookups)
 4. Updates the room's `path: RwLock<Option<PathBuf>>`
 5. Spawns a file watcher for the new path
-6. Broadcasts `PathChanged { path }` so peers can update local path tracking
+6. Updates room path state so peers can update local path tracking
 
 The `NotebookSaved` response returns the room's UUID (unchanged).
 
@@ -264,12 +264,13 @@ crates/runtimed/
 │   ├── lib.rs                   # Daemon crate + backward-compatible re-exports from runtimed-client
 │   ├── main.rs                  # Daemon CLI entry point
 │   ├── daemon.rs                # Daemon state, pool management, connection routing
-│   ├── notebook_sync_server.rs  # NotebookRoom, room lifecycle, autosave, path_index, sync loop
+│   ├── notebook_sync_server/    # Room lifecycle, peer sync loops, persistence, metadata/trust/project context
 │   ├── runtime_agent.rs         # Runtime agent subprocess: Unix socket peer, CRDT queue watching, kernel ownership
 │   ├── runtime_agent_handle.rs  # Coordinator-side runtime agent process management (spawn + monitor)
 │   ├── jupyter_kernel.rs        # JupyterKernel: process spawn, ZMQ socket wiring, IOPub output routing
 │   ├── output_prep.rs           # Output-prep helpers: QueueCommand, KernelStatus, QueuedCell, iopub → nbformat conversion, widget buffers, blob-store offload
-│   ├── kernel_pids.rs           # Kernel PID tracking and orphan reaping
+│   ├── kernel_ports.rs          # Daemon-owned five-port kernel reservations
+│   ├── process_groups.rs        # Cross-platform process-group cleanup helpers
 │   ├── singleton.rs             # Daemon locking/singleton management
 │   ├── sync_server.rs           # Settings Automerge sync handler
 │   ├── output_store.rs          # Output manifest creation, blob inlining threshold

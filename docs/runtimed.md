@@ -6,9 +6,9 @@ runtimed is a long-lived daemon that owns the heavy, stateful parts of the noteb
 
 The architecture has two core ideas:
 
-1. **Outputs live outside the CRDT.** Kernel outputs (images, HTML, logs) are write-once blobs from a single actor. Storing them in an Automerge document wastes CRDT history tracking on data that will never be concurrently edited. Instead, outputs go into a content-addressed blob store. The CRDT stores lightweight hash references.
+1. **Live outputs live outside NotebookDoc.** Kernel outputs (images, HTML, logs) are write-once data from a single actor. NotebookDoc stores source and structure; RuntimeStateDoc stores live execution/output state. Large text and binary payloads spill to the content-addressed blob store.
 
-2. **Two levels of output abstraction.** An "output" (the Jupyter-level concept — a display_data, stream, error, etc.) is described by a manifest that references raw content blobs. Small data is inlined in the manifest; large data points to the blob store. `GET /output/{id}` returns the manifest. `GET /blob/{hash}` returns raw bytes. Most renders need only one request.
+2. **Two levels of output abstraction.** An "output" (the Jupyter-level concept — a display_data, stream, error, etc.) is described by a RuntimeStateDoc manifest that references raw content blobs. Small text is inlined in the manifest; large text and binary data point to the blob store. `GET /blob/{hash}` returns raw bytes.
 
 ---
 
@@ -76,7 +76,7 @@ The foundation. A singleton daemon that prewarms Python environments so notebook
 
 ### Singleton management
 
-Only one daemon per user. A file lock (`~/.cache/runt/daemon.lock`) provides mutual exclusion. A sidecar JSON file (`~/.cache/runt/daemon.json`) advertises the running daemon's state:
+Only one daemon per user. A file lock (`~/.cache/runt/daemon.lock`) provides mutual exclusion. Daemon discovery is socket-first: clients connect to the socket and ask the daemon for live info. The sidecar JSON file (`~/.cache/runt/daemon.json`) remains only as a fallback for older daemons and should not be used by new code.
 
 ```rust
 pub struct DaemonInfo {
@@ -171,7 +171,9 @@ Auto-upgrade: the client detects version mismatches and replaces the binary.
 |------|------|
 | `daemon.rs` | Daemon state, pool management, warming loops, connection routing |
 | `crates/notebook-protocol/src/protocol.rs` | Notebook request/response/broadcast wire types |
-| `crates/notebook-protocol/src/connection.rs` | Unified framing, handshake enum, send/recv helpers |
+| `crates/notebook-protocol/src/connection/handshake.rs` | Handshake enum, protocol version, channel compatibility |
+| `crates/notebook-protocol/src/connection/framing.rs` | Length-prefixed frame send/recv helpers |
+| `crates/notebook-protocol/src/connection.rs` | Compatibility re-exports for connection helpers |
 | `crates/runtimed-client/src/client.rs` | Client library (`PoolClient`, notebook clients) |
 | `crates/runtimed-client/src/singleton.rs` | File locking, `DaemonInfo` discovery |
 | `crates/runtimed-client/src/service.rs` | Platform-specific install/start/stop helpers |
@@ -242,20 +244,23 @@ Cell ordering uses fractional indexing via the `position` field. Cells are sorte
 
 ### Room architecture
 
-`NotebookRoom` (defined in `crates/runtimed/src/notebook_sync_server.rs`) has 20+ fields — key ones:
+`NotebookRoom` (defined in `crates/runtimed/src/notebook_sync_server/room.rs`) is keyed by UUID and groups the notebook doc, runtime state, persistence, and runtime-agent coordination. Key fields:
 
 | Field | Type | Role |
 |-------|------|------|
+| `id` | `uuid::Uuid` | Stable room identity and `NotebookRooms` key |
 | `doc` | `Arc<RwLock<NotebookDoc>>` | Canonical Automerge document |
-| `kernel` | `Arc<Mutex<Option<RoomKernel>>>` | Daemon-owned kernel process |
+| `broadcasts` | `RoomBroadcasts` | Fan-out channels for peer sync loops |
 | `blob_store` | `Arc<BlobStore>` | Content-addressed output storage |
 | `trust_state` | `Arc<RwLock<TrustState>>` | HMAC trust for auto-launch |
-| `notebook_path` | `PathBuf` | Notebook file path (= notebook_id) |
-| `comm_state` | `Arc<CommState>` | Active widget comm channels |
-| `presence` | `Arc<RwLock<PresenceState>>` | Cursor/selection peer state |
-| `persist_tx` | `watch::Sender<Option<Vec<u8>>>` | Debounced persistence channel |
+| `identity` | `RoomIdentity` | Persist path, `.ipynb` path, working directory, and ephemeral flag |
+| `connections` | `RoomConnections` | Active-peer and had-peer accounting |
+| `persistence` | `RoomPersistence` | Debounced persistence, autosave/file watcher shutdown, save baselines, attachments |
+| `state` | `RuntimeStateHandle` | Per-notebook daemon-authoritative runtime state |
+| `runtime_agent_handle` | `Arc<Mutex<Option<RuntimeAgentHandle>>>` | Runtime agent subprocess handle |
+| `runtime_agent_request_tx` | `Arc<Mutex<Option<RuntimeAgentRequestSender>>>` | RPC channel to the connected runtime agent |
 
-See source for full definition (includes `working_dir`, `nbformat_attachments`, `auto_launch_at`, `last_self_write`, file watcher shutdown, etc.).
+See source for the full definition and the split support structs (`RoomIdentity`, `RoomPersistence`, `RoomConnections`, `RoomBroadcasts`).
 
 **Room lifecycle**:
 1. First window opens notebook -> daemon acquires room via `get_or_create_room()`, loading persisted doc from disk (or creating fresh)
@@ -282,7 +287,7 @@ See source for full definition (includes `working_dir`, `nbformat_attachments`, 
 | `crates/runtimed/src/sync_server.rs` | Settings sync handler |
 | `crates/runtimed-client/src/sync_client.rs` | Settings sync client library |
 | `crates/notebook-doc/src/lib.rs` | Notebook Automerge document, cell CRUD, text editing, persistence |
-| `crates/runtimed/src/notebook_sync_server.rs` | Room-based notebook sync, peer management, eviction |
+| `crates/runtimed/src/notebook_sync_server/` | Room-based notebook sync, peer management, persistence, metadata/trust/project context |
 | `crates/notebook-sync/src/relay.rs` | Relay handle for notebook sync connections |
 
 ---
@@ -350,7 +355,7 @@ Minimal hyper 1.x server on `127.0.0.1:0` (random port).
 
 **`GET /health`** — 200 OK
 
-Port advertised in `daemon.json` via `DaemonInfo.blob_port`.
+Blob server details are reported by the live daemon info response. `daemon.json` may contain the same data only as a legacy discovery fallback.
 
 ### Security model
 
@@ -449,13 +454,16 @@ pub enum BlobResponse {
 
 | File | Role |
 |------|------|
-| `crates/notebook-protocol/src/connection.rs` | Unified framing, handshake enum, send/recv helpers |
+| `crates/notebook-protocol/src/connection/handshake.rs` | Handshake enum, protocol version, channel compatibility |
+| `crates/notebook-protocol/src/connection/framing.rs` | Length-prefixed frame send/recv helpers |
+| `crates/notebook-protocol/src/connection.rs` | Compatibility re-exports for connection helpers |
 | `daemon.rs` | Single accept loop, `route_connection()` dispatcher |
 | `crates/runtimed-client/src/client.rs` | Uses `Handshake::Pool` |
 | `crates/runtimed-client/src/sync_client.rs` | Uses `Handshake::SettingsSync` |
 | `crates/runtimed/src/sync_server.rs` | Handler function (no longer owns accept loop) |
 | `crates/notebook-sync/src/connect.rs` | Uses `Handshake::NotebookSync` for relay connections |
-| `crates/runtimed/src/notebook_sync_server.rs` | Handler function, room lookup |
+| `crates/runtimed/src/notebook_sync_server/peer_connection.rs` | Notebook sync connection handler |
+| `crates/runtimed/src/notebook_sync_server/catalog.rs` | Room lookup and creation |
 | `crates/runtimed-client/src/protocol.rs` | `BlobRequest`/`BlobResponse` enums |
 
 ---
@@ -501,15 +509,16 @@ Character-level source edits use Automerge's `update_text` for CRDT-friendly mer
 
 ### How outputs arrive
 
-Outputs flow through the Automerge doc, not Tauri events:
+Outputs flow through RuntimeStateDoc sync, not Tauri events:
 
 1. Kernel emits iopub message → daemon's `output_prep` receives it
-2. Daemon writes output to the notebook's Automerge doc (cell outputs array)
-3. Daemon produces a sync message → Tauri relay forwards raw bytes to the frontend (pipe mode — no Automerge processing in the relay)
-4. Frontend receives `notebook:frame` → WASM `receive_frame()` demuxes and merges into local doc
-5. `materialize-cells.ts` converts the updated doc into React cell state
+2. Daemon creates an output manifest with `ContentRef` entries; small text is inlined, large text and binary data go to the blob store
+3. Daemon writes the structured manifest to RuntimeStateDoc under the execution record
+4. RuntimeStateDoc produces a sync message → Tauri relay forwards raw bytes to the frontend
+5. Frontend receives a typed frame → WASM `receive_frame()` demuxes and merges runtime state
+6. `materialize-cells.ts` and `notebook-outputs.ts` resolve manifests into React output state
 
-The `onOutput` callback is omitted entirely from the `useDaemonKernel` call — when undefined, the hook skips Output broadcast processing (including blob resolution). Outputs are rendered from Automerge sync, not broadcasts.
+Output broadcasts are not the rendering path. Outputs are rendered from RuntimeStateDoc manifests and resolved through WASM/frontend manifest-resolution helpers.
 
 ### Save and format-on-save
 
@@ -523,7 +532,7 @@ Save is delegated to the daemon via `NotebookRequest::SaveNotebook`. The daemon:
 
 - Two windows open the same notebook → both have local Automerge docs synced through the daemon
 - Edit source in window A → binary sync message → daemon → window B sees the change
-- Execute cell in window A → daemon writes outputs → both windows materialize them
+- Execute cell in window A → daemon writes RuntimeStateDoc execution/output state → both windows materialize it
 - Save from either window → daemon writes the same canonical `.ipynb`
 
 ### Key files
@@ -533,7 +542,7 @@ Save is delegated to the daemon via `NotebookRequest::SaveNotebook`. The daemon:
 | `crates/runtimed-wasm/` | WASM module exposing `NotebookHandle` to the frontend |
 | `apps/notebook/src/hooks/useAutomergeNotebook.ts` | Frontend hook owning the local Automerge doc and sync lifecycle |
 | `apps/notebook/src/lib/materialize-cells.ts` | Converts Automerge doc state into React cell arrays |
-| `crates/runtimed/src/notebook_sync_server.rs` | Daemon-side notebook room management and sync |
+| `crates/runtimed/src/notebook_sync_server/` | Daemon-side notebook room management and sync |
 | `crates/runtimed/src/output_prep.rs` | Daemon-side iopub → Automerge output conversion and blob-store offload |
 | `crates/notebook/src/lib.rs` | Tauri commands and relay plumbing |
 
@@ -541,15 +550,17 @@ Save is delegated to the daemon via `NotebookRequest::SaveNotebook`. The daemon:
 
 ## Phase 6: Output store
 
-> **Foundation implemented** (PR #237 adds ContentRef, manifest types, inlining threshold)
+> **Implemented**
 
-Move outputs from inline JSON in the CRDT to the blob store. This solves the CRDT bloat problem from Phase 5 and introduces two-level serving.
+Outputs are structured manifests in RuntimeStateDoc. Manifest fields use `ContentRef` values: small text is inlined directly in the CRDT, while larger text and all binary data are stored in the blob store. NotebookDoc does not store live outputs.
 
 ### The two levels
 
 **Level 1 — Blob store** (`GET /blob/{hash}`): Pure content-addressed bytes. Returns raw PNG, text, JSON — whatever was stored. Used for `<img src>`, direct rendering, large data.
 
-**Level 2 — Output store** (`GET /output/{id}`): Jupyter-aware. Returns structured information about an output — what type it is, what representations are available, and the data itself (inlined for small content, blob-referenced for large content). Used by the frontend to understand what to render.
+**Level 2 — Output manifests** (RuntimeStateDoc): Jupyter-aware structured objects describing output type, available representations, metadata, execution count, and `ContentRef` payloads. Used by frontend, Python, and MCP consumers to understand what to render or summarize.
+
+There is no separate `GET /output/{id}` rendering endpoint in the current design; output identity and structure live in RuntimeStateDoc manifests, and any large payloads are fetched by blob hash.
 
 ### ContentRef
 
@@ -623,7 +634,7 @@ Traceback is a ContentRef holding the JSON-serialized array of traceback lines. 
 
 ### Inlining threshold
 
-**Default: 8 KB.** Below -> inline in manifest. Above -> blob store.
+**Default: 1 KB.** Text below the threshold is inlined in the manifest. Text at or above the threshold goes to the blob store. Binary content always goes to the blob store.
 
 - Most `text/plain`: inline (one request)
 - Most images: blob (two requests)
@@ -633,50 +644,18 @@ Traceback is a ContentRef holding the JSON-serialized array of traceback lines. 
 
 Daemon-side decision at write time. The frontend just checks `inline` vs `blob`.
 
-### Manifest storage
+### RuntimeStateDoc integration
 
-Manifests are themselves blobs (media type `application/x-jupyter-output+json`), content-addressed. `GET /output/{id}` is a thin view over `GET /blob/{hash}` that validates the media type.
-
-### Automerge doc integration
-
-Outputs change from JSON strings to manifest hashes:
-
-```
-cells/{cell_id}/
-  outputs/           <- List of Str
-    [0]: Str         <- output manifest hash (e.g. "a1b2c3d4...")
-```
-
-The CRDT stores only hashes (~64 bytes each). All output structure and content lives in the blob store:
-- No CRDT bloat from images or large text
-- Clearing outputs removes hashes (no tombstone inflation from large data)
-- Output history doesn't accumulate in the Automerge change log
-
-### Tauri backend changes
-
-The iopub listener (from Phase 5) changes what it writes to automerge:
-
-**Before** (Phase 5): `sync_client.append_output(cell_id, json_string)` — full JSON output
-**After** (Phase 6):
-1. For each MIME type / stream text / traceback: size < 8KB -> inline, >= 8KB -> blob store via daemon
-2. Construct output manifest JSON
-3. Store manifest in blob store -> get manifest hash
-4. `sync_client.append_output(cell_id, manifest_hash)` — just the hash
+RuntimeStateDoc stores execution records keyed by `execution_id`. Each record points at output IDs, and each output is a structured manifest object with `ContentRef` fields. The cell's current execution pointer lives in RuntimeStateDoc as well, so live outputs and live execution counts disappear when runtime state is gone. NotebookDoc keeps only source, metadata, ordering, resolved assets, and nbformat/import-export fallback fields.
 
 ### Frontend changes
 
-**`OutputArea.tsx`** — the big change. Currently receives `JupyterOutput[]` (parsed JSON). Now receives `string[]` (manifest hashes).
+The frontend reads output manifests through WASM/runtime-state sync:
 
-New rendering flow:
-1. Cell outputs = `["hash1", "hash2", ...]`
-2. For each hash, fetch `GET /output/{hash}` -> manifest JSON
-3. Parse manifest, select MIME type by priority
-4. For `ContentRef::Inline` — use data directly
-5. For `ContentRef::Blob` — `<img src="http://localhost:{port}/blob/{blobHash}">` for images, `fetch()` for HTML/text
-
-This needs a loading state per output (while manifest is being fetched) and caching (manifests are immutable, cache aggressively).
-
-**Stream output handling during execution**: The iopub listener still emits `kernel:iopub` events for live display. The frontend renders stream text incrementally from events. When execution finishes, the finalized manifest hash appears in the automerge doc. The frontend transitions from live event-driven display to blob-backed display.
+1. RuntimeStateDoc sync updates execution/output records.
+2. `frame-pipeline.ts` plans which cells need output or chrome refreshes.
+3. `materialize-cells.ts` and `notebook-outputs.ts` resolve manifests with cache-aware helpers.
+4. `manifest-resolution.ts` fetches blobs through the daemon blob server when a `ContentRef::Blob` is encountered.
 
 ### Python bindings: MIME type contract
 
@@ -694,7 +673,7 @@ Key differences from the frontend path:
 - **JSON types return native dicts.** `application/json` and `*+json` ContentRefs are parsed into Python dicts/lists, not returned as JSON strings.
 - **`text/llm+plain` synthesis.** When an output contains binary image data but no `text/llm+plain` entry, the output resolver synthesizes one. The synthesized text includes the image MIME type, size in KB, and — when available — the blob URL (`http://localhost:{port}/blob/{hash}`). This gives LLM-based agents a text representation of image outputs without requiring them to consume raw bytes.
 
-The MIME classification logic is implemented in `mime_kind()` in `crates/runtimed-client/src/output_resolver.rs`, mirrored by `isBinaryMime()` in `apps/notebook/src/lib/manifest-resolution.ts`, and kept aligned with `is_binary_mime()` in `crates/runtimed/src/output_store.rs`.
+The MIME classification logic has one Rust source of truth in `crates/notebook-doc/src/mime.rs`. Rust consumers import `mime_kind()`, `MimeKind`, and `is_binary_mime()` from there. The frontend receives already-resolved `ContentRef` variants from WASM; `looksLikeBinaryMime()` in `manifest-resolution.ts` is only a safety net for unresolved blob refs.
 
 ### Key files
 
@@ -704,8 +683,8 @@ The MIME classification logic is implemented in `mime_kind()` in `crates/runtime
 | `crates/runtimed/src/blob_server.rs` | HTTP read server (`GET /blob/{hash}`, `GET /health`) |
 | `crates/runtimed/src/output_prep.rs` | iopub listener constructs manifests and stores blobs |
 | `crates/runtimed-client/src/output_resolver.rs` | Shared manifest resolution, MIME typing, `text/llm+plain` synthesis used by Python/MCP consumers |
-| `src/components/cell/OutputArea.tsx` | Fetch manifests, resolve blob URLs |
-| `apps/notebook/src/hooks/useManifestResolver.ts` | Hook for fetching/caching output manifests |
+| `apps/notebook/src/lib/manifest-resolution.ts` | Resolve `ContentRef` payloads and blob URLs |
+| `apps/notebook/src/lib/notebook-outputs.ts` | Output store projected from RuntimeStateDoc |
 
 ---
 
@@ -713,20 +692,20 @@ The MIME classification logic is implemented in `mime_kind()` in `crates/runtime
 
 The `.ipynb` file on disk is always a valid Jupyter notebook with fully inline outputs. The blob store is acceleration, not a dependency.
 
-### Load (.ipynb -> automerge + blobs)
+### Load (.ipynb -> NotebookDoc + RuntimeStateDoc + blobs)
 
 For each output in the notebook file:
 
 1. **display_data / execute_result**: For each MIME entry — decode base64 for binary types, apply inlining threshold, build manifest
 2. **stream**: Inline or blob based on size
 3. **error**: Inline traceback (usually small)
-4. Store manifest in blob store -> append manifest hash to automerge doc
+4. Store output manifests in RuntimeStateDoc and large payloads in the blob store
 
 Content addressing makes this idempotent.
 
-### Save (automerge + blobs -> .ipynb)
+### Save (NotebookDoc + RuntimeStateDoc + blobs -> .ipynb)
 
-For each manifest hash: fetch manifest, resolve ContentRefs (inline or blob), reconstruct standard Jupyter output dict (base64-encode binary), write valid nbformat JSON.
+For each cell's current execution output manifests, resolve ContentRefs (inline or blob), reconstruct standard Jupyter output dict (base64-encode binary), and write valid nbformat JSON.
 
 ### Metadata hints for fast re-load
 
@@ -768,15 +747,15 @@ The daemon owns kernel processes and the output pipeline. Notebook windows are v
 ```
 Notebook window (thin view)
   +-- sends LaunchKernel/ExecuteCell/RunAllCells to daemon
-  +-- receives broadcasts (KernelStatus, Output, ExecutionStarted)
+  +-- receives RuntimeStateDoc sync and ephemeral broadcasts
   +-- syncs cell source via Automerge
-  +-- renders outputs from Automerge doc
+  +-- renders outputs from RuntimeStateDoc manifests
 
 runtimed (daemon)
   +-- owns kernel process per notebook room
   +-- subscribes to ZMQ iopub
-  +-- writes outputs to Automerge doc (nbformat JSON)
-  +-- broadcasts real-time events to all windows
+  +-- writes execution, output, and comm state to RuntimeStateDoc
+  +-- broadcasts only ephemeral events
   +-- auto-detects project files for environment selection
 ```
 
@@ -784,26 +763,18 @@ runtimed (daemon)
 
 | Channel | Purpose | Persisted? |
 |---------|---------|------------|
-| **Automerge Sync** | Document state (cells, source, outputs) | Yes |
-| **Broadcasts** | Real-time events | No |
+| **NotebookDoc Sync** | Persisted notebook state: cells, source, metadata, resolved assets, nbformat fallback fields | Yes |
+| **RuntimeStateDoc Sync** | Daemon-authored runtime state: kernel lifecycle, queue, outputs, comms, env progress, trust/project context | No |
+| **Broadcasts** | Ephemeral events that are not durable state | No |
 
-**Why both?** Automerge provides persistence and late-joiner sync. Broadcasts provide sub-50ms UI updates for kernel status during execution.
+**Why all three?** NotebookDoc sync provides local-first editing and persistence. RuntimeStateDoc sync gives late joiners the current daemon-owned state without replaying historical broadcasts. Broadcasts remain only for event-like messages that should not become durable state.
 
 Broadcast types (see `NotebookBroadcast` in `crates/notebook-protocol/src/protocol.rs`):
-- `KernelStatus { status, cell_id }` — idle/busy/starting/error/shutdown, with optional triggering cell
-- `ExecutionStarted { cell_id, execution_count }` — clear outputs, show spinner
-- `Output { cell_id, output_type, output_json, output_index }` — streamed output; `output_index` distinguishes append vs update-in-place
-- `DisplayUpdate { display_id, data, metadata }` — update_display_data (widget progress bars); keyed by `display_id`, no `cell_id`
-- `ExecutionDone { cell_id }` — execution completed
-- `OutputsCleared { cell_id }` — outputs cleared for a cell
-- `QueueChanged { executing, queued }` — execution queue state
-- `KernelError { error }` — launch failure or crash
-- `Comm { msg_type, content, buffers }` — ipywidgets protocol (comm_open/msg/close)
+- `Comm { msg_type, content, buffers }` — ephemeral custom comm messages; widget state updates flow through RuntimeStateDoc
+- `EnvProgress { env_type, phase }` — environment setup progress; RuntimeStateDoc remains authoritative for durable env state
 - ~~`CommSync`~~ — removed; widget state syncs via RuntimeStateDoc CRDT
-- `EnvProgress { env_type, phase }` — rich environment setup progress (repodata, solve, download, link)
-- `EnvSyncState { in_sync, diff }` — notebook metadata vs launched config drift
 
-> **Note:** `Output` broadcasts are still sent by the daemon, but `onOutput` is omitted from the `useDaemonKernel` call so the hook skips broadcast processing entirely. All output **rendering** is driven by the Automerge sync channel (`notebook:frame` → WASM `receive_frame()` → `materializeCells`). Issue #557 was resolved by making sync the sole output rendering path.
+The old state-carrying broadcast variants were removed after RuntimeStateDoc became authoritative: kernel state, execution lifecycle, queue, outputs/display updates, path/autosave, and env sync state now flow through CRDT sync. Outputs are rendered from RuntimeStateDoc manifests and resolved through the blob/content-ref layer.
 
 ### Project file auto-detection
 
@@ -827,9 +798,9 @@ Walk-up stops at `.git` boundary or home directory.
 
 > **Note:** The daemon also checks the legacy paths `metadata.uv.dependencies` and `metadata.conda.dependencies` as fallbacks for notebooks that haven't been migrated to the `metadata.runt.*` namespace.
 
-### Widget support (partial)
+### Widget support
 
-> **Implemented** (PR #275) — single-window widgets work, multi-window sync is a known limitation
+> **Implemented** — widget state syncs through RuntimeStateDoc so late-joining windows can reconstruct widget models.
 
 Widgets require bidirectional comm message routing through the daemon:
 
@@ -838,12 +809,10 @@ Frontend ←──comm_msg──→ Daemon ←──ZMQ──→ Kernel
 ```
 
 The implementation:
-1. **Kernel → Frontend**: Daemon broadcasts `comm_open`, `comm_msg`, `comm_close` from iopub to all connected windows
-2. **Frontend → Kernel**: Frontend sends full Jupyter message envelope via `SendComm` request, daemon preserves original headers and forwards to kernel shell channel
-
-**Known limitation**: Widgets only render in the window that was active when the widget was created. Secondary windows show "Loading widget" because they miss the initial `comm_open` message. See issue #276.
-
-**Future work**: Sync widget/comm state via Automerge so late-joining windows can reconstruct widget models.
+1. **Kernel → Daemon**: runtime agent records `comm_open`, `comm_msg(update)`, and `comm_close` state in RuntimeStateDoc.
+2. **Daemon → Frontend**: clients receive widget state through RuntimeStateDoc sync; late joiners do not need historical `comm_open` broadcasts.
+3. **Frontend → Kernel**: frontend-originated widget updates write to RuntimeStateDoc, and the runtime agent diffs comm state on each sync to forward deltas to the kernel.
+4. **Ephemeral events**: custom comm messages that are not model state still travel as `NotebookBroadcast::Comm`.
 
 ### Benefits
 
@@ -857,7 +826,8 @@ The implementation:
 | File | Role |
 |------|------|
 | `crates/runtimed/src/output_prep.rs` | Output-prep helpers: iopub → nbformat conversion, widget buffer handling, blob-store offload |
-| `crates/runtimed/src/notebook_sync_server.rs` | Room management, request handling, broadcasts |
+| `crates/runtimed/src/notebook_sync_server/` | Room management, peer sync, persistence, metadata/trust/project context |
+| `crates/runtimed/src/requests/` | Notebook request handling |
 | `crates/runtimed/src/project_file.rs` | Project file detection for auto-env |
 | `crates/notebook-doc/src/lib.rs` | Automerge doc operations, output persistence |
 | `crates/notebook/src/lib.rs` | Tauri commands (`launch_kernel_via_daemon`, etc.) |
@@ -875,9 +845,9 @@ Cross-cutting decisions that affect multiple phases. These are living answers �
 
 **Phase 6**: Outputs render from manifests + blob store. Images no longer bloat the CRDT. Re-opening a notebook with existing outputs renders them correctly from blobs, and new execution outputs use the manifest path.
 
-### Output format backward compatibility (Phase 5 -> 6)
+### Output format compatibility
 
-The outputs list is `List of Str`. A string that starts with `{` and parses as a Jupyter output object is Phase 5 inline JSON. A string that's 64 hex characters is a Phase 6 manifest hash. The reader can detect which format it's looking at trivially. Phase 6 rolls out incrementally — old outputs keep working, new outputs use manifests. No migration step needed.
+NotebookDoc may still contain legacy nbformat output data from older documents or import/export fallback paths. Current live output rendering reads RuntimeStateDoc execution records and structured output manifests. Save/export resolves those manifests back to nbformat-compatible JSON when writing `.ipynb`.
 
 ### ipynb metadata hints are advisory only
 
@@ -893,9 +863,9 @@ Localhost-only binding, content-addressed with 256-bit hashes (unguessable), non
 
 ### Multi-window sync latency targets
 
-Source edits: sub-200ms perceived. The `sync_to_daemon` round-trip is ~1-5ms locally (Unix socket). The daemon broadcasts immediately. The bottleneck is React re-render, not sync.
+Source edits: sub-200ms perceived. The `sync_to_daemon` round-trip is ~1-5ms locally (Unix socket). The daemon relays sync frames immediately. The bottleneck is React re-render, not sync.
 
-Outputs during execution: the dual delivery path (iopub events for speed, automerge for durability) means the executing window sees outputs instantly. Other windows see them after the automerge round-trip (<50ms). Acceptable for outputs which are inherently asynchronous.
+Outputs during execution: the daemon writes RuntimeStateDoc output manifests as iopub messages arrive, then relays the resulting sync frames to every peer. Latency is the RuntimeStateDoc sync round-trip plus frontend materialization, which is acceptable for outputs that are inherently asynchronous.
 
 If latency becomes an issue during rapid output bursts (e.g., training loops), the first optimization is batching sync messages rather than syncing per-output.
 
@@ -911,22 +881,13 @@ For output manifests, the `output_type` field provides structural versioning. Ne
 
 ### Output Flow
 
-Output **rendering** is driven exclusively by Automerge sync: the daemon writes outputs to the notebook doc, produces a sync message, and the Tauri relay forwards raw bytes to the frontend WASM where `materialize-cells.ts` renders them. The `onOutput` callback is omitted from the `useDaemonKernel` call, so the hook skips Output broadcast processing entirely (including blob resolution).
+Output **rendering** is driven by RuntimeStateDoc sync: the daemon writes execution/output manifests into runtime state, produces a sync message, and the Tauri relay forwards raw bytes to the frontend WASM where `materialize-cells.ts` and `notebook-outputs.ts` render them.
 
-Output latency is bounded by the Automerge sync round-trip rather than direct broadcast delivery. Providing an `onOutput` callback would re-enable broadcast processing for lower-latency streaming, but would require dedup IDs to prevent duplicates with sync-delivered outputs. Issue #557 was resolved by making sync the sole output rendering path.
+Output latency is bounded by the RuntimeStateDoc sync round-trip rather than direct broadcast delivery. That is intentional: it gives every window the same daemon-authored state and avoids duplicate output paths.
 
-### Multi-Window Widget Sync (#276)
+### Multi-Window Widget Sync
 
-Widgets only render in the window that was active when the widget was created. Secondary windows show "Loading widget" because they miss the initial `comm_open` message that established the widget model.
-
-**Root cause**: The Jupyter comm protocol establishes widget models via messages. When a second window connects to the same notebook via the daemon, it doesn't receive the historical `comm_open` messages.
-
-**Workaround**: Single-window mode works correctly, which covers the majority of use cases.
-
-**Proposed fix**: Sync widget/comm state via Automerge:
-1. Store comm channel state (target_name, comm_id, initial data) in Automerge document
-2. When a new client connects, reconstruct widget models from Automerge state
-3. Keep widget model updates in sync across clients
+Widget model state lives in RuntimeStateDoc. New windows receive the current comm map through normal CRDT sync, and the frontend synthesizes the widget model openings needed by the renderer. Custom comm messages remain ephemeral broadcasts because they represent events, not durable widget state.
 
 ---
 
@@ -941,4 +902,4 @@ Widgets only render in the window that was active when the widget was created. S
 | **5** | Local-first Automerge notebook sync | Implemented — frontend owns local Automerge doc via `runtimed-wasm` WASM, cell mutations happen in WASM, sync to daemon via binary messages |
 | **6** | Output store (manifests, ContentRef, inlining) | Implemented (PR #237) |
 | **7** | ipynb round-tripping | Future (outputs already persist in nbformat) |
-| **8** | Daemon-owned kernels | Implemented (PRs #258, #259, #265, #267, #271) — widgets work single-window |
+| **8** | Daemon-owned kernels | Implemented (PRs #258, #259, #265, #267, #271) |

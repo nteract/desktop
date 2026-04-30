@@ -109,7 +109,7 @@ The daemon maintains a pool of pre-created environments with `ipykernel` and `ip
 
 ## Project File Discovery
 
-Unified detection in `project_file.rs`, used by daemon's `auto_launch_kernel()`:
+Unified detection in `project_file.rs`, used by daemon auto-launch helpers:
 
 | Module | Purpose |
 |--------|---------|
@@ -150,15 +150,15 @@ Dependencies are signed with HMAC-SHA256 to prevent untrusted code execution on 
 - **Machine-specific:** Every shared notebook is untrusted on the recipient's machine
 - **Verification:** `verify_signature()` returns `bool`. Higher-level `verify_notebook_trust()` returns `TrustInfo` with `TrustStatus`: Trusted, Untrusted, SignatureInvalid, or NoDependencies
 
-Changes to dependency metadata structure require updating `crates/runt-trust/src/lib.rs` (re-exported by `crates/notebook/src/trust.rs`).
+Changes to dependency metadata structure require updating `crates/notebook-doc/src/metadata.rs` and `crates/runt-trust/src/lib.rs`.
 
 ## Adding a New Project File Format
 
-1. Create `crates/notebook/src/{format}.rs` with `find_{format}()` (directory walk) and `parse_{format}()` functions
-2. Add Tauri commands in `lib.rs`: `detect_{format}`, `get_{format}_dependencies`, `import_{format}_dependencies`
-3. Wire detection into daemon's `auto_launch_kernel()` in `notebook_sync_server.rs` at the correct priority position
-4. Add frontend detection in `useDaemonKernel.ts` and the appropriate dependencies hook
-5. Add test fixture in `crates/notebook/fixtures/audit-test/`
+1. Extend `crates/runtimed/src/project_file.rs` so the unified closest-wins walk detects and parses the new format.
+2. Extend `crates/notebook-doc/src/metadata.rs` if the format adds notebook dependency metadata.
+3. Wire the parsed project context into daemon auto-launch helpers in `notebook_sync_server/metadata.rs` at the correct priority position.
+4. Add frontend projection in `packages/runtimed/src/derived-state.ts` and the appropriate dependencies hook/component.
+5. Add test fixture coverage in `crates/notebook/fixtures/audit-test/` and daemon project-file tests.
 
 ## Frontend Architecture
 
@@ -183,7 +183,8 @@ Changes to dependency metadata structure require updating `crates/runt-trust/src
 | File | Role |
 |------|------|
 | `crates/runtimed/src/daemon.rs` | Pool management |
-| `crates/runtimed/src/notebook_sync_server.rs` | `auto_launch_kernel()` -- detection and resolution |
+| `crates/runtimed/src/notebook_sync_server/metadata.rs` | auto-launch detection and resolution helpers |
+| `crates/runtimed/src/requests/launch_kernel.rs` | manual launch request handling |
 | `crates/runtimed/src/runtime_agent.rs` | Spawned as a subprocess by `RuntimeAgentHandle::spawn()`. `run_runtime_agent()` is the per-notebook event loop owning sockets, `QueueCommand` channels, and RuntimeStateDoc writes; `handle_runtime_agent_request()` dispatches each `LaunchKernel`/`RestartKernel`/etc. RPC |
 | `crates/runtimed/src/jupyter_kernel.rs` | `JupyterKernel::launch()` -- spawns the kernel process and wires ZMQ sockets |
 | `crates/runtimed/src/output_prep.rs` | Output-prep helpers — `QueueCommand`, `KernelStatus`, `QueuedCell`, iopub → nbformat conversion + display-update helpers, widget-buffer offload to the blob store. Imported by `runtime_agent.rs`, `jupyter_kernel.rs`, and `kernel_state.rs` |
@@ -195,17 +196,14 @@ Changes to dependency metadata structure require updating `crates/runt-trust/src
 | File | Role |
 |------|------|
 | `crates/notebook/src/lib.rs` | Tauri commands, `launch_kernel_via_daemon` |
-| `crates/notebook/src/uv_env.rs` | UV dependency metadata |
-| `crates/notebook/src/conda_env.rs` | Conda dependency metadata |
-| `crates/notebook/src/pyproject.rs` | pyproject.toml discovery and parsing |
-| `crates/notebook/src/pixi.rs` | pixi.toml discovery and parsing |
-| `crates/notebook/src/environment_yml.rs` | environment.yml discovery and parsing |
-| `crates/notebook/src/trust.rs` | HMAC trust verification (re-exports from `runt-trust`) |
+| `crates/notebook-doc/src/metadata.rs` | Notebook dependency metadata schema and accessors |
+| `crates/runtimed/src/project_file.rs` | Unified closest-wins project file detection |
+| `crates/runt-trust/src/lib.rs` | HMAC trust verification |
 
 ### Frontend
 
 | File | Role |
 |------|------|
-| `apps/notebook/src/hooks/useDaemonKernel.ts` | Kernel execution, env sync |
+| `apps/notebook/src/hooks/useDaemonKernel.ts` | Kernel execution actions and ephemeral runtime event callbacks |
 | `apps/notebook/src/hooks/useDependencies.ts` | UV dep management |
 | `apps/notebook/src/hooks/useCondaDependencies.ts` | Conda dep management |

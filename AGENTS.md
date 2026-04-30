@@ -48,7 +48,7 @@ If `nteract-dev` is unavailable, fall back to `cargo xtask` (it derives the work
 | `runtimed-py` | Python bindings (PyO3/maturin) |
 | `runtimed-wasm` | WASM bindings for the notebook doc |
 | `notebook` | Tauri desktop app |
-| `notebook-doc` | Automerge schema, cell CRUD, output writes, MIME classification, `CellChangeset` |
+| `notebook-doc` | Automerge schema, cell CRUD, nbformat fallback fields, MIME classification, `CellChangeset` |
 | `notebook-protocol` | Wire types (requests, responses, broadcasts) |
 | `notebook-sync` | `DocHandle`, sync infrastructure, per-cell Python accessors |
 | `runt` | CLI - daemon mgmt, kernel control, `runt mcp` |
@@ -58,6 +58,7 @@ If `nteract-dev` is unavailable, fall back to `cargo xtask` (it derives the work
 | `runt-workspace` | Per-worktree daemon isolation |
 | `kernel-launch` | Kernel launching, tool bootstrapping |
 | `kernel-env` | UV + Conda env management |
+| `runtime-doc` | Daemon-authoritative runtime state CRDT schema and handle |
 | `repr-llm` | LLM-friendly text summaries (synthesizes `text/llm+plain`) |
 | `nteract-predicate` | Pure-Rust dataframe/Arrow compute kernels (backs Sift) |
 | `sift-wasm` | WASM bindings for `nteract-predicate` |

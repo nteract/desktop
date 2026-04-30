@@ -30,7 +30,7 @@ The daemon (`runtimed`) is a singleton process that communicates with notebook w
 
 - **Unix socket** — IPC endpoint for all notebook windows
 - **Lock file** — Singleton guarantee (only one daemon runs)
-- **Info file** (`daemon.json`) — Discovery: PID, endpoint, version
+- **Info file** (`daemon.json`) — Legacy discovery fallback; new code should query the live daemon over the socket
 - **UV Pool + Conda Pool** — Prewarmed Python environments (configurable pool size)
 - **Blob store** — Content-addressed output storage (`blobs/`)
 - **Notebook docs** — Persisted Automerge documents (`notebook-docs/`)
@@ -51,7 +51,7 @@ When you change daemon code and want the system service to pick it up on a cloud
 
 Builds runtimed + runt + nteract-mcp (release), installs them to `~/.local/share/runt-nightly/bin/` with channel-suffixed names, writes + starts the systemd user unit on first install, upgrades in place on subsequent runs. On macOS it refuses by default — use the nteract Nightly app (it auto-updates). Pass `--on-macos` to override, `--replace-installed-app` if an app bundle is already present.
 
-Verify: `runt-nightly daemon status` or `cat ~/.cache/runt-nightly/daemon.json`.
+Verify: `runt-nightly daemon status`.
 
 ### Fast iteration
 
@@ -77,11 +77,11 @@ Integration tests use temp directories for socket/lock files to avoid conflicts.
 
 ## Notebook Room Lifecycle
 
-Each open notebook has a **room** (`NotebookRoom` in `notebook_sync_server.rs`), always keyed by UUID. A secondary `path_index: HashMap<PathBuf, Uuid>` maps file paths to room UUIDs.
+Each open notebook has a **room** (`NotebookRoom` in `notebook_sync_server/room.rs`), keyed by UUID in `NotebookRooms`. A secondary `PathIndex` maps canonical `.ipynb` paths to room UUIDs.
 
 ### Autosave
 
-Debounced: 2s quiet period, 10s max interval via `spawn_autosave_debouncer`. `NotebookAutosaved` broadcast clears frontend dirty flag. Explicit Cmd+S also runs cell formatting (ruff/deno fmt). Skips untitled notebooks and notebooks mid-load.
+Debounced: 2s quiet period, 10s max interval via `spawn_autosave_debouncer`. Frontend dirty state is cleared from save state/confirmations, not a room broadcast. Explicit Cmd+S also runs cell formatting (ruff/deno fmt). Skips untitled notebooks and notebooks mid-load.
 
 ### Saving an untitled notebook
 
@@ -91,7 +91,7 @@ Room keys are always UUIDs (never change). When an untitled notebook is first sa
 3. Inserts into `path_index: HashMap<PathBuf, Uuid>`
 4. Updates room's `path: RwLock<Option<PathBuf>>`
 5. Spawns file watcher for new path
-6. Broadcasts `PathChanged { path }` so peers update local path tracking
+6. Updates room path state so peers update local path tracking
 
 ### Crash Recovery
 
@@ -162,7 +162,7 @@ crates/runtimed/src/
   lib.rs                   — Public types, path helpers
   main.rs                  — CLI entry point
   daemon.rs                — Daemon state, pool management, connection routing
-  notebook_sync_server.rs  — NotebookRoom, room lifecycle, autosave, path_index
+  notebook_sync_server/    — Room lifecycle, peer sync loops, persistence, metadata/trust/project context
   jupyter_kernel.rs        — JupyterKernel: process spawn, ZMQ socket wiring, IOPub output routing
   output_prep.rs           — Output-prep helpers: QueueCommand, KernelStatus, QueuedCell, iopub → nbformat conversion, widget buffers, blob-store offload
   runtime_agent.rs         — Process-isolated runtime agent: kernel lifecycle, IOPub, RuntimeStateDoc writes
@@ -173,7 +173,8 @@ crates/runtimed/src/
   inline_env.rs            — Inline dependency environment caching
   stream_terminal.rs       — Stream terminal output handling
   singleton.rs             — Daemon singleton management (lock file, PID tracking)
-  kernel_pids.rs           — Kernel process ID tracking and cleanup
+  kernel_ports.rs          — Daemon-owned five-port kernel reservations
+  process_groups.rs        — Cross-platform process-group cleanup helpers
   markdown_assets.rs       — Markdown output asset rendering and resolution
   terminal_size.rs         — Terminal size detection for kernel PTY
   project_file.rs          — Unified project file discovery (pyproject, pixi, env.yml)
@@ -230,7 +231,7 @@ ROOT/
 - **Frontend reads only** via `useRuntimeState()` hook in `apps/notebook/src/lib/runtime-state.ts`
 - **Python reads** via `notebook.runtime` property (`RuntimeState` class)
 
-Key files: `crates/notebook-doc/src/runtime_state.rs` (schema), `apps/notebook/src/lib/runtime-state.ts` (frontend).
+Key files: `crates/runtime-doc/src/doc.rs` (schema), `crates/runtime-doc/src/handle.rs` (handle), `apps/notebook/src/lib/runtime-state.ts` (frontend).
 
 ## Execution Lifecycle
 
@@ -253,7 +254,7 @@ Key files: `crates/runtimed-client/src/settings_doc.rs` (schema), `src/hooks/use
 ### Daemon won't start (lock held)
 
 ```bash
-cat ~/.cache/runt/daemon.json
+runt daemon status
 lsof ~/.cache/runt/daemon.lock
 
 # If stale (crashed daemon), remove manually
@@ -305,7 +306,7 @@ launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/io.nteract.runtimed.plis
 | Installed binary | `~/Library/Application Support/runt/bin/runtimed` |
 | Service config | `~/Library/LaunchAgents/io.nteract.runtimed.plist` |
 | Socket | `~/Library/Caches/runt/runtimed.sock` |
-| Daemon info | `~/Library/Caches/runt/daemon.json` |
+| Daemon info fallback | `~/Library/Caches/runt/daemon.json` |
 | Logs | `~/Library/Caches/runt/runtimed.log` |
 
 ## Dev Mode: Per-Worktree Isolation

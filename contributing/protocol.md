@@ -56,7 +56,7 @@ The notebook app communicates with runtimed over a Unix socket (named pipe on Wi
 1. **Automerge sync** — binary CRDT sync messages that keep the notebook document consistent between the frontend WASM peer and the daemon peer
 2. **Request/response** — JSON messages where a client asks the daemon to do something (execute a cell, launch a kernel) and gets a reply
 3. **Runtime and pool state sync** — binary Automerge sync for daemon-authored state documents
-4. **Broadcasts** — JSON messages the daemon pushes to all connected clients for comm messages and environment progress
+4. **Broadcasts** — JSON messages the daemon pushes to all connected clients for ephemeral comm messages and environment progress
 5. **Presence and session control** — binary presence updates plus daemon-originated readiness/status frames
 
 ## Connection Topology
@@ -311,35 +311,22 @@ Broadcasts are daemon-initiated messages pushed to all connected clients for a n
 
 | Broadcast | Purpose |
 |-----------|---------|
-| `KernelStatus { status, cell_id }` | Kernel state changed: `"starting"`, `"idle"`, `"busy"`, `"error"`, `"shutdown"` |
-| `ExecutionStarted { cell_id, execution_count }` | A cell began executing |
-| `Output { cell_id, output_type, output_json, output_index }` | Cell produced output (stdout, display data, error) |
-| `DisplayUpdate { display_id, data, metadata }` | Update an existing output by display ID |
-| `ExecutionDone { cell_id }` | Cell execution completed |
-| `QueueChanged { executing, queued }` | Execution queue state changed |
-| `KernelError { error }` | Kernel crashed or failed to launch |
-| `OutputsCleared { cell_id }` | Cell outputs cleared |
-| `Comm { msg_type, content, buffers }` | Jupyter comm message (widget open/msg/close) |
+| `Comm { msg_type, content, buffers }` | Jupyter comm message (widget open/msg/close). Custom one-shot events; widget state syncs via RuntimeStateDoc. |
+| `EnvProgress { env_type, phase }` | Environment setup progress (`phase` is a flattened `EnvProgressPhase`). RuntimeStateDoc remains authoritative for durable env state. |
 | ~~`CommSync`~~ | Removed — widget state syncs via RuntimeStateDoc CRDT |
-| `EnvProgress { env_type, phase }` | Environment setup progress (`phase` is a flattened `EnvProgressPhase`) |
-| `EnvSyncState { in_sync, diff }` | Notebook dependencies drifted from launched kernel config |
-| `PathChanged { path }` | Room's `.ipynb` path changed (e.g. untitled notebook saved) — UUID is stable; peers update local path tracking |
-| `NotebookAutosaved { path }` | Daemon autosaved `.ipynb` to disk — frontend clears dirty flag |
 
-Several broadcast variants have been superseded by RuntimeStateDoc CRDT sync: `CommSync` (removed), `KernelStatus`, `ExecutionStarted`, `ExecutionDone`, `QueueChanged`, and `EnvSyncState` are filtered at the relay stage and never reach clients. The `Comm` variant is now limited to custom messages (`method != "update"`) — state updates flow through the CRDT instead.
+The old state-carrying broadcast variants were removed after RuntimeStateDoc became authoritative: kernel state, execution lifecycle, queue, outputs/display updates, path/autosave, and env sync state now flow through CRDT sync. The `Comm` variant is limited to custom messages (`method != "update"`) — state updates flow through RuntimeStateDoc instead.
 
-### Broadcast flow
+### Output sync flow
 
 ```
 Kernel produces output
   → Daemon intercepts Jupyter IOPub message
-  → Daemon writes output to Automerge doc (as blob manifest)
-  → Daemon sends NotebookBroadcast::Output on broadcast channel
-  → Frame type 0x03 sent to all connected clients
+  → Daemon writes output manifest to RuntimeStateDoc
+  → RuntimeStateDoc sync produces a frame type 0x05 message
   → Relay receives, emits "notebook:frame" Tauri event
-  → WASM handle.receive_frame() demuxes → Broadcast event
-  → useAutomergeNotebook dispatches via emitBroadcast() (in-memory frame bus)
-  → useDaemonKernel subscribeBroadcast() callback processes the broadcast
+  → WASM handle.receive_frame() demuxes → RuntimeStateDoc merge
+  → frame-pipeline.ts plans output materialization
   → UI updates
 ```
 
@@ -362,7 +349,7 @@ After WASM `receive_frame()` demuxes typed frames, broadcast and presence payloa
 | Function | Purpose |
 |----------|---------|
 | `emitBroadcast(payload)` | Called by `useAutomergeNotebook` after WASM demux for type `0x03` frames |
-| `subscribeBroadcast(cb)` | Used by `useDaemonKernel`, `useEnvProgress` to receive kernel/env broadcasts |
+| `subscribeBroadcast(cb)` | Used by `useDaemonKernel` for ephemeral runtime events; persistent env state is RuntimeStateDoc-backed |
 | `emitPresence(payload)` | Called by `useAutomergeNotebook` after WASM CBOR decode for type `0x04` frames |
 | `subscribePresence(cb)` | Used by `usePresence`, `cursor-registry` to receive remote cursor updates |
 
@@ -384,9 +371,9 @@ Stream outputs (stdout/stderr) are special: text is fed through a terminal emula
 
 ## Notebook Lifecycle
 
-**Autosave:** The daemon autosaves `.ipynb` on a debounce (2s quiet, 10s max). `NotebookAutosaved` broadcast clears the frontend dirty flag. Explicit save (Cmd+S) additionally formats cells.
+**Autosave:** The daemon autosaves `.ipynb` on a debounce (2s quiet, 10s max). Explicit save (Cmd+S) additionally formats cells; frontend dirty state is derived from sync/save confirmations rather than a room broadcast.
 
-**UUID-stable rooms:** Room keys are always UUIDs. Saving an untitled notebook updates a secondary `path_index` map and broadcasts `PathChanged { path }` so peers can update their local path tracking. The UUID never changes.
+**UUID-stable rooms:** Room keys are always UUIDs. Saving an untitled notebook updates a secondary `path_index` map and the daemon-authored room state so peers can update their local path tracking. The UUID never changes.
 
 **Crash recovery:** Untitled notebooks persist their Automerge doc to `notebook-docs/{hash}.automerge`. Before overwriting on reopen, the daemon snapshots to `notebook-docs/snapshots/`. Outputs are ephemeral (RuntimeStateDoc, not persisted), so snapshots hold source and metadata only.
 
@@ -398,9 +385,9 @@ Stream outputs (stdout/stderr) are special: text is fed through a terminal emula
 
 Several broadcast variants carry **state** (kernel status, env sync diff, queue) rather than **events**. State-carrying broadcasts suffer from silent drops, no initial state for late joiners, and ordering races between windows. The `RuntimeStateDoc` replaces these with a daemon-authoritative, per-notebook Automerge document synced via frame type `0x05` on the existing notebook connection.
 
-The daemon writes kernel status, execution queue, and environment sync drift. Clients receive updates via normal Automerge sync — read-only enforced by stripping client changes. The frontend reads via `useRuntimeState()`. See `.context/plans/daemon-state-doc.md` for the full phased plan.
+The daemon writes kernel status, execution queue, environment progress, project context, and trust state. Clients receive updates via normal Automerge sync — read-only enforced by stripping client changes. The frontend reads via `useRuntimeState()` and the project runtime stores.
 
-**Key files:** `crates/notebook-doc/src/runtime_state.rs` (schema + setters), `apps/notebook/src/lib/runtime-state.ts` (frontend store + hook).
+**Key files:** `crates/runtime-doc/src/doc.rs` (schema + setters), `crates/runtime-doc/src/handle.rs` (handle), `apps/notebook/src/lib/runtime-state.ts` (frontend store + hook).
 
 ### Comms in doc (#761) — Done
 
@@ -421,19 +408,28 @@ Widget state now lives in `doc.comms/` in RuntimeStateDoc. The daemon writes com
 | `crates/notebook-sync/src/relay.rs` | Relay handle for notebook sync connections |
 | `crates/notebook-sync/src/connect.rs` | Connection setup (`connect_open_relay`, `connect_create_relay`) |
 | `crates/notebook-sync/src/handle.rs` | `DocHandle` — sync infrastructure, per-cell accessors for Python clients |
-| `crates/runtimed/src/notebook_sync_server.rs` | `NotebookRoom`, room lifecycle, autosave debouncer, sync loop |
+| `crates/runtimed/src/notebook_sync_server/mod.rs` | Notebook sync server module facade |
+| `crates/runtimed/src/notebook_sync_server/catalog.rs` | Room lookup and creation |
+| `crates/runtimed/src/notebook_sync_server/room.rs` | `NotebookRoom` and room-owned state |
+| `crates/runtimed/src/notebook_sync_server/peer_connection.rs` | Notebook sync connection handler |
+| `crates/runtimed/src/notebook_sync_server/peer_loop.rs` | Main peer sync loop and frame dispatch |
+| `crates/runtimed/src/notebook_sync_server/peer_session.rs` | Initial readiness/session-control state |
+| `crates/runtimed/src/notebook_sync_server/peer_writer.rs` | Bounded peer writer |
+| `crates/runtimed/src/notebook_sync_server/metadata.rs` | Metadata, trust, project-file, and environment detection helpers |
+| `crates/runtimed/src/requests/` | Notebook request routing handlers |
 | `crates/runtimed/src/output_prep.rs` | IOPub output-prep helpers: message-to-nbformat conversion, widget buffers, blob-store offload |
-| `crates/runtimed/src/comm_state.rs` | Widget comm state + Output widget capture routing |
+| `crates/runtimed/src/runtime_agent.rs` | Runtime-agent peer loop, kernel lifecycle, comm-state diff forwarding, RuntimeStateDoc writes |
 | `crates/runtimed/src/output_store.rs` | Output manifest creation, blob inlining threshold |
 | `crates/runtimed/src/blob_store.rs` | Content-addressed blob storage |
 | `crates/notebook/src/lib.rs` | Tauri commands and relay tasks (transparent byte pipe) |
 | `crates/runtimed-wasm/src/lib.rs` | WASM bindings: cell mutations, sync, per-cell accessors, `CellChangeset` |
-| `crates/notebook-doc/src/lib.rs` | `NotebookDoc`: Automerge schema, cell CRUD, output writes, per-cell accessors |
+| `crates/notebook-doc/src/lib.rs` | `NotebookDoc`: Automerge schema, cell CRUD, nbformat fallback fields, per-cell accessors |
 | `crates/notebook-doc/src/diff.rs` | `CellChangeset`: structural diff from Automerge patches |
 | `crates/notebook-doc/src/frame_types.rs` | Shared frame type constants (0x00–0x07) |
-| `crates/notebook-doc/src/runtime_state.rs` | `RuntimeStateDoc`: per-notebook daemon-authoritative state (kernel, queue, env sync) |
+| `crates/runtime-doc/src/doc.rs` | `RuntimeStateDoc`: per-notebook daemon-authoritative state (kernel, queue, env sync) |
 | `apps/notebook/src/lib/runtime-state.ts` | Frontend runtime state store + `useRuntimeState()` hook |
-| `apps/notebook/src/lib/frame-types.ts` | Frame type constants + `sendFrame()` binary IPC helper |
+| `packages/runtimed/src/transport.ts` | TypeScript `FrameType` constants and transport boundary |
+| `apps/notebook/src/lib/frame-pipeline.ts` | App-side frame event processing and materialization planning |
 | `apps/notebook/src/hooks/useAutomergeNotebook.ts` | WASM handle owner, `scheduleMaterialize`, `CellChangeset` dispatch |
 | `apps/notebook/src/hooks/useDaemonKernel.ts` | Kernel execution, widget comm routing, broadcast handling |
 | `apps/notebook/src/lib/materialize-cells.ts` | `materializeCellFromWasm()` (per-cell) + `cellSnapshotsToNotebookCells()` (full) |
