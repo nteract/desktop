@@ -6049,7 +6049,7 @@ mod tests {
                 "image/png".to_string(),
                 notebook_doc::AttachmentRef {
                     blob_hash: attachment_hash.to_string(),
-                    encoding: "base64".to_string(),
+                    encoding: notebook_doc::AttachmentEncoding::Base64,
                 },
             )]),
         )]);

@@ -92,14 +92,14 @@ fn test_image_attachment_hash_uses_stable_image_preference() {
                 "image/jpeg".to_string(),
                 AttachmentRef {
                     blob_hash: "jpeg-hash".to_string(),
-                    encoding: "base64".to_string(),
+                    encoding: AttachmentEncoding::Base64,
                 },
             ),
             (
                 "image/png".to_string(),
                 AttachmentRef {
                     blob_hash: "png-hash".to_string(),
-                    encoding: "base64".to_string(),
+                    encoding: AttachmentEncoding::Base64,
                 },
             ),
         ]),
@@ -2160,7 +2160,7 @@ async fn test_load_notebook_from_disk_resolves_nbformat_attachments() {
         .and_then(|bundle| bundle.get("image/png"))
         .expect("attachment should be stored in the cell schema");
     assert_eq!(attachment_ref.blob_hash, *hash);
-    assert_eq!(attachment_ref.encoding, "base64");
+    assert_eq!(attachment_ref.encoding, AttachmentEncoding::Base64);
 }
 
 #[tokio::test]
@@ -2351,7 +2351,7 @@ async fn test_process_markdown_assets_resolves_existing_attachment_refs() {
                 "image/png".to_string(),
                 AttachmentRef {
                     blob_hash: hash.clone(),
-                    encoding: "base64".to_string(),
+                    encoding: AttachmentEncoding::Base64,
                 },
             )]),
         )]);
@@ -2412,7 +2412,7 @@ async fn test_save_notebook_to_disk_preserves_nbformat_attachments_from_doc() {
                 "image/png".to_string(),
                 AttachmentRef {
                     blob_hash: hash,
-                    encoding: "base64".to_string(),
+                    encoding: AttachmentEncoding::Base64,
                 },
             )]),
         );
@@ -2466,14 +2466,14 @@ async fn test_save_notebook_to_disk_preserves_raw_cell_attachments_from_doc() {
                     "text/plain".to_string(),
                     AttachmentRef {
                         blob_hash: hash,
-                        encoding: "text".to_string(),
+                        encoding: AttachmentEncoding::Text,
                     },
                 ),
                 (
                     "application/json".to_string(),
                     AttachmentRef {
                         blob_hash: json_hash,
-                        encoding: "json".to_string(),
+                        encoding: AttachmentEncoding::Json,
                     },
                 ),
             ]),
@@ -2511,7 +2511,7 @@ async fn test_save_notebook_to_disk_treats_missing_attachment_blob_as_unrecovera
                 "image/png".to_string(),
                 AttachmentRef {
                     blob_hash: "missing-blob".to_string(),
-                    encoding: "base64".to_string(),
+                    encoding: AttachmentEncoding::Base64,
                 },
             )]),
         )]);
@@ -6672,7 +6672,7 @@ async fn test_clone_as_ephemeral_forks_cells_and_clears_outputs() {
                 "image/png".to_string(),
                 AttachmentRef {
                     blob_hash: attachment_hash.clone(),
-                    encoding: "base64".to_string(),
+                    encoding: AttachmentEncoding::Base64,
                 },
             )]),
         )]);
@@ -6683,7 +6683,7 @@ async fn test_clone_as_ephemeral_forks_cells_and_clears_outputs() {
                 "application/json".to_string(),
                 AttachmentRef {
                     blob_hash: raw_attachment_hash.clone(),
-                    encoding: "json".to_string(),
+                    encoding: AttachmentEncoding::Json,
                 },
             )]),
         )]);

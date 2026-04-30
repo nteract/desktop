@@ -99,7 +99,7 @@ pub(crate) async fn attachment_refs_to_nbformat_value(
                 })?;
             media_bundle.insert(
                 media_type.clone(),
-                encode_attachment_payload(media_type, attachment_ref.encoding.as_str(), &data)?,
+                encode_attachment_payload(media_type, attachment_ref.encoding, &data)?,
             );
         }
         if !media_bundle.is_empty() {
@@ -159,10 +159,10 @@ pub(crate) fn resolved_attachment_assets(
 fn decode_attachment_payload(
     media_type: &str,
     payload: &serde_json::Value,
-) -> Result<(Vec<u8>, String), AttachmentIngestError> {
+) -> Result<(Vec<u8>, AttachmentEncoding), AttachmentIngestError> {
     if attachment_payload_is_json(media_type) {
         return serde_json::to_vec(payload)
-            .map(|data| (data, "json".to_string()))
+            .map(|data| (data, AttachmentEncoding::Json))
             .map_err(|e| {
                 AttachmentIngestError::InvalidPayload(format!(
                     "attachment {media_type} JSON payload is invalid: {e}"
@@ -172,11 +172,11 @@ fn decode_attachment_payload(
 
     if let Some(payload) = payload.as_str() {
         if attachment_payload_is_text(media_type) {
-            return Ok((payload.as_bytes().to_vec(), "text".to_string()));
+            return Ok((payload.as_bytes().to_vec(), AttachmentEncoding::Text));
         }
         return base64::engine::general_purpose::STANDARD
             .decode(payload)
-            .map(|data| (data, "base64".to_string()))
+            .map(|data| (data, AttachmentEncoding::Base64))
             .map_err(|e| {
                 AttachmentIngestError::InvalidPayload(format!(
                     "attachment {media_type} base64 payload is invalid: {e}"
@@ -185,7 +185,7 @@ fn decode_attachment_payload(
     }
 
     serde_json::to_vec(payload)
-        .map(|data| (data, "json".to_string()))
+        .map(|data| (data, AttachmentEncoding::Json))
         .map_err(|e| {
             AttachmentIngestError::InvalidPayload(format!(
                 "attachment {media_type} JSON payload is invalid: {e}"
@@ -195,28 +195,35 @@ fn decode_attachment_payload(
 
 fn encode_attachment_payload(
     media_type: &str,
-    encoding: &str,
+    encoding: AttachmentEncoding,
     data: &[u8],
 ) -> Result<serde_json::Value, AttachmentResolveError> {
-    if encoding == "json" {
-        return serde_json::from_slice(data).map_err(|e| {
+    match encoding {
+        AttachmentEncoding::Json => serde_json::from_slice(data).map_err(|e| {
             AttachmentResolveError::InvalidPayload(format!(
                 "attachment {media_type} JSON payload is invalid: {e}"
             ))
-        });
+        }),
+        AttachmentEncoding::Text => encode_text_attachment(media_type, data),
+        AttachmentEncoding::Base64 if attachment_payload_is_text(media_type) => {
+            encode_text_attachment(media_type, data)
+        }
+        AttachmentEncoding::Base64 => Ok(serde_json::Value::String(
+            base64::engine::general_purpose::STANDARD.encode(data),
+        )),
     }
+}
 
-    if encoding == "text" || attachment_payload_is_text(media_type) {
-        let text = std::str::from_utf8(data).map_err(|e| {
-            AttachmentResolveError::InvalidPayload(format!(
-                "attachment {media_type} is not valid UTF-8: {e}"
-            ))
-        })?;
-        return Ok(serde_json::Value::String(text.to_string()));
-    }
-    Ok(serde_json::Value::String(
-        base64::engine::general_purpose::STANDARD.encode(data),
-    ))
+fn encode_text_attachment(
+    media_type: &str,
+    data: &[u8],
+) -> Result<serde_json::Value, AttachmentResolveError> {
+    let text = std::str::from_utf8(data).map_err(|e| {
+        AttachmentResolveError::InvalidPayload(format!(
+            "attachment {media_type} is not valid UTF-8: {e}"
+        ))
+    })?;
+    Ok(serde_json::Value::String(text.to_string()))
 }
 
 fn attachment_payload_is_json(media_type: &str) -> bool {

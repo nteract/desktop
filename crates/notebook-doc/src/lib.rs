@@ -117,15 +117,49 @@ pub struct CellSnapshot {
     pub resolved_assets: HashMap<String, String>,
     /// nbformat attachments stored as blob refs.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    pub attachments: HashMap<String, HashMap<String, AttachmentRef>>,
+    pub attachments: CellAttachments,
 }
+
+/// nbformat attachments for one cell: attachment name -> MIME bundle.
+pub type CellAttachments = HashMap<String, AttachmentMediaBundle>;
+
+/// One nbformat attachment MIME bundle: media type -> blob ref.
+pub type AttachmentMediaBundle = HashMap<String, AttachmentRef>;
 
 /// A single nbformat attachment payload stored by blob reference.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AttachmentRef {
     pub blob_hash: String,
-    /// How to reconstruct the nbformat payload (`base64`, `text`, or `json`).
-    pub encoding: String,
+    pub encoding: AttachmentEncoding,
+}
+
+/// How to reconstruct a blob-backed nbformat attachment payload.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum AttachmentEncoding {
+    Base64,
+    Text,
+    Json,
+}
+
+impl AttachmentEncoding {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Base64 => "base64",
+            Self::Text => "text",
+            Self::Json => "json",
+        }
+    }
+
+    fn from_schema_str(value: Option<&str>) -> Option<Self> {
+        match value {
+            None => Some(Self::Base64),
+            Some("base64") => Some(Self::Base64),
+            Some("text") => Some(Self::Text),
+            Some("json") => Some(Self::Json),
+            Some(_) => None,
+        }
+    }
 }
 
 fn default_empty_object() -> serde_json::Value {
@@ -1710,10 +1744,7 @@ impl NotebookDoc {
 
     /// Get all nbformat attachments for a cell as blob refs
     /// (`attachment name` -> `media type` -> `blob hash`).
-    pub fn get_cell_attachments(
-        &self,
-        cell_id: &str,
-    ) -> Option<HashMap<String, HashMap<String, AttachmentRef>>> {
+    pub fn get_cell_attachments(&self, cell_id: &str) -> Option<CellAttachments> {
         let cells_id = self.cells_map_id()?;
         let cell_obj = self.cell_obj_id(&cells_id, cell_id)?;
         let attachments_id = self.map_id(&cell_obj, "attachments")?;
@@ -1729,7 +1760,7 @@ impl NotebookDoc {
     pub fn set_cell_attachments(
         &mut self,
         cell_id: &str,
-        attachments: &HashMap<String, HashMap<String, AttachmentRef>>,
+        attachments: &CellAttachments,
     ) -> Result<bool, AutomergeError> {
         let cells_id = match self.cells_map_id() {
             Some(id) => id,
@@ -2148,22 +2179,20 @@ fn read_str<O: AsRef<automerge::ObjId>, P: Into<automerge::Prop>>(
         })
 }
 
-fn read_attachment_refs(
-    doc: &AutoCommit,
-    attachments_id: &ObjId,
-) -> HashMap<String, HashMap<String, AttachmentRef>> {
+fn read_attachment_refs(doc: &AutoCommit, attachments_id: &ObjId) -> CellAttachments {
     doc.map_range(attachments_id, ..)
         .filter_map(|item| {
             if !matches!(item.value, automerge::ValueRef::Object(ObjType::Map)) {
                 return None;
             }
-            let bundle: HashMap<String, AttachmentRef> = doc
+            let bundle: AttachmentMediaBundle = doc
                 .map_range(&item.id(), ..)
                 .filter_map(|media_item| {
                     if matches!(media_item.value, automerge::ValueRef::Object(ObjType::Map)) {
                         let blob_hash = read_str(doc, media_item.id(), "blob_hash")?;
-                        let encoding = read_str(doc, media_item.id(), "encoding")
-                            .unwrap_or_else(|| "base64".to_string());
+                        let encoding = AttachmentEncoding::from_schema_str(
+                            read_str(doc, media_item.id(), "encoding").as_deref(),
+                        )?;
                         return Some((
                             media_item.key.to_string(),
                             AttachmentRef {
@@ -2836,7 +2865,7 @@ mod tests {
                 "image/png".to_string(),
                 AttachmentRef {
                     blob_hash: "attachment-hash".to_string(),
-                    encoding: "base64".to_string(),
+                    encoding: AttachmentEncoding::Base64,
                 },
             )]),
         )]);
