@@ -1,7 +1,6 @@
 //! `NotebookRequest::SaveNotebook` handler.
 
 use std::path::PathBuf;
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use tracing::warn;
@@ -26,12 +25,9 @@ pub(crate) async fn handle(
         }
     }
 
-    // Capture was_untitled and old_path in a single critical section to
-    // avoid a TOCTOU race between the two reads.
-    let (was_untitled, old_path) = {
-        let p = room.file_binding.path.read().await;
-        (p.is_none(), p.clone())
-    };
+    let binding_snapshot = room.file_binding.save_snapshot().await;
+    let was_untitled = binding_snapshot.was_untitled;
+    let old_path = binding_snapshot.old_path;
 
     // For any save that writes to a NEW path (untitled promotion or
     // save-as rename), claim path_index BEFORE touching disk. Writing
@@ -41,7 +37,7 @@ pub(crate) async fn handle(
     //
     // Compute the pre-write canonical target. For untitled rooms a path
     // is required; for file-backed rooms we only need a pre-write claim
-    // if the caller specified a path different from room.file_binding.path.
+    // if the caller specified a path different from the current bound path.
     let target_for_claim: Option<PathBuf> = match (&path, was_untitled) {
         (Some(p), _) => match crate::paths::normalize_save_target(p) {
             Ok(normalized) => Some(canonical_target_path(&normalized).await),
@@ -87,9 +83,7 @@ pub(crate) async fn handle(
             }
             // Emergency persist for ephemeral rooms: if saving to .ipynb
             // failed, at least write the Automerge doc so data isn't lost.
-            if room.file_binding.is_ephemeral.load(Ordering::Relaxed)
-                && room.persistence.debouncer.is_none()
-            {
+            if binding_snapshot.is_ephemeral && room.persistence.debouncer.is_none() {
                 let bytes = room.doc.write().await.save();
                 persist_notebook_bytes(&bytes, &room.identity.persist_path);
                 warn!(
@@ -139,7 +133,7 @@ pub(crate) async fn handle(
         let path_changed = old != &canonical;
         if path_changed {
             // Save-as rename: new path already claimed above; remove
-            // the old path_index entry and update room.file_binding.path.
+            // the old path_index entry and rebind the room to the new path.
             NotebookFileBinding::release_path(&daemon.path_index, old).await;
             NotebookFileBinding::rebind_after_save_as(room, canonical.clone()).await;
         }

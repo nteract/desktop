@@ -28,7 +28,7 @@ pub(crate) async fn save_notebook_to_disk(
         "[save] save_notebook_to_disk entered: target_path={:?}, room.id={}, room.file_binding.path={:?}",
         target_path,
         room.id,
-        room.file_binding.path.read().await.as_deref()
+        room.file_binding.path().await.as_deref()
     );
     // Determine the actual save path
     let notebook_path = match target_path {
@@ -51,7 +51,7 @@ pub(crate) async fn save_notebook_to_disk(
                 PathBuf::from(format!("{}.ipynb", p))
             }
         }
-        None => match room.file_binding.path.read().await.clone() {
+        None => match room.file_binding.path().await {
             Some(p) => p,
             None => {
                 return Err(SaveError::Unrecoverable(
@@ -225,7 +225,10 @@ pub(crate) async fn save_notebook_to_disk(
             );
             // Still update save baselines so the file watcher stays consistent.
             let is_primary_path = target_path.is_none()
-                || room.file_binding.path.read().await.as_deref() == Some(notebook_path.as_path());
+                || room
+                    .file_binding
+                    .path_matches(notebook_path.as_path())
+                    .await;
             if is_primary_path {
                 let mut saved = HashMap::with_capacity(cells.len());
                 for cell in &cells {
@@ -277,7 +280,10 @@ pub(crate) async fn save_notebook_to_disk(
     // to the primary path - saving to an alternate path (Save As) must not
     // corrupt the baseline for the file watcher.
     let is_primary_path = target_path.is_none()
-        || room.file_binding.path.read().await.as_deref() == Some(notebook_path.as_path());
+        || room
+            .file_binding
+            .path_matches(notebook_path.as_path())
+            .await;
     if is_primary_path {
         let mut saved = HashMap::with_capacity(cells.len());
         for cell in &cells {

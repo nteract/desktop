@@ -75,7 +75,7 @@ async fn resolve_project_file(
         return Ok(crate::project_file::DetectedProjectFile { path, kind });
     }
 
-    let notebook_path = room.file_binding.path.read().await.clone();
+    let notebook_path = room.file_binding.path().await;
     let working_dir = room.identity.working_dir.read().await.clone();
     let detection_path = notebook_path.as_ref().or(working_dir.as_ref());
     let Some(path) = detection_path else {

@@ -180,7 +180,7 @@ async fn untitled_room_has_path_none() {
     let tmp = tempfile::TempDir::new().unwrap();
     let blob_store = test_blob_store(&tmp);
     let room = NotebookRoom::new_fresh(Uuid::new_v4(), None, tmp.path(), blob_store, false);
-    assert!(room.file_binding.path.read().await.is_none());
+    assert!(room.file_binding.path().await.is_none());
 }
 
 #[tokio::test]
@@ -195,8 +195,10 @@ async fn file_backed_room_has_path_some() {
         blob_store,
         false,
     );
-    let guard = room.file_binding.path.read().await;
-    assert_eq!(guard.as_deref(), Some(fake_path.as_path()));
+    assert_eq!(
+        room.file_binding.path().await.as_deref(),
+        Some(fake_path.as_path())
+    );
 }
 
 #[tokio::test]
@@ -494,10 +496,7 @@ async fn test_ephemeral_room_skips_persistence() {
     let room = NotebookRoom::new_fresh(notebook_uuid, None, dir.path(), blob_store, true);
 
     assert!(room.persistence.debouncer.is_none());
-    assert!(room
-        .file_binding
-        .is_ephemeral
-        .load(std::sync::atomic::Ordering::Relaxed));
+    assert!(room.file_binding.is_ephemeral());
 
     // No .automerge file should exist
     let filename = notebook_doc_filename(&notebook_uuid.to_string());
@@ -512,10 +511,7 @@ async fn test_session_room_persists() {
     let room = NotebookRoom::new_fresh(notebook_uuid, None, dir.path(), blob_store, false);
 
     assert!(room.persistence.debouncer.is_some());
-    assert!(!room
-        .file_binding
-        .is_ephemeral
-        .load(std::sync::atomic::Ordering::Relaxed));
+    assert!(!room.file_binding.is_ephemeral());
 }
 
 #[tokio::test(start_paused = true)]
@@ -3049,13 +3045,15 @@ async fn saving_untitled_notebook_updates_path_index_and_keeps_uuid() {
         .await
         .insert(canonical.clone(), room.id)
         .unwrap();
-    *room.file_binding.path.write().await = Some(canonical.clone());
+    room.file_binding
+        .set_path_for_test(Some(canonical.clone()))
+        .await;
 
     // UUID key unchanged, path_index populated, room.file_binding.path set.
     assert!(rooms.lock().await.contains_key(&uuid));
     assert_eq!(path_index.lock().await.lookup(&canonical), Some(uuid));
     assert_eq!(
-        room.file_binding.path.read().await.as_deref(),
+        room.file_binding.path().await.as_deref(),
         Some(canonical.as_path())
     );
 }
@@ -3101,7 +3099,7 @@ async fn saving_to_already_open_path_returns_path_already_open_error() {
 
     // room.file_binding.path must NOT have been mutated on error.
     assert!(
-        room.file_binding.path.read().await.is_none(),
+        room.file_binding.path().await.is_none(),
         "room.file_binding.path should still be None after a failed claim"
     );
 }
@@ -3211,7 +3209,7 @@ async fn test_promote_untitled_starts_autosave() {
         "UUID key should still be present after promotion"
     );
     assert_eq!(
-        room.file_binding.path.read().await.as_deref(),
+        room.file_binding.path().await.as_deref(),
         Some(canonical.as_path()),
         "room.file_binding.path should be set after promotion"
     );
@@ -3221,7 +3219,7 @@ async fn test_promote_untitled_starts_autosave() {
         "path_index should contain the room's UUID"
     );
     assert!(
-        !room.file_binding.is_ephemeral.load(Ordering::Relaxed),
+        !room.file_binding.is_ephemeral(),
         "is_ephemeral should be cleared after promotion"
     );
 
@@ -6801,10 +6799,7 @@ async fn test_clone_as_ephemeral_forks_cells_and_clears_outputs() {
         .expect("clone room should be registered");
 
     // Ephemeral.
-    assert!(clone_room
-        .file_binding
-        .is_ephemeral
-        .load(std::sync::atomic::Ordering::Acquire));
+    assert!(clone_room.file_binding.is_ephemeral());
 
     // working_dir seeded on the room.
     assert_eq!(
@@ -7235,12 +7230,7 @@ async fn project_file_watcher_refreshes_context_on_external_edit() {
     assert_eq!(parsed.dependencies, vec!["pandas".to_string()]);
 
     // Sanity: watcher state is armed.
-    assert!(room
-        .file_binding
-        .project_file_watcher_shutdown_tx
-        .lock()
-        .await
-        .is_some());
+    assert!(room.file_binding.has_project_file_watcher_for_test().await);
 
     // External edit: add a dep. `refresh_project_context_async`
     // already awaited the watcher's ready signal before returning, so
@@ -7276,15 +7266,7 @@ async fn project_file_watcher_refreshes_context_on_external_edit() {
     );
 
     // Tear down the watcher so the temp dir can drop cleanly.
-    let shutdown = room
-        .file_binding
-        .project_file_watcher_shutdown_tx
-        .lock()
-        .await
-        .take();
-    if let Some(tx) = shutdown {
-        let _ = tx.send(());
-    }
+    room.file_binding.shutdown_project_file_watcher().await;
 }
 
 /// Kernel launch can fail before the kernel ever connects to the
@@ -7626,11 +7608,7 @@ async fn test_autosave_shutdown_flushes_pending_doc_change() {
         "shutdown final save should include the edit made inside the debounce window; got: {sources:?}"
     );
     assert!(
-        room.file_binding
-            .autosave_shutdown_tx
-            .lock()
-            .await
-            .is_none(),
+        !room.file_binding.has_autosave_shutdown_tx_for_test().await,
         "shutdown should consume the autosave lifecycle handle"
     );
 }
@@ -7690,7 +7668,9 @@ async fn test_save_as_rebind_replaces_file_lifecycle_and_runtime_path() {
     std::fs::write(&new_path, "{}").unwrap();
 
     let (old_watcher_tx, old_watcher_rx) = oneshot::channel::<()>();
-    *room.file_binding.watcher_shutdown_tx.lock().await = Some(old_watcher_tx);
+    room.file_binding
+        .install_notebook_watcher_shutdown_tx(old_watcher_tx)
+        .await;
 
     let (old_autosave_tx, mut old_autosave_rx) =
         mpsc::unbounded_channel::<AutosaveShutdownRequest>();
@@ -7714,7 +7694,7 @@ async fn test_save_as_rebind_replaces_file_lifecycle_and_runtime_path() {
     autosave_ack_task.await.unwrap();
 
     assert_eq!(
-        room.file_binding.path.read().await.as_deref(),
+        room.file_binding.path().await.as_deref(),
         Some(new_path.as_path())
     );
     let runtime_path = room
@@ -7727,9 +7707,7 @@ async fn test_save_as_rebind_replaces_file_lifecycle_and_runtime_path() {
         Some(expected_runtime_path.as_str())
     );
 
-    if let Some(shutdown_tx) = room.file_binding.watcher_shutdown_tx.lock().await.take() {
-        let _ = shutdown_tx.send(());
-    }
+    room.file_binding.shutdown_notebook_watcher().await;
     assert!(
         shutdown_autosave_debouncer(&room, &new_path.to_string_lossy(), Duration::from_secs(1))
             .await,
@@ -7767,7 +7745,9 @@ async fn test_autosave_shutdown_during_loading_returns_false_without_write() {
     let canonical = tokio::fs::canonicalize(&written)
         .await
         .unwrap_or_else(|_| PathBuf::from(&written));
-    *room.file_binding.path.write().await = Some(canonical.clone());
+    room.file_binding
+        .set_path_for_test(Some(canonical.clone()))
+        .await;
     let shutdown_tx =
         spawn_autosave_debouncer(canonical.to_string_lossy().into_owned(), Arc::clone(&room));
     room.file_binding

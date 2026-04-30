@@ -81,26 +81,16 @@ pub(super) async fn refresh_project_context_async(room: &Arc<NotebookRoom>, path
 /// result (NotFound / Unreadable with missing file) leaves the slot
 /// empty; the next refresh trigger will re-evaluate.
 async fn rearm_project_file_watcher(room: &Arc<NotebookRoom>, detected_path: Option<PathBuf>) {
-    if let Some(tx) = room
-        .file_binding
-        .project_file_watcher_shutdown_tx
-        .lock()
-        .await
-        .take()
-    {
-        let _ = tx.send(());
-    }
+    room.file_binding.shutdown_project_file_watcher().await;
 
     let Some(watch_path) = detected_path else {
         return;
     };
 
     let (shutdown_tx, ready_rx) = spawn_project_file_watcher(watch_path, room.clone());
-    *room
-        .file_binding
-        .project_file_watcher_shutdown_tx
-        .lock()
-        .await = Some(shutdown_tx);
+    room.file_binding
+        .install_project_file_watcher_shutdown_tx(shutdown_tx)
+        .await;
     // Block until the watcher task has actually installed its
     // subscription (or failed trying). Without this, events that land
     // between "we returned from this function" and "notify attached
@@ -215,7 +205,7 @@ fn spawn_project_file_watcher(
                             // path: the notebook may have been moved such
                             // that a closer project file now wins, or the
                             // detected file may have been deleted.
-                            let notebook_path = room.file_binding.path.read().await.clone();
+                            let notebook_path = room.file_binding.path().await;
                             refresh_project_context_async(&room, notebook_path.as_deref()).await;
                         }
                         Err(e) => {
