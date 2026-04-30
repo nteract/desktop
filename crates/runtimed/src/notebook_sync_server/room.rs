@@ -225,7 +225,9 @@ impl Default for RoomConnections {
 
 pub struct NotebookRoom {
     /// Permanent, immutable UUID for this room, independent of the display
-    /// path or string lookup keys used by callers.
+    /// path or string lookup keys used by callers. Rooms are still looked up
+    /// by string key today; this identity is carried alongside that map for
+    /// stable cross-process references.
     pub id: uuid::Uuid,
     /// The canonical Automerge notebook document.
     pub doc: Arc<RwLock<NotebookDoc>>,

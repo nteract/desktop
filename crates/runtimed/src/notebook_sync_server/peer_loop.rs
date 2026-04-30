@@ -22,7 +22,7 @@ use super::*;
 /// Typed frames sync loop with first-byte type indicator.
 ///
 /// Handles both Automerge sync messages and NotebookRequest messages.
-/// This protocol supports daemon-owned kernel execution (Phase 8).
+/// This protocol supports daemon-owned kernel execution.
 ///
 /// Takes `reader` by value because the post-streaming-load main loop
 /// hands it to a `FramedReader` actor; from that point the read half

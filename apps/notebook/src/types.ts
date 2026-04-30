@@ -6,8 +6,10 @@ export interface CodeCell {
   id: string;
   source: string;
   /**
-   * Display count projected from RuntimeStateDoc when available, with the
-   * notebook-doc nbformat fallback used only when runtime state is absent.
+   * Display count for the code cell. Full materialization resolves this from
+   * RuntimeStateDoc first, then falls back to the notebook-doc nbformat value
+   * for runtime-free reload/export paths. Local in-flight updates may hold
+   * `null` until the daemon publishes runtime state.
    */
   execution_count: number | null;
   /**

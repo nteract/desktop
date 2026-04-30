@@ -25,8 +25,9 @@
 //!       cell_type: Str            ← "code" | "markdown" | "raw"
 //!       position: Str             ← Fractional index hex string for ordering
 //!       source: Text              ← Automerge Text CRDT (character-level merging)
-//!       execution_count: Str      ← Legacy nbformat/import-export fallback;
-//!                                   live counts are in RuntimeStateDoc
+//!       execution_count: Str      ← JSON-encoded i32 or "null"; legacy
+//!                                   nbformat/import-export fallback; live
+//!                                   counts are in RuntimeStateDoc
 //!       metadata/                 ← Map (native Automerge types, legacy: JSON string fallback)
 //!       resolved_assets/          ← Map of markdown asset ref -> blob hash
 //!   metadata/                     ← Map

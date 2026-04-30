@@ -2540,10 +2540,10 @@ fn test_create_empty_notebook_with_provided_env_id() {
 /// - add_cell_full per batch
 /// - generate_sync_message per batch
 ///
-/// Run with: cargo test -p runtimed -- bench_streaming_load_phases --nocapture --ignored
+/// Run with: cargo test -p runtimed -- bench_streaming_load_steps --nocapture --ignored
 #[tokio::test]
 #[ignore] // Only run manually — requires the fixture notebook
-async fn bench_streaming_load_phases() {
+async fn bench_streaming_load_steps() {
     let notebook_path = std::path::Path::new("/tmp/gelmanschools-bench.ipynb");
     if !notebook_path.exists() {
         eprintln!("Skipping: /tmp/gelmanschools-bench.ipynb not found");
