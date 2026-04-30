@@ -76,10 +76,6 @@ Daemon broadcast -> useDaemonKernel callback -> store-only update
 Examples:
 - `applyExecutionCountFromDaemon(cellId, count)` -- daemon broadcast, store only
 
-Clear Outputs is intentionally not modeled as a frontend `*Local`/`*FromDaemon`
-pair. The frontend sends a daemon request; the daemon clears visible outputs by
-removing the selected cells' `execution_id` pointers in the notebook doc.
-
 ## The CodeMirror CRDT Bridge
 
 Source text has its own dedicated path that bypasses both the store and the old `updateCellSource` function:
