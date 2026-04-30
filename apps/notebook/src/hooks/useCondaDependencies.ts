@@ -1,5 +1,5 @@
 import { useCallback, useMemo, useState } from "react";
-import type { ProjectContext, ProjectFileExtras } from "runtimed";
+import { deriveEnvironmentYml } from "runtimed";
 import { logger } from "../lib/logger";
 import {
   addCondaDependency as addCondaDepWasm,
@@ -16,37 +16,7 @@ export interface CondaDependencies {
   channels: string[];
   python: string | null;
 }
-
-/**
- * Info about a detected environment.yml.
- *
- * Derived from `RuntimeState.project_context` (see #2208). Some fields
- * that the old app-side walker produced (`name`) are not currently
- * surfaced through `ProjectFileParsed`; they're emitted as `null` and
- * the UI treats them as optional display.
- */
-export interface EnvironmentYmlInfo {
-  path: string;
-  relative_path: string;
-  name: string | null;
-  has_dependencies: boolean;
-  dependency_count: number;
-  has_pip_dependencies: boolean;
-  pip_dependency_count: number;
-  python: string | null;
-  channels: string[];
-}
-
-/** Full environment.yml dependencies for display. */
-export interface EnvironmentYmlDeps {
-  path: string;
-  relative_path: string;
-  name: string | null;
-  dependencies: string[];
-  pip_dependencies: string[];
-  python: string | null;
-  channels: string[];
-}
+export type { EnvironmentYmlDeps, EnvironmentYmlInfo } from "runtimed";
 
 /** Conda sync state — tracks whether declared deps match the running kernel's environment. */
 export type CondaSyncState =
@@ -54,50 +24,6 @@ export type CondaSyncState =
   | { status: "not_conda_managed" }
   | { status: "synced" }
   | { status: "dirty" };
-
-function envYmlExtras(extras: ProjectFileExtras): { channels: string[]; pip: string[] } {
-  if (extras.kind === "EnvironmentYml") {
-    return { channels: extras.channels, pip: extras.pip };
-  }
-  return { channels: [], pip: [] };
-}
-
-/**
- * Derive `EnvironmentYmlInfo` + `EnvironmentYmlDeps` from a
- * `ProjectContext`. Pure; exported for tests.
- *
- * Returns both `null` when the context is not a Detected environment.yml.
- */
-export function deriveEnvironmentYml(ctx: ProjectContext): {
-  environmentYmlInfo: EnvironmentYmlInfo | null;
-  environmentYmlDeps: EnvironmentYmlDeps | null;
-} {
-  if (ctx.state !== "Detected" || ctx.project_file.kind !== "EnvironmentYml") {
-    return { environmentYmlInfo: null, environmentYmlDeps: null };
-  }
-  const { channels, pip } = envYmlExtras(ctx.parsed.extras);
-  const shared = {
-    path: ctx.project_file.absolute_path,
-    relative_path: ctx.project_file.relative_to_notebook,
-    name: null,
-    python: ctx.parsed.requires_python,
-    channels,
-  };
-  return {
-    environmentYmlInfo: {
-      ...shared,
-      has_dependencies: ctx.parsed.dependencies.length > 0,
-      dependency_count: ctx.parsed.dependencies.length,
-      has_pip_dependencies: pip.length > 0,
-      pip_dependency_count: pip.length,
-    },
-    environmentYmlDeps: {
-      ...shared,
-      dependencies: ctx.parsed.dependencies,
-      pip_dependencies: pip,
-    },
-  };
-}
 
 export function useCondaDependencies() {
   const [loading, setLoading] = useState(false);

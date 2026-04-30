@@ -1,8 +1,10 @@
-import type { ProjectContext } from "runtimed";
+import {
+  deriveEnvironmentYml,
+  derivePixiInfo,
+  derivePyproject,
+  type ProjectContext,
+} from "runtimed";
 import { describe, expect, it } from "vite-plus/test";
-import { deriveEnvironmentYml } from "../useCondaDependencies";
-import { derivePyproject } from "../useDependencies";
-import { derivePixiInfo } from "../usePixiDetection";
 
 const OBSERVED_AT = "2026-04-25T00:00:00Z";
 

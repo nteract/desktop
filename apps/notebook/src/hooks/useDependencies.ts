@@ -1,5 +1,5 @@
 import { useCallback, useMemo, useState } from "react";
-import type { ProjectContext, ProjectFileKind } from "runtimed";
+import { derivePyproject } from "runtimed";
 import { logger } from "../lib/logger";
 import {
   addUvDependency,
@@ -24,83 +24,7 @@ export type EnvSyncState =
   | { status: "synced" }
   | { status: "dirty"; added: string[]; removed: string[] };
 
-/**
- * Full pyproject.toml dependencies for display.
- *
- * Derived from `RuntimeState.project_context`. Fields the daemon does
- * not currently surface (`project_name`, `index_url`) are emitted as
- * `null`; UI code treats them as optional today.
- */
-export interface PyProjectDeps {
-  path: string;
-  relative_path: string;
-  project_name: string | null;
-  dependencies: string[];
-  dev_dependencies: string[];
-  requires_python: string | null;
-  index_url: string | null;
-}
-
-/**
- * Info about a detected pyproject.toml.
- *
- * Derived from `RuntimeState.project_context`. `has_venv` is `false`
- * because the daemon does not currently check the filesystem for a
- * `.venv` next to the project file; consumers must not treat this as
- * authoritative for "is the env built yet."
- */
-export interface PyProjectInfo {
-  path: string;
-  relative_path: string;
-  project_name: string | null;
-  has_dependencies: boolean;
-  dependency_count: number;
-  has_dev_dependencies: boolean;
-  requires_python: string | null;
-  has_venv: boolean;
-}
-
-/**
- * Project-file kind the frontend cares about here. Narrowed from the
- * CRDT's `ProjectFileKind` so we only select pyproject detections.
- */
-const PYPROJECT: ProjectFileKind = "PyprojectToml";
-
-/**
- * Derive `PyProjectInfo` + `PyProjectDeps` from a `ProjectContext`. Pure;
- * exported for tests. Returns both `null` when the context is not a
- * Detected pyproject.toml.
- */
-export function derivePyproject(ctx: ProjectContext): {
-  pyprojectInfo: PyProjectInfo | null;
-  pyprojectDeps: PyProjectDeps | null;
-} {
-  if (ctx.state !== "Detected" || ctx.project_file.kind !== PYPROJECT) {
-    return { pyprojectInfo: null, pyprojectDeps: null };
-  }
-  const { project_file, parsed } = ctx;
-  const shared = {
-    path: project_file.absolute_path,
-    relative_path: project_file.relative_to_notebook,
-    project_name: null,
-    requires_python: parsed.requires_python,
-  };
-  return {
-    pyprojectInfo: {
-      ...shared,
-      has_dependencies: parsed.dependencies.length > 0,
-      dependency_count: parsed.dependencies.length,
-      has_dev_dependencies: parsed.dev_dependencies.length > 0,
-      has_venv: false,
-    },
-    pyprojectDeps: {
-      ...shared,
-      dependencies: parsed.dependencies,
-      dev_dependencies: parsed.dev_dependencies,
-      index_url: null,
-    },
-  };
-}
+export type { PyProjectDeps, PyProjectInfo } from "runtimed";
 
 export function useDependencies() {
   const [loading, setLoading] = useState(false);
