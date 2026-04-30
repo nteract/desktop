@@ -400,16 +400,24 @@ pub enum Handshake {
     SettingsSync,
     NotebookSync {
         notebook_id: String,
-        protocol: Option<String>,        // version negotiation (v2 = typed frames)
+        protocol: Option<String>,        // version negotiation (currently "v4")
         working_dir: Option<String>,      // for untitled notebook project detection
         initial_metadata: Option<String>, // kernelspec JSON for auto-launch
     },
     Blob,
     OpenNotebook { path: String },        // daemon loads from disk, returns NotebookConnectionInfo
+    RuntimeAgent {                        // runtime-agent subprocess attaches to a room
+        notebook_id: String,
+        runtime_agent_id: String,
+        blob_root: String,
+    },
     CreateNotebook {                      // daemon creates empty room
         runtime: String,                  // "python" or "deno"
         working_dir: Option<String>,
         notebook_id: Option<String>,      // restore hint for previous session
+        ephemeral: Option<bool>,
+        package_manager: Option<PackageManager>,
+        dependencies: Vec<String>,
     },
 }
 ```
@@ -424,6 +432,7 @@ The daemon's `route_connection()` validates the preamble first via `recv_preambl
 | `Blob` | Binary blob writes | Short-lived |
 | `OpenNotebook` | Returns `NotebookConnectionInfo`, then notebook sync | Long-lived |
 | `CreateNotebook` | Returns `NotebookConnectionInfo`, then notebook sync | Long-lived |
+| `RuntimeAgent` | RuntimeStateDoc sync plus runtime-agent RPC | Long-lived |
 
 ### Blob channel protocol
 

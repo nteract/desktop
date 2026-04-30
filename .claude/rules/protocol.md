@@ -58,7 +58,7 @@ After handshake, frames are typed by first byte:
 | `0x06` | PoolStateSync | Binary (raw Automerge sync for PoolDoc — global daemon pool state) |
 | `0x07` | SessionControl | JSON (`SessionControlMessage`, daemon-originated readiness/status) |
 
-Only `0x00` (AutomergeSync), `0x01` (NotebookRequest), `0x04` (Presence), and `0x06` (PoolStateSync) are valid outgoing frame types from the frontend/relay. `0x07` is daemon-originated.
+Frontend/relay outbound frames are `0x00` (AutomergeSync), `0x01` (NotebookRequest), `0x04` (Presence), `0x05` (RuntimeStateSync), and `0x06` (PoolStateSync). `0x02` responses, `0x03` broadcasts, and `0x07` session-control frames are daemon-originated.
 
 Notebook request and response frames use `NotebookRequestEnvelope` and `NotebookResponseEnvelope`. Every overlapping request must carry an `id`, and responses must route by id rather than by receive order.
 
@@ -74,6 +74,9 @@ Notebook request and response frames use `NotebookRequestEnvelope` and `Notebook
 | `RunAllCells` | Execute all code cells in order |
 | `SaveNotebook` | Persist Automerge doc to `.ipynb` |
 | `SyncEnvironment` | Hot-install packages into running kernel |
+| `ApproveTrust` / `ApproveProjectEnvironment` | Record user approval for dependency or project-file environments |
+| `CloneAsEphemeral` | Fork the current notebook into a new in-memory room |
+| `GetDocBytes` | Fetch canonical Automerge bytes to bootstrap a WASM peer |
 | `SendComm { message }` | Send comm message to kernel (widget interactions) |
 | `Complete { code, cursor_pos }` | Code completions from kernel |
 | `GetHistory { pattern, n, unique }` | Search kernel input history |
@@ -147,19 +150,25 @@ Schema (in `crates/runtime-doc/src/doc.rs`):
 
 | Path | Type | Description |
 |------|------|-------------|
-| `kernel.status` | Str | `"idle"`, `"busy"`, `"starting"`, `"error"`, `"shutdown"`, `"not_started"` |
-| `kernel.starting_phase` | Str | `""`, `"resolving"`, `"preparing_env"`, `"launching"`, `"connecting"` |
+| `kernel.lifecycle` | Str | Typed lifecycle: `"NotStarted"`, `"AwaitingTrust"`, `"AwaitingEnvBuild"`, `"Resolving"`, `"PreparingEnv"`, `"Launching"`, `"Connecting"`, `"Running"`, `"Error"`, `"Shutdown"` |
+| `kernel.activity` | Str | `""`, `"Unknown"`, `"Idle"`, `"Busy"`; meaningful when lifecycle is `Running` |
+| `kernel.error_reason`, `kernel.error_details` | Str | Typed and free-form error context when lifecycle is `Error` |
+| `kernel.runtime_agent_id` | Str | Runtime agent subprocess currently owning the kernel |
 | `kernel.name`, `kernel.language`, `kernel.env_source` | Str | Kernel metadata |
 | `queue.executing` | Str\|null | Cell ID currently executing |
 | `queue.executing_execution_id` | Str\|null | Execution ID for the executing cell |
 | `queue.queued` | List[Str] | Queued cell IDs |
 | `queue.queued_execution_ids` | List[Str] | Parallel execution IDs for queued entries |
 | `executions.{execution_id}` | Map | `{ cell_id, status, execution_count, success }` |
-| `env.in_sync`, `env.added`, `env.removed` | bool/List | Environment drift state |
+| `env.in_sync`, `env.added`, `env.removed`, `env.channels_changed`, `env.deno_changed` | bool/List | Environment drift state |
+| `env.prewarmed_packages`, `env.progress` | List/Map | Current prewarmed package snapshot and latest env progress |
 | `trust.status`, `trust.needs_approval` | Str/bool | Trust state |
+| `project_context` | Map | Daemon-observed project-file detection and parsed dependency context |
+| `display_index` | Map | `display_id` -> ordered `"execution_id\0output_id"` entries |
+| `comms` | Map | Widget state keyed by `comm_id` |
 | `last_saved` | Str\|null | ISO timestamp of last save |
 
-The daemon is the sole writer. Frontends and Python clients read-only via Automerge sync.
+`kernel.status` and `kernel.starting_phase` remain source-compatible projection fields on `KernelState`, but new code should read `kernel.lifecycle` and `kernel.activity`. The daemon is the sole writer. Frontends and Python clients read-only via Automerge sync.
 
 ### Execution ID Tracking
 
