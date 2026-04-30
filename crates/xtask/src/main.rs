@@ -2483,6 +2483,7 @@ fn run_cmd(cmd: &str, args: &[&str]) {
     }
     if cmd == "wasm-pack" {
         strip_rustc_wrapper_for_wasm(&mut command);
+        ensure_wasm_c_toolchain(&mut command);
     }
 
     let status = command.status().unwrap_or_else(|e| {
@@ -2656,6 +2657,92 @@ fn strip_rustc_wrapper_for_wasm(command: &mut Command) {
         );
         command.env_remove("RUSTC_WRAPPER");
     }
+}
+
+/// Point `cc-rs` at a clang that knows about `wasm32-unknown-unknown`.
+///
+/// `zstd-sys` (pulled in by `parquet` with the `zstd` feature, which we need
+/// to read pandas/duckdb/spark parquet in `sift-wasm`) compiles C for
+/// `wasm32-unknown-unknown`. Apple's Xcode clang has no wasm backend —
+/// `clang --print-targets` lists only AArch64/ARM/x86 — so the build fails
+/// with `'No available targets are compatible with triple "wasm32-unknown-unknown"'`.
+/// Homebrew's `llvm` formula ships a clang that does have wasm32/wasm64
+/// registered; we detect it and point `cc-rs` at it via the per-target
+/// env vars it honors.
+///
+/// Order:
+///   1. If the user already set `CC_wasm32_unknown_unknown` (or the dashed
+///      variant), honor it and do nothing.
+///   2. Probe known brew prefixes then `clang` on PATH, picking the first
+///      whose `--print-targets` mentions `wasm32`.
+///   3. If nothing qualifies, bail with install instructions. We do NOT
+///      run `brew install` — that's the user's call.
+fn ensure_wasm_c_toolchain(command: &mut Command) {
+    if env::var_os("CC_wasm32_unknown_unknown").is_some()
+        || env::var_os("CC_wasm32-unknown-unknown").is_some()
+    {
+        return;
+    }
+
+    let candidates = [
+        "/opt/homebrew/opt/llvm/bin/clang",
+        "/usr/local/opt/llvm/bin/clang",
+        "clang",
+    ];
+
+    for candidate in candidates {
+        if !clang_supports_wasm32(candidate) {
+            continue;
+        }
+        command.env("CC_wasm32_unknown_unknown", candidate);
+        if let Some(ar) = sibling_llvm_ar(candidate) {
+            command.env("AR_wasm32_unknown_unknown", ar);
+        }
+        eprintln!(
+            "Note: using {candidate} as CC_wasm32_unknown_unknown \
+             (Xcode clang has no wasm backend)"
+        );
+        return;
+    }
+
+    eprintln!(
+        "Error: no clang with a wasm32 backend was found.\n\
+         \n\
+         zstd-sys (via parquet's `zstd` feature in sift-wasm) cross-compiles\n\
+         C to wasm32-unknown-unknown. Apple's Xcode clang does not register\n\
+         the wasm32 target, so the build fails with:\n\
+         \n\
+           'No available targets are compatible with triple \"wasm32-unknown-unknown\"'\n\
+         \n\
+         Fix (macOS): install Homebrew LLVM, which ships a clang with the\n\
+         wasm32 backend:\n\
+         \n\
+           brew install llvm\n\
+         \n\
+         Or, if LLVM is already installed elsewhere, point cc-rs at it:\n\
+         \n\
+           export CC_wasm32_unknown_unknown=/path/to/clang\n\
+           export AR_wasm32_unknown_unknown=/path/to/llvm-ar"
+    );
+    exit(1);
+}
+
+fn clang_supports_wasm32(clang: &str) -> bool {
+    let output = Command::new(clang)
+        .arg("--print-targets")
+        .stderr(Stdio::null())
+        .output();
+    match output {
+        Ok(out) if out.status.success() => String::from_utf8_lossy(&out.stdout).contains("wasm32"),
+        _ => false,
+    }
+}
+
+fn sibling_llvm_ar(clang: &str) -> Option<PathBuf> {
+    let path = Path::new(clang);
+    let dir = path.parent()?;
+    let ar = dir.join("llvm-ar");
+    ar.exists().then_some(ar)
 }
 
 fn apply_rust_log_env(command: &mut Command) {
