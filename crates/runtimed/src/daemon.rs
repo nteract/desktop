@@ -828,10 +828,17 @@ impl LeasedPoolEnv {
 
     /// Borrow the inner env (e.g. to read `venv_path`/`python_path` before
     /// transferring ownership).
+    ///
+    /// `inner` is `Some` from `new`/`cached` until `transfer_to_runtime` or
+    /// `release_and_delete` consume `self`; once either runs, the wrapper
+    /// is gone, so this method can't observe the drained state. The
+    /// `expect` documents the ownership invariant rather than a runtime
+    /// failure mode.
+    #[allow(clippy::expect_used)]
     pub fn env(&self) -> &PooledEnv {
         self.inner
             .as_ref()
-            .expect("LeasedPoolEnv::env called after consumption")
+            .expect("LeasedPoolEnv::inner is Some until self is consumed")
     }
 
     /// Mutably borrow the inner env so callers can update `venv_path`
@@ -839,10 +846,13 @@ impl LeasedPoolEnv {
     /// cache. The lease's `leased_path` is unchanged: it still tracks the
     /// original `pool_env_root` so orphan GC / lease bookkeeping remains
     /// consistent regardless of where the directory ends up.
+    ///
+    /// Same ownership invariant as [`Self::env`].
+    #[allow(clippy::expect_used)]
     pub fn env_mut(&mut self) -> &mut PooledEnv {
         self.inner
             .as_mut()
-            .expect("LeasedPoolEnv::env_mut called after consumption")
+            .expect("LeasedPoolEnv::inner is Some until self is consumed")
     }
 
     /// Drain the lease and return the inner `PooledEnv`. The caller MUST
@@ -850,10 +860,15 @@ impl LeasedPoolEnv {
     /// inline-cache record) on the same await chain — once the lease is
     /// released, only that field protects the env from orphan GC.
     pub async fn transfer_to_runtime(mut self) -> PooledEnv {
+        // `self` is consumed by-value, so `inner` is guaranteed `Some`
+        // here: the only way it could be `None` is if some other method
+        // had already taken it, but those methods all consume `self`
+        // too, so this would be unreachable.
+        #[allow(clippy::expect_used)]
         let env = self
             .inner
             .take()
-            .expect("LeasedPoolEnv::transfer_to_runtime called twice");
+            .expect("LeasedPoolEnv::inner is Some on entry to transfer_to_runtime");
         if let Some(daemon) = self.daemon.upgrade() {
             daemon
                 .release_pool_lease(self.env_type, &self.leased_path)
