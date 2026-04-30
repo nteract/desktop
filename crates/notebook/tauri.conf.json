@@ -40,6 +40,7 @@
       "minimumSystemVersion": "10.13"
     },
     "windows": {
+      "signCommand": "trusted-signing-cli -e https://eus.codesigning.azure.net -a NumFOCUS -c TrustedCertificateProfileForALLNumFOCUS -d nteract %1",
       "nsis": {
         "installerIcon": "icons/icon.ico",
         "installMode": "currentUser",

@@ -646,8 +646,8 @@ jobs:
           Set-ExecutionPolicy Unrestricted -Scope Process -Force
           iex (iwr "https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.ps1").Content
 
-      - name: Install Tauri CLI
-        run: cargo binstall tauri-cli --no-confirm --locked --force
+      - name: Install Tauri CLI and trusted-signing-cli
+        run: cargo binstall tauri-cli trusted-signing-cli --no-confirm --locked --force
 
       - name: Set version in tauri.conf.json
         shell: pwsh
@@ -703,6 +703,9 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
         with:
           projectPath: crates/notebook
           args: --bundles nsis --config '{"build":{"beforeBuildCommand":""}}'
@@ -1497,7 +1500,7 @@ jobs:
             echo "| Windows | x64 | \`nteract-${VERSION_SUFFIX}-windows-x64.exe\` |"
             echo "| Linux | x64 | \`nteract-${VERSION_SUFFIX}-linux-x64.AppImage\` |"
             echo ''
-            echo "macOS builds are signed and notarized. Windows is not code signed — expect a SmartScreen prompt. Linux AppImage: \`chmod +x\` and run. DEB/RPM packages are not currently supported because runtimed is a per-user daemon managed by the app and CLI, not by system package-manager scripts."
+            echo "macOS and Windows builds are signed. macOS builds are also notarized. Linux AppImage: \`chmod +x\` and run. DEB/RPM packages are not currently supported because runtimed is a per-user daemon managed by the app and CLI, not by system package-manager scripts."
             echo ''
             echo 'This release includes auto-update support. Existing installations will be notified of this update automatically.'
             echo ''
