@@ -26,6 +26,7 @@ import {
 } from "runtimed";
 import { refreshBlobPort, resetBlobPort } from "../lib/blob-port";
 import { logger } from "../lib/logger";
+import { getCellExecutionId } from "../lib/notebook-executions";
 import { subscribeBroadcast } from "../lib/notebook-frame-bus";
 import {
   diffExecutions,
@@ -187,7 +188,7 @@ export function useDaemonKernel({
         // (arrives via execute_input, after the queued→running transition).
         // Materialization reads execution_count from RuntimeState directly,
         // so skipping null here avoids a brief flash of "0".
-        if (t.execution_count != null) {
+        if (t.execution_count != null && getCellExecutionId(t.cell_id) === t.execution_id) {
           callbacksRef.current.onExecutionCount(t.cell_id, t.execution_count);
         }
       } else {

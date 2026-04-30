@@ -569,6 +569,7 @@ impl NotebookHandle {
         struct CellWithOutputs<'a> {
             #[serde(flatten)]
             snapshot: &'a CellSnapshot,
+            execution_id: Option<String>,
             outputs: Vec<serde_json::Value>,
         }
 
@@ -576,9 +577,11 @@ impl NotebookHandle {
         let combined: Vec<CellWithOutputs<'_>> = cells
             .iter()
             .map(|snap| {
+                let execution_id = self.doc.get_execution_id(&snap.id);
                 let outputs = self.fetch_and_narrow_outputs(&snap.id);
                 CellWithOutputs {
                     snapshot: snap,
+                    execution_id,
                     outputs,
                 }
             })
