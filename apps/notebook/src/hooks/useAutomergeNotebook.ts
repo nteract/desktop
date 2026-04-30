@@ -1,7 +1,13 @@
 import { useNotebookHost } from "@nteract/notebook-host";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { NotebookTransport, SessionStatus, SyncableHandle } from "runtimed";
-import { DEFAULT_MIME_PRIORITY, SyncEngine } from "runtimed";
+import {
+  DEFAULT_MIME_PRIORITY,
+  SyncEngine,
+  isDisplayCapableJupyterOutput,
+  isInitialLoadFailed,
+  isInitialLoadStreaming,
+} from "runtimed";
 import { concatMap, from, Observable, switchMap } from "rxjs";
 import { needsPlugin, preWarmForMimes } from "@/components/isolated/iframe-libraries";
 import { getBlobPort, refreshBlobPort } from "../lib/blob-port";
@@ -153,7 +159,7 @@ export function useAutomergeNotebook() {
     for (const c of newCells) {
       if (c.cell_type === "code") {
         for (const output of c.outputs) {
-          if (output.output_type === "execute_result" || output.output_type === "display_data") {
+          if (isDisplayCapableJupyterOutput(output)) {
             for (const mime of Object.keys(output.data)) {
               if (needsPlugin(mime)) pluginMimes.push(mime);
             }
@@ -272,7 +278,7 @@ export function useAutomergeNotebook() {
     const sessionStatusSub = engine.sessionStatus$.subscribe((status) => {
       latestSessionStatusRef.current = status;
 
-      if (status.initial_load.phase === "failed") {
+      if (isInitialLoadFailed(status.initial_load)) {
         logger.warn("[automerge-notebook] Initial load failed:", status.initial_load.reason);
         setLoadError(status.initial_load.reason);
         setIsLoading(false);
@@ -281,7 +287,7 @@ export function useAutomergeNotebook() {
 
       setLoadError(null);
       if (interactiveReadyRef.current) {
-        setIsLoading(status.initial_load.phase === "streaming");
+        setIsLoading(isInitialLoadStreaming(status.initial_load));
       }
     });
 
@@ -311,7 +317,7 @@ export function useAutomergeNotebook() {
             // runtimeState$ subscription will redo on the next tick.
             projectRuntimeStateToExecutions(getRuntimeState());
             const status = latestSessionStatusRef.current;
-            setIsLoading(status ? status.initial_load.phase === "streaming" : false);
+            setIsLoading(status ? isInitialLoadStreaming(status.initial_load) : false);
             notifyMetadataChanged();
             logger.info("[automerge-notebook] Interactive materialization done");
           })
@@ -647,7 +653,7 @@ export function useAutomergeNotebook() {
           let changed = false;
           const updatedOutputs = c.outputs.map((output) => {
             if (
-              (output.output_type === "display_data" || output.output_type === "execute_result") &&
+              isDisplayCapableJupyterOutput(output) &&
               output.display_id === displayId
             ) {
               changed = true;

@@ -10,7 +10,10 @@ import {
   needsPlugin,
   preWarmForMimes,
 } from "@/components/isolated/iframe-libraries";
-import { classifyCellChangesetMaterialization } from "runtimed";
+import {
+  classifyCellChangesetMaterialization,
+  isDisplayCapableJupyterOutputType,
+} from "runtimed";
 import type { JupyterOutput } from "../types";
 import type { NotebookHandle } from "../wasm/runtimed-wasm/runtimed_wasm.js";
 import { getBlobPort } from "./blob-port";
@@ -65,7 +68,7 @@ function preWarmPluginsForRawOutputs(rawOutputs: unknown[]): void {
   for (const raw of rawOutputs) {
     if (!raw || typeof raw !== "object") continue;
     const type = (raw as { output_type?: unknown }).output_type;
-    if (type !== "execute_result" && type !== "display_data") continue;
+    if (!isDisplayCapableJupyterOutputType(type)) continue;
     const data = (raw as { data?: unknown }).data;
     if (!data || typeof data !== "object") continue;
     for (const mime of Object.keys(data as Record<string, unknown>)) {

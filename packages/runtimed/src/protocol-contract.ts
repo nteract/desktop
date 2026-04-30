@@ -112,3 +112,58 @@ export const INITIAL_LOAD_PHASES_EXHAUSTIVE: MissingUnionMember<
 > extends never
   ? true
   : never = true;
+
+export const DISPLAY_CAPABLE_JUPYTER_OUTPUT_TYPES = [
+  "execute_result",
+  "display_data",
+] as const;
+
+export type DisplayCapableJupyterOutputType =
+  (typeof DISPLAY_CAPABLE_JUPYTER_OUTPUT_TYPES)[number];
+
+export interface DisplayCapableJupyterOutput {
+  output_type: DisplayCapableJupyterOutputType;
+  data: Record<string, unknown>;
+  metadata?: Record<string, unknown>;
+  execution_count?: number | null;
+  display_id?: string;
+}
+
+export function isDisplayCapableJupyterOutputType(
+  outputType: unknown,
+): outputType is DisplayCapableJupyterOutputType {
+  return (
+    outputType === "execute_result" ||
+    outputType === "display_data"
+  );
+}
+
+export function isDisplayCapableJupyterOutput<T extends { output_type: unknown }>(
+  output: T,
+): output is Extract<T, { output_type: DisplayCapableJupyterOutputType }>;
+export function isDisplayCapableJupyterOutput(
+  output: unknown,
+): output is DisplayCapableJupyterOutput;
+export function isDisplayCapableJupyterOutput(
+  output: unknown,
+): output is DisplayCapableJupyterOutput {
+  return (
+    typeof output === "object" &&
+    output !== null &&
+    isDisplayCapableJupyterOutputType(
+      (output as { output_type?: unknown }).output_type,
+    )
+  );
+}
+
+export function isInitialLoadFailed(
+  initialLoad: InitialLoadPhase,
+): initialLoad is Extract<InitialLoadPhase, { phase: "failed" }> {
+  return initialLoad.phase === "failed";
+}
+
+export function isInitialLoadStreaming(
+  initialLoad: InitialLoadPhase,
+): initialLoad is Extract<InitialLoadPhase, { phase: "streaming" }> {
+  return initialLoad.phase === "streaming";
+}

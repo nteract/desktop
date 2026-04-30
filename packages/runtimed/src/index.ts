@@ -20,12 +20,19 @@ export {
 
 // Protocol contract
 export {
+  DISPLAY_CAPABLE_JUPYTER_OUTPUT_TYPES,
   INITIAL_LOAD_PHASES,
   NOTEBOOK_DOC_PHASES,
   NOTEBOOK_REQUEST_TYPES,
   NOTEBOOK_RESPONSE_RESULTS,
   RUNTIME_STATE_PHASES,
   SESSION_CONTROL_TYPES,
+  isDisplayCapableJupyterOutput,
+  isDisplayCapableJupyterOutputType,
+  isInitialLoadFailed,
+  isInitialLoadStreaming,
+  type DisplayCapableJupyterOutput,
+  type DisplayCapableJupyterOutputType,
   type SessionControlMessage,
 } from "./protocol-contract";
 
