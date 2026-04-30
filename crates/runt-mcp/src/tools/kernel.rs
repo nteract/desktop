@@ -122,8 +122,9 @@ pub async fn restart_kernel(
         use notebook_protocol::connection::{EnvSource, PackageManager};
         if let Some(ref prev) = pre_shutdown_env_source {
             // Derive the scoped auto-detect from the previous env_source,
-            // preserving the package manager family. Same logic as
-            // apply_dependency_changes "restart" branch in deps.rs.
+            // preserving the package manager family. The daemon's auto:*
+            // variants re-resolve through the normal launch priority
+            // (project files → inline deps → captured envs → prewarmed).
             match EnvSource::parse(prev) {
                 EnvSource::Prewarmed(PackageManager::Conda) => "auto:conda".to_string(),
                 EnvSource::Prewarmed(PackageManager::Pixi) => "auto:pixi".to_string(),
