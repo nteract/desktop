@@ -240,6 +240,98 @@ pub fn default_notebook_docs_dir() -> PathBuf {
     daemon_base_dir().join("notebook-docs")
 }
 
+/// Base directory for kernel IPC (Unix domain) socket files.
+///
+/// Uses `/tmp/` to stay within the macOS 104-byte `sun_path` limit —
+/// paths under `~/.cache/` can exceed it with long usernames. The UID
+/// is embedded in the directory name so that different OS users on the
+/// same machine get private, non-overlapping socket roots (the daemon
+/// singleton lock is per-user, but `/tmp/` is world-writable). The
+/// directory is created with mode `0o700` by `ensure_ipc_socket_dir`.
+///
+/// Layout: `/tmp/{cache_namespace}-{uid}/` (e.g. `/tmp/runt-nightly-1000/`).
+/// In dev mode a worktree hash is appended so concurrent worktree
+/// daemons never collide.
+/// Kernel socket files are `kernel-{id}-ipc-{1..5}` inside this dir.
+#[cfg(unix)]
+fn ipc_socket_base_dir() -> PathBuf {
+    // SAFETY: getuid() is always safe — it's a read-only syscall with no
+    // preconditions.
+    let uid = unsafe { libc::getuid() };
+    PathBuf::from("/tmp").join(format!("{}-{}", cache_namespace(), uid))
+}
+
+#[cfg(unix)]
+pub fn ipc_socket_dir() -> PathBuf {
+    let base = ipc_socket_base_dir();
+    if is_dev_mode() {
+        if let Some(worktree) = get_workspace_path() {
+            return base.join(format!("wt-{}", worktree_hash(&worktree)));
+        }
+    }
+    base
+}
+
+#[cfg(unix)]
+fn ensure_private_ipc_dir(dir: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+    match std::fs::create_dir(dir) {
+        Ok(()) => {
+            std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
+            return Ok(());
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(e) => return Err(e),
+    }
+
+    let metadata = std::fs::symlink_metadata(dir)?;
+    if metadata.file_type().is_symlink() || !metadata.file_type().is_dir() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            format!(
+                "IPC socket path exists but is not a directory: {}",
+                dir.display()
+            ),
+        ));
+    }
+
+    // SAFETY: getuid() is always safe — it's a read-only syscall with no
+    // preconditions.
+    let uid = unsafe { libc::getuid() };
+    if metadata.uid() != uid {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            format!(
+                "IPC socket directory is owned by uid {}, expected {}: {}",
+                metadata.uid(),
+                uid,
+                dir.display()
+            ),
+        ));
+    }
+
+    if metadata.permissions().mode() & 0o777 != 0o700 {
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(())
+}
+
+/// Create the IPC socket directory with owner-only permissions (`0o700`).
+///
+/// Call this before writing kernel socket files. The restricted mode
+/// prevents other local users from creating or removing sockets in
+/// our directory.
+#[cfg(unix)]
+pub fn ensure_ipc_socket_dir() -> std::io::Result<()> {
+    ensure_private_ipc_dir(&ipc_socket_base_dir())?;
+    let dir = ipc_socket_dir();
+    if dir != ipc_socket_base_dir() {
+        ensure_private_ipc_dir(&dir)?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -1910,6 +1910,14 @@ pub(crate) async fn acquire_prewarmed_env_with_capture(
     // claim to the unified-hash location, and capture into metadata.
     let pooled = acquire_pool_env_for_source(env_source, daemon, room).await?;
     let pooled = pooled?;
+    {
+        // Protect the taken pool env from orphan GC while we asynchronously
+        // claim/vendor it. The final launch path is written again below after
+        // claim resolves, but the raw pool path needs protection immediately
+        // after pool.take().
+        let mut ep = room.runtime_agent_env_path.write().await;
+        *ep = Some(pooled.venv_path.clone());
+    }
 
     let env_id = metadata_snapshot
         .and_then(|s| s.runt.env_id.clone())
