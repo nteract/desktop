@@ -7,9 +7,7 @@ export interface TextAttributionEvent {
   attributions: TextAttribution[];
 }
 
-export function createTextAttributionEvent(
-  attributions: TextAttribution[],
-): TextAttributionEvent {
+export function createTextAttributionEvent(attributions: TextAttribution[]): TextAttributionEvent {
   return {
     type: TEXT_ATTRIBUTION_EVENT_TYPE,
     attributions,

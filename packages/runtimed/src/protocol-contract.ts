@@ -113,13 +113,9 @@ export const INITIAL_LOAD_PHASES_EXHAUSTIVE: MissingUnionMember<
   ? true
   : never = true;
 
-export const DISPLAY_CAPABLE_JUPYTER_OUTPUT_TYPES = [
-  "execute_result",
-  "display_data",
-] as const;
+export const DISPLAY_CAPABLE_JUPYTER_OUTPUT_TYPES = ["execute_result", "display_data"] as const;
 
-export type DisplayCapableJupyterOutputType =
-  (typeof DISPLAY_CAPABLE_JUPYTER_OUTPUT_TYPES)[number];
+export type DisplayCapableJupyterOutputType = (typeof DISPLAY_CAPABLE_JUPYTER_OUTPUT_TYPES)[number];
 
 export interface DisplayCapableJupyterOutput {
   output_type: DisplayCapableJupyterOutputType;
@@ -132,10 +128,7 @@ export interface DisplayCapableJupyterOutput {
 export function isDisplayCapableJupyterOutputType(
   outputType: unknown,
 ): outputType is DisplayCapableJupyterOutputType {
-  return (
-    outputType === "execute_result" ||
-    outputType === "display_data"
-  );
+  return outputType === "execute_result" || outputType === "display_data";
 }
 
 export function isDisplayCapableJupyterOutput<T extends { output_type: unknown }>(
@@ -150,9 +143,7 @@ export function isDisplayCapableJupyterOutput(
   return (
     typeof output === "object" &&
     output !== null &&
-    isDisplayCapableJupyterOutputType(
-      (output as { output_type?: unknown }).output_type,
-    )
+    isDisplayCapableJupyterOutputType((output as { output_type?: unknown }).output_type)
   );
 }
 

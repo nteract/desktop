@@ -14,9 +14,7 @@ export function extractOutputId(output: unknown): string | null {
   return typeof oid === "string" && oid.length > 0 ? oid : null;
 }
 
-export function collectOutputIds(
-  outputs: readonly unknown[] | undefined,
-): string[] {
+export function collectOutputIds(outputs: readonly unknown[] | undefined): string[] {
   const ids: string[] = [];
   if (!outputs) return ids;
   for (const output of outputs) {
@@ -37,9 +35,7 @@ export function executionFingerprint(raw: ExecutionState): string {
   return `${raw.cell_id}|${raw.execution_count ?? ""}|${raw.status}|${raw.success ?? ""}|${ids.join(",")}`;
 }
 
-export function buildRuntimeExecutionSnapshot(
-  raw: ExecutionState,
-): RuntimeExecutionSnapshot {
+export function buildRuntimeExecutionSnapshot(raw: ExecutionState): RuntimeExecutionSnapshot {
   return {
     cell_id: raw.cell_id,
     execution_count: raw.execution_count,

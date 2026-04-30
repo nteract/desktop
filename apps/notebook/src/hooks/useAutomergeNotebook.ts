@@ -652,10 +652,7 @@ export function useAutomergeNotebook() {
           if (c.cell_type !== "code") return c;
           let changed = false;
           const updatedOutputs = c.outputs.map((output) => {
-            if (
-              isDisplayCapableJupyterOutput(output) &&
-              output.display_id === displayId
-            ) {
+            if (isDisplayCapableJupyterOutput(output) && output.display_id === displayId) {
               changed = true;
               return { ...output, data: newData, metadata: newMetadata };
             }

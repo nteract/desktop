@@ -70,10 +70,7 @@ describe("protocol contract discriminants", () => {
   });
 
   it("identifies display-capable Jupyter output types", () => {
-    expect(DISPLAY_CAPABLE_JUPYTER_OUTPUT_TYPES).toEqual([
-      "execute_result",
-      "display_data",
-    ]);
+    expect(DISPLAY_CAPABLE_JUPYTER_OUTPUT_TYPES).toEqual(["execute_result", "display_data"]);
     expect(isDisplayCapableJupyterOutputType("execute_result")).toBe(true);
     expect(isDisplayCapableJupyterOutputType("display_data")).toBe(true);
     expect(isDisplayCapableJupyterOutputType("stream")).toBe(false);
