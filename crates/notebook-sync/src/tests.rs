@@ -17,6 +17,7 @@ mod tests {
     use crate::status::{
         ConnectionState, InitialLoadPhase, NotebookDocPhase, RuntimeStatePhase, SyncStatus,
     };
+    use crate::SyncError;
 
     /// Create a DocHandle wired up with channels but no sync task.
     /// Good for testing the handle's local behavior in isolation.
@@ -281,6 +282,17 @@ mod tests {
         .await
         .expect("await_initial_load_ready should finish after explicit NotNeeded status")
         .expect("explicit NotNeeded status should be treated as ready");
+    }
+
+    #[tokio::test]
+    async fn bounded_readiness_wait_times_out_with_latest_status() {
+        let (handle, _status_tx, _changed_rx, _cmd_rx) = test_handle_with_status();
+
+        let result = handle
+            .await_initial_load_ready_timeout(std::time::Duration::from_millis(5))
+            .await;
+
+        assert!(matches!(result, Err(SyncError::Timeout)));
     }
 
     #[test]

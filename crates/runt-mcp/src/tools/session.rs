@@ -1,6 +1,7 @@
 //! Session management tools: list, join, open notebooks.
 
 use std::path::PathBuf;
+use std::time::Duration;
 
 use rmcp::model::{CallToolRequestParams, CallToolResult, Content};
 use rmcp::ErrorData as McpError;
@@ -12,6 +13,8 @@ use runtimed_client::client::PoolClient;
 use crate::formatting;
 use crate::session::{NotebookSession, SessionDropInfo, SessionDropReason};
 use crate::NteractMcp;
+
+const MCP_SESSION_READY_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// Read the current session's notebook_id (if any) before replacing it.
 async fn previous_notebook_id(server: &NteractMcp) -> Option<String> {
@@ -414,7 +417,10 @@ pub async fn open_notebook(
             Ok(result) => {
                 let handle = &result.handle;
                 let notebook_id = handle.notebook_id().to_string();
-                if let Err(e) = handle.await_session_ready().await {
+                if let Err(e) = handle
+                    .await_session_ready_timeout(MCP_SESSION_READY_TIMEOUT)
+                    .await
+                {
                     return tool_error(&format!("Notebook opened but did not become ready: {}", e));
                 }
 
@@ -483,7 +489,10 @@ pub async fn open_notebook(
         {
             Ok(result) => {
                 let handle = &result.handle;
-                if let Err(e) = handle.await_session_ready().await {
+                if let Err(e) = handle
+                    .await_session_ready_timeout(MCP_SESSION_READY_TIMEOUT)
+                    .await
+                {
                     return tool_error(&format!(
                         "Notebook connected but did not become ready: {}",
                         e
@@ -573,7 +582,11 @@ pub async fn create_notebook(
     .await
     {
         Ok(result) => {
-            if let Err(e) = result.handle.await_session_ready().await {
+            if let Err(e) = result
+                .handle
+                .await_session_ready_timeout(MCP_SESSION_READY_TIMEOUT)
+                .await
+            {
                 return tool_error(&format!("Notebook created but did not become ready: {}", e));
             }
 
@@ -604,13 +617,14 @@ pub async fn create_notebook(
             };
             *server.session.write().await = Some(session);
 
-            let runtime_info = {
+            let runtime_info_handle = {
                 let guard = server.session.read().await;
-                if let Some(s) = guard.as_ref() {
-                    collect_runtime_info(&s.handle).await
-                } else {
-                    serde_json::json!({ "language": runtime })
-                }
+                guard.as_ref().map(|s| s.handle.clone())
+            };
+            let runtime_info = if let Some(handle) = runtime_info_handle {
+                collect_runtime_info(&handle).await
+            } else {
+                serde_json::json!({ "language": runtime })
             };
 
             let all_deps = {
@@ -756,6 +770,7 @@ pub async fn show_notebook(
             match session.as_ref() {
                 Some(s) => (s.notebook_id.clone(), s.notebook_path.clone()),
                 None => {
+                    drop(session);
                     return super::no_session_error(server).await;
                 }
             }

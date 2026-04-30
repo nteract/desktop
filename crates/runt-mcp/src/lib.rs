@@ -32,6 +32,8 @@ pub mod tools;
 
 use session::{NotebookSession, SessionDropInfo};
 
+const SLOW_MCP_TOOL_CALL: Duration = Duration::from_secs(30);
+
 /// The nteract MCP server.
 pub struct NteractMcp {
     socket_path: PathBuf,
@@ -234,8 +236,16 @@ impl ServerHandler for NteractMcp {
         }
         let start = std::time::Instant::now();
         let result = tools::dispatch(self, &request).await;
+        let elapsed = start.elapsed();
+        if elapsed >= SLOW_MCP_TOOL_CALL {
+            tracing::warn!(
+                tool = %request.name,
+                elapsed_ms = elapsed.as_millis(),
+                success = result.is_ok(),
+                "Slow runt-mcp tool call"
+            );
+        }
         if tracing::enabled!(tracing::Level::DEBUG) {
-            let elapsed = start.elapsed();
             log_mcp_response(&request.name, elapsed, &result);
         }
         result

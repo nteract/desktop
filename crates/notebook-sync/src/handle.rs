@@ -30,9 +30,10 @@
 //! ```
 
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use automerge::{AutoCommit, ReadDoc, Value};
-use log::debug;
+use log::{debug, warn};
 use tokio::sync::{mpsc, oneshot, watch};
 
 use notebook_protocol::protocol::{NotebookRequest, NotebookResponse};
@@ -663,6 +664,29 @@ impl DocHandle {
         }
     }
 
+    async fn wait_for_status_timeout<F>(
+        &self,
+        label: &str,
+        predicate: F,
+        timeout: Duration,
+    ) -> Result<(), SyncError>
+    where
+        F: Fn(&SyncStatus) -> bool,
+    {
+        match tokio::time::timeout(timeout, self.wait_for_status(predicate)).await {
+            Ok(result) => result,
+            Err(_) => {
+                warn!(
+                    "[notebook-sync] {label} timed out after {:?} for {} with latest status: {:?}",
+                    timeout,
+                    self.notebook_id,
+                    self.status()
+                );
+                Err(SyncError::Timeout)
+            }
+        }
+    }
+
     /// Return the latest connection/bootstrap status.
     pub fn status(&self) -> SyncStatus {
         self.status_rx.borrow().clone()
@@ -697,9 +721,35 @@ impl DocHandle {
         .await
     }
 
+    /// Bounded variant of [`Self::await_initial_load_ready`] for agent-facing
+    /// entry points where returning a diagnostic timeout is better than
+    /// waiting indefinitely.
+    pub async fn await_initial_load_ready_timeout(
+        &self,
+        timeout: Duration,
+    ) -> Result<(), SyncError> {
+        self.wait_for_status_timeout(
+            "await_initial_load_ready",
+            |status| {
+                matches!(
+                    status.initial_load,
+                    InitialLoadPhase::NotNeeded | InitialLoadPhase::Ready
+                )
+            },
+            timeout,
+        )
+        .await
+    }
+
     /// Wait until notebook doc, runtime state, and initial load are ready.
     pub async fn await_session_ready(&self) -> Result<(), SyncError> {
         self.wait_for_status(SyncStatus::session_ready).await
+    }
+
+    /// Bounded variant of [`Self::await_session_ready`] for MCP session setup.
+    pub async fn await_session_ready_timeout(&self, timeout: Duration) -> Result<(), SyncError> {
+        self.wait_for_status_timeout("await_session_ready", SyncStatus::session_ready, timeout)
+            .await
     }
 
     /// Get all connected peer IDs and labels, sorted by peer ID for stable ordering.
