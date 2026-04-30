@@ -36,6 +36,7 @@ import {
 import { onEditorRegistered, onEditorUnregistered } from "../lib/cursor-registry";
 import { registerCellEditor, unregisterCellEditor } from "../lib/editor-registry";
 import { kernelCompletionExtension } from "../lib/kernel-completion";
+import { useCellExecutionId, useExecution } from "../lib/notebook-executions";
 import { useCellOutputs } from "../lib/notebook-outputs";
 import { openUrl } from "../lib/open-url";
 import { presenceSenderExtension } from "../lib/presence-sender";
@@ -121,6 +122,9 @@ export const CodeCell = memo(function CodeCell({
   // than `cell.outputs`. Content changes no longer invalidate the cell
   // snapshot — CodeCell re-renders only when its chrome state changes.
   const outputs = useCellOutputs(cell.id);
+  const executionId = useCellExecutionId(cell.id);
+  const execution = useExecution(executionId);
+  const executionCount = execution?.execution_count ?? null;
 
   // Check cell metadata for visibility (JupyterLab convention)
   const isSourceHidden =
@@ -271,7 +275,7 @@ export const CodeCell = memo(function CodeCell({
 
   const gutterContent = bothHidden ? null : (
     <CompactExecutionButton
-      count={cell.execution_count}
+      count={executionCount}
       isExecuting={isExecuting}
       isQueued={isQueued}
       onExecute={onExecute}
