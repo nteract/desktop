@@ -1910,14 +1910,7 @@ pub(crate) async fn acquire_prewarmed_env_with_capture(
     // claim to the unified-hash location, and capture into metadata.
     let pooled = acquire_pool_env_for_source(env_source, daemon, room).await?;
     let pooled = pooled?;
-    {
-        // Protect the taken pool env from orphan GC while we asynchronously
-        // claim/vendor it. The final launch path is written again below after
-        // claim resolves, but the raw pool path needs protection immediately
-        // after pool.take().
-        let mut ep = room.runtime_agent_env_path.write().await;
-        *ep = Some(pooled.venv_path.clone());
-    }
+    let leased_path = pooled.venv_path.clone();
 
     let env_id = metadata_snapshot
         .and_then(|s| s.runt.env_id.clone())
@@ -1954,6 +1947,9 @@ pub(crate) async fn acquire_prewarmed_env_with_capture(
                         "[notebook-sync] Captured prewarmed UV env into metadata for env_id={} at {:?}",
                         env_id, claimed_path
                     );
+                    daemon
+                        .release_pool_lease(crate::EnvType::Uv, &leased_path)
+                        .await;
                     Some(Some(crate::PooledEnv {
                         env_type: crate::EnvType::Uv,
                         venv_path: claimed_path,
@@ -1966,6 +1962,13 @@ pub(crate) async fn acquire_prewarmed_env_with_capture(
                         "[notebook-sync] Failed to claim UV pool env ({}), using raw pool env",
                         e
                     );
+                    {
+                        let mut ep = room.runtime_agent_env_path.write().await;
+                        *ep = Some(pooled.venv_path.clone());
+                    }
+                    daemon
+                        .release_pool_lease(crate::EnvType::Uv, &leased_path)
+                        .await;
                     Some(Some(pooled))
                 }
             }
@@ -2000,6 +2003,9 @@ pub(crate) async fn acquire_prewarmed_env_with_capture(
                         "[notebook-sync] Captured prewarmed conda env into metadata for env_id={} at {:?}",
                         env_id, claimed_path
                     );
+                    daemon
+                        .release_pool_lease(crate::EnvType::Conda, &leased_path)
+                        .await;
                     Some(Some(crate::PooledEnv {
                         env_type: crate::EnvType::Conda,
                         venv_path: claimed_path,
@@ -2012,6 +2018,13 @@ pub(crate) async fn acquire_prewarmed_env_with_capture(
                         "[notebook-sync] Failed to claim conda pool env ({}), using raw pool env",
                         e
                     );
+                    {
+                        let mut ep = room.runtime_agent_env_path.write().await;
+                        *ep = Some(pooled.venv_path.clone());
+                    }
+                    daemon
+                        .release_pool_lease(crate::EnvType::Conda, &leased_path)
+                        .await;
                     Some(Some(pooled))
                 }
             }
@@ -2244,6 +2257,7 @@ pub(crate) async fn try_uv_pool_for_inline_deps(
             return Err(());
         }
     };
+    let leased_path = env.venv_path.clone();
 
     let actual_packages = env.prewarmed_packages.clone();
     let relation = crate::inline_env::compare_deps_to_pool(&effective_deps, &actual_packages);
@@ -2261,6 +2275,9 @@ pub(crate) async fn try_uv_pool_for_inline_deps(
                 bootstrap_dx,
             )
             .await;
+            daemon
+                .release_pool_lease(crate::EnvType::Uv, &leased_path)
+                .await;
             Ok((env, actual_packages))
         }
         crate::inline_env::PoolDepRelation::Additive { delta } => {
@@ -2291,6 +2308,9 @@ pub(crate) async fn try_uv_pool_for_inline_deps(
                         bootstrap_dx,
                     )
                     .await;
+                    daemon
+                        .release_pool_lease(crate::EnvType::Uv, &leased_path)
+                        .await;
                     progress_handler.on_progress(
                         "uv",
                         kernel_env::EnvProgressPhase::Ready {
@@ -2307,6 +2327,9 @@ pub(crate) async fn try_uv_pool_for_inline_deps(
                     );
                     // Clean up the taken pool env — it's out of the pool's
                     // tracking and would otherwise leak on disk.
+                    daemon
+                        .release_pool_lease(crate::EnvType::Uv, &leased_path)
+                        .await;
                     let root = crate::paths::pool_env_root(&env.venv_path);
                     let cache_dir = crate::paths::default_cache_dir();
                     if crate::is_within_cache_dir(&root, &cache_dir) {
@@ -2324,6 +2347,9 @@ pub(crate) async fn try_uv_pool_for_inline_deps(
         crate::inline_env::PoolDepRelation::Independent => {
             // Shouldn't reach here (pre-check above), but handle gracefully
             debug!("[notebook-sync] UV pool env doesn't match inline deps, falling back");
+            daemon
+                .release_pool_lease(crate::EnvType::Uv, &leased_path)
+                .await;
             let root = crate::paths::pool_env_root(&env.venv_path);
             let cache_dir = crate::paths::default_cache_dir();
             if crate::is_within_cache_dir(&root, &cache_dir) {
@@ -2379,6 +2405,7 @@ pub(crate) async fn try_conda_pool_for_inline_deps(
             return Err(());
         }
     };
+    let leased_path = env.venv_path.clone();
 
     let actual_packages = env.prewarmed_packages.clone();
     let relation = crate::inline_env::compare_deps_to_pool(deps, &actual_packages);
@@ -2389,6 +2416,9 @@ pub(crate) async fn try_conda_pool_for_inline_deps(
             // Promote the pool env into the inline-env cache so the next
             // restart cache-hits. See #2089 / #2083.
             crate::inline_env::claim_pool_env_for_conda_inline_cache(&mut env, deps, channels)
+                .await;
+            daemon
+                .release_pool_lease(crate::EnvType::Conda, &leased_path)
                 .await;
             Ok((env, actual_packages))
         }
@@ -2428,6 +2458,9 @@ pub(crate) async fn try_conda_pool_for_inline_deps(
                         &mut env, deps, channels,
                     )
                     .await;
+                    daemon
+                        .release_pool_lease(crate::EnvType::Conda, &leased_path)
+                        .await;
                     progress_handler.on_progress(
                         "conda",
                         kernel_env::EnvProgressPhase::Ready {
@@ -2442,6 +2475,9 @@ pub(crate) async fn try_conda_pool_for_inline_deps(
                         "[notebook-sync] Failed to install delta into Conda pool env: {}, falling back",
                         e
                     );
+                    daemon
+                        .release_pool_lease(crate::EnvType::Conda, &leased_path)
+                        .await;
                     let root = crate::paths::pool_env_root(&env.venv_path);
                     let cache_dir = crate::paths::default_cache_dir();
                     if crate::is_within_cache_dir(&root, &cache_dir) {
@@ -2458,6 +2494,9 @@ pub(crate) async fn try_conda_pool_for_inline_deps(
         }
         crate::inline_env::PoolDepRelation::Independent => {
             debug!("[notebook-sync] Conda pool env doesn't match inline deps, falling back");
+            daemon
+                .release_pool_lease(crate::EnvType::Conda, &leased_path)
+                .await;
             let root = crate::paths::pool_env_root(&env.venv_path);
             let cache_dir = crate::paths::default_cache_dir();
             if crate::is_within_cache_dir(&root, &cache_dir) {
@@ -3383,8 +3422,13 @@ pub(crate) async fn auto_launch_kernel(
     // Without this, there's a race window where GC sees the taken env as an
     // orphan and deletes it while we're still setting up the kernel.
     if let Some(ref env) = pooled_env {
-        let mut ep = room.runtime_agent_env_path.write().await;
-        *ep = Some(env.venv_path.clone());
+        {
+            let mut ep = room.runtime_agent_env_path.write().await;
+            *ep = Some(env.venv_path.clone());
+        }
+        daemon
+            .release_pool_lease(env.env_type, &env.venv_path)
+            .await;
     }
 
     // Build LaunchedEnvConfig to track what config the kernel was launched with

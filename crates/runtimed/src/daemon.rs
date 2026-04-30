@@ -372,6 +372,9 @@ struct Pool {
     /// Paths of environments currently being warmed up (for GC protection).
     /// Populated when the env directory is created, removed on `add()` or failure.
     warming_paths: std::collections::HashSet<PathBuf>,
+    /// Paths of environments taken from the pool but not yet transferred to a
+    /// runtime, cache, or return/delete path.
+    leased_paths: std::collections::HashSet<PathBuf>,
     /// Target pool size.
     target: usize,
     /// Maximum age in seconds.
@@ -440,6 +443,7 @@ impl Pool {
             available: VecDeque::new(),
             warming: 0,
             warming_paths: std::collections::HashSet::new(),
+            leased_paths: std::collections::HashSet::new(),
             target,
             max_age_secs,
             failure_state: FailureState::default(),
@@ -533,6 +537,8 @@ impl Pool {
                 && entry.env.python_path.exists()
                 && entry.env.venv_path.join(".warmed").exists()
             {
+                self.leased_paths
+                    .insert(pool_env_root(&entry.env.venv_path));
                 let mut all_paths = stale_paths;
                 all_paths.extend(invalid_paths);
                 return (Some(entry.env), all_paths);
@@ -656,6 +662,20 @@ impl Pool {
     /// Register a warming path so GC won't delete it while it's being set up.
     fn register_warming_path(&mut self, path: PathBuf) {
         self.warming_paths.insert(path);
+    }
+
+    fn release_lease(&mut self, path: &Path) {
+        self.leased_paths.remove(&pool_env_root(path));
+    }
+
+    fn tracked_paths(&self) -> std::collections::HashSet<PathBuf> {
+        let mut tracked = std::collections::HashSet::new();
+        for entry in &self.available {
+            tracked.insert(pool_env_root(&entry.env.venv_path));
+        }
+        tracked.extend(self.warming_paths.iter().cloned());
+        tracked.extend(self.leased_paths.iter().cloned());
+        tracked
     }
 
     /// Get current stats.
@@ -837,6 +857,17 @@ impl Daemon {
     /// Snapshot the user's feature-flag settings.
     pub async fn feature_flags(&self) -> notebook_protocol::protocol::FeatureFlags {
         self.settings.read().await.get_all().feature_flags()
+    }
+
+    /// Release a pool lease after ownership has transferred to a runtime,
+    /// cache, return path, or explicit delete path.
+    pub(crate) async fn release_pool_lease(&self, env_type: EnvType, path: &Path) {
+        let pool = match env_type {
+            EnvType::Uv => &self.uv_pool,
+            EnvType::Conda => &self.conda_pool,
+            EnvType::Pixi => &self.pixi_pool,
+        };
+        pool.lock().await.release_lease(path);
     }
 
     /// Get the full list of Conda pool packages (base + user default_packages).
@@ -2725,6 +2756,7 @@ impl Daemon {
                 let should_delete = match env.env_type {
                     EnvType::Uv => {
                         let mut pool = self.uv_pool.lock().await;
+                        pool.release_lease(&env.venv_path);
                         if pool.available.len() < pool.target {
                             pool.available.push_back(PoolEntry {
                                 env: env.clone(),
@@ -2738,6 +2770,7 @@ impl Daemon {
                     }
                     EnvType::Conda => {
                         let mut pool = self.conda_pool.lock().await;
+                        pool.release_lease(&env.venv_path);
                         if pool.available.len() < pool.target {
                             pool.available.push_back(PoolEntry {
                                 env: env.clone(),
@@ -2751,6 +2784,7 @@ impl Daemon {
                     }
                     EnvType::Pixi => {
                         let mut pool = self.pixi_pool.lock().await;
+                        pool.release_lease(&env.venv_path);
                         if pool.available.len() < pool.target {
                             pool.available.push_back(PoolEntry {
                                 env: env.clone(),
@@ -3098,29 +3132,22 @@ impl Daemon {
                     // (runtimed-pixi-{uuid}/.pixi/envs/default) matches the
                     // top-level directory that the scan below sees.
                     // Also includes warming paths (mid-creation) to avoid
-                    // racing with in-progress warmup tasks.
+                    // racing with in-progress warmup tasks, and leased
+                    // paths that have been taken from the pool but not yet
+                    // transferred to a runtime/cache owner.
                     let mut tracked: std::collections::HashSet<PathBuf> =
                         std::collections::HashSet::new();
                     {
                         let pool = self.uv_pool.lock().await;
-                        for entry in &pool.available {
-                            tracked.insert(pool_env_root(&entry.env.venv_path));
-                        }
-                        tracked.extend(pool.warming_paths.iter().cloned());
+                        tracked.extend(pool.tracked_paths());
                     }
                     {
                         let pool = self.conda_pool.lock().await;
-                        for entry in &pool.available {
-                            tracked.insert(pool_env_root(&entry.env.venv_path));
-                        }
-                        tracked.extend(pool.warming_paths.iter().cloned());
+                        tracked.extend(pool.tracked_paths());
                     }
                     {
                         let pool = self.pixi_pool.lock().await;
-                        for entry in &pool.available {
-                            tracked.insert(pool_env_root(&entry.env.venv_path));
-                        }
-                        tracked.extend(pool.warming_paths.iter().cloned());
+                        tracked.extend(pool.tracked_paths());
                     }
 
                     let mut orphans_deleted = 0;
@@ -5058,6 +5085,7 @@ mod tests {
         assert_eq!(pool.max_age_secs, 3600);
         assert_eq!(pool.available.len(), 0);
         assert_eq!(pool.warming, 0);
+        assert!(pool.leased_paths.is_empty());
     }
 
     #[test]
@@ -5074,7 +5102,47 @@ mod tests {
         assert!(taken.is_some());
         assert_eq!(taken.unwrap().venv_path, env.venv_path);
         assert_eq!(pool.available.len(), 0);
+        assert!(pool.leased_paths.contains(&pool_env_root(&env.venv_path)));
         assert!(stale.is_empty());
+    }
+
+    #[test]
+    fn test_pool_lease_released_on_commit() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut pool = Pool::new(3, 3600);
+        let env = create_test_env(&temp_dir, "runtimed-uv-leased");
+        let root = pool_env_root(&env.venv_path);
+        pool.add(env.clone());
+
+        let (taken, stale) = pool.take();
+        assert!(taken.is_some());
+        assert!(stale.is_empty());
+        assert!(pool.leased_paths.contains(&root));
+
+        pool.release_lease(&env.venv_path);
+        assert!(pool.leased_paths.is_empty());
+    }
+
+    #[test]
+    fn test_pool_tracked_paths_include_leases() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut pool = Pool::new(3, 3600);
+        let available_env = create_test_env(&temp_dir, "runtimed-uv-available");
+        let leased_env = create_test_env(&temp_dir, "runtimed-uv-leased");
+        let warming = temp_dir.path().join("runtimed-uv-warming");
+
+        pool.add(available_env.clone());
+        pool.add(leased_env.clone());
+        pool.register_warming_path(warming.clone());
+
+        let (taken, stale) = pool.take();
+        assert!(taken.is_some());
+        assert!(stale.is_empty());
+
+        let tracked = pool.tracked_paths();
+        assert!(tracked.contains(&pool_env_root(&available_env.venv_path)));
+        assert!(tracked.contains(&pool_env_root(&leased_env.venv_path)));
+        assert!(tracked.contains(&warming));
     }
 
     #[test]

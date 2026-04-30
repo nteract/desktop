@@ -1182,8 +1182,13 @@ pub(crate) async fn handle(
     // Register the env path for GC protection immediately after pool.take(),
     // BEFORE any async work (agent spawn, connect timeout, delta install).
     if let Some(ref env) = pooled_env {
-        let mut ep = room.runtime_agent_env_path.write().await;
-        *ep = Some(env.venv_path.clone());
+        {
+            let mut ep = room.runtime_agent_env_path.write().await;
+            *ep = Some(env.venv_path.clone());
+        }
+        daemon
+            .release_pool_lease(env.env_type, &env.venv_path)
+            .await;
     }
 
     // Build LaunchedEnvConfig to track what config the kernel was launched with.
