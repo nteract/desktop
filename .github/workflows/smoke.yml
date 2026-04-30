@@ -100,7 +100,7 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ env.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           projectPath: crates/notebook
-          args: --bundles nsis --config '{"build":{"beforeBuildCommand":""}}'
+          args: --bundles nsis --config '{"build":{"beforeBuildCommand":""},"bundle":{"windows":{"signCommand":null}}}'
           includeUpdaterJson: false
 
       - name: Locate installer
