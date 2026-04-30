@@ -718,6 +718,19 @@ jobs:
           Write-Host "Found Azure CLI: $azCmd"
           "AZURE_CLI_PATH=$azCmd" | Out-File -Append -FilePath $env:GITHUB_ENV -Encoding utf8
 
+      - name: Test code signing
+        shell: pwsh
+        env:
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+        run: |
+          $testBin = (Get-ChildItem crates/notebook/binaries/runt-*.exe | Select-Object -First 1).FullName
+          Write-Host "Test signing: $testBin"
+          Write-Host "SIGNTOOL_PATH: $env:SIGNTOOL_PATH"
+          Write-Host "AZURE_CLI_PATH: $env:AZURE_CLI_PATH"
+          trusted-signing-cli -e https://eus.codesigning.azure.net -a NumFOCUS -c TrustedCertificateProfileForALLNumFOCUS -d nteract $testBin
+
       - name: Build with tauri-action
         uses: tauri-apps/tauri-action@v0
         env:
@@ -727,7 +740,7 @@ jobs:
           AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
         with:
           projectPath: crates/notebook
-          args: --bundles nsis --config '{"build":{"beforeBuildCommand":""}}'
+          args: --bundles nsis --config '{"build":{"beforeBuildCommand":""}}' -v
           includeUpdaterJson: false
 
       - name: Collect artifacts
