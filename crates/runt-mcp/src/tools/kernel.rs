@@ -45,21 +45,29 @@ pub async fn restart_kernel(
         }
     };
 
-    // Capture kernel_type from the *current* RuntimeState before shutdown.
-    // After a daemon restart the fresh RuntimeStateDoc has kernel.name = "",
-    // so reading it post-reconnect would silently regress to "python".
-    let pre_shutdown_kernel_type = handle
-        .get_runtime_state()
-        .ok()
-        .and_then(|s| {
-            let name = &s.kernel.name;
-            if name.is_empty() {
-                None
-            } else {
-                Some(name.clone())
-            }
-        })
-        .unwrap_or_else(|| "python".to_string());
+    // Capture kernel_type and env_source from the *current* RuntimeState
+    // before shutdown. After a daemon restart the fresh RuntimeStateDoc has
+    // kernel.name = "" and env_source = "", so reading it post-reconnect
+    // would silently regress to "python" / "auto:uv".
+    let (pre_shutdown_kernel_type, pre_shutdown_env_source) = {
+        let state = handle.get_runtime_state().ok();
+        let kernel_type = state
+            .as_ref()
+            .and_then(|s| {
+                let name = &s.kernel.name;
+                if name.is_empty() {
+                    None
+                } else {
+                    Some(name.clone())
+                }
+            })
+            .unwrap_or_else(|| "python".to_string());
+        let env_source = state
+            .as_ref()
+            .map(|s| s.kernel.env_source.clone())
+            .filter(|s| !s.is_empty());
+        (kernel_type, env_source)
+    };
 
     // Step 1: Shutdown existing kernel
     match handle
@@ -104,15 +112,47 @@ pub async fn restart_kernel(
         tracing::warn!("confirm_sync failed before restart_kernel launch: {e}");
     }
 
-    // Step 3: Determine env_source from metadata. kernel_type was captured
-    // pre-shutdown so it survives daemon restarts that clear RuntimeStateDoc.
+    // Step 3: Determine env_source. Prefer the pre-shutdown env_source
+    // captured above — it's authoritative for the kernel that was running.
+    // After shutdown (or after a daemon restart that clears RuntimeStateDoc)
+    // the handle's runtime state may be empty, and detect_package_manager
+    // would fall through to the Uv default, losing conda/pixi context.
     let kernel_type = pre_shutdown_kernel_type;
     let env_source = {
-        let detected_manager = super::deps::detect_package_manager(&handle);
-        match detected_manager.as_str() {
-            "pixi" => "auto:pixi".to_string(),
-            "conda" => "auto:conda".to_string(),
-            _ => "auto:uv".to_string(),
+        use notebook_protocol::connection::{EnvSource, PackageManager};
+        if let Some(ref prev) = pre_shutdown_env_source {
+            // Derive the scoped auto-detect from the previous env_source,
+            // preserving the package manager family. Same logic as
+            // apply_dependency_changes "restart" branch in deps.rs.
+            match EnvSource::parse(prev) {
+                EnvSource::Prewarmed(PackageManager::Conda) => "auto:conda".to_string(),
+                EnvSource::Prewarmed(PackageManager::Pixi) => "auto:pixi".to_string(),
+                EnvSource::Prewarmed(PackageManager::Uv) => "auto:uv".to_string(),
+                EnvSource::Deno => "deno".to_string(),
+                other => {
+                    // For inline, pep723, project-file etc. use the scoped
+                    // auto variant matching the package manager, or fall back
+                    // to the raw value.
+                    if let Some(pm) = other.package_manager() {
+                        match pm {
+                            PackageManager::Conda => "auto:conda".to_string(),
+                            PackageManager::Pixi => "auto:pixi".to_string(),
+                            _ => "auto:uv".to_string(),
+                        }
+                    } else {
+                        other.as_str().to_string()
+                    }
+                }
+            }
+        } else {
+            // No pre-shutdown env_source (daemon may have been fresh).
+            // Fall back to metadata-based detection.
+            let detected_manager = super::deps::detect_package_manager(&handle);
+            match detected_manager.as_str() {
+                "pixi" => "auto:pixi".to_string(),
+                "conda" => "auto:conda".to_string(),
+                _ => "auto:uv".to_string(),
+            }
         }
     };
 
