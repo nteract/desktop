@@ -3,6 +3,7 @@ import {
   cellChangesetTouchesChrome,
   type CellChangeset,
   mergeChangesets,
+  planCellPointerRefresh,
   planCellChangesetProjection,
   summarizeChangedFields,
 } from "runtimed";
@@ -135,5 +136,41 @@ describe("CellChangeset helpers", () => {
         position: true,
       }),
     ).toEqual(["src", "out", "ec", "meta"]);
+  });
+
+  it("plans pointer refreshes for touched cells only on incremental changes", () => {
+    expect(
+      planCellPointerRefresh({
+        ...empty,
+        changed: [
+          { cell_id: "cell-1", fields: { outputs: true } },
+          { cell_id: "cell-1", fields: { execution_count: true } },
+          { cell_id: "cell-2", fields: { source: true } },
+        ],
+      }),
+    ).toEqual({ kind: "touched", cell_ids: ["cell-1", "cell-2"] });
+  });
+
+  it("plans full pointer refreshes for full materialization paths", () => {
+    expect(planCellPointerRefresh(null)).toEqual({ kind: "all" });
+    expect(planCellPointerRefresh({ ...empty, added: ["cell-new"] })).toEqual({
+      kind: "all",
+    });
+    expect(planCellPointerRefresh({ ...empty, removed: ["cell-old"] })).toEqual({
+      kind: "all",
+    });
+    expect(planCellPointerRefresh({ ...empty, order_changed: true })).toEqual({
+      kind: "all",
+    });
+    expect(
+      planCellPointerRefresh({
+        ...empty,
+        changed: [{ cell_id: "cell-1", fields: { resolved_assets: true } }],
+      }),
+    ).toEqual({ kind: "all" });
+  });
+
+  it("skips pointer refreshes when an incremental changeset touches no cells", () => {
+    expect(planCellPointerRefresh(empty)).toEqual({ kind: "none" });
   });
 });

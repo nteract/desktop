@@ -124,7 +124,7 @@ export async function materializeChangeset(
   let outputOnlySkipped = 0;
 
   for (const projection of projectionPlan.cells) {
-    const { cell_id: cellId, fields } = projection;
+    const cellId = projection.cell_id;
     // Phase C-lite: outputs live in the per-output / per-execution stores
     // (see notebook-outputs.ts, notebook-executions.ts). The cell store
     // still carries an `outputs: JupyterOutput[]` field for legacy readers

@@ -51,6 +51,11 @@ export type CellChangesetProjectionPlan =
   | { kind: "full"; reason: "missing_changeset" | "structural" | "resolved_assets" }
   | { kind: "incremental"; cells: IncrementalCellProjection[] };
 
+export type CellPointerRefreshPlan =
+  | { kind: "all" }
+  | { kind: "touched"; cell_ids: string[] }
+  | { kind: "none" };
+
 const CHROME_FIELD_KEYS = [
   "source",
   "execution_count",
@@ -141,6 +146,9 @@ export function planCellChangesetProjection(
   if (materialization.kind === "full") {
     return materialization;
   }
+  if (!changeset) {
+    return { kind: "full", reason: "missing_changeset" };
+  }
   return {
     kind: "incremental",
     cells: changeset.changed.map(({ cell_id, fields }) => ({
@@ -152,4 +160,29 @@ export function planCellChangesetProjection(
       field_summary: summarizeChangedFields(fields),
     })),
   };
+}
+
+/**
+ * Plan which notebook-doc cell execution_id pointers need refreshing after a
+ * materialization pass. Incremental non-structural changes only need touched
+ * cells; full/structural materialization refreshes the whole document.
+ */
+export function planCellPointerRefresh(
+  changeset: CellChangeset | null,
+): CellPointerRefreshPlan {
+  if (!changeset || changeset.added.length > 0) {
+    return { kind: "all" };
+  }
+  if (
+    changeset.removed.length > 0 ||
+    changeset.order_changed ||
+    changeset.changed.some((c) => c.fields.resolved_assets)
+  ) {
+    return { kind: "all" };
+  }
+  const cellIds = [...new Set(changeset.changed.map((c) => c.cell_id))];
+  if (cellIds.length === 0) {
+    return { kind: "none" };
+  }
+  return { kind: "touched", cell_ids: cellIds };
 }

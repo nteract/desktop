@@ -59,6 +59,7 @@ export {
 export {
   classifyCellChangesetMaterialization,
   cellChangesetTouchesChrome,
+  type CellPointerRefreshPlan,
   type CellChangeset,
   type CellChangesetMaterialization,
   type CellChangesetProjectionPlan,
@@ -66,6 +67,7 @@ export {
   type ChangedFields,
   type IncrementalCellProjection,
   mergeChangesets,
+  planCellPointerRefresh,
   planCellChangesetProjection,
   summarizeChangedFields,
 } from "./cell-changeset";
