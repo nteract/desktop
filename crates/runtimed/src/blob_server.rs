@@ -448,6 +448,17 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_blob_server_binds_loopback_only() {
+        let listener = bind_preferred_or_random().await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        assert_eq!(
+            addr.ip(),
+            std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)
+        );
+    }
+
+    #[tokio::test]
     async fn test_bind_bumps_on_collision() {
         // Hold the preferred port so the first attempt hits AddrInUse.
         let preferred = runt_workspace::preferred_blob_port();
@@ -474,16 +485,31 @@ mod tests {
 
     #[tokio::test]
     async fn test_embedded_plugin_served() {
+        let response = serve_embedded_plugin("plotly.js");
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response_header(&response, "content-type"),
+            Some("application/javascript; charset=utf-8".into())
+        );
+        assert_eq!(
+            response_header(&response, "cache-control"),
+            Some("public, max-age=86400".into())
+        );
+        assert_eq!(
+            response_header(&response, "access-control-allow-origin"),
+            Some("*".into())
+        );
+    }
+
+    #[tokio::test]
+    async fn test_plugin_http_route_serves_known_asset() {
         let (_dir, _store, port) = setup().await;
         let (status, headers, _body) = get(port, "/plugins/plotly.js").await;
+
         assert_eq!(status, StatusCode::OK);
         assert_eq!(
             header_value(&headers, "content-type"),
             Some("application/javascript; charset=utf-8".into())
-        );
-        assert_eq!(
-            header_value(&headers, "cache-control"),
-            Some("public, max-age=86400".into())
         );
         assert_eq!(
             header_value(&headers, "access-control-allow-origin"),
@@ -539,6 +565,13 @@ mod tests {
     async fn test_plugin_path_traversal_rejected() {
         let (_dir, _store, port) = setup().await;
         let (status, _, _) = get(port, "/plugins/../secret").await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn test_blob_path_traversal_rejected() {
+        let (_dir, _store, port) = setup().await;
+        let (status, _, _) = get(port, "/blob/../secret").await;
         assert_eq!(status, StatusCode::NOT_FOUND);
     }
 }

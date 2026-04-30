@@ -763,7 +763,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev libxdo-dev \
-            libssl-dev libayatana-appindicator3-dev librsvg2-dev rpm
+            libssl-dev libayatana-appindicator3-dev librsvg2-dev
 
       - name: Set up Rust
         uses: dsherret/rust-toolchain-file@v1
@@ -843,7 +843,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           projectPath: crates/notebook
-          args: --bundles appimage,deb,rpm --config '{"build":{"beforeBuildCommand":""}}'
+          args: --bundles appimage --config '{"build":{"beforeBuildCommand":""}}'
           includeUpdaterJson: false
 
       - name: Collect artifacts
@@ -855,10 +855,6 @@ jobs:
           for f in target/release/bundle/appimage/*.AppImage.sig; do
             [ -f "$f" ] && cp "$f" "artifacts/nteract-${CHANNEL}-linux-x64.AppImage.sig"
           done
-          DEB_PATH=$(find target/release/bundle/deb -name "*.deb" | head -1)
-          cp "$DEB_PATH" "artifacts/nteract-${CHANNEL}-linux-x64.deb"
-          RPM_PATH=$(find target/release/bundle/rpm -name "*.rpm" | head -1)
-          cp "$RPM_PATH" "artifacts/nteract-${CHANNEL}-linux-x64.rpm"
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
@@ -900,68 +896,6 @@ jobs:
               dnf install -y coreutils findutils fuse-libs grep procps-ng systemd
               bash scripts/ci/fedora-appimage-smoke.sh "$1"
             ' bash "$APPIMAGE"
-
-  smoke-ubuntu-deb:
-    name: Smoke Ubuntu DEB
-    runs-on: blacksmith-4vcpu-ubuntu-2204
-    needs: [compute-version, build-notebook-linux-x64]
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-
-      - name: Download Linux DEB
-        uses: actions/download-artifact@v4
-        with:
-          name: nteract-linux-x64
-          path: artifacts
-
-      - name: Smoke DEB in Ubuntu
-        run: |
-          CHANNEL="${RUNT_BUILD_CHANNEL:-stable}"
-          if [ "$CHANNEL" = "nightly" ]; then
-            echo "::notice::Skipping nightly DEB smoke until Linux package-manager installs use channel-specific commands."
-            exit 0
-          fi
-          DEB="artifacts/nteract-${CHANNEL}-linux-x64.deb"
-          docker run --rm \
-            -v "${PWD}:/workspace" \
-            -w /workspace \
-            ubuntu:24.04 \
-            bash -lc '
-              set -euo pipefail
-              bash scripts/ci/ubuntu-deb-smoke.sh local "$1" "$2" "$3"
-            ' bash "$DEB" "$CHANNEL" "${{ needs.compute-version.outputs.version }}"
-
-  smoke-fedora-rpm:
-    name: Smoke Fedora RPM
-    runs-on: blacksmith-4vcpu-ubuntu-2204
-    needs: [compute-version, build-notebook-linux-x64]
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-
-      - name: Download Linux RPM
-        uses: actions/download-artifact@v4
-        with:
-          name: nteract-linux-x64
-          path: artifacts
-
-      - name: Smoke RPM in Fedora
-        run: |
-          CHANNEL="${RUNT_BUILD_CHANNEL:-stable}"
-          if [ "$CHANNEL" = "nightly" ]; then
-            echo "::notice::Skipping nightly RPM smoke until Linux package-manager installs use channel-specific commands."
-            exit 0
-          fi
-          RPM="artifacts/nteract-${CHANNEL}-linux-x64.rpm"
-          docker run --rm \
-            -v "${PWD}:/workspace" \
-            -w /workspace \
-            fedora:latest \
-            bash -lc '
-              set -euo pipefail
-              bash scripts/ci/fedora-rpm-smoke.sh "$1" "$2" "$3"
-            ' bash "$RPM" "$CHANNEL" "${{ needs.compute-version.outputs.version }}"
 
   build-nteract-package:
     name: Build nteract Package
@@ -1285,8 +1219,6 @@ jobs:
         build-notebook-windows-x64,
         build-notebook-linux-x64,
         smoke-fedora-appimage,
-        smoke-ubuntu-deb,
-        smoke-fedora-rpm,
         build-python-wheels,
         build-nteract-package,
         build-dx-package,
@@ -1403,8 +1335,6 @@ jobs:
           cp "notebook-macos-x64/nteract-${CHANNEL}-darwin-x64.dmg" release-assets/
           cp "notebook-windows-x64/nteract-${CHANNEL}-windows-x64.exe" release-assets/
           cp "notebook-linux-x64/nteract-${CHANNEL}-linux-x64.AppImage" release-assets/
-          cp "notebook-linux-x64/nteract-${CHANNEL}-linux-x64.deb" release-assets/
-          cp "notebook-linux-x64/nteract-${CHANNEL}-linux-x64.rpm" release-assets/
           # Updater bundles + signatures
           cp "notebook-macos-arm64/nteract-${CHANNEL}-darwin-arm64.app.tar.gz" release-assets/
           cp "notebook-macos-arm64/nteract-${CHANNEL}-darwin-arm64.app.tar.gz.sig" release-assets/
@@ -1542,14 +1472,10 @@ jobs:
           CLI_NAME="runt"
           DAEMON_NAME="runtimed"
           MCP_NAME="nteract-mcp"
-          APT_PACKAGE="nteract"
-          APT_LIST_NAME="nteract"
           if [ "$VERSION_SUFFIX" = "nightly" ]; then
             CLI_NAME="runt-nightly"
             DAEMON_NAME="runtimed-nightly"
             MCP_NAME="nteract-mcp-nightly"
-            APT_PACKAGE="nteract-nightly"
-            APT_LIST_NAME="nteract-nightly"
           fi
           {
             echo "$RELEASE_INTRO"
@@ -1570,26 +1496,10 @@ jobs:
             echo "| macOS | x64 (Intel) | \`nteract-${VERSION_SUFFIX}-darwin-x64.dmg\` |"
             echo "| Windows | x64 | \`nteract-${VERSION_SUFFIX}-windows-x64.exe\` |"
             echo "| Linux | x64 | \`nteract-${VERSION_SUFFIX}-linux-x64.AppImage\` |"
-            echo "| Linux | x64 (deb) | \`nteract-${VERSION_SUFFIX}-linux-x64.deb\` |"
-            echo "| Linux | x64 (rpm) | \`nteract-${VERSION_SUFFIX}-linux-x64.rpm\` |"
             echo ''
-            echo "macOS builds are signed and notarized. Windows is not code signed — expect a SmartScreen prompt. Linux AppImage: \`chmod +x\` and run. Linux DEB: \`sudo apt install ./nteract-${VERSION_SUFFIX}-linux-x64.deb\`. Linux RPM: \`sudo dnf install ./nteract-${VERSION_SUFFIX}-linux-x64.rpm\`."
+            echo "macOS builds are signed and notarized. Windows is not code signed — expect a SmartScreen prompt. Linux AppImage: \`chmod +x\` and run. DEB/RPM packages are not currently supported because runtimed is a per-user daemon managed by the app and CLI, not by system package-manager scripts."
             echo ''
             echo 'This release includes auto-update support. Existing installations will be notified of this update automatically.'
-            echo ''
-            echo '### Linux (APT repository)'
-            echo ''
-            echo '```bash'
-            echo '# Add the nteract signing key'
-            echo "curl -fsSL https://apt.runtimed.com/nteract-keyring.gpg \\"
-            echo '  | sudo gpg --dearmor --yes -o /usr/share/keyrings/nteract-keyring.gpg'
-            echo ''
-            echo '# Add the repository'
-            echo "echo \"deb [arch=amd64 signed-by=/usr/share/keyrings/nteract-keyring.gpg] https://apt.runtimed.com ${VERSION_SUFFIX} main\" \\"
-            echo "  | sudo tee /etc/apt/sources.list.d/${APT_LIST_NAME}.list"
-            echo ''
-            echo "sudo apt update && sudo apt install ${APT_PACKAGE}"
-            echo '```'
             echo ''
             echo "## ${CLI_NAME} (CLI)"
             echo ''
@@ -1633,8 +1543,6 @@ jobs:
             ./release-assets/runt*-darwin-x64
             ./release-assets/nteract-${{ inputs.version_suffix }}-linux-x64.AppImage
             ./release-assets/nteract-${{ inputs.version_suffix }}-linux-x64.AppImage.sig
-            ./release-assets/nteract-${{ inputs.version_suffix }}-linux-x64.deb
-            ./release-assets/nteract-${{ inputs.version_suffix }}-linux-x64.rpm
             ./release-assets/nteract-${{ inputs.version_suffix }}-darwin-arm64.dmg
             ./release-assets/nteract-${{ inputs.version_suffix }}-darwin-arm64.app.tar.gz
             ./release-assets/nteract-${{ inputs.version_suffix }}-darwin-arm64.app.tar.gz.sig
@@ -1688,75 +1596,3 @@ jobs:
               \"color\": 3066993
             }]
           }" "$DISCORD_WEBHOOK"
-
-  publish-apt:
-    name: Publish to APT Repository
-    runs-on: blacksmith-4vcpu-ubuntu-2204
-    needs: [build-notebook-linux-x64, smoke-ubuntu-deb]
-    if: github.event_name != 'pull_request' && inputs.version_suffix == 'stable'
-    concurrency:
-      group: apt-publish-${{ inputs.version_suffix }}
-      cancel-in-progress: false
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-
-      - name: Download Linux x64 notebook artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: nteract-linux-x64
-          path: ./linux-artifacts
-
-      - name: Install APT publishing dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends dpkg-dev awscli
-
-      - name: Install publish scripts
-        run: |
-          sudo cp scripts/apt/publish-apt.sh /usr/local/bin/publish-apt.sh
-          sudo cp scripts/apt/prune-packages.py /usr/local/bin/prune-packages.py
-          sudo chmod +x /usr/local/bin/publish-apt.sh /usr/local/bin/prune-packages.py
-
-      - name: Publish .deb to APT repository
-        env:
-          CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
-          AWS_ACCESS_KEY_ID: ${{ secrets.R2_AWS_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_AWS_SECRET_ACCESS_KEY }}
-          AWS_DEFAULT_REGION: auto
-          R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
-          R2_PUBLIC_URL: https://apt.runtimed.com
-          GPG_KEY_ID: ${{ secrets.APT_GPG_KEY_ID }}
-          GPG_PRIVATE_KEY: ${{ secrets.APT_GPG_PRIVATE_KEY }}
-        run: |
-          CHANNEL="${{ inputs.version_suffix }}"
-          DEB_FILE="./linux-artifacts/nteract-${CHANNEL}-linux-x64.deb"
-
-          if [ ! -f "$DEB_FILE" ]; then
-            echo "ERROR: .deb not found at $DEB_FILE"
-            ls -la ./linux-artifacts/
-            exit 1
-          fi
-
-          publish-apt.sh --channel "$CHANNEL" "$DEB_FILE"
-
-  smoke-apt-repository:
-    name: Smoke APT Repository
-    runs-on: blacksmith-4vcpu-ubuntu-2204
-    needs: [compute-version, publish-apt]
-    if: github.event_name != 'pull_request' && inputs.version_suffix == 'stable'
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-
-      - name: Smoke live APT install in Ubuntu
-        run: |
-          CHANNEL="${RUNT_BUILD_CHANNEL:-stable}"
-          docker run --rm \
-            -v "${PWD}:/workspace" \
-            -w /workspace \
-            ubuntu:24.04 \
-            bash -lc '
-              set -euo pipefail
-              bash scripts/ci/ubuntu-deb-smoke.sh apt "$1" "$2"
-            ' bash "$CHANNEL" "${{ needs.compute-version.outputs.version }}"

@@ -136,6 +136,94 @@ impl DaemonConfig {
     }
 }
 
+#[cfg(unix)]
+fn channel_socket_parent() -> Option<PathBuf> {
+    runt_workspace::socket_path_for_channel(runt_workspace::build_channel())
+        .parent()
+        .map(Path::to_path_buf)
+}
+
+#[cfg(unix)]
+fn should_force_owner_private_socket_dir(socket_path: &Path) -> bool {
+    let Some(parent) = socket_path.parent() else {
+        return false;
+    };
+    channel_socket_parent().is_some_and(|channel_parent| parent == channel_parent)
+}
+
+#[cfg(unix)]
+fn set_owner_private_dir(path: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
+}
+
+#[cfg(unix)]
+fn set_owner_private_socket(path: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+}
+
+#[cfg(unix)]
+async fn remove_stale_socket(path: &Path) -> anyhow::Result<()> {
+    use std::os::unix::fs::FileTypeExt;
+
+    let metadata = match tokio::fs::symlink_metadata(path).await {
+        Ok(metadata) => metadata,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e).with_context(|| format!("inspect socket path {}", path.display())),
+    };
+
+    if metadata.file_type().is_socket() {
+        tokio::fs::remove_file(path)
+            .await
+            .with_context(|| format!("remove stale socket {}", path.display()))?;
+        return Ok(());
+    }
+
+    anyhow::bail!(
+        "refusing to remove non-socket path at daemon socket location: {}",
+        path.display()
+    );
+}
+
+#[cfg(unix)]
+async fn prepare_unix_socket_path(socket_path: &Path) -> anyhow::Result<()> {
+    if let Some(parent) = socket_path.parent() {
+        tokio::fs::create_dir_all(parent)
+            .await
+            .with_context(|| format!("create daemon socket directory {}", parent.display()))?;
+        if should_force_owner_private_socket_dir(socket_path) {
+            set_owner_private_dir(parent).with_context(|| {
+                format!(
+                    "set owner-only permissions on daemon socket directory {}",
+                    parent.display()
+                )
+            })?;
+        }
+    }
+
+    remove_stale_socket(socket_path).await?;
+
+    let sync_sock = socket_path.with_file_name("runtimed-sync.sock");
+    if sync_sock.exists() {
+        info!("[runtimed] Removing obsolete sync socket: {:?}", sync_sock);
+        tokio::fs::remove_file(&sync_sock).await.ok();
+    }
+
+    Ok(())
+}
+
+#[cfg(unix)]
+fn bind_private_unix_listener(socket_path: &Path) -> anyhow::Result<UnixListener> {
+    let listener = UnixListener::bind(socket_path)?;
+    // Restrict socket permissions to owner-only (0600) so other users cannot
+    // connect to the per-user daemon. Same-UID clients remain trusted.
+    set_owner_private_socket(socket_path)?;
+    Ok(listener)
+}
+
 /// A prewarmed environment in the pool.
 struct PoolEntry {
     env: PooledEnv,
@@ -921,32 +1009,7 @@ impl Daemon {
     pub async fn run(self: Arc<Self>) -> anyhow::Result<()> {
         // Platform-specific setup
         #[cfg(unix)]
-        {
-            // Ensure socket directory exists
-            if let Some(parent) = self.config.socket_path.parent() {
-                tokio::fs::create_dir_all(parent).await?;
-            }
-
-            // Remove stale socket file — singleton lock guarantees exclusivity,
-            // so NotFound is fine; log other errors for diagnostics.
-            if self.config.socket_path.exists() {
-                if let Err(e) = tokio::fs::remove_file(&self.config.socket_path).await {
-                    if e.kind() != std::io::ErrorKind::NotFound {
-                        warn!(
-                            "[runtimed] Failed to remove stale socket {:?}: {}",
-                            self.config.socket_path, e
-                        );
-                    }
-                }
-            }
-
-            // Clean up obsolete sync socket from pre-unification daemons
-            let sync_sock = self.config.socket_path.with_file_name("runtimed-sync.sock");
-            if sync_sock.exists() {
-                info!("[runtimed] Removing obsolete sync socket: {:?}", sync_sock);
-                tokio::fs::remove_file(&sync_sock).await.ok();
-            }
-        }
+        prepare_unix_socket_path(&self.config.socket_path).await?;
 
         // Start the blob HTTP server (also serves renderer plugin assets)
         let blob_port = match blob_server::start_blob_server(
@@ -971,16 +1034,7 @@ impl Daemon {
         // the rest of initialisation finishes.  The accept loop runs later.
         #[cfg(unix)]
         let unix_listener = {
-            let listener = UnixListener::bind(&self.config.socket_path)?;
-            // Restrict socket permissions to owner-only (0600) so other users
-            // cannot connect to the daemon.
-            {
-                use std::os::unix::fs::PermissionsExt;
-                std::fs::set_permissions(
-                    &self.config.socket_path,
-                    std::fs::Permissions::from_mode(0o600),
-                )?;
-            }
+            let listener = bind_private_unix_listener(&self.config.socket_path)?;
             info!("[runtimed] Listening on {:?}", self.config.socket_path);
             listener
         };
@@ -4905,6 +4959,71 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
     use tempfile::TempDir;
+
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn bind_private_unix_listener_sets_socket_mode_0600() {
+        let tmp = TempDir::new().unwrap();
+        let socket = tmp.path().join("runtimed.sock");
+
+        prepare_unix_socket_path(&socket).await.unwrap();
+        let listener = bind_private_unix_listener(&socket).unwrap();
+
+        let mode = std::fs::symlink_metadata(&socket)
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o600);
+
+        drop(listener);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn owner_private_socket_dir_sets_mode_0700() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path().join("daemon");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        set_owner_private_dir(&dir).unwrap();
+
+        let mode = std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o700);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn remove_stale_socket_removes_socket_files() {
+        let tmp = TempDir::new().unwrap();
+        let socket = tmp.path().join("runtimed.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        drop(listener);
+
+        remove_stale_socket(&socket).await.unwrap();
+
+        assert!(!socket.exists());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn remove_stale_socket_refuses_regular_files() {
+        let tmp = TempDir::new().unwrap();
+        let socket = tmp.path().join("runtimed.sock");
+        std::fs::write(&socket, b"not a socket").unwrap();
+
+        let err = remove_stale_socket(&socket).await.unwrap_err();
+
+        assert!(
+            err.to_string().contains("refusing to remove non-socket"),
+            "unexpected error: {err:#}"
+        );
+        assert!(socket.exists());
+    }
 
     fn create_test_env(temp_dir: &TempDir, name: &str) -> PooledEnv {
         let venv_path = temp_dir.path().join(name);

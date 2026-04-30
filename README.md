@@ -8,8 +8,10 @@ Built on [runtimelib](https://crates.io/crates/runtimelib) and [jupyter-protocol
 
 Download the latest release from [GitHub Releases](https://github.com/nteract/desktop/releases).
 
-Linux users on Debian or Ubuntu should prefer the APT repository at
-`https://apt.runtimed.com`; see [Linux install options](docs/linux.md).
+Linux desktop users should use the AppImage from GitHub Releases; see
+[Linux install options](docs/linux.md). DEB/RPM/APT installs are not currently
+supported because `runtimed` is a per-user daemon managed by the app and CLI,
+not by system package-manager scripts.
 
 The desktop app bundles everything — `runt` CLI and `runtimed` daemon.
 

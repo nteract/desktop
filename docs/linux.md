@@ -1,78 +1,43 @@
 # Linux Install Options
 
-nteract publishes Linux desktop builds through GitHub Releases and the APT
-repository at `https://apt.runtimed.com`.
+nteract currently supports the AppImage from GitHub Releases as the Linux
+desktop install and update artifact.
 
-## Debian and Ubuntu
+## Desktop Install
 
-Use APT for Debian and Ubuntu systems. Native packages are the recommended
-Linux install path because they integrate with the desktop and the per-user
-`runtimed` systemd service.
-
-### Stable
-
-```bash
-curl -fsSL https://apt.runtimed.com/nteract-keyring.gpg \
-  | sudo gpg --dearmor --yes -o /usr/share/keyrings/nteract-keyring.gpg
-
-echo "deb [arch=amd64 signed-by=/usr/share/keyrings/nteract-keyring.gpg] https://apt.runtimed.com stable main" \
-  | sudo tee /etc/apt/sources.list.d/nteract.list
-
-sudo apt update
-sudo apt install nteract
-```
-
-### Nightly
-
-Nightly builds install side-by-side with stable builds and use the
-`nteract-nightly`, `runt-nightly`, and `runtimed-nightly` names.
-
-```bash
-curl -fsSL https://apt.runtimed.com/nteract-keyring.gpg \
-  | sudo gpg --dearmor --yes -o /usr/share/keyrings/nteract-keyring.gpg
-
-echo "deb [arch=amd64 signed-by=/usr/share/keyrings/nteract-keyring.gpg] https://apt.runtimed.com nightly main" \
-  | sudo tee /etc/apt/sources.list.d/nteract-nightly.list
-
-sudo apt update
-sudo apt install nteract-nightly
-```
-
-You can enable both channels by keeping both source-list files.
-
-## Direct Downloads
-
-GitHub Releases include:
-
-- `.deb` packages for direct Debian/Ubuntu installs when you do not want to add
-  the APT repository.
-- `.rpm` packages for direct Fedora/RHEL/openSUSE-family installs while we
-  evaluate whether to add a signed RPM repository.
-- AppImage builds for desktop Linux systems outside the Debian/Ubuntu family.
-
-For direct `.deb` installs:
-
-```bash
-sudo apt install ./nteract-stable-linux-x64.deb
-```
-
-For direct `.rpm` installs:
-
-```bash
-sudo dnf install ./nteract-stable-linux-x64.rpm
-```
-
-For AppImage:
+Download the AppImage from
+[GitHub Releases](https://github.com/nteract/desktop/releases), make it
+executable, and run it:
 
 ```bash
 chmod +x nteract-stable-linux-x64.AppImage
 ./nteract-stable-linux-x64.AppImage
 ```
 
-The AppImage is a portable fallback. It can run the app and bootstrap the
-daemon, but persistent CLI installation from the temporary AppImage mount is
-intentionally skipped. Use the APT or `.deb` package when you want the `runt`
-CLI and system service to stay integrated across upgrades.
+Nightly builds use the same shape:
+
+```bash
+chmod +x nteract-nightly-linux-x64.AppImage
+./nteract-nightly-linux-x64.AppImage
+```
+
+The AppImage is the Linux artifact used by the desktop updater. It bundles the
+desktop app, `runt`, `runtimed`, and `nteract-mcp` sidecars for that app
+instance.
+
+## Unsupported Package Formats
+
+DEB, RPM, and APT repository installs are not currently supported.
+
+`runtimed` is a user-local daemon. It owns per-user notebooks, kernels,
+environment pools, settings sync, socket state, and MCP/CLI access. System
+package managers are good at installing files under system-owned prefixes, but
+they should not manage every user's daemon instance or run per-user daemon
+repair from package maintainer scripts.
+
+Until we design a first-class distro-native lifecycle, Linux releases do not
+publish supported `.deb` or `.rpm` desktop packages and the release pipeline
+does not publish new APT repository packages.
 
 ## Headless Runtime Installs
 
@@ -92,6 +57,7 @@ For source-built nightly installs on Linux development machines:
 
 Both scripts install channel-specific `runt`, `runtimed`, and `nteract-mcp`
 binaries under `~/.local/share/` and configure a user-level systemd service.
+This is a user-local runtime install, not a distro package-manager install.
 
 ## Troubleshooting
 

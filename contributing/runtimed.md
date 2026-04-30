@@ -84,6 +84,36 @@ Execution is CRDT-driven — the coordinator writes execution entries (with sour
 
 **Daemon discovery is socket-first.** Clients connect to the socket and send a `GetDaemonInfo` request; the daemon answers from live state. The on-disk `daemon.json` exists only as a fallback for older daemons that don't recognise the request — it will be removed once every daemon in the wild speaks `GetDaemonInfo`. New code should not depend on `daemon.json`. See `crates/runtimed-client/src/singleton.rs::query_daemon_info`.
 
+## Security Model
+
+`runtimed` is a per-user daemon. The operating system account is the security
+boundary: cross-user access must be denied, and same-UID access is trusted by
+design.
+
+On Unix, the daemon listens on a Unix socket inside the channel cache namespace
+and sets the socket mode to `0600`. The channel-owned socket directory is kept
+owner-private (`0700`) where the daemon owns that namespace; custom
+`RUNTIMED_SOCKET_PATH` parents inherit the caller's filesystem policy. Any
+same-UID process that can connect to the socket can intentionally use the
+daemon's trusted APIs, including pool/admin requests, settings sync, notebook
+sync, open/create notebook, blob storage, runtime-agent attachment, MCP, and CLI
+workflows. `RUNTIMED_SOCKET_PATH` is therefore a capability-bearing pointer:
+only set or pass it to processes that should be allowed to control that user's
+daemon. On Windows, runtimed uses named pipes and relies on the platform's
+default pipe ACLs; the `0600` socket and `0700` directory guarantees are
+Unix-only.
+
+The blob HTTP server is part of the same local trust model. It binds to
+`127.0.0.1`, is read-only, and serves content-addressed blobs by unguessable
+hash plus embedded renderer plugin assets. Treat blob URLs as local same-user
+data exposure, not as a cross-user or remote network interface.
+
+Linux package managers do not own the daemon lifecycle. DEB/RPM/APT packages are
+not currently supported because maintainer scripts should not manage per-user
+daemon instances, sockets, notebooks, or kernel processes. Linux desktop releases
+use AppImage as the supported install/update artifact until a distro-native
+daemon lifecycle is designed separately.
+
 ## Development Workflow
 
 ### Default: Let the notebook start it
