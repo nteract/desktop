@@ -734,6 +734,7 @@ pub(crate) async fn handle(
                     &deps,
                     bootstrap_dx,
                     daemon,
+                    room,
                     launch_progress_handler.clone(),
                 )
                 .await
@@ -835,6 +836,7 @@ pub(crate) async fn handle(
                     &deps,
                     &channels,
                     daemon,
+                    room,
                     launch_progress_handler.clone(),
                 )
                 .await

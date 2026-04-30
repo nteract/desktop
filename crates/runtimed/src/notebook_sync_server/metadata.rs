@@ -2251,6 +2251,7 @@ pub(crate) async fn try_uv_pool_for_inline_deps(
     deps: &[String],
     bootstrap_dx: bool,
     daemon: &std::sync::Arc<crate::daemon::Daemon>,
+    room: &NotebookRoom,
     progress_handler: std::sync::Arc<dyn kernel_env::ProgressHandler>,
 ) -> Result<(crate::PooledEnv, Vec<String>), ()> {
     // `inline_deps_with_bootstrap` is a shim since 0.2.0 — launcher
@@ -2290,6 +2291,14 @@ pub(crate) async fn try_uv_pool_for_inline_deps(
             // Promote the pool env into the inline-env cache so the next
             // restart with the same deps cache-hits instead of taking
             // another pool env. See #2089 / #2083.
+            //
+            // The claim is best-effort: if the rename target already
+            // exists or the move fails, `env.venv_path` stays at the
+            // raw pool path (`runtimed-uv-*`). That path is subject to
+            // the orphan sweep, so we MUST install runtime ownership
+            // before releasing the lease — otherwise the sweep races
+            // with the launch handler's later `runtime_agent_env_path`
+            // write and can delete the env mid-launch.
             crate::inline_env::claim_pool_env_for_uv_inline_cache(
                 &mut env,
                 deps,
@@ -2297,6 +2306,10 @@ pub(crate) async fn try_uv_pool_for_inline_deps(
                 bootstrap_dx,
             )
             .await;
+            {
+                let mut ep = room.runtime_agent_env_path.write().await;
+                *ep = Some(env.venv_path.clone());
+            }
             guard.release().await;
             Ok((env, actual_packages))
         }
@@ -2321,6 +2334,8 @@ pub(crate) async fn try_uv_pool_for_inline_deps(
                     );
                     // Promote the pool env into the inline-env cache so
                     // the next restart cache-hits. See #2089 / #2083.
+                    // Same claim-best-effort caveat as the Subset arm —
+                    // install runtime ownership before releasing.
                     crate::inline_env::claim_pool_env_for_uv_inline_cache(
                         &mut env,
                         deps,
@@ -2328,6 +2343,10 @@ pub(crate) async fn try_uv_pool_for_inline_deps(
                         bootstrap_dx,
                     )
                     .await;
+                    {
+                        let mut ep = room.runtime_agent_env_path.write().await;
+                        *ep = Some(env.venv_path.clone());
+                    }
                     guard.release().await;
                     progress_handler.on_progress(
                         "uv",
@@ -2368,6 +2387,7 @@ pub(crate) async fn try_conda_pool_for_inline_deps(
     deps: &[String],
     channels: &[String],
     daemon: &std::sync::Arc<crate::daemon::Daemon>,
+    room: &NotebookRoom,
     progress_handler: std::sync::Arc<dyn kernel_env::ProgressHandler>,
 ) -> Result<(crate::PooledEnv, Vec<String>), ()> {
     // Only use pool for default conda-forge channel
@@ -2410,9 +2430,15 @@ pub(crate) async fn try_conda_pool_for_inline_deps(
         crate::inline_env::PoolDepRelation::Subset => {
             info!("[notebook-sync] Inline Conda deps are subset of pool env, reusing directly");
             // Promote the pool env into the inline-env cache so the next
-            // restart cache-hits. See #2089 / #2083.
+            // restart cache-hits. See #2089 / #2083. The claim is
+            // best-effort, so install runtime ownership before releasing
+            // the lease (see try_uv_pool_for_inline_deps for rationale).
             crate::inline_env::claim_pool_env_for_conda_inline_cache(&mut env, deps, channels)
                 .await;
+            {
+                let mut ep = room.runtime_agent_env_path.write().await;
+                *ep = Some(env.venv_path.clone());
+            }
             guard.release().await;
             Ok((env, actual_packages))
         }
@@ -2447,11 +2473,17 @@ pub(crate) async fn try_conda_pool_for_inline_deps(
                         delta.len()
                     );
                     // Promote the pool env into the inline-env cache so
-                    // the next restart cache-hits. See #2089 / #2083.
+                    // the next restart cache-hits. Same claim-best-effort
+                    // caveat as the Subset arm — install runtime
+                    // ownership before releasing.
                     crate::inline_env::claim_pool_env_for_conda_inline_cache(
                         &mut env, deps, channels,
                     )
                     .await;
+                    {
+                        let mut ep = room.runtime_agent_env_path.write().await;
+                        *ep = Some(env.venv_path.clone());
+                    }
                     guard.release().await;
                     progress_handler.on_progress(
                         "conda",
@@ -2974,6 +3006,7 @@ pub(crate) async fn auto_launch_kernel(
                     &deps,
                     bootstrap_dx,
                     &daemon,
+                    room,
                     progress_handler.clone(),
                 )
                 .await
@@ -3081,6 +3114,7 @@ pub(crate) async fn auto_launch_kernel(
                     &deps,
                     &channels,
                     &daemon,
+                    room,
                     progress_handler.clone(),
                 )
                 .await

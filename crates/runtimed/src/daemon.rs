@@ -813,20 +813,25 @@ impl PoolLeaseGuard {
     /// Release the lease — caller has transferred ownership of the env
     /// (typically by writing `runtime_agent_env_path` first). The env
     /// directory is left on disk; whoever now owns it is responsible.
+    ///
+    /// `released` is flipped only after the pool-set update completes so
+    /// a cancellation mid-await leaves Drop able to retry. Double-release
+    /// is harmless (`HashSet::remove` of an absent key is a no-op).
     pub async fn release(mut self) {
-        self.released = true;
         if let Some(daemon) = self.daemon.upgrade() {
             daemon
                 .release_pool_lease(self.env_type, &self.leased_path)
                 .await;
         }
+        self.released = true;
     }
 
     /// Delete the env directory and release the lease. Use on known
     /// failure paths (claim/vendor/spawn errors) where the env is in an
     /// inconsistent state and must not be reused.
+    ///
+    /// Same flag-after-await invariant as [`Self::release`].
     pub async fn release_and_delete(mut self) {
-        self.released = true;
         if let Some(daemon) = self.daemon.upgrade() {
             daemon
                 .release_pool_lease(self.env_type, &self.leased_path)
@@ -841,6 +846,7 @@ impl PoolLeaseGuard {
                 self.leased_path, e
             );
         }
+        self.released = true;
     }
 
     /// Path of the leased env directory (the top-level `pool_env_root`).
@@ -5472,6 +5478,53 @@ mod tests {
             "released env should be reclaimed by orphan sweep"
         );
         assert!(!venv_path.exists());
+    }
+
+    /// Regression test for the inline-cache claim-failure race that
+    /// codex flagged in review of #2408. The inline-deps helpers used
+    /// to release the lease right after `claim_pool_env_for_*_inline_cache`,
+    /// which is best-effort: if the rename collides or fails, the env
+    /// stays at its original `runtimed-{uv,conda,pixi}-*` path. With the
+    /// lease released and `runtime_agent_env_path` not yet written, the
+    /// orphan sweep would delete the env mid-launch.
+    ///
+    /// Models the unprotected window directly: take a env, release the
+    /// lease without writing `runtime_agent_env_path`, and assert the
+    /// sweep deletes it. Then repeat with the path in `in_use` and
+    /// assert it survives. This is the invariant the helpers must
+    /// uphold (write owner before release).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn released_env_unprotected_unless_runtime_owner_set() {
+        let temp_dir = TempDir::new().unwrap();
+        let daemon = Daemon::new(lease_test_config(&temp_dir)).unwrap();
+        let venv_path = plant_uv_pool_env(&daemon, "runtimed-uv-released-no-owner");
+
+        // Release the lease without recording any runtime owner, mirroring
+        // the bug shape: claim no-op'd, env stayed at the pool path.
+        let (_env, guard) = daemon.take_uv_env().await.expect("take");
+        guard.release().await;
+
+        // No room owns this path. Sweep finds it as an untracked pool
+        // dir and deletes it — exactly the race in PR #2408 review.
+        let deleted = daemon
+            .sweep_orphan_pool_envs(&std::collections::HashSet::new())
+            .await;
+        assert_eq!(
+            deleted, 1,
+            "released env without runtime owner is unprotected"
+        );
+        assert!(!venv_path.exists(), "sweep removes unprotected pool env");
+
+        // Same env restored. This time mark it as runtime-owned via the
+        // `in_use` set the way `env_gc_loop` would. Sweep must skip it.
+        let venv_path2 = plant_uv_pool_env(&daemon, "runtimed-uv-released-with-owner");
+        let (env2, guard2) = daemon.take_uv_env().await.expect("take");
+        let mut in_use = std::collections::HashSet::new();
+        in_use.insert(env2.venv_path.clone());
+        guard2.release().await;
+        let deleted = daemon.sweep_orphan_pool_envs(&in_use).await;
+        assert_eq!(deleted, 0, "in_use covers the released-but-owned window");
+        assert!(venv_path2.exists());
     }
 
     /// `release` clears the lease (caller now owns the env) but does
