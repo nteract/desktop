@@ -99,7 +99,7 @@ pub(crate) async fn attachment_refs_to_nbformat_value(
                 })?;
             media_bundle.insert(
                 media_type.clone(),
-                encode_attachment_payload(media_type, attachment_ref.encoding, &data)?,
+                encode_attachment_payload(media_type, &attachment_ref.encoding, &data)?,
             );
         }
         if !media_bundle.is_empty() {
@@ -110,7 +110,9 @@ pub(crate) async fn attachment_refs_to_nbformat_value(
 }
 
 pub(crate) fn image_attachment_hash(refs: &AttachmentRefs, name: &str) -> Option<String> {
-    let attachment = refs.get(strip_query_and_fragment(name))?;
+    let attachment = refs
+        .get(name)
+        .or_else(|| refs.get(strip_query_and_fragment(name)))?;
     const PREFERRED_IMAGE_MEDIA_TYPES: &[&str] = &[
         "image/png",
         "image/jpeg",
@@ -195,7 +197,7 @@ fn decode_attachment_payload(
 
 fn encode_attachment_payload(
     media_type: &str,
-    encoding: AttachmentEncoding,
+    encoding: &AttachmentEncoding,
     data: &[u8],
 ) -> Result<serde_json::Value, AttachmentResolveError> {
     match encoding {
@@ -211,6 +213,9 @@ fn encode_attachment_payload(
         AttachmentEncoding::Base64 => Ok(serde_json::Value::String(
             base64::engine::general_purpose::STANDARD.encode(data),
         )),
+        AttachmentEncoding::Unknown(value) => Err(AttachmentResolveError::InvalidPayload(format!(
+            "attachment {media_type} has unknown encoding {value}"
+        ))),
     }
 }
 

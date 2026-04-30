@@ -109,6 +109,21 @@ fn test_image_attachment_hash_uses_stable_image_preference() {
         image_attachment_hash(&refs, "plot#fragment").as_deref(),
         Some("png-hash")
     );
+
+    let refs_with_query_name = HashMap::from([(
+        "plot?actual".to_string(),
+        HashMap::from([(
+            "image/png".to_string(),
+            AttachmentRef {
+                blob_hash: "query-name-hash".to_string(),
+                encoding: AttachmentEncoding::Base64,
+            },
+        )]),
+    )]);
+    assert_eq!(
+        image_attachment_hash(&refs_with_query_name, "plot?actual").as_deref(),
+        Some("query-name-hash")
+    );
 }
 
 #[test]
