@@ -301,8 +301,8 @@ pub enum NotebookRequest {
         observed_heads: Vec<String>,
     },
 
-    /// Clear outputs for a cell (before re-execution).
-    ClearOutputs { cell_id: String },
+    /// Clear outputs for one or more cells by removing their execution_id pointers.
+    ClearOutputs { cell_ids: Vec<String> },
 
     /// Interrupt the currently executing cell.
     InterruptExecution {},
@@ -440,7 +440,7 @@ pub enum NotebookResponse {
     },
 
     /// Outputs cleared.
-    OutputsCleared { cell_id: String },
+    OutputsCleared { cell_ids: Vec<String> },
 
     /// Interrupt sent to kernel.
     InterruptSent {},
@@ -944,7 +944,7 @@ mod tests {
             ),
             (
                 "clear_outputs",
-                serde_json::json!({ "action": "clear_outputs", "cell_id": "c1" }),
+                serde_json::json!({ "action": "clear_outputs", "cell_ids": ["c1"] }),
             ),
             (
                 "interrupt_execution",

@@ -201,7 +201,6 @@ export function createTauriHost(opts: CreateTauriHostOptions = {}): NotebookHost
     async cloneToEphemeral() {
       return invoke<string>("clone_notebook_to_ephemeral");
     },
-    onOutputsCleared: (cb) => listenWebview<string[]>("cells:outputs_cleared", cb),
   };
 
   const windowNs: HostWindow = {

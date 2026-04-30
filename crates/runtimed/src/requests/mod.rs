@@ -89,7 +89,7 @@ pub(crate) async fn handle_notebook_request(
             observed_heads,
         } => execute_cell::handle_guarded(room, cell_id, observed_heads).await,
 
-        NotebookRequest::ClearOutputs { cell_id } => clear_outputs::handle(room, cell_id).await,
+        NotebookRequest::ClearOutputs { cell_ids } => clear_outputs::handle(room, cell_ids).await,
 
         NotebookRequest::InterruptExecution {} => interrupt_execution::handle(room).await,
 

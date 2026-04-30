@@ -193,8 +193,6 @@ export interface HostNotebook {
   openInNewWindow(path: string): Promise<void>;
   /** Fork the current notebook into a new in-memory room and open it in a new host window. */
   cloneToEphemeral(): Promise<string>;
-  /** Subscribe to host broadcasts that a batch of cell outputs was cleared. */
-  onOutputsCleared(cb: (cellIds: string[]) => void): Unlisten;
 }
 
 /**

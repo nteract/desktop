@@ -51,6 +51,28 @@ describe("NotebookClient", () => {
     });
   });
 
+  it("emits clear_outputs requests for a single cell", async () => {
+    const { client, sendRequest } = stubClient();
+
+    await client.clearOutputs("cell-1");
+
+    expect(sendRequest).toHaveBeenCalledWith({
+      type: "clear_outputs",
+      cell_ids: ["cell-1"],
+    });
+  });
+
+  it("emits clear_outputs requests for multiple cells", async () => {
+    const { client, sendRequest } = stubClient();
+
+    await client.clearOutputs(["cell-1", "cell-2"]);
+
+    expect(sendRequest).toHaveBeenCalledWith({
+      type: "clear_outputs",
+      cell_ids: ["cell-1", "cell-2"],
+    });
+  });
+
   it("clones a notebook as an ephemeral room", async () => {
     const { client, sendRequest } = stubClient();
     sendRequest.mockResolvedValueOnce({

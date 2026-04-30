@@ -280,7 +280,7 @@ export function useDaemonKernel({
   );
 
   const clearOutputs = useCallback(
-    (cellId: string) => client.clearOutputs(cellId) as Promise<NotebookResponse>,
+    (cellIds: string | string[]) => client.clearOutputs(cellIds) as Promise<NotebookResponse>,
     [client],
   );
 

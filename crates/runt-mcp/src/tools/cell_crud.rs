@@ -312,32 +312,22 @@ pub async fn clear_outputs(
     }
 
     let peer_label = server.get_peer_label().await;
-    let mut cleared = Vec::new();
-    let mut failed = Vec::new();
 
     for id in &cell_ids {
         crate::presence::emit_focus(&handle, id, &peer_label).await;
+    }
 
-        match handle
+    if !cell_ids.is_empty() {
+        if let Err(e) = handle
             .send_request(NotebookRequest::ClearOutputs {
-                cell_id: id.clone(),
+                cell_ids: cell_ids.clone(),
             })
             .await
         {
-            Ok(_) => cleared.push(id.as_str()),
-            Err(e) => failed.push(format!("{id}: {e}")),
+            return tool_error(&format!("Failed to clear outputs: {e}"));
         }
     }
 
-    if !failed.is_empty() {
-        return tool_error(&format!(
-            "Cleared {}/{} cells. Failures: {}",
-            cleared.len(),
-            cell_ids.len(),
-            failed.join(", ")
-        ));
-    }
-
-    let result = serde_json::json!({ "cleared": cleared.len() });
+    let result = serde_json::json!({ "cleared": cell_ids.len() });
     tool_success(&serde_json::to_string_pretty(&result).unwrap_or_default())
 }

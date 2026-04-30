@@ -248,18 +248,6 @@ describe("createTauriHost()", () => {
     expect(capturedInvokes[2].args).toEqual({ path: "/tmp/notebooks/a.ipynb" });
   });
 
-  it("notebook.onOutputsCleared subscribes to cells:outputs_cleared", async () => {
-    const host = createTauriHost({ transport: stubTransport });
-    const received: string[][] = [];
-    const unlisten = host.notebook.onOutputsCleared((cellIds) => received.push(cellIds));
-    await Promise.resolve();
-    const entry = capturedListens.find((x) => x.event === "cells:outputs_cleared");
-    expect(entry).toBeTruthy();
-    entry?.cb({ payload: ["c1", "c2"] });
-    expect(received).toEqual([["c1", "c2"]]);
-    unlisten();
-  });
-
   it("system.getGitInfo and getUsername route to the correct commands", async () => {
     const host = createTauriHost({ transport: stubTransport });
     await expect(host.system.getGitInfo()).resolves.toEqual({

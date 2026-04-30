@@ -1238,8 +1238,9 @@ pub(crate) async fn move_cell(
 
 /// Clear a cell's outputs.
 ///
-/// Sends a ClearOutputs request to the daemon — outputs live in RuntimeStateDoc,
-/// so the daemon handles clearing the execution_id pointer and outputs.
+/// Sends a ClearOutputs request to the daemon. Visible outputs follow the
+/// cell's execution_id pointer, so clearing detaches the cell from that
+/// execution without mutating historical runtime state.
 pub(crate) async fn clear_outputs(state: &Arc<Mutex<SessionState>>, cell_id: &str) -> PyResult<()> {
     let handle = {
         let st = state.lock().await;
@@ -1251,7 +1252,7 @@ pub(crate) async fn clear_outputs(state: &Arc<Mutex<SessionState>>, cell_id: &st
 
     handle
         .send_request(NotebookRequest::ClearOutputs {
-            cell_id: cell_id.to_string(),
+            cell_ids: vec![cell_id.to_string()],
         })
         .await
         .map_err(|e| to_py_err(format!("Failed to clear outputs: {e}")))?;

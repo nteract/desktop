@@ -74,9 +74,11 @@ Daemon broadcast -> useDaemonKernel callback -> store-only update
 | `apply*FromDaemon` | Same as above -- applies daemon state to the store. |
 
 Examples:
-- `clearOutputsLocal(cellId)` -- user hit Ctrl-Enter, clear in CRDT + store
-- `clearOutputsFromDaemon(cellId)` -- daemon broadcast, store only
 - `applyExecutionCountFromDaemon(cellId, count)` -- daemon broadcast, store only
+
+Clear Outputs is intentionally not modeled as a frontend `*Local`/`*FromDaemon`
+pair. The frontend sends a daemon request; the daemon clears visible outputs by
+removing the selected cells' `execution_id` pointers in the notebook doc.
 
 ## The CodeMirror CRDT Bridge
 
