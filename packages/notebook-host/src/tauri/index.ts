@@ -44,6 +44,7 @@ import type {
   HostLog,
   HostNotebook,
   HostRelay,
+  HostSettings,
   HostSystem,
   HostTrust,
   HostUpdater,
@@ -141,6 +142,7 @@ export function createTauriHost(opts: CreateTauriHostOptions = {}): NotebookHost
   };
 
   const daemonEvents: HostDaemonEvents = {
+    onReadyLive: (cb) => listenWebview<DaemonReadyPayload>("daemon:ready", cb),
     // `onReady` subscribes to future emissions AND backfills from the
     // Rust-side cache. Tauri webview events aren't sticky — if the Rust
     // sync task emitted `daemon:ready` before this listener was attached,
@@ -187,6 +189,19 @@ export function createTauriHost(opts: CreateTauriHostOptions = {}): NotebookHost
     async applyPathChanged(path) {
       await invoke("apply_path_changed", { path });
     },
+    async getDefaultSaveDirectory() {
+      return invoke<string>("get_default_save_directory");
+    },
+    async saveAs(path) {
+      await invoke("save_notebook_as", { path });
+    },
+    async openInNewWindow(path) {
+      await invoke("open_notebook_in_new_window", { path });
+    },
+    async cloneToEphemeral() {
+      return invoke<string>("clone_notebook_to_ephemeral");
+    },
+    onOutputsCleared: (cb) => listenWebview<string[]>("cells:outputs_cleared", cb),
   };
 
   const windowNs: HostWindow = {
@@ -261,6 +276,15 @@ export function createTauriHost(opts: CreateTauriHostOptions = {}): NotebookHost
       // `begin_upgrade` command.
       return update ? { version: update.version } : null;
     },
+    async beginUpgrade() {
+      await invoke("begin_upgrade");
+    },
+  };
+
+  const settings: HostSettings = {
+    async openWindow() {
+      await invoke("open_settings_window");
+    },
   };
 
   const commands = createCommandRegistry();
@@ -307,6 +331,7 @@ export function createTauriHost(opts: CreateTauriHostOptions = {}): NotebookHost
     dialog,
     externalLinks,
     updater,
+    settings,
     commands,
     log,
   };

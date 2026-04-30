@@ -147,6 +147,9 @@ export interface HostDeps {
  * subscription; outgoing signals belong on `HostRelay`, not here.
  */
 export interface HostDaemonEvents {
+  /** Subscribe only to future daemon-ready events. */
+  onReadyLive(cb: (payload: DaemonReadyPayload) => void): Unlisten;
+  /** Subscribe to future daemon-ready events and backfill the latest cached payload. */
   onReady(cb: (payload: DaemonReadyPayload) => void): Unlisten;
   onProgress(cb: (payload: DaemonProgressPayload) => void): Unlisten;
   onDisconnected(cb: () => void): Unlisten;
@@ -182,6 +185,16 @@ export interface HostRelay {
 export interface HostNotebook {
   /** Daemon's path for this room changed (save / save-as); flushed to window state. */
   applyPathChanged(path: string): Promise<void>;
+  /** Default directory for untitled notebook save-as flows. */
+  getDefaultSaveDirectory(): Promise<string>;
+  /** Save the current notebook to a specific path and run host-side save-as bookkeeping. */
+  saveAs(path: string): Promise<void>;
+  /** Open an existing notebook path in a new host window. */
+  openInNewWindow(path: string): Promise<void>;
+  /** Fork the current notebook into a new in-memory room and open it in a new host window. */
+  cloneToEphemeral(): Promise<string>;
+  /** Subscribe to host broadcasts that a batch of cell outputs was cleared. */
+  onOutputsCleared(cb: (cellIds: string[]) => void): Unlisten;
 }
 
 /**
@@ -254,6 +267,8 @@ export interface HostExternalLinks {
 export interface HostUpdater {
   /** Returns available update info or null when the app is up to date. */
   check(): Promise<HostUpdateInfo | null>;
+  /** Begin the host-owned upgrade flow. */
+  beginUpgrade(): Promise<void>;
 }
 
 export interface HostUpdateInfo {
@@ -274,6 +289,11 @@ export interface HostLog {
   info(message: string): void;
   warn(message: string): void;
   error(message: string): void;
+}
+
+/** Host-owned settings window. */
+export interface HostSettings {
+  openWindow(): Promise<void>;
 }
 
 // ── Host ──────────────────────────────────────────────────────────────────
@@ -300,6 +320,7 @@ export interface NotebookHost {
   readonly dialog: HostDialog;
   readonly externalLinks: HostExternalLinks;
   readonly updater: HostUpdater;
+  readonly settings: HostSettings;
   /**
    * Typed action bus shared between host UI surfaces (menus, keyboard,
    * future palette) and the app. Host-side wiring calls `run(id, payload)`;
@@ -314,7 +335,6 @@ export interface NotebookHost {
    */
   readonly log: HostLog;
   // Future namespaces (add in dedicated PRs):
-  //   settings:   HostSettings
   //   env:        HostEnv         (detect_pyproject, detect_pixi_toml, …)
   //   deps (ext): dependency *edit* APIs — this PR only has validation
   //   dialog:     HostDialog      (plugin-dialog: open/save file pickers)

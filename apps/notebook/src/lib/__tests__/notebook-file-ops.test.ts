@@ -1,5 +1,4 @@
 // @vitest-environment jsdom
-import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 import type { NotebookHost } from "@nteract/notebook-host";
 import type { NotebookTransport } from "runtimed";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
@@ -22,6 +21,10 @@ const mockSaveDialog = vi.fn<
  * surface is unused in these tests.
  */
 const mockSendRequest = vi.fn();
+const mockGetDefaultSaveDirectory = vi.fn<() => Promise<string>>();
+const mockSaveAs = vi.fn<(path: string) => Promise<void>>();
+const mockOpenInNewWindow = vi.fn<(path: string) => Promise<void>>();
+const mockCloneToEphemeral = vi.fn<() => Promise<string>>();
 const stubTransport = {
   sendRequest: (req: unknown) => mockSendRequest(req),
   sendFrame: async () => {},
@@ -36,20 +39,29 @@ const stubHost = {
     openFile: (opts?: { filters?: unknown; defaultPath?: string }) => mockOpenDialog(opts),
     saveFile: (opts?: { filters?: unknown; defaultPath?: string }) => mockSaveDialog(opts),
   },
+  notebook: {
+    getDefaultSaveDirectory: () => mockGetDefaultSaveDirectory(),
+    saveAs: (path: string) => mockSaveAs(path),
+    openInNewWindow: (path: string) => mockOpenInNewWindow(path),
+    cloneToEphemeral: () => mockCloneToEphemeral(),
+  },
 } as unknown as NotebookHost;
 
-const mockInvoke = vi.fn();
-
 beforeEach(() => {
-  mockIPC((cmd, args) => mockInvoke(cmd, args));
+  mockGetDefaultSaveDirectory.mockResolvedValue("/home/user/notebooks");
+  mockSaveAs.mockResolvedValue(undefined);
+  mockOpenInNewWindow.mockResolvedValue(undefined);
+  mockCloneToEphemeral.mockResolvedValue("new-uuid-1234");
 });
 
 afterEach(() => {
-  mockInvoke.mockReset();
   mockOpenDialog.mockReset();
   mockSaveDialog.mockReset();
   mockSendRequest.mockReset();
-  clearMocks();
+  mockGetDefaultSaveDirectory.mockReset();
+  mockSaveAs.mockReset();
+  mockOpenInNewWindow.mockReset();
+  mockCloneToEphemeral.mockReset();
 });
 
 // ---------------------------------------------------------------------------
@@ -76,18 +88,10 @@ describe("saveNotebook", () => {
     expect(mockSendRequest).toHaveBeenCalledWith(
       expect.objectContaining({ type: "save_notebook", format_cells: true }),
     );
-    // No Tauri round-trip for save-in-place.
-    expect(mockInvoke).not.toHaveBeenCalledWith(
-      "save_notebook",
-      expect.anything(),
-    );
+    expect(mockSaveAs).not.toHaveBeenCalled();
   });
 
   it("opens a save dialog for untitled notebooks", async () => {
-    mockInvoke.mockImplementation((cmd: string) => {
-      if (cmd === "get_default_save_directory") return "/home/user/notebooks";
-      return undefined;
-    });
     mockSaveDialog.mockResolvedValueOnce(
       "/home/user/notebooks/MyNotebook.ipynb",
     );
@@ -95,31 +99,20 @@ describe("saveNotebook", () => {
     const result = await saveNotebook(stubHost, flushSync, false);
 
     expect(result).toBe(true);
+    expect(mockGetDefaultSaveDirectory).toHaveBeenCalledTimes(1);
     expect(mockSaveDialog).toHaveBeenCalledTimes(1);
-    expect(mockInvoke).toHaveBeenCalledWith(
-      "save_notebook_as",
-      expect.objectContaining({
-        path: "/home/user/notebooks/MyNotebook.ipynb",
-      }),
-    );
+    expect(mockSaveAs).toHaveBeenCalledWith("/home/user/notebooks/MyNotebook.ipynb");
     expect(mockSendRequest).not.toHaveBeenCalled();
   });
 
   it("returns false when the save dialog is cancelled", async () => {
-    mockInvoke.mockImplementation((cmd: string) => {
-      if (cmd === "get_default_save_directory") return "/tmp";
-      return undefined;
-    });
+    mockGetDefaultSaveDirectory.mockResolvedValueOnce("/tmp");
     mockSaveDialog.mockResolvedValueOnce(null);
 
     const result = await saveNotebook(stubHost, flushSync, false);
 
     expect(result).toBe(false);
-    // save_notebook_as should NOT be called
-    const saveAsCalls = mockInvoke.mock.calls.filter(
-      ([cmd]) => cmd === "save_notebook_as",
-    );
-    expect(saveAsCalls).toHaveLength(0);
+    expect(mockSaveAs).not.toHaveBeenCalled();
   });
 
   it("returns false on daemon save errors", async () => {
@@ -157,15 +150,11 @@ describe("saveNotebook", () => {
 describe("openNotebookFile", () => {
   it("opens the selected file in a new window", async () => {
     mockOpenDialog.mockResolvedValueOnce("/path/to/notebook.ipynb");
-    mockInvoke.mockResolvedValue(undefined);
 
     await openNotebookFile(stubHost);
 
     expect(mockOpenDialog).toHaveBeenCalledTimes(1);
-    expect(mockInvoke).toHaveBeenCalledWith(
-      "open_notebook_in_new_window",
-      expect.objectContaining({ path: "/path/to/notebook.ipynb" }),
-    );
+    expect(mockOpenInNewWindow).toHaveBeenCalledWith("/path/to/notebook.ipynb");
   });
 
   it("does nothing when the dialog is cancelled", async () => {
@@ -173,7 +162,7 @@ describe("openNotebookFile", () => {
 
     await openNotebookFile(stubHost);
 
-    expect(mockInvoke).not.toHaveBeenCalled();
+    expect(mockOpenInNewWindow).not.toHaveBeenCalled();
   });
 
   it("does not throw on error", async () => {
@@ -190,36 +179,18 @@ describe("openNotebookFile", () => {
 
 describe("cloneNotebookFile", () => {
   it("invokes clone_notebook_to_ephemeral once and opens no dialog", async () => {
-    mockInvoke.mockResolvedValueOnce("new-uuid-1234");
-
     await cloneNotebookFile(stubHost);
 
-    const cloneCalls = mockInvoke.mock.calls.filter(
-      ([cmd]) => cmd === "clone_notebook_to_ephemeral",
-    );
-    expect(cloneCalls).toHaveLength(1);
+    expect(mockCloneToEphemeral).toHaveBeenCalledTimes(1);
 
     // No dialog, no save-directory lookup, no legacy path construction.
     expect(mockSaveDialog).not.toHaveBeenCalled();
-    expect(
-      mockInvoke.mock.calls.filter(
-        ([cmd]) => cmd === "get_default_save_directory",
-      ),
-    ).toHaveLength(0);
-    expect(
-      mockInvoke.mock.calls.filter(
-        ([cmd]) => cmd === "open_notebook_in_new_window",
-      ),
-    ).toHaveLength(0);
-    expect(
-      mockInvoke.mock.calls.filter(
-        ([cmd]) => cmd === "clone_notebook_to_path",
-      ),
-    ).toHaveLength(0);
+    expect(mockGetDefaultSaveDirectory).not.toHaveBeenCalled();
+    expect(mockOpenInNewWindow).not.toHaveBeenCalled();
   });
 
   it("does not throw on error", async () => {
-    mockInvoke.mockRejectedValue(new Error("clone failed"));
+    mockCloneToEphemeral.mockRejectedValue(new Error("clone failed"));
 
     await expect(cloneNotebookFile(stubHost)).resolves.toBeUndefined();
   });
