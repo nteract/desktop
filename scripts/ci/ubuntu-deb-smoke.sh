@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Disabled from release gates while Linux desktop releases are AppImage-only.
+# See docs/linux.md and contributing/releasing.md before re-enabling DEB/APT
+# package-manager smokes.
+
 usage() {
   echo "usage: ubuntu-deb-smoke.sh local <path-to-deb> <stable|nightly> [expected-version]" >&2
   echo "       ubuntu-deb-smoke.sh apt <stable|nightly> [expected-version]" >&2

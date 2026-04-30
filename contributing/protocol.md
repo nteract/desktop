@@ -102,7 +102,26 @@ The first frame is a JSON `Handshake` message:
 
 The `Handshake` enum uses `#[serde(tag = "channel", rename_all = "snake_case")]`, so the wire format is flat with a `"channel"` discriminator field — not nested. Optional fields like `working_dir` and `initial_metadata` are omitted when `None` (via `skip_serializing_if`).
 
-Other handshake variants include `Pool`, `SettingsSync`, `Blob`, `OpenNotebook { path }`, and `CreateNotebook { runtime, ... }`. The `OpenNotebook` and `CreateNotebook` variants are the primary paths for opening/creating notebooks from the desktop app, while `NotebookSync` is used by programmatic clients (e.g., Python bindings).
+Other handshake variants include `Pool`, `SettingsSync`, `Blob`, `OpenNotebook { path }`, `CreateNotebook { runtime, ... }`, and `RuntimeAgent { ... }`. The `OpenNotebook` and `CreateNotebook` variants are the primary paths for opening/creating notebooks from the desktop app, while `NotebookSync` is used by programmatic clients (e.g., Python bindings).
+
+The runtimed socket is not an app-only IPC surface. It is a same-UID trusted API:
+the Unix socket permissions prevent cross-user access, but any process running as
+the same OS user and holding the socket path can intentionally use the daemon.
+`RUNTIMED_SOCKET_PATH` is therefore a capability-bearing pointer.
+
+| Handshake | Authority exposed |
+|-----------|-------------------|
+| `Pool` | Pool status, environment claims/returns, daemon status/admin requests including shutdown |
+| `SettingsSync` | Read/write access to the user's synced settings document |
+| `NotebookSync` | Peer access to a notebook room and its runtime-state sync |
+| `OpenNotebook` | Load or create a file-backed notebook from a path |
+| `CreateNotebook` | Create an untitled or ephemeral notebook room |
+| `Blob` | Store blobs and query the localhost blob HTTP port |
+| `RuntimeAgent` | Attach a runtime-agent peer to a notebook room |
+
+Do not add a new handshake variant under the assumption that only the desktop app
+can reach it. If a channel needs tighter authority than same-UID access, design
+an explicit capability or guard for that channel.
 
 The daemon responds with a `NotebookConnectionInfo`:
 

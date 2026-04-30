@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Disabled from release gates while Linux desktop releases are AppImage-only.
+# See docs/linux.md and contributing/releasing.md before re-enabling RPM
+# package-manager smokes.
+
 usage() {
   echo "usage: fedora-rpm-smoke.sh <path-to-rpm> <stable|nightly> [expected-version]" >&2
 }

@@ -144,6 +144,18 @@ Python wheels are always built (macOS arm64, Linux x64, Windows x64) and always 
 
 Desktop version is computed as `{runt version}-{suffix}.{timestamp}` where suffix is `nightly` or `stable`. This is stamped into `tauri.conf.json` and `Cargo.toml` at build time — not committed.
 
+### Linux desktop artifacts
+
+Linux desktop releases publish the AppImage only. DEB/RPM/APT publication is
+disabled until there is a first-class distro-native lifecycle for `runtimed`.
+
+The reason is architectural: `runtimed` is a per-user daemon. It manages
+per-user notebooks, kernels, settings sync, environment pools, MCP/CLI access,
+and the user-owned Unix socket. Package-manager scripts should install files;
+they should not start, repair, or upgrade each logged-in user's daemon
+instance. AppImage keeps the Linux desktop update model aligned with Tauri's
+updater artifact and leaves daemon bootstrap to the app/CLI user-local paths.
+
 ### Trusted Publishing
 
 PyPI publishing uses OIDC trusted publishing (no API tokens). The GitHub Actions workflow identity is registered as a trusted publisher on PyPI for the `runtimed` package. Both `release-common.yml` and `python-package.yml` use this.
