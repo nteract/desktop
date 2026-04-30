@@ -10,10 +10,7 @@ import {
   needsPlugin,
   preWarmForMimes,
 } from "@/components/isolated/iframe-libraries";
-import {
-  classifyCellChangesetMaterialization,
-  isDisplayCapableJupyterOutputType,
-} from "runtimed";
+import { isDisplayCapableJupyterOutputType, planCellChangesetProjection } from "runtimed";
 import type { JupyterOutput } from "../types";
 import type { NotebookHandle } from "../wasm/runtimed-wasm/runtimed_wasm.js";
 import { getBlobPort } from "./blob-port";
@@ -99,15 +96,15 @@ export async function materializeChangeset(
 
   // ── Full materialization fallback ──────────────────────────────────
 
-  const materialization = classifyCellChangesetMaterialization(changeset);
-  if (materialization.kind === "full") {
-    if (materialization.reason === "missing_changeset") {
+  const projectionPlan = planCellChangesetProjection(changeset);
+  if (projectionPlan.kind === "full") {
+    if (projectionPlan.reason === "missing_changeset") {
       logger.debug(
         "[frame-pipeline] full materialization: no changeset from WASM",
       );
     } else {
       logger.debug(
-        `[frame-pipeline] full materialization: +${changeset?.added.length ?? 0} -${changeset?.removed.length ?? 0} reorder=${changeset?.order_changed ?? false} reason=${materialization.reason}`,
+        `[frame-pipeline] full materialization: +${changeset?.added.length ?? 0} -${changeset?.removed.length ?? 0} reorder=${changeset?.order_changed ?? false} reason=${projectionPlan.reason}`,
       );
     }
     await deps.materializeCells(handle);
@@ -126,26 +123,20 @@ export async function materializeChangeset(
   let cellStoreTouched = 0;
   let outputOnlySkipped = 0;
 
-  for (const { cell_id: cellId, fields } of changeset.changed) {
+  for (const projection of projectionPlan.cells) {
+    const { cell_id: cellId, fields } = projection;
     // Phase C-lite: outputs live in the per-output / per-execution stores
     // (see notebook-outputs.ts, notebook-executions.ts). The cell store
     // still carries an `outputs: JupyterOutput[]` field for legacy readers
     // on full materialization, but the frame pipeline no longer touches
     // that field on incremental updates — the outputs store is the source
     // of truth for <OutputArea>.
-    const chromeChanged =
-      fields.source ||
-      fields.execution_count ||
-      fields.cell_type ||
-      fields.metadata ||
-      fields.position;
-
-    if (!chromeChanged) {
+    if (!projection.touches_chrome) {
       // Output-only change — the outputs store already has the new data
       // from `applyOutputChangeset`. Still warm the plugin cache for any
       // rich MIME types so <OutputArea> renders without waiting for async
       // loads, but don't touch the cell store.
-      if (fields.outputs) {
+      if (projection.touches_outputs) {
         outputOnlySkipped++;
         const rawOutputs: unknown[] = handle.get_cell_outputs(cellId) ?? [];
         preWarmPluginsForRawOutputs(rawOutputs);
@@ -168,12 +159,12 @@ export async function materializeChangeset(
     );
     if (!cell) continue;
 
-    if (!fields.source) {
+    if (projection.preserve_source) {
       const existing = getCellById(cellId);
       if (existing) cell.source = existing.source;
     }
 
-    if (fields.outputs) {
+    if (projection.touches_outputs) {
       // Warm plugin cache so the <OutputArea> iframe has renderers ready.
       const rawOutputs: unknown[] = handle.get_cell_outputs(cellId) ?? [];
       preWarmPluginsForRawOutputs(rawOutputs);
@@ -182,17 +173,8 @@ export async function materializeChangeset(
   }
 
   if (changeset.changed.length > 0) {
-    const fieldSummary = changeset.changed
-      .map((c) => {
-        const f = c.fields;
-        const flags = [
-          f.source && "src",
-          f.outputs && "out",
-          f.execution_count && "ec",
-          f.metadata && "meta",
-        ].filter(Boolean);
-        return `${c.cell_id.slice(0, 8)}(${flags.join(",")})`;
-      })
+    const fieldSummary = projectionPlan.cells
+      .map((c) => `${c.cell_id.slice(0, 8)}(${c.field_summary.join(",")})`)
       .join(" ");
     logger.debug(
       `[frame-pipeline] incremental: ${changeset.changed.length} cells [${fieldSummary}] cell-store=${cellStoreTouched} outputs-only-skipped=${outputOnlySkipped}`,

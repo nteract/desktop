@@ -58,11 +58,16 @@ export {
 // Cell changeset
 export {
   classifyCellChangesetMaterialization,
+  cellChangesetTouchesChrome,
   type CellChangeset,
   type CellChangesetMaterialization,
+  type CellChangesetProjectionPlan,
   type ChangedCell,
   type ChangedFields,
+  type IncrementalCellProjection,
   mergeChangesets,
+  planCellChangesetProjection,
+  summarizeChangedFields,
 } from "./cell-changeset";
 
 // Execution projection

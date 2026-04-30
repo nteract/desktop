@@ -1,7 +1,10 @@
 import {
   classifyCellChangesetMaterialization,
+  cellChangesetTouchesChrome,
   type CellChangeset,
   mergeChangesets,
+  planCellChangesetProjection,
+  summarizeChangedFields,
 } from "runtimed";
 import { describe, expect, it } from "vite-plus/test";
 
@@ -64,5 +67,73 @@ describe("CellChangeset helpers", () => {
     expect(classifyCellChangesetMaterialization(outputsOnly("cell-1"))).toEqual({
       kind: "incremental",
     });
+  });
+
+  it("plans output-only updates without cell chrome writes", () => {
+    expect(planCellChangesetProjection(outputsOnly("cell-1"))).toEqual({
+      kind: "incremental",
+      cells: [
+        {
+          cell_id: "cell-1",
+          fields: { outputs: true },
+          touches_chrome: false,
+          touches_outputs: true,
+          preserve_source: true,
+          field_summary: ["out"],
+        },
+      ],
+    });
+  });
+
+  it("plans chrome updates and source preservation for app projections", () => {
+    expect(
+      planCellChangesetProjection({
+        ...empty,
+        changed: [
+          {
+            cell_id: "cell-1",
+            fields: { outputs: true, execution_count: true },
+          },
+          {
+            cell_id: "cell-2",
+            fields: { source: true, metadata: true },
+          },
+        ],
+      }),
+    ).toEqual({
+      kind: "incremental",
+      cells: [
+        {
+          cell_id: "cell-1",
+          fields: { outputs: true, execution_count: true },
+          touches_chrome: true,
+          touches_outputs: true,
+          preserve_source: true,
+          field_summary: ["out", "ec"],
+        },
+        {
+          cell_id: "cell-2",
+          fields: { source: true, metadata: true },
+          touches_chrome: true,
+          touches_outputs: false,
+          preserve_source: false,
+          field_summary: ["src", "meta"],
+        },
+      ],
+    });
+  });
+
+  it("exposes field-level projection helpers", () => {
+    expect(cellChangesetTouchesChrome({ outputs: true })).toBe(false);
+    expect(cellChangesetTouchesChrome({ position: true })).toBe(true);
+    expect(
+      summarizeChangedFields({
+        source: true,
+        outputs: true,
+        execution_count: true,
+        metadata: true,
+        position: true,
+      }),
+    ).toEqual(["src", "out", "ec", "meta"]);
   });
 });

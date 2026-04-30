@@ -38,6 +38,34 @@ export type CellChangesetMaterialization =
   | { kind: "full"; reason: "missing_changeset" | "structural" | "resolved_assets" }
   | { kind: "incremental" };
 
+export interface IncrementalCellProjection {
+  cell_id: string;
+  fields: ChangedFields;
+  touches_chrome: boolean;
+  touches_outputs: boolean;
+  preserve_source: boolean;
+  field_summary: string[];
+}
+
+export type CellChangesetProjectionPlan =
+  | { kind: "full"; reason: "missing_changeset" | "structural" | "resolved_assets" }
+  | { kind: "incremental"; cells: IncrementalCellProjection[] };
+
+const CHROME_FIELD_KEYS = [
+  "source",
+  "execution_count",
+  "cell_type",
+  "metadata",
+  "position",
+] as const satisfies readonly (keyof ChangedFields)[];
+
+const FIELD_SUMMARY_LABELS: ReadonlyArray<[keyof ChangedFields, string]> = [
+  ["source", "src"],
+  ["outputs", "out"],
+  ["execution_count", "ec"],
+  ["metadata", "meta"],
+];
+
 // ── Utilities ────────────────────────────────────────────────────────
 
 /**
@@ -88,4 +116,40 @@ export function classifyCellChangesetMaterialization(
     return { kind: "full", reason: "resolved_assets" };
   }
   return { kind: "incremental" };
+}
+
+export function cellChangesetTouchesChrome(fields: ChangedFields): boolean {
+  return CHROME_FIELD_KEYS.some((key) => fields[key] === true);
+}
+
+export function summarizeChangedFields(fields: ChangedFields): string[] {
+  return FIELD_SUMMARY_LABELS.flatMap(([key, label]) =>
+    fields[key] === true ? [label] : [],
+  );
+}
+
+/**
+ * Plan frontend projection work for a coalesced changeset.
+ *
+ * This keeps protocol-field interpretation in the runtimed package while
+ * allowing apps to supply their own store writes and renderer pre-warming.
+ */
+export function planCellChangesetProjection(
+  changeset: CellChangeset | null,
+): CellChangesetProjectionPlan {
+  const materialization = classifyCellChangesetMaterialization(changeset);
+  if (materialization.kind === "full") {
+    return materialization;
+  }
+  return {
+    kind: "incremental",
+    cells: changeset.changed.map(({ cell_id, fields }) => ({
+      cell_id,
+      fields,
+      touches_chrome: cellChangesetTouchesChrome(fields),
+      touches_outputs: fields.outputs === true,
+      preserve_source: fields.source !== true,
+      field_summary: summarizeChangedFields(fields),
+    })),
+  };
 }
