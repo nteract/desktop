@@ -80,7 +80,7 @@ The notebook app communicates with runtimed over a Unix socket (named pipe on Wi
                                    └─────────────────┘
 ```
 
-The **Tauri relay** is a transparent byte pipe for Automerge sync frames — it does not maintain its own document replica. It forwards raw bytes between the WASM peer and the daemon peer. For requests and broadcasts, it bridges Tauri IPC commands to the daemon's socket protocol.
+The **Tauri relay** is a transparent byte pipe for Automerge sync, request, runtime-state, pool-state, and presence frames — it does not maintain its own document replica. It forwards raw typed frames between the WASM/TypeScript peer and the daemon peer. Broadcast, response, presence, and session-control frames arrive through the unified `notebook:frame` event.
 
 ## Connection Lifecycle
 
@@ -187,6 +187,14 @@ After the handshake, frames are typed by their first byte:
 | `0x06`    | PoolStateSync      | Binary (raw Automerge sync for the per-daemon `PoolDoc`) |
 | `0x07`    | SessionControl     | JSON (`SessionControlMessage`, daemon-originated readiness/status) |
 
+Frame direction is peer-specific:
+
+| Sender | Valid frame types |
+|--------|-------------------|
+| Frontend / Tauri relay | `0x00` AutomergeSync, `0x01` NotebookRequest, `0x04` Presence, `0x05` RuntimeStateSync, `0x06` PoolStateSync |
+| Daemon notebook peer | `0x00` AutomergeSync, `0x02` NotebookResponse, `0x03` NotebookBroadcast, `0x04` Presence, `0x05` RuntimeStateSync, `0x06` PoolStateSync, `0x07` SessionControl |
+| Runtime agent peer | `0x00` AutomergeSync, `0x01` RuntimeAgentRequest/Envelope, `0x02` RuntimeAgentResponse/Envelope, `0x05` RuntimeStateSync |
+
 `NotebookRequest` and `NotebookResponse` payloads are carried in flattened
 `NotebookRequestEnvelope` and `NotebookResponseEnvelope` values. Concurrent
 requests must include an `id`, and clients must route responses by id because
@@ -263,17 +271,21 @@ Requests are one-shot JSON messages sent from the client to the daemon. Each req
 |---------|---------|
 | `LaunchKernel` | Start a kernel with environment config |
 | `ExecuteCell { cell_id }` | Queue a cell for execution (daemon reads source from synced doc) |
+| `ExecuteCellGuarded { cell_id, observed_heads }` | Queue a cell only if the approved notebook heads still match |
 | `ClearOutputs { cell_id }` | Clear a cell's outputs |
 | `InterruptExecution` | Send SIGINT to the running kernel |
 | `ShutdownKernel` | Stop the kernel process |
 | `RunAllCells` | Execute all code cells in order |
-| `SaveNotebook` | Persist the Automerge doc to `.ipynb` on disk |
+| `RunAllCellsGuarded { observed_heads }` | Run all code cells only if the approved notebook heads still match |
+| `SaveNotebook { format_cells, path? }` | Persist the Automerge doc to `.ipynb` on disk, optionally save-as to `path` |
 | `SyncEnvironment` | Hot-install packages into the running kernel's environment |
+| `ApproveTrust` | Sign current dependency metadata after user approval |
+| `ApproveProjectEnvironment` | Record local approval for a project-file environment |
+| `CloneAsEphemeral { source_notebook_id }` | Fork an existing loaded notebook into a new in-memory room |
 | `SendComm { message }` | Send a comm message to the kernel (widget interactions) |
 | `Complete { code, cursor_pos }` | Get code completions from the kernel |
 | `GetHistory { pattern, n, unique }` | Search kernel input history |
-| `GetKernelInfo` | Query current kernel status |
-| `GetQueueState` | Query the execution queue |
+| `GetDocBytes` | Fetch canonical Automerge bytes to bootstrap a WASM peer |
 
 `LaunchKernel.env_source` is a request-time `LaunchSpec` string on the wire:
 `"auto"`, `"auto:uv"`, `"auto:conda"`, `"auto:pixi"`, or a concrete
@@ -285,22 +297,31 @@ launch and downstream protocol responses carry a concrete `EnvSource`.
 | Response | Meaning |
 |----------|---------|
 | `KernelLaunched { env_source, ... }` | Kernel started, includes resolved concrete environment origin label |
+| `KernelAlreadyRunning { env_source, ... }` | Existing kernel reused |
 | `CellQueued` | Cell added to execution queue |
-| `NotebookSaved` | File written to disk |
+| `AllCellsQueued { queued }` | All runnable code cells queued with execution IDs |
+| `NotebookSaved { path }` | File written to disk |
+| `SaveError { error }` | Save failed with structured error details |
+| `GuardRejected { reason }` | Guarded action rejected because observed notebook state changed |
+| `NotebookCloned { notebook_id, working_dir }` | Ephemeral fork created |
+| `SyncEnvironmentComplete` / `SyncEnvironmentFailed` | Hot-sync result |
+| `DocBytes { bytes }` | Canonical Automerge doc bytes |
 | `CompletionResult { items, cursor_start, cursor_end }` | Code completion results (`items: Vec<CompletionItem>`) |
+| `HistoryResult { entries }` | Kernel input history search results |
 | `Error { error }` | Something went wrong |
 
 ### Request flow through the stack
 
 ```
-Frontend: invoke("execute_cell_via_daemon", { cellId })
-  → Tauri command handler
-  → Relay: handle.send_request(NotebookRequest::ExecuteCell { cell_id })
+Frontend: host.transport.sendRequest({ type: "execute_cell", cell_id })
+  → TauriTransport encodes NotebookRequestEnvelope with a correlation id
+  → send_frame(0x01 + JSON envelope)
+  → Relay: handle.forward_frame(NotebookRequest)
   → Frame type 0x01 sent on socket
   → Daemon processes request
-  → Frame type 0x02 returned
-  → Relay receives response via oneshot channel
-  → Returns to frontend
+  → Frame type 0x02 returned with matching id
+  → Relay emits "notebook:frame"
+  → TauriTransport response tap resolves the pending request by id
 ```
 
 ## Broadcasts
@@ -340,7 +361,7 @@ The relay and frontend use these Tauri events for cross-process communication:
 | `daemon:ready` | Relay → Frontend | `DaemonReadyPayload` | Connection established, ready to bootstrap |
 | `daemon:disconnected` | Relay → Frontend | — | Connection to daemon lost |
 
-Outgoing frames from the frontend use `sendFrame(frameType, payload)` where `payload` is `Uint8Array` passed as raw binary via `tauri::ipc::Request`. Only `0x00` (AutomergeSync) and `0x04` (Presence) are valid outgoing types.
+Outgoing frames from the frontend use `sendFrame(frameType, payload)` where `payload` is `Uint8Array` passed as raw binary via `tauri::ipc::Request`. The relay accepts frontend-originated `0x00` (AutomergeSync), `0x01` (NotebookRequest), `0x04` (Presence), `0x05` (RuntimeStateSync), and `0x06` (PoolStateSync). `0x02` responses, `0x03` broadcasts, and `0x07` session-control frames are daemon-originated.
 
 ### In-memory frame bus
 
