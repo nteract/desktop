@@ -315,12 +315,15 @@ pub async fn clear_outputs(
         crate::presence::emit_focus(&handle, id, &peer_label).await;
     }
 
-    if !cell_ids.is_empty() {
-        if let Err(e) = handle.clear_outputs_for_cells(&cell_ids) {
-            return tool_error(&format!("Failed to clear outputs: {e}"));
+    let cleared = if cell_ids.is_empty() {
+        0
+    } else {
+        match handle.clear_outputs_for_cells(&cell_ids) {
+            Ok(count) => count,
+            Err(e) => return tool_error(&format!("Failed to clear outputs: {e}")),
         }
-    }
+    };
 
-    let result = serde_json::json!({ "cleared": cell_ids.len() });
+    let result = serde_json::json!({ "cleared": cleared });
     tool_success(&serde_json::to_string_pretty(&result).unwrap_or_default())
 }

@@ -793,7 +793,7 @@ mod tests {
     }
 
     #[test]
-    fn get_cell_execution_count_prefers_runtime_state() {
+    fn get_cell_execution_count_uses_current_execution_pointer() {
         let (handle, shared, _rx, _cmd_rx) = test_handle_with_shared();
 
         handle
@@ -801,6 +801,7 @@ mod tests {
                 let mut nd = notebook_doc::NotebookDoc::wrap(std::mem::take(doc));
                 nd.add_cell_full("cell-1", "code", "80", "x = 1", "7", &serde_json::json!({}))
                     .unwrap();
+                nd.set_execution_id("cell-1", Some("exec-1")).unwrap();
                 *doc = nd.into_inner();
             })
             .unwrap();
@@ -813,15 +814,31 @@ mod tests {
     }
 
     #[test]
-    fn get_cell_execution_count_prefers_latest_runtime_sequence() {
+    fn get_cell_execution_count_ignores_unpointed_runtime_executions() {
         let (handle, shared, _rx, _cmd_rx) = test_handle_with_shared();
 
+        handle
+            .with_doc(|doc| {
+                let mut nd = notebook_doc::NotebookDoc::wrap(std::mem::take(doc));
+                nd.add_cell_full(
+                    "cell-1",
+                    "code",
+                    "80",
+                    "x = 1",
+                    "null",
+                    &serde_json::json!({}),
+                )
+                .unwrap();
+                nd.set_execution_id("cell-1", Some("exec-old")).unwrap();
+                *doc = nd.into_inner();
+            })
+            .unwrap();
         set_execution_with_seq(&shared, "exec-old", "cell-1", "done", &[], Some(12), 1);
         set_execution_with_seq(&shared, "exec-new", "cell-1", "done", &[], Some(1), 2);
 
         assert_eq!(
             handle.get_cell_execution_count("cell-1").as_deref(),
-            Some("1")
+            Some("12")
         );
     }
 
