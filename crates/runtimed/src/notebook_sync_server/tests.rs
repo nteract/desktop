@@ -2385,7 +2385,7 @@ async fn test_format_notebook_cells_skips_unknown_runtime() {
 }
 
 // ========================================================================
-// Tests for daemon-owned notebook loading functions (Phase 2)
+// Tests for daemon-owned notebook loading functions
 // ========================================================================
 
 #[test]
@@ -2555,7 +2555,7 @@ async fn bench_streaming_load_phases() {
     let tmp = tempfile::TempDir::new().unwrap();
     let blob_store = test_blob_store(&tmp);
 
-    // Phase 0: Read + parse
+    // Step 1: Read + parse
     let t0 = std::time::Instant::now();
     let bytes = std::fs::read(notebook_path).unwrap();
     let read_elapsed = t0.elapsed();

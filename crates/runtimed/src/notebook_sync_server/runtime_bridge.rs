@@ -49,7 +49,7 @@ pub(crate) async fn send_runtime_agent_query(
     }
 }
 
-/// Send an RPC request to the runtime agent (legacy wrapper).
+/// Send an RPC request to the runtime agent.
 ///
 /// Routes commands as fire-and-forget, queries as sync RPCs.
 /// Callers that don't need a response should use `send_runtime_agent_command` directly.
