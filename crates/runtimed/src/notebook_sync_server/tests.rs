@@ -1454,6 +1454,59 @@ async fn test_apply_ipynb_changes_updates_execution_count() {
 }
 
 #[tokio::test]
+async fn test_apply_ipynb_changes_updates_existing_cell_attachments() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (room, _) = test_room_with_path(&tmp, "test.ipynb");
+
+    {
+        let mut doc = room.doc.write().await;
+        doc.add_cell(0, "cell-1", "raw").unwrap();
+        doc.update_source("cell-1", "attachment ref").unwrap();
+    }
+
+    let external_cells = vec![CellSnapshot {
+        id: "cell-1".to_string(),
+        cell_type: "raw".to_string(),
+        position: "80".to_string(),
+        source: "attachment ref".to_string(),
+        execution_count: "null".to_string(),
+        metadata: serde_json::json!({}),
+        resolved_assets: HashMap::new(),
+        attachments: HashMap::new(),
+    }];
+    let external_attachments = HashMap::from([(
+        "cell-1".to_string(),
+        serde_json::json!({
+            "payload.json": {
+                "application/json": {"kind": "watch-update"}
+            }
+        }),
+    )]);
+
+    let changed = apply_ipynb_changes(
+        &room,
+        &external_cells,
+        &HashMap::new(),
+        &external_attachments,
+        false,
+    )
+    .await;
+    assert!(changed, "Should detect attachment changes");
+
+    let cells = room.doc.read().await.get_cells();
+    let attachment_ref = cells[0]
+        .attachments
+        .get("payload.json")
+        .and_then(|bundle| bundle.get("application/json"))
+        .expect("watch path should store attachment refs on the existing cell");
+    let reconstructed = attachment_refs_to_nbformat_value(&cells[0].attachments, &room.blob_store)
+        .await
+        .unwrap();
+    assert_eq!(attachment_ref.encoding, AttachmentEncoding::Json);
+    assert_eq!(reconstructed, external_attachments["cell-1"]);
+}
+
+#[tokio::test]
 async fn test_apply_ipynb_changes_preserves_execution_count_when_kernel_running() {
     let tmp = tempfile::TempDir::new().unwrap();
     let (room, _) = test_room_with_path(&tmp, "test.ipynb");
