@@ -16,7 +16,7 @@
 //!    (any pending doc bytes are flushed to disk via debounced persistence)
 //! 6. Documents persist to `~/.cache/runt/notebook-docs/{hash}.automerge`
 //!
-//! ## Phase 8: Daemon-owned kernel execution
+//! ## Daemon-owned kernel execution
 //!
 //! Each room can have an optional kernel. When a kernel is launched:
 //! - Execute requests flow through the daemon

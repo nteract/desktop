@@ -292,6 +292,8 @@ pub struct JsCell {
     cell_type: String,
     position: String,
     source: String,
+    /// Legacy notebook-doc execution count fallback. RuntimeStateDoc is
+    /// authoritative when an execution exists for this cell.
     execution_count: String,
     outputs: Vec<serde_json::Value>,
     metadata: serde_json::Value,

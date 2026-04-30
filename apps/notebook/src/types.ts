@@ -5,6 +5,12 @@ export interface CodeCell {
   cell_type: "code";
   id: string;
   source: string;
+  /**
+   * Display count for the code cell. Full materialization resolves this from
+   * RuntimeStateDoc first, then falls back to the notebook-doc nbformat value
+   * for runtime-free reload/export paths. Local in-flight updates may hold
+   * `null` until the daemon publishes runtime state.
+   */
   execution_count: number | null;
   /**
    * Legacy: after Phase C-lite, the frame pipeline no longer populates

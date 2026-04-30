@@ -22,7 +22,7 @@ use super::*;
 /// Typed frames sync loop with first-byte type indicator.
 ///
 /// Handles both Automerge sync messages and NotebookRequest messages.
-/// This protocol supports daemon-owned kernel execution (Phase 8).
+/// This protocol supports daemon-owned kernel execution.
 ///
 /// Takes `reader` by value because the post-streaming-load main loop
 /// hands it to a `FramedReader` actor; from that point the read half
@@ -122,9 +122,9 @@ where
 
     send_initial_pool_sync(&mut writer, &daemon, &mut pool_peer_state).await?;
 
-    // Phase 1.5 (removed): CommSync broadcast is no longer needed.
-    // Late joiners receive widget state via RuntimeStateDoc CRDT sync,
-    // and the frontend CRDT watcher synthesizes comm_open messages.
+    // CommSync broadcast is no longer needed. Late joiners receive widget
+    // state via RuntimeStateDoc CRDT sync, and the frontend CRDT watcher
+    // synthesizes comm_open messages.
 
     send_initial_presence_snapshot(&mut writer, room, peer_id).await?;
 
@@ -154,7 +154,7 @@ where
     // arm wins mid-payload (see issue + production diagnostics).
     let mut framed_reader = connection::FramedReader::spawn(reader, 16);
 
-    // Phase 2: Exchange messages until sync is complete, then watch for changes
+    // Steady state: exchange client frames and broadcast room changes.
     loop {
         tokio::select! {
             biased;

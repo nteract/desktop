@@ -49,10 +49,11 @@ pub(crate) async fn send_runtime_agent_query(
     }
 }
 
-/// Send an RPC request to the runtime agent (legacy wrapper).
+/// Send an RPC request to the runtime agent.
 ///
-/// Routes commands as fire-and-forget, queries as sync RPCs.
-/// Callers that don't need a response should use `send_runtime_agent_command` directly.
+/// Routes commands as fire-and-forget and queries as sync RPCs. Callers that
+/// already know they do not need a response should use
+/// `send_runtime_agent_command` directly.
 pub(crate) async fn send_runtime_agent_request(
     room: &NotebookRoom,
     request: notebook_protocol::protocol::RuntimeAgentRequest,

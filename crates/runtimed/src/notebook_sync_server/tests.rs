@@ -2385,7 +2385,7 @@ async fn test_format_notebook_cells_skips_unknown_runtime() {
 }
 
 // ========================================================================
-// Tests for daemon-owned notebook loading functions (Phase 2)
+// Tests for daemon-owned notebook loading functions
 // ========================================================================
 
 #[test]
@@ -2540,10 +2540,10 @@ fn test_create_empty_notebook_with_provided_env_id() {
 /// - add_cell_full per batch
 /// - generate_sync_message per batch
 ///
-/// Run with: cargo test -p runtimed -- bench_streaming_load_phases --nocapture --ignored
+/// Run with: cargo test -p runtimed -- bench_streaming_load_steps --nocapture --ignored
 #[tokio::test]
 #[ignore] // Only run manually — requires the fixture notebook
-async fn bench_streaming_load_phases() {
+async fn bench_streaming_load_steps() {
     let notebook_path = std::path::Path::new("/tmp/gelmanschools-bench.ipynb");
     if !notebook_path.exists() {
         eprintln!("Skipping: /tmp/gelmanschools-bench.ipynb not found");
@@ -2555,7 +2555,7 @@ async fn bench_streaming_load_phases() {
     let tmp = tempfile::TempDir::new().unwrap();
     let blob_store = test_blob_store(&tmp);
 
-    // Phase 0: Read + parse
+    // Step 1: Read + parse
     let t0 = std::time::Instant::now();
     let bytes = std::fs::read(notebook_path).unwrap();
     let read_elapsed = t0.elapsed();

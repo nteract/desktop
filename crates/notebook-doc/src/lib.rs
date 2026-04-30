@@ -25,7 +25,9 @@
 //!       cell_type: Str            ← "code" | "markdown" | "raw"
 //!       position: Str             ← Fractional index hex string for ordering
 //!       source: Text              ← Automerge Text CRDT (character-level merging)
-//!       execution_count: Str      ← JSON-encoded i32 or "null"
+//!       execution_count: Str      ← JSON-encoded i32 or "null"; legacy
+//!                                   nbformat/import-export fallback; live
+//!                                   counts are in RuntimeStateDoc
 //!       metadata/                 ← Map (native Automerge types, legacy: JSON string fallback)
 //!       resolved_assets/          ← Map of markdown asset ref -> blob hash
 //!   metadata/                     ← Map
@@ -100,7 +102,11 @@ pub struct CellSnapshot {
     /// Cells are sorted lexicographically by this field.
     pub position: String,
     pub source: String,
-    /// JSON-encoded execution count: a number string like "5" or "null"
+    /// Legacy JSON-encoded execution count: a number string like "5" or "null".
+    ///
+    /// Live execution counts are daemon-authored in `RuntimeStateDoc`. This
+    /// field preserves nbformat/import-export history when runtime state is
+    /// unavailable.
     pub execution_count: String,
     /// Cell metadata (arbitrary JSON object, preserves unknown keys)
     #[serde(default = "default_empty_object")]
@@ -1112,7 +1118,12 @@ impl NotebookDoc {
         read_str(&self.doc, &cell_obj, "cell_type")
     }
 
-    /// Get a cell's execution count (O(1) lookup).
+    /// Get the persisted legacy execution count for a cell (O(1) lookup).
+    ///
+    /// This reads only the notebook document fallback used for nbformat
+    /// import/export and reloads without runtime state. Live execution counts
+    /// are RuntimeStateDoc-owned and should be read through higher-level
+    /// handles that can consult both documents.
     pub fn get_cell_execution_count(&self, cell_id: &str) -> Option<String> {
         let cell_obj = self.cell_obj_for(cell_id)?;
         read_str(&self.doc, &cell_obj, "execution_count")
@@ -1182,6 +1193,9 @@ impl NotebookDoc {
     }
 
     /// Insert a fully-populated cell with an explicit position string.
+    ///
+    /// `execution_count` is the persisted nbformat/import-export fallback. Live
+    /// execution counts are stored in RuntimeStateDoc.
     ///
     /// This is the preferred method for bulk loads (e.g., loading from .ipynb).
     /// The caller provides the position string directly, avoiding O(n²) overhead
@@ -2923,11 +2937,20 @@ mod tests {
         }
     }
 
-    /// Tests execution count sync propagates correctly.
+    /// Tests legacy execution count fallback sync propagates correctly.
     #[test]
-    fn test_execution_count_sync() {
+    fn test_legacy_execution_count_sync() {
         let mut daemon = NotebookDoc::new("exec-count-test");
-        daemon.add_cell(0, "cell-1", "code").unwrap();
+        daemon
+            .add_cell_full(
+                "cell-1",
+                "code",
+                "80",
+                "print('from file')",
+                "7",
+                &serde_json::json!({}),
+            )
+            .unwrap();
 
         let mut client = NotebookDoc {
             doc: AutoCommit::new(),
@@ -2943,8 +2966,23 @@ mod tests {
             10,
         );
 
-        // Live execution_count is covered by RuntimeStateDoc tests. NotebookDoc
-        // keeps only the persisted nbformat-history fallback.
+        // Live execution_count is covered by RuntimeStateDoc tests.
+        // NotebookDoc syncs only the persisted nbformat-history fallback.
+        assert_eq!(
+            client.get_cell_execution_count("cell-1").as_deref(),
+            Some("7")
+        );
+    }
+
+    #[test]
+    fn test_new_cells_default_to_null_legacy_execution_count() {
+        let mut doc = NotebookDoc::new("exec-count-default-test");
+        doc.add_cell(0, "cell-1", "code").unwrap();
+
+        assert_eq!(
+            doc.get_cell_execution_count("cell-1").as_deref(),
+            Some("null")
+        );
     }
 
     /// Tests three-peer sync: daemon + two clients.
