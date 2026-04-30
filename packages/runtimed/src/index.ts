@@ -91,6 +91,15 @@ export {
   type KnownBroadcast,
 } from "./broadcast-types";
 
+// Env progress projection
+export {
+  EMPTY_ENV_PROGRESS,
+  envProgressKey,
+  type EnvProgressState,
+  getEnvProgressStatusText,
+  projectEnvProgress,
+} from "./env-progress";
+
 // Comm diffing
 export {
   type CommChanges,
