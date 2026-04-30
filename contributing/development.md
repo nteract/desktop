@@ -32,6 +32,30 @@ support `wasm32-unknown-unknown`, causing `zstd-sys` (and similar C deps) to
 fail. If you have `RUSTC_WRAPPER=sccache` in your shell profile, remove it or
 xtask will strip it automatically for `wasm-pack` invocations.
 
+## WASM Prerequisite on macOS
+
+`sift-wasm` links `zstd-sys` (via parquet's `zstd` feature — needed to read
+pandas/duckdb/spark output) and cross-compiles it to `wasm32-unknown-unknown`.
+Apple's Xcode clang has no wasm backend registered, so the default system
+toolchain fails with `'No available targets are compatible with triple
+"wasm32-unknown-unknown"'`. Install Homebrew LLVM once:
+
+```bash
+brew install llvm
+```
+
+`cargo xtask wasm` auto-detects `/opt/homebrew/opt/llvm/bin/clang` (or the
+Intel-brew path) and exports `CC_wasm32_unknown_unknown` for the wasm-pack
+subprocess. If your LLVM lives elsewhere, set it yourself:
+
+```bash
+export CC_wasm32_unknown_unknown=/path/to/clang
+export AR_wasm32_unknown_unknown=/path/to/llvm-ar
+```
+
+If no wasm-capable clang is found, xtask bails with this instruction block
+instead of dumping a 2000-line cc-rs error.
+
 ## Windows Target Checks From macOS
 
 Use [`cargo-xwin`](https://github.com/rust-cross/cargo-xwin) when validating
