@@ -530,11 +530,10 @@ Three UI components manage dependencies for different runtimes:
 | `DenoDependencyHeader.tsx` | `useDenoConfig.ts` | Deno configuration and deno.json detection |
 
 The kernel lifecycle is managed by `useDaemonKernel.ts`, which:
-- Listens for `notebook:broadcast` events (re-emitted by `useAutomergeNotebook` after WASM frame demux)
-- Captures the `env_source` string (e.g. `"uv:pyproject"`, `"pixi:toml"`) from `KernelLaunched` responses
-- Tracks kernel status and execution queue
+- Derives kernel status, execution queue, and env sync state from RuntimeStateDoc
+- Listens for ephemeral runtime event callbacks from typed notebook frames
 - Provides `launchKernel()`, `executeCell()`, `syncEnvironment()` methods
-- Runs auto-launch detection on notebook open
+- Leaves project-file detection and auto-launch decisions to the daemon
 
 ## Testing
 

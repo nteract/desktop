@@ -154,11 +154,11 @@ Changes to dependency metadata structure require updating `crates/notebook-doc/s
 
 ## Adding a New Project File Format
 
-1. Create `crates/notebook/src/{format}.rs` with `find_{format}()` (directory walk) and `parse_{format}()` functions
-2. Add Tauri commands in `lib.rs`: `detect_{format}`, `get_{format}_dependencies`, `import_{format}_dependencies`
-3. Wire detection into the daemon auto-launch helpers in `notebook_sync_server/metadata.rs` at the correct priority position
-4. Add frontend detection in `useDaemonKernel.ts` and the appropriate dependencies hook
-5. Add test fixture in `crates/notebook/fixtures/audit-test/`
+1. Extend `crates/runtimed/src/project_file.rs` so the unified closest-wins walk detects and parses the new format.
+2. Extend `crates/notebook-doc/src/metadata.rs` if the format adds notebook dependency metadata.
+3. Wire the parsed project context into daemon auto-launch helpers in `notebook_sync_server/metadata.rs` at the correct priority position.
+4. Add frontend projection in `packages/runtimed/src/derived-state.ts` and the appropriate dependencies hook/component.
+5. Add test fixture coverage in `crates/notebook/fixtures/audit-test/` and daemon project-file tests.
 
 ## Frontend Architecture
 
@@ -204,6 +204,6 @@ Changes to dependency metadata structure require updating `crates/notebook-doc/s
 
 | File | Role |
 |------|------|
-| `apps/notebook/src/hooks/useDaemonKernel.ts` | Kernel execution, env sync |
+| `apps/notebook/src/hooks/useDaemonKernel.ts` | Kernel execution actions and ephemeral runtime event callbacks |
 | `apps/notebook/src/hooks/useDependencies.ts` | UV dep management |
 | `apps/notebook/src/hooks/useCondaDependencies.ts` | Conda dep management |
