@@ -40,13 +40,6 @@ use crate::project_file::{self as daemon_project_file, DetectedProjectFile};
 use super::room::NotebookRoom;
 use crate::task_supervisor::spawn_best_effort;
 
-/// Cross-module entrypoint for the save-as handler. Save-as hands us a
-/// concrete path (no `Option`), and lives in `crate::requests`, outside
-/// `notebook_sync_server`'s `pub(super)` visibility.
-pub(crate) async fn refresh_project_context_on_save_as(room: &Arc<NotebookRoom>, canonical: &Path) {
-    refresh_project_context_async(room, Some(canonical)).await;
-}
-
 /// Walk up from the notebook path, parse what the daemon can, write the
 /// result into `RuntimeStateDoc.project_context`, and arm (or rearm) a
 /// filesystem watcher on the detected project file. External edits to
@@ -89,7 +82,7 @@ pub(super) async fn refresh_project_context_async(room: &Arc<NotebookRoom>, path
 /// empty; the next refresh trigger will re-evaluate.
 async fn rearm_project_file_watcher(room: &Arc<NotebookRoom>, detected_path: Option<PathBuf>) {
     if let Some(tx) = room
-        .persistence
+        .file_binding
         .project_file_watcher_shutdown_tx
         .lock()
         .await
@@ -104,7 +97,7 @@ async fn rearm_project_file_watcher(room: &Arc<NotebookRoom>, detected_path: Opt
 
     let (shutdown_tx, ready_rx) = spawn_project_file_watcher(watch_path, room.clone());
     *room
-        .persistence
+        .file_binding
         .project_file_watcher_shutdown_tx
         .lock()
         .await = Some(shutdown_tx);
@@ -222,7 +215,7 @@ fn spawn_project_file_watcher(
                             // path: the notebook may have been moved such
                             // that a closer project file now wins, or the
                             // detected file may have been deleted.
-                            let notebook_path = room.identity.path.read().await.clone();
+                            let notebook_path = room.file_binding.path.read().await.clone();
                             refresh_project_context_async(&room, notebook_path.as_deref()).await;
                         }
                         Err(e) => {

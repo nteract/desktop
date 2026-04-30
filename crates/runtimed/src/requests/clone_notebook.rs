@@ -108,7 +108,7 @@ pub(crate) async fn handle_inner(
 /// if file-backed, or the explicit working_dir stored on the room for
 /// untitled rooms. None only if both are absent.
 async fn derive_working_dir(room: &NotebookRoom) -> Option<PathBuf> {
-    if let Some(path) = room.identity.path.read().await.as_ref() {
+    if let Some(path) = room.file_binding.path.read().await.as_ref() {
         if let Some(parent) = path.parent() {
             return Some(parent.to_path_buf());
         }

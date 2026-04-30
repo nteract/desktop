@@ -137,7 +137,7 @@ async fn untitled_room_has_path_none() {
     let tmp = tempfile::TempDir::new().unwrap();
     let blob_store = test_blob_store(&tmp);
     let room = NotebookRoom::new_fresh(Uuid::new_v4(), None, tmp.path(), blob_store, false);
-    assert!(room.identity.path.read().await.is_none());
+    assert!(room.file_binding.path.read().await.is_none());
 }
 
 #[tokio::test]
@@ -152,7 +152,7 @@ async fn file_backed_room_has_path_some() {
         blob_store,
         false,
     );
-    let guard = room.identity.path.read().await;
+    let guard = room.file_binding.path.read().await;
     assert_eq!(guard.as_deref(), Some(fake_path.as_path()));
 }
 
@@ -452,7 +452,7 @@ async fn test_ephemeral_room_skips_persistence() {
 
     assert!(room.persistence.debouncer.is_none());
     assert!(room
-        .identity
+        .file_binding
         .is_ephemeral
         .load(std::sync::atomic::Ordering::Relaxed));
 
@@ -470,7 +470,7 @@ async fn test_session_room_persists() {
 
     assert!(room.persistence.debouncer.is_some());
     assert!(!room
-        .identity
+        .file_binding
         .is_ephemeral
         .load(std::sync::atomic::Ordering::Relaxed));
 }
@@ -713,7 +713,8 @@ fn test_room_with_path_and_store(
         doc: Arc::new(RwLock::new(doc)),
         broadcasts: RoomBroadcasts::default(),
         persistence: RoomPersistence::with_debouncer(persist_tx, flush_request_tx),
-        identity: RoomIdentity::new(persist_path, Some(notebook_path.clone()), false),
+        file_binding: NotebookFileBinding::new(Some(notebook_path.clone()), false),
+        identity: RoomIdentity::new(persist_path),
         connections: RoomConnections::default(),
         blob_store,
         trust_state: Arc::new(RwLock::new(TrustState {
@@ -2712,7 +2713,7 @@ async fn test_update_kernel_presence_publishes_state_and_relays() {
 // ── Regression test: autosave after save_notebook path update ──────
 
 /// Verify that saving an untitled (UUID-keyed) room updates path_index and
-/// room.identity.path, while keeping the UUID stable in the rooms map.
+/// room.file_binding.path, while keeping the UUID stable in the rooms map.
 #[tokio::test]
 async fn saving_untitled_notebook_updates_path_index_and_keeps_uuid() {
     let tmp = tempfile::TempDir::new().unwrap();
@@ -2747,13 +2748,13 @@ async fn saving_untitled_notebook_updates_path_index_and_keeps_uuid() {
         .await
         .insert(canonical.clone(), room.id)
         .unwrap();
-    *room.identity.path.write().await = Some(canonical.clone());
+    *room.file_binding.path.write().await = Some(canonical.clone());
 
-    // UUID key unchanged, path_index populated, room.identity.path set.
+    // UUID key unchanged, path_index populated, room.file_binding.path set.
     assert!(rooms.lock().await.contains_key(&uuid));
     assert_eq!(path_index.lock().await.lookup(&canonical), Some(uuid));
     assert_eq!(
-        room.identity.path.read().await.as_deref(),
+        room.file_binding.path.read().await.as_deref(),
         Some(canonical.as_path())
     );
 }
@@ -2797,10 +2798,10 @@ async fn saving_to_already_open_path_returns_path_already_open_error() {
         other => panic!("expected PathAlreadyOpen, got {:?}", other),
     }
 
-    // room.identity.path must NOT have been mutated on error.
+    // room.file_binding.path must NOT have been mutated on error.
     assert!(
-        room.identity.path.read().await.is_none(),
-        "room.identity.path should still be None after a failed claim"
+        room.file_binding.path.read().await.is_none(),
+        "room.file_binding.path should still be None after a failed claim"
     );
 }
 
@@ -2909,9 +2910,9 @@ async fn test_promote_untitled_starts_autosave() {
         "UUID key should still be present after promotion"
     );
     assert_eq!(
-        room.identity.path.read().await.as_deref(),
+        room.file_binding.path.read().await.as_deref(),
         Some(canonical.as_path()),
-        "room.identity.path should be set after promotion"
+        "room.file_binding.path should be set after promotion"
     );
     assert_eq!(
         path_index.lock().await.lookup(&canonical),
@@ -2919,7 +2920,7 @@ async fn test_promote_untitled_starts_autosave() {
         "path_index should contain the room's UUID"
     );
     assert!(
-        !room.identity.is_ephemeral.load(Ordering::Relaxed),
+        !room.file_binding.is_ephemeral.load(Ordering::Relaxed),
         "is_ephemeral should be cleared after promotion"
     );
 
@@ -6476,7 +6477,7 @@ async fn test_clone_as_ephemeral_forks_cells_and_clears_outputs() {
 
     // Ephemeral.
     assert!(clone_room
-        .identity
+        .file_binding
         .is_ephemeral
         .load(std::sync::atomic::Ordering::Acquire));
 
@@ -6888,7 +6889,7 @@ async fn project_file_watcher_refreshes_context_on_external_edit() {
 
     // Sanity: watcher state is armed.
     assert!(room
-        .persistence
+        .file_binding
         .project_file_watcher_shutdown_tx
         .lock()
         .await
@@ -6929,7 +6930,7 @@ async fn project_file_watcher_refreshes_context_on_external_edit() {
 
     // Tear down the watcher so the temp dir can drop cleanly.
     let shutdown = room
-        .persistence
+        .file_binding
         .project_file_watcher_shutdown_tx
         .lock()
         .await
@@ -7278,7 +7279,11 @@ async fn test_autosave_shutdown_flushes_pending_doc_change() {
         "shutdown final save should include the edit made inside the debounce window; got: {sources:?}"
     );
     assert!(
-        room.persistence.autosave_shutdown_tx.lock().await.is_none(),
+        room.file_binding
+            .autosave_shutdown_tx
+            .lock()
+            .await
+            .is_none(),
         "shutdown should consume the autosave lifecycle handle"
     );
 }
@@ -7295,7 +7300,7 @@ async fn test_install_autosave_shutdown_tx_signals_replaced_handle() {
     let room = NotebookRoom::new_fresh(Uuid::new_v4(), None, &docs_dir, blob_store, false);
 
     let (old_tx, mut old_rx) = mpsc::unbounded_channel::<AutosaveShutdownRequest>();
-    install_autosave_shutdown_tx(&room, old_tx).await;
+    room.file_binding.install_autosave_shutdown_tx(old_tx).await;
 
     let (new_tx, mut new_rx) = mpsc::unbounded_channel::<AutosaveShutdownRequest>();
     let replaced_ack_task = tokio::spawn(async move {
@@ -7305,7 +7310,7 @@ async fn test_install_autosave_shutdown_tx_signals_replaced_handle() {
             .expect("replacing the handle should signal the old task");
         let _ = ack_tx.send(true);
     });
-    install_autosave_shutdown_tx(&room, new_tx).await;
+    room.file_binding.install_autosave_shutdown_tx(new_tx).await;
     replaced_ack_task.await.unwrap();
     assert!(
         new_rx.try_recv().is_err(),
@@ -7324,6 +7329,65 @@ async fn test_install_autosave_shutdown_tx_signals_replaced_handle() {
         "explicit shutdown should receive ack from the new handle"
     );
     ack_task.await.unwrap();
+}
+
+#[tokio::test]
+async fn test_save_as_rebind_replaces_file_lifecycle_and_runtime_path() {
+    use std::time::Duration;
+
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (room, old_path) = test_room_with_path(&tmp, "old.ipynb");
+    let room = Arc::new(room);
+    let new_path = tmp.path().join("new.ipynb");
+    std::fs::write(&old_path, "{}").unwrap();
+    std::fs::write(&new_path, "{}").unwrap();
+
+    let (old_watcher_tx, old_watcher_rx) = oneshot::channel::<()>();
+    *room.file_binding.watcher_shutdown_tx.lock().await = Some(old_watcher_tx);
+
+    let (old_autosave_tx, mut old_autosave_rx) =
+        mpsc::unbounded_channel::<AutosaveShutdownRequest>();
+    room.file_binding
+        .install_autosave_shutdown_tx(old_autosave_tx)
+        .await;
+    let autosave_ack_task = tokio::spawn(async move {
+        let ack_tx = old_autosave_rx
+            .recv()
+            .await
+            .expect("rebind should signal the old autosave task");
+        let _ = ack_tx.send(true);
+    });
+
+    NotebookFileBinding::rebind_after_save_as(&room, new_path.clone()).await;
+
+    tokio::time::timeout(Duration::from_secs(1), old_watcher_rx)
+        .await
+        .expect("rebind should signal old notebook watcher")
+        .expect("old notebook watcher sender should not be dropped");
+    autosave_ack_task.await.unwrap();
+
+    assert_eq!(
+        room.file_binding.path.read().await.as_deref(),
+        Some(new_path.as_path())
+    );
+    let runtime_path = room
+        .state
+        .read(|sd| sd.read_state().path)
+        .expect("runtime state should be readable");
+    let expected_runtime_path = new_path.to_string_lossy().into_owned();
+    assert_eq!(
+        runtime_path.as_deref(),
+        Some(expected_runtime_path.as_str())
+    );
+
+    if let Some(shutdown_tx) = room.file_binding.watcher_shutdown_tx.lock().await.take() {
+        let _ = shutdown_tx.send(());
+    }
+    assert!(
+        shutdown_autosave_debouncer(&room, &new_path.to_string_lossy(), Duration::from_secs(1))
+            .await,
+        "new autosave task should shut down cleanly"
+    );
 }
 
 #[tokio::test]
@@ -7356,10 +7420,12 @@ async fn test_autosave_shutdown_during_loading_returns_false_without_write() {
     let canonical = tokio::fs::canonicalize(&written)
         .await
         .unwrap_or_else(|_| PathBuf::from(&written));
-    *room.identity.path.write().await = Some(canonical.clone());
+    *room.file_binding.path.write().await = Some(canonical.clone());
     let shutdown_tx =
         spawn_autosave_debouncer(canonical.to_string_lossy().into_owned(), Arc::clone(&room));
-    install_autosave_shutdown_tx(&room, shutdown_tx).await;
+    room.file_binding
+        .install_autosave_shutdown_tx(shutdown_tx)
+        .await;
 
     {
         let mut doc = room.doc.write().await;

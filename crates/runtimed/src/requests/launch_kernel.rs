@@ -50,7 +50,7 @@ pub(crate) async fn handle(
     let notebook_path = match notebook_path {
         Some(p) => Some(p),
         None => room
-            .identity
+            .file_binding
             .path
             .read()
             .await

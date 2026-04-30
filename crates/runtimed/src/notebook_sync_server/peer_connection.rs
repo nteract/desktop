@@ -108,7 +108,7 @@ where
     // Auto-launch kernel if this is the first peer and notebook is trusted
     if peers == 1 {
         // Check if notebook_id is a UUID (new unsaved notebook) vs a file path
-        let path_snapshot = room.identity.path.read().await.clone();
+        let path_snapshot = room.file_binding.path.read().await.clone();
         let is_new_notebook = path_snapshot.as_ref().is_none_or(|p| !p.exists())
             && uuid::Uuid::parse_str(&notebook_id).is_ok();
 

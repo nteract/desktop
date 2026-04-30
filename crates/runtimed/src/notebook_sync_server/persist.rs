@@ -25,10 +25,10 @@ pub(crate) async fn save_notebook_to_disk(
     // room currently has as its path. Triangulates stray-file bugs by letting
     // us correlate saves against whoever fired them.
     debug!(
-        "[save] save_notebook_to_disk entered: target_path={:?}, room.id={}, room.identity.path={:?}",
+        "[save] save_notebook_to_disk entered: target_path={:?}, room.id={}, room.file_binding.path={:?}",
         target_path,
         room.id,
-        room.identity.path.read().await.as_deref()
+        room.file_binding.path.read().await.as_deref()
     );
     // Determine the actual save path
     let notebook_path = match target_path {
@@ -51,7 +51,7 @@ pub(crate) async fn save_notebook_to_disk(
                 PathBuf::from(format!("{}.ipynb", p))
             }
         }
-        None => match room.identity.path.read().await.clone() {
+        None => match room.file_binding.path.read().await.clone() {
             Some(p) => p,
             None => {
                 return Err(SaveError::Unrecoverable(
@@ -209,7 +209,7 @@ pub(crate) async fn save_notebook_to_disk(
             );
             // Still update save baselines so the file watcher stays consistent.
             let is_primary_path = target_path.is_none()
-                || room.identity.path.read().await.as_deref() == Some(notebook_path.as_path());
+                || room.file_binding.path.read().await.as_deref() == Some(notebook_path.as_path());
             if is_primary_path {
                 let mut saved = HashMap::with_capacity(cells.len());
                 for cell in &cells {
@@ -261,7 +261,7 @@ pub(crate) async fn save_notebook_to_disk(
     // to the primary path - saving to an alternate path (Save As) must not
     // corrupt the baseline for the file watcher.
     let is_primary_path = target_path.is_none()
-        || room.identity.path.read().await.as_deref() == Some(notebook_path.as_path());
+        || room.file_binding.path.read().await.as_deref() == Some(notebook_path.as_path());
     if is_primary_path {
         let mut saved = HashMap::with_capacity(cells.len());
         for cell in &cells {
@@ -279,7 +279,7 @@ pub(crate) async fn save_notebook_to_disk(
 }
 
 /// Transitions an untitled room to file-backed: claims path in path_index,
-/// updates room.identity.path, cleans up the stale `.automerge` persist file, spawns
+/// updates room.file_binding.path, cleans up the stale `.automerge` persist file, spawns
 /// the `.ipynb` file watcher and autosave debouncer, clears ephemeral markers,
 /// and stamps the new path on the runtime-state doc (peers see it via sync).
 ///
@@ -323,14 +323,11 @@ pub(crate) async fn try_claim_path(
 }
 
 /// Finalize the untitled-to-file-backed transition AFTER the .ipynb has been
-/// written and path_index already holds the claim. This is the non-claim half
-/// of the promotion: path field update, persist file cleanup, file watcher +
-/// autosave debouncer spawn, ephemeral marker clear, and runtime-state doc
-/// `path` write.
+/// written and path_index already holds the claim. `NotebookFileBinding` owns
+/// the path, watcher/autosave lifecycle, runtime-state path write, and project
+/// context refresh; this helper only handles the stale untitled Automerge file
+/// and notebook metadata transition around that binding update.
 pub(crate) async fn finalize_untitled_promotion(room: &Arc<NotebookRoom>, canonical: PathBuf) {
-    // Update room's path now that path_index owns it.
-    *room.identity.path.write().await = Some(canonical.clone());
-
     // NOTE: We don't actually stop the .automerge persist debouncer here —
     // stopping it would require taking ownership of room.persist_tx, which
     // the current struct definition doesn't support (it's a plain
@@ -352,36 +349,13 @@ pub(crate) async fn finalize_untitled_promotion(room: &Arc<NotebookRoom>, canoni
         }
     }
 
-    // Spawn .ipynb file watcher. RoomPersistence is always present, so the
-    // shutdown sender finds a home whether the room was born file-backed or
-    // promoted from ephemeral.
-    if canonical.extension().is_some_and(|ext| ext == "ipynb") {
-        let shutdown_tx = spawn_notebook_file_watcher(canonical.clone(), Arc::clone(room));
-        *room.persistence.watcher_shutdown_tx.lock().await = Some(shutdown_tx);
-    }
+    NotebookFileBinding::promote_after_save(room, canonical.clone()).await;
 
-    // Spawn autosave debouncer so subsequent edits persist to .ipynb.
-    let shutdown_tx =
-        spawn_autosave_debouncer(canonical.to_string_lossy().into_owned(), Arc::clone(room));
-    install_autosave_shutdown_tx(room, shutdown_tx).await;
-
-    // Clear ephemeral markers.
-    room.identity.is_ephemeral.store(false, Ordering::Relaxed);
+    // Clear the document-level ephemeral marker after the binding is file-backed.
     {
         let mut doc = room.doc.write().await;
         let _ = doc.delete_metadata("ephemeral");
     }
-
-    // Stamp the new path on the runtime-state doc; peers see it via sync.
-    let path_str = canonical.to_string_lossy().into_owned();
-    if let Err(e) = room.state.with_doc(|sd| sd.set_path(Some(&path_str))) {
-        warn!("[notebook-sync] set_path on promote failed: {}", e);
-    }
-
-    // Project context was `Pending` for untitled; now that we have a
-    // real path, walk up from it. Same call shape catalog uses on room
-    // creation.
-    super::project_context::refresh_project_context_async(room, Some(canonical.as_path())).await;
 
     info!(
         "[notebook-sync] Promoted untitled room {} to file-backed path {:?}",
@@ -674,37 +648,6 @@ pub(crate) fn spawn_autosave_debouncer(
     spawn_autosave_debouncer_with_config(notebook_id, room, AutosaveDebouncerConfig::default())
 }
 
-pub(crate) async fn install_autosave_shutdown_tx(
-    room: &NotebookRoom,
-    shutdown_tx: mpsc::UnboundedSender<AutosaveShutdownRequest>,
-) {
-    let previous_tx = room
-        .persistence
-        .autosave_shutdown_tx
-        .lock()
-        .await
-        .replace(shutdown_tx);
-
-    if let Some(previous_tx) = previous_tx {
-        let (ack_tx, ack_rx) = oneshot::channel::<bool>();
-        if previous_tx.send(ack_tx).is_err() {
-            return;
-        }
-        match tokio::time::timeout(std::time::Duration::from_secs(5), ack_rx).await {
-            Ok(Ok(true)) => {}
-            Ok(Ok(false)) => {
-                warn!("[autosave] Replaced autosave task reported failed shutdown");
-            }
-            Ok(Err(_)) => {
-                warn!("[autosave] Replaced autosave task dropped shutdown ack");
-            }
-            Err(_) => {
-                warn!("[autosave] Timed out waiting for replaced autosave task shutdown");
-            }
-        }
-    }
-}
-
 /// Request one final autosave and stop the `.ipynb` autosave task.
 ///
 /// The task owns a room `Arc`, so room eviction cannot rely on broadcast
@@ -715,38 +658,9 @@ pub(crate) async fn shutdown_autosave_debouncer(
     notebook_id: &str,
     timeout: std::time::Duration,
 ) -> bool {
-    let shutdown_tx = room.persistence.autosave_shutdown_tx.lock().await.take();
-    let Some(shutdown_tx) = shutdown_tx else {
-        return true;
-    };
-
-    let (ack_tx, ack_rx) = oneshot::channel::<bool>();
-    if shutdown_tx.send(ack_tx).is_err() {
-        debug!(
-            "[autosave] Shutdown skipped for {} (autosave task already exited)",
-            notebook_id
-        );
-        return true;
-    }
-
-    match tokio::time::timeout(timeout, ack_rx).await {
-        Ok(Ok(true)) => true,
-        Ok(Ok(false)) => false,
-        Ok(Err(_)) => {
-            warn!(
-                "[autosave] Shutdown ack dropped for {} before final save completed",
-                notebook_id
-            );
-            false
-        }
-        Err(_) => {
-            warn!(
-                "[autosave] Shutdown timed out for {} after {:?}",
-                notebook_id, timeout
-            );
-            false
-        }
-    }
+    room.file_binding
+        .shutdown_autosave(notebook_id, timeout)
+        .await
 }
 
 /// Spawn autosave debouncer with custom timing configuration (for testing).

@@ -179,8 +179,8 @@ pub(super) async fn handle_peer_disconnect(
             }; // rooms lock dropped here
 
             // Clean up path_index entry (separate lock, after rooms lock is dropped).
-            // Use remove_by_uuid rather than reading room.identity.path — a concurrent writer
-            // A concurrent save-path-update could hold room.identity.path.write() and a
+            // Use remove_by_uuid rather than reading room.file_binding.path — a concurrent writer
+            // A concurrent save-path-update could hold room.file_binding.path.write() and a
             // try_read() would silently return None, leaking the path_index entry.
             if should_teardown {
                 if let Some(uuid) = evicted_uuid {
@@ -239,7 +239,7 @@ pub(super) async fn handle_peer_disconnect(
                 // always present on `RoomPersistence`, but the Option inside
                 // is None until a watcher is actually spawned.
                 if let Some(shutdown_tx) = room_for_eviction
-                    .persistence
+                    .file_binding
                     .watcher_shutdown_tx
                     .lock()
                     .await
@@ -257,7 +257,7 @@ pub(super) async fn handle_peer_disconnect(
                 // file to watch; untitled / bare-dir notebooks leave it
                 // unset.
                 if let Some(shutdown_tx) = room_for_eviction
-                    .persistence
+                    .file_binding
                     .project_file_watcher_shutdown_tx
                     .lock()
                     .await
@@ -286,7 +286,7 @@ pub(super) async fn handle_peer_disconnect(
                 let mut flushed_runtime: Option<CapturedEnvRuntime> = None;
                 let mut save_succeeded = false;
                 if let Some(ref launched) = launched_snapshot {
-                    let has_saved_path = room_for_eviction.identity.path.read().await.is_some();
+                    let has_saved_path = room_for_eviction.file_binding.path.read().await.is_some();
                     let env_source = room_for_eviction
                         .state
                         .read(|sd| sd.read_state().kernel.env_source.clone())
@@ -406,7 +406,8 @@ pub(super) async fn handle_peer_disconnect(
                         .await
                         .clone();
                     if let Some(ref path) = env_path {
-                        let has_saved_path = room_for_eviction.identity.path.read().await.is_some();
+                        let has_saved_path =
+                            room_for_eviction.file_binding.path.read().await.is_some();
                         let metadata = {
                             let doc = room_for_eviction.doc.read().await;
                             doc.get_metadata_snapshot()
