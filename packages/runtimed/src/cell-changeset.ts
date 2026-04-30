@@ -64,6 +64,7 @@ const CHROME_FIELD_KEYS = [
   "position",
 ] as const satisfies readonly (keyof ChangedFields)[];
 
+// Debug summaries intentionally mirror the historic frame-pipeline log subset.
 const FIELD_SUMMARY_LABELS: ReadonlyArray<[keyof ChangedFields, string]> = [
   ["source", "src"],
   ["outputs", "out"],
@@ -167,13 +168,6 @@ export function planCellChangesetProjection(
  */
 export function planCellPointerRefresh(changeset: CellChangeset | null): CellPointerRefreshPlan {
   if (!changeset || changeset.added.length > 0) {
-    return { kind: "all" };
-  }
-  if (
-    changeset.removed.length > 0 ||
-    changeset.order_changed ||
-    changeset.changed.some((c) => c.fields.resolved_assets)
-  ) {
     return { kind: "all" };
   }
   const cellIds = [...new Set(changeset.changed.map((c) => c.cell_id))];

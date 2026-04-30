@@ -86,6 +86,23 @@ describe("CellChangeset helpers", () => {
     });
   });
 
+  it("plans full projection for missing and structural changesets", () => {
+    expect(planCellChangesetProjection(null)).toEqual({
+      kind: "full",
+      reason: "missing_changeset",
+    });
+    expect(planCellChangesetProjection({ ...empty, added: ["cell-new"] })).toEqual({
+      kind: "full",
+      reason: "structural",
+    });
+    expect(
+      planCellChangesetProjection({
+        ...empty,
+        changed: [{ cell_id: "cell-1", fields: { resolved_assets: true } }],
+      }),
+    ).toEqual({ kind: "full", reason: "resolved_assets" });
+  });
+
   it("plans chrome updates and source preservation for app projections", () => {
     expect(
       planCellChangesetProjection({
@@ -151,23 +168,29 @@ describe("CellChangeset helpers", () => {
     ).toEqual({ kind: "touched", cell_ids: ["cell-1", "cell-2"] });
   });
 
-  it("plans full pointer refreshes for full materialization paths", () => {
+  it("preserves the historic full pointer refresh cases", () => {
     expect(planCellPointerRefresh(null)).toEqual({ kind: "all" });
     expect(planCellPointerRefresh({ ...empty, added: ["cell-new"] })).toEqual({
       kind: "all",
     });
+  });
+
+  it("preserves historic no-op pointer refreshes for structural changes without touched cells", () => {
     expect(planCellPointerRefresh({ ...empty, removed: ["cell-old"] })).toEqual({
-      kind: "all",
+      kind: "none",
     });
     expect(planCellPointerRefresh({ ...empty, order_changed: true })).toEqual({
-      kind: "all",
+      kind: "none",
     });
+  });
+
+  it("preserves historic touched pointer refreshes for resolved-assets changes", () => {
     expect(
       planCellPointerRefresh({
         ...empty,
         changed: [{ cell_id: "cell-1", fields: { resolved_assets: true } }],
       }),
-    ).toEqual({ kind: "all" });
+    ).toEqual({ kind: "touched", cell_ids: ["cell-1"] });
   });
 
   it("skips pointer refreshes when an incremental changeset touches no cells", () => {
