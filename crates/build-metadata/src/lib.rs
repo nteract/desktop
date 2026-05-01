@@ -66,6 +66,10 @@ pub fn normalized_short_hash(value: &str) -> Option<String> {
     let candidate = without_dirty
         .split_once('+')
         .map_or(without_dirty, |(_, hash)| hash);
+    if candidate.is_empty() {
+        return None;
+    }
+
     let hex_len = candidate
         .bytes()
         .take_while(|byte| byte.is_ascii_hexdigit())
@@ -161,6 +165,11 @@ mod tests {
     #[test]
     fn non_hex_hash_is_unknown_to_caller() {
         assert_eq!(normalized_short_hash("not-hex-at-all"), None);
+    }
+
+    #[test]
+    fn dirty_only_hash_is_unknown_to_caller() {
+        assert_eq!(normalized_short_hash("+dirty"), None);
     }
 
     #[test]
