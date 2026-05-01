@@ -31,12 +31,7 @@ import {
   Subscription,
 } from "rxjs";
 
-import {
-  type CommBroadcast,
-  type EnvProgressBroadcast,
-  isCommBroadcast,
-  isEnvProgressBroadcast,
-} from "./broadcast-types";
+import { type CommBroadcast, isCommBroadcast } from "./broadcast-types";
 import { type CellChangeset, mergeChangesets } from "./cell-changeset";
 import {
   type CommChanges,
@@ -311,9 +306,6 @@ export class SyncEngine {
   /** Custom comm messages (buttons, model.send()). */
   readonly commBroadcasts$: Observable<CommBroadcast>;
 
-  /** Environment install/solve/download progress. */
-  readonly envProgress$: Observable<EnvProgressBroadcast>;
-
   /**
    * Comm state projection from RuntimeStateDoc.
    *
@@ -375,7 +367,6 @@ export class SyncEngine {
 
     // Typed broadcast sub-observables (derived from broadcasts$)
     this.commBroadcasts$ = this.broadcasts$.pipe(filter(isCommBroadcast));
-    this.envProgress$ = this.broadcasts$.pipe(filter(isEnvProgressBroadcast));
   }
 
   // ── Lifecycle ────────────────────────────────────────────────────

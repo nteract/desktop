@@ -5,13 +5,11 @@
  * via frame type 0x03 (BROADCAST). Provides type guards for filtering
  * the untyped `broadcasts$` observable into typed sub-streams.
  *
- * Path changes and autosave timestamps used to be broadcasts; they are now
- * fields on `RuntimeStateDoc` (`path`, `last_saved`) and reach clients via
- * normal CRDT sync. Read them via `useRuntimeState()` instead of subscribing
- * to broadcasts.
+ * Path changes, autosave timestamps, and env-preparation progress used to be
+ * broadcasts; they are now fields on `RuntimeStateDoc` (`path`, `last_saved`,
+ * `env.progress`) and reach clients via normal CRDT sync. Read them via
+ * `useRuntimeState()` instead of subscribing to broadcasts.
  */
-
-import type { EnvProgressEvent } from "./runtime-state";
 
 // ── Broadcast interfaces ────────────────────────────────────────────
 
@@ -22,12 +20,8 @@ export interface CommBroadcast {
   buffers: number[][];
 }
 
-export type EnvProgressBroadcast = EnvProgressEvent & {
-  event: "env_progress";
-};
-
 /** Union of all known broadcast types with an `event` field. */
-export type KnownBroadcast = CommBroadcast | EnvProgressBroadcast;
+export type KnownBroadcast = CommBroadcast;
 
 // ── Type guards ─────────────────────────────────────────────────────
 
@@ -42,8 +36,4 @@ function hasBroadcastEvent(payload: unknown): payload is { event: string } {
 
 export function isCommBroadcast(payload: unknown): payload is CommBroadcast {
   return hasBroadcastEvent(payload) && payload.event === "comm";
-}
-
-export function isEnvProgressBroadcast(payload: unknown): payload is EnvProgressBroadcast {
-  return hasBroadcastEvent(payload) && payload.event === "env_progress";
 }

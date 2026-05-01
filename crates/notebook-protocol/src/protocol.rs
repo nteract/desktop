@@ -519,16 +519,15 @@ pub enum NotebookResponse {
 
 /// Broadcast messages from daemon to all peers in a room.
 ///
-/// Ephemeral, room-wide events that don't fit the request/response or
-/// CRDT-sync model: comm messages from the kernel and environment-launch
-/// progress. Kernel state, execution lifecycle, queue, outputs, the
-/// notebook's `path`, and `last_saved` timestamp all live in
-/// `RuntimeStateDoc` (frame type `0x05`) — they used to flow as
-/// broadcasts and the dead variants were removed once the doc became
+/// Ephemeral, room-wide events. Custom comm messages (ipywidgets model
+/// updates, button clicks) are the only traffic that still flows here.
+/// Kernel state, execution lifecycle, queue, outputs, the notebook's
+/// `path`, `last_saved` timestamp, and environment-preparation progress
+/// all live in `RuntimeStateDoc` (frame type `0x05`) — they used to flow
+/// as broadcasts and the dead variants were removed once the doc became
 /// authoritative.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
-#[allow(clippy::large_enum_variant)]
 pub enum NotebookBroadcast {
     /// Comm message from kernel (ipywidgets protocol).
     /// Broadcast to all connected peers so all windows can display widgets.
@@ -540,16 +539,6 @@ pub enum NotebookBroadcast {
         /// Binary buffers (base64-encoded when serialized to JSON)
         #[serde(default)]
         buffers: Vec<Vec<u8>>,
-    },
-
-    /// Environment progress update during kernel launch.
-    ///
-    /// Carries rich progress phases (repodata, solve, download, link)
-    /// from `kernel_env` so the frontend can display detailed status.
-    EnvProgress {
-        env_type: String,
-        #[serde(flatten)]
-        phase: kernel_env::EnvProgressPhase,
     },
 }
 

@@ -10,8 +10,7 @@
  */
 
 import { describe, expect, it } from "vite-plus/test";
-import type { EnvProgressBroadcast } from "../src/broadcast-types";
-import { isCommBroadcast, isEnvProgressBroadcast } from "../src/broadcast-types";
+import { isCommBroadcast } from "../src/broadcast-types";
 
 // All guards share `hasBroadcastEvent` — exercise the invalid-payload
 // matrix once so every guard inherits the coverage.
@@ -28,58 +27,26 @@ const INVALID_PAYLOADS: Array<[string, unknown]> = [
   ["event is an object", { event: { nested: "comm" } }],
 ];
 
-const GUARDS = [
-  ["isCommBroadcast", isCommBroadcast, "comm"],
-  ["isEnvProgressBroadcast", isEnvProgressBroadcast, "env_progress"],
-] as const;
-
-describe("broadcast type guards", () => {
-  describe.each(GUARDS)("%s", (_name, guard, event) => {
-    it("accepts a payload with the matching event", () => {
-      // Only the `event` field is checked; the rest of the payload is
-      // carried through as `any` into the narrowed type. The guard is
-      // deliberately permissive so the daemon can add fields without
-      // breaking the frontend — pin that behavior.
-      expect(guard({ event })).toBe(true);
-      expect(guard({ event, extra: "ignored", nested: { a: 1 } })).toBe(true);
-    });
-
-    it.each(INVALID_PAYLOADS)("rejects %s", (_label, payload) => {
-      expect(guard(payload)).toBe(false);
-    });
-
-    it("rejects payloads with a different event discriminator", () => {
-      // The point of having separate guards is that only the matching
-      // one fires. A guard that returns true for the wrong event would
-      // cross-wire env progress into the comm stream (or similar).
-      const otherEvents = GUARDS.filter(([, , e]) => e !== event).map(([, , e]) => e);
-      for (const other of otherEvents) {
-        expect(guard({ event: other })).toBe(false);
-      }
-    });
+describe("isCommBroadcast", () => {
+  it("accepts a payload with the matching event", () => {
+    // Only the `event` field is checked; the rest of the payload is
+    // carried through as `any` into the narrowed type. The guard is
+    // deliberately permissive so the daemon can add fields without
+    // breaking the frontend — pin that behavior.
+    expect(isCommBroadcast({ event: "comm" })).toBe(true);
+    expect(isCommBroadcast({ event: "comm", extra: "ignored", nested: { a: 1 } })).toBe(true);
   });
 
-  it("guards are mutually exclusive for a given payload", () => {
-    // A single broadcast must be claimed by at most one guard. If a
-    // future refactor accidentally normalizes event names such that
-    // two guards pass simultaneously, the first matching subscriber
-    // would silently double-handle.
-    for (const [, , event] of GUARDS) {
-      const payload = { event };
-      const hits = GUARDS.filter(([, guard]) => guard(payload));
-      expect(hits.length).toBe(1);
-    }
+  it.each(INVALID_PAYLOADS)("rejects %s", (_label, payload) => {
+    expect(isCommBroadcast(payload)).toBe(false);
   });
 
-  it("models flattened env progress broadcasts from Rust", () => {
-    const payload: EnvProgressBroadcast = {
-      event: "env_progress",
-      env_type: "uv",
-      phase: "ready",
-      env_path: "/tmp/env",
-      python_path: "/tmp/env/bin/python",
-    };
-
-    expect(isEnvProgressBroadcast(payload)).toBe(true);
+  it("rejects payloads with a different event discriminator", () => {
+    // Env progress used to ride the broadcast channel; it moved to
+    // RuntimeStateDoc. If a future refactor accidentally starts sending
+    // env_progress broadcasts again, make sure isCommBroadcast doesn't
+    // absorb them.
+    expect(isCommBroadcast({ event: "env_progress" })).toBe(false);
+    expect(isCommBroadcast({ event: "unknown_future_event" })).toBe(false);
   });
 });

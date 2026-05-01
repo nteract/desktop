@@ -629,8 +629,7 @@ pub(crate) async fn handle(
 
     // For inline deps, prepare a cached environment with rich progress
     let launch_progress_handler: std::sync::Arc<dyn kernel_env::ProgressHandler> =
-        std::sync::Arc::new(crate::inline_env::BroadcastProgressHandler::with_state(
-            room.broadcasts.kernel_broadcast_tx.clone(),
+        std::sync::Arc::new(crate::inline_env::RuntimeDocProgressHandler::new(
             room.state.clone(),
         ));
 

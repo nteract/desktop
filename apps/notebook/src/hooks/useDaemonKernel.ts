@@ -19,7 +19,6 @@ import {
   type NotebookClient,
   type NotebookResponse,
   RUNTIME_STATUS,
-  isEnvProgressBroadcast,
   runtimeStatusKey,
   type RuntimeStatusKey,
   statusKeyToLegacyStatus,
@@ -202,17 +201,12 @@ export function useDaemonKernel({
     let cancelled = false;
     refreshBlobPort();
 
+    // Custom comm messages (buttons, model.send()) are handled by the
+    // SyncEngine.commBroadcasts$ subscriber in App.tsx. Env progress lives
+    // in RuntimeStateDoc, not the broadcast channel. Anything else that
+    // arrives here is unexpected.
     const unsubscribeBroadcast = subscribeBroadcast((payload) => {
       if (cancelled) return;
-
-      // Custom comm messages (buttons, model.send()) are now handled
-      // by the SyncEngine.commBroadcasts$ subscriber in App.tsx. Env
-      // progress state is daemon-authored in RuntimeStateDoc; the
-      // broadcast remains only as a compatibility event for older
-      // consumers.
-      if (isEnvProgressBroadcast(payload)) {
-        return;
-      }
 
       if (
         typeof payload === "object" &&
@@ -220,9 +214,9 @@ export function useDaemonKernel({
         "event" in payload &&
         typeof (payload as { event: unknown }).event === "string"
       ) {
-        logger.debug(
-          `[daemon-kernel] Unknown broadcast event: ${(payload as { event: string }).event}`,
-        );
+        const event = (payload as { event: string }).event;
+        if (event === "comm") return;
+        logger.debug(`[daemon-kernel] Unknown broadcast event: ${event}`);
       }
     });
 

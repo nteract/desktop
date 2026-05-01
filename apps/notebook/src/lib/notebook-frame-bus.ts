@@ -30,8 +30,10 @@ const presenceSubscribers = new Set<PresenceSubscriber>();
 /**
  * Subscribe to broadcast events. Returns an unsubscribe function.
  *
- * Broadcasts include kernel_status, KernelLaunched, env_progress,
- * and other daemon lifecycle events scoped to the notebook room.
+ * Only custom comm messages (ipywidgets model updates, button clicks)
+ * still flow through this channel. Kernel status, execution lifecycle,
+ * and env-preparation progress live in RuntimeStateDoc and reach clients
+ * via normal CRDT sync — read them via `useRuntimeState()`.
  */
 export function subscribeBroadcast(cb: BroadcastSubscriber): () => void {
   broadcastSubscribers.add(cb);
