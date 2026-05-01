@@ -45,8 +45,8 @@ pub fn collect_git_metadata() -> GitMetadata {
 }
 
 pub fn write_git_hash(out_dir: &Path) {
-    let metadata = collect_git_metadata();
-    write_if_changed(&out_dir.join("git_hash.txt"), &metadata.hash);
+    let hash = git_hash();
+    write_if_changed(&out_dir.join("git_hash.txt"), &hash);
 }
 
 pub fn write_git_metadata(out_dir: &Path) {
@@ -73,8 +73,10 @@ pub fn normalized_short_hash(value: &str) -> Option<String> {
 
     if hex_len >= 7 {
         Some(candidate[..7].to_string())
-    } else {
+    } else if hex_len == candidate.len() {
         Some(candidate.to_string())
+    } else {
+        None
     }
 }
 
@@ -147,8 +149,18 @@ mod tests {
     }
 
     #[test]
+    fn very_short_hex_sha_is_preserved() {
+        assert_eq!(normalized_short_hash("abc123").as_deref(), Some("abc123"));
+    }
+
+    #[test]
     fn empty_hash_is_unknown_to_caller() {
         assert_eq!(normalized_short_hash("  "), None);
+    }
+
+    #[test]
+    fn non_hex_hash_is_unknown_to_caller() {
+        assert_eq!(normalized_short_hash("not-hex-at-all"), None);
     }
 
     #[test]
