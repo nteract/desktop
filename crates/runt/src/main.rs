@@ -600,6 +600,8 @@ enum PoolCommands {
 }
 
 fn main() -> Result<()> {
+    enable_virtual_terminal_processing();
+
     let cli = Cli::parse();
 
     match cli.command {
@@ -612,6 +614,14 @@ fn main() -> Result<()> {
         }
     }
 }
+
+#[cfg(windows)]
+fn enable_virtual_terminal_processing() {
+    let _ = colored::control::set_virtual_terminal(true);
+}
+
+#[cfg(not(windows))]
+fn enable_virtual_terminal_processing() {}
 
 /// Open the notebook application with optional path and runtime arguments.
 ///

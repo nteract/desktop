@@ -1,5 +1,6 @@
 // Allow `expect()` and `unwrap()` in tests
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use clap::Parser;
 use notebook::Runtime;
