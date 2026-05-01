@@ -7,6 +7,7 @@ This is a map. Subsystem details live in `contributing/`, auto-loaded rules live
 Claude-specific skills live in `.claude/skills/`. Use when the task matches:
 - `automerge-sync` for sync protocol internals, reconnection, peer state lifecycle, in-flight suppression, catch_unwind recovery, and convergence debugging
 - `mcp-session-lifecycle` for MCP proxy supervision, daemon watch loop, session state, rejoin/reconnect races, and room eviction
+- `sync-protocol-patterns` for higher-level protocol design: comparing automerge-repo/samod/nteract architectures, adding new sync streams, heads tracking patterns, and connection lifecycle decisions
 
 Codex-specific repo skills live in `.codex/skills/`. Prefer them when the task matches:
 - `nteract-daemon-dev` for per-worktree daemon lifecycle, socket setup, and daemon-backed verification
