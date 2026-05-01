@@ -123,15 +123,18 @@ to discover V2 support. Once discovered, subsequent messages use V2.
 
 ## nteract's Sync Architecture
 
-nteract runs two sync streams over one socket connection:
+nteract runs three sync streams over one socket connection:
 
-| Stream | Frame | Document | Ownership |
-|--------|-------|----------|-----------|
-| Notebook | `0x00` AutomergeSync | `SharedDocState.doc` | Bidirectional |
-| RuntimeState | `0x05` RuntimeStateSync | `SharedDocState.state_doc` | Daemon-authoritative |
+| Stream | Frame | Document | Ownership | Sync state location |
+|--------|-------|----------|-----------|---------------------|
+| Notebook | `0x00` AutomergeSync | `SharedDocState.doc` | Bidirectional | `notebook-sync::SharedDocState.peer_state` |
+| RuntimeState | `0x05` RuntimeStateSync | `SharedDocState.state_doc` | Daemon-authoritative | `notebook-sync::SharedDocState.state_peer_state` |
+| PoolState | `0x06` PoolStateSync | PoolDoc | Daemon-authoritative | Frontend owns pool-doc sync state; daemon peer loop carries `pool_peer_state` separately |
 
-Each stream has its own `sync::State` (`peer_state` and `state_peer_state`).
-They share the same `Arc<Mutex<SharedDocState>>` but operate independently.
+The notebook and runtime-state streams share the same
+`Arc<Mutex<SharedDocState>>` and each has its own `sync::State` within it.
+PoolStateSync is separate — the frontend manages its sync state directly
+while the daemon carries `pool_peer_state` in the peer loop.
 
 ### The Sync Task Loop
 
@@ -316,15 +319,18 @@ round-trip:
 
 **Why required_heads is better:**
 - No client-side blocking -- the request is sent immediately
-- The daemon can process other requests while waiting
-- Works correctly even if the sync stream is slow (the request just
-  queues behind the sync convergence)
+- The main peer sync loop still drains frames while the wait runs, so
+  the required heads can arrive and other peers are unaffected. However,
+  later requests from the *same* peer remain queued behind the waiting
+  request (it runs inside the per-peer request worker)
 - Replaces the old `confirm_sync` → `execute_cell` two-step with a
   single `execute_cell` request that carries its causal precondition
 
 **Used by:** `execute_cell`, `run_all_cells` (both MCP and frontend).
-Frontend flushes pending sync before capturing heads to minimize the
-daemon-side wait.
+Frontend captures current heads first, then triggers a fire-and-forget
+`flush()` to nudge the sync stream to deliver them. This preserves
+the causal baseline in `required_heads` while minimizing daemon-side
+wait (see #2457 for the ordering rationale).
 
 ### Which to use
 
@@ -332,7 +338,8 @@ daemon-side wait.
 |----------|-----|
 | Execute / run-all (need source synced) | `required_heads` via `send_request_after_heads` |
 | General "is my edit synced?" check | `confirm_sync` (still available) |
-| Save (daemon reads doc directly) | Neither -- daemon reads its own doc copy |
+| Client-initiated save (MCP `save_notebook`) | `confirm_sync` before `SaveNotebook` request -- ensures edits reach daemon |
+| Daemon-internal autosave | Neither -- daemon reads its own doc copy directly |
 
 ## Key Source Files
 

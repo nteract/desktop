@@ -198,15 +198,22 @@ reduce the initial sync burst.
 
 ## When Adding a New Sync Stream
 
-If you need to add a new Automerge-synced document to the protocol (like
-PoolStateSync frame `0x06`):
+If you need to add a new Automerge-synced document to the protocol
+(e.g., a hypothetical `AgentCoordinationSync`):
 
 1. **Allocate a frame type** in `notebook-wire`
-2. **Add sync state fields** to `SharedDocState` (doc + peer_state pair)
+2. **Decide sync state ownership.** Two patterns exist:
+   - **SharedDocState pattern** (notebook `0x00`, runtime-state `0x05`):
+     sync state lives in `notebook-sync::SharedDocState` as a doc +
+     peer_state pair managed by `sync_task.rs`
+   - **Separate ownership** (pool-state `0x06`): frontend owns its
+     sync state directly; daemon carries `pool_peer_state` in the peer
+     loop. Choose this when sync-task's biased select isn't the right
+     priority model for the new stream
 3. **Add catch_unwind guards** for both receive and generate paths
 4. **Add a rebuild function** following the save→load→reset pattern
-5. **Update the biased select loop** — decide priority relative to
-   existing streams
+5. **Update the biased select loop** (SharedDocState pattern) or the
+   relevant owner's frame handler (separate ownership)
 6. **Consider subscription scope** — does every peer need this stream,
    or only specific consumers?
 7. **Test with concurrent mutation** — the automerge#1187 panic only
