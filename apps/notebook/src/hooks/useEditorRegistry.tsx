@@ -118,7 +118,6 @@ function startScrollPin(cellElement: Element, anchorElement: Element) {
   scrollContainer.addEventListener("touchstart", cleanup, { passive: true });
   scrollContainer.addEventListener("keydown", cleanupOnKeydown);
   timeoutId = window.setTimeout(cleanup, SCROLL_PIN_DURATION_MS);
-  scheduleKeepVisible();
   cancelActiveScrollPin = cleanup;
 }
 

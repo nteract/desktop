@@ -127,6 +127,8 @@ describe("EditorRegistryProvider", () => {
     expect(cell.scrollIntoView).toHaveBeenCalledWith({ block: "nearest", behavior: "smooth" });
     expect(EditorView.findFromDOM).toHaveBeenCalledWith(cmContent);
     expect(MockResizeObserver.instances).toHaveLength(1);
+    expect(editor.scrollIntoView).not.toHaveBeenCalledWith({ block: "nearest", behavior: "auto" });
+    vi.mocked(editor.scrollIntoView).mockClear();
 
     act(() => {
       MockResizeObserver.instances[0].trigger();
