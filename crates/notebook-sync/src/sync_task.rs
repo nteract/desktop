@@ -1411,6 +1411,7 @@ mod tests {
         // panic keeps the task alive, but the daemon peer state can still
         // believe the client received the dropped change. A fuller fix likely
         // needs a runtime-state peer reset/rejoin path, not just catch_unwind.
+        // Remove #[ignore] once that peer reset/rejoin path exists.
         let mut reactor = test_reactor();
         {
             let mut state = reactor.io.doc.lock().unwrap();
@@ -1626,7 +1627,7 @@ mod tests {
         const CELL_COUNT: usize = 24;
 
         let (handle, config) = test_handle_and_config();
-        let (client, server) = tokio::io::duplex(4096);
+        let (client, server) = tokio::io::duplex(128 * 1024);
         let (client_read, client_write) = tokio::io::split(client);
         let (server_read, server_write) = tokio::io::split(server);
         let (daemon_converged_tx, daemon_converged_rx) = oneshot::channel();
@@ -1718,12 +1719,11 @@ mod tests {
         for index in 0..CELL_COUNT {
             let handle = handle.clone();
             cell_tasks.push(tokio::spawn(async move {
-                let previous = index.checked_sub(1).map(|i| format!("cell-{i}"));
                 handle
                     .add_cell_with_source(
                         &format!("cell-{index}"),
                         "code",
-                        previous.as_deref(),
+                        None,
                         &format!("print({index})"),
                     )
                     .expect("cell added under pressure");

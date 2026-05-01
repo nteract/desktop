@@ -8,6 +8,7 @@
 use automerge::sync;
 use automerge::sync::SyncDoc;
 use automerge::AutoCommit;
+use log::warn;
 use notebook_doc::presence::PresenceState;
 use runtime_doc::RuntimeStateDoc;
 
@@ -119,7 +120,12 @@ impl SharedDocState {
     /// processing — the same recovery pattern as `rebuild_shared_doc_state`
     /// for the notebook doc, but targeting the state doc.
     pub fn rebuild_state_doc(&mut self) {
-        self.state_doc.rebuild_from_save();
+        if !self.state_doc.rebuild_from_save() {
+            warn!(
+                "[notebook-sync] Failed to rebuild RuntimeStateDoc after panic; \
+                 resetting state sync protocol only"
+            );
+        }
         self.state_peer_state = sync::State::new();
     }
 
