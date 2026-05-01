@@ -285,7 +285,7 @@ fn dependency_fingerprint_for_handle(handle: &DocHandle) -> Option<String> {
 
 async fn approve_current_trust(
     handle: &DocHandle,
-    dependency_fingerprint: Option<String>,
+    _dependency_fingerprint: Option<String>,
     action: &str,
 ) -> Result<(), String> {
     if let Err(e) = handle.confirm_sync().await {
@@ -294,7 +294,7 @@ async fn approve_current_trust(
 
     match handle
         .send_request(NotebookRequest::ApproveTrust {
-            dependency_fingerprint,
+            observed_heads: None,
         })
         .await
     {

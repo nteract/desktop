@@ -28,14 +28,12 @@ describe("NotebookClient", () => {
 
     await client.syncEnvironment({
       observed_heads: ["head-a", "head-b"],
-      dependency_fingerprint: '{"uv":{"dependencies":["numpy"]}}',
     });
 
     expect(sendRequest).toHaveBeenCalledWith({
       type: "sync_environment",
       guard: {
         observed_heads: ["head-a", "head-b"],
-        dependency_fingerprint: '{"uv":{"dependencies":["numpy"]}}',
       },
     });
   });

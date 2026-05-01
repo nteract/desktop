@@ -117,9 +117,9 @@ pub(crate) async fn handle_notebook_request(
 
         NotebookRequest::SyncEnvironment { guard } => sync_environment::handle(room, guard).await,
 
-        NotebookRequest::ApproveTrust {
-            dependency_fingerprint,
-        } => approve_trust::handle(room, dependency_fingerprint).await,
+        NotebookRequest::ApproveTrust { observed_heads } => {
+            approve_trust::handle(room, observed_heads).await
+        }
 
         NotebookRequest::ApproveProjectEnvironment { project_file_path } => {
             approve_project_environment::handle(room, project_file_path).await

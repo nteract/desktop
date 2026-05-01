@@ -117,9 +117,7 @@ export function createTauriHost(opts: CreateTauriHostOptions = {}): NotebookHost
     async approve(options) {
       const response = (await transport.sendRequest({
         type: "approve_trust",
-        ...(options?.dependencyFingerprint !== undefined
-          ? { dependency_fingerprint: options.dependencyFingerprint }
-          : {}),
+        ...(options?.observedHeads !== undefined ? { observed_heads: options.observedHeads } : {}),
       })) as NotebookResponse;
 
       switch (response.result) {

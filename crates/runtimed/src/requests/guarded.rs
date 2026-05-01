@@ -83,20 +83,51 @@ pub(crate) fn validate_run_all(doc: &mut NotebookDoc, observed_heads: &[String])
 }
 
 pub(crate) fn validate_sync_environment(
-    doc: &mut NotebookDoc,
+    doc: &NotebookDoc,
     observed_heads: &[String],
-    dependency_fingerprint: &str,
 ) -> GuardResult {
-    let _ = diff_from_observed(doc, observed_heads)?;
+    let observed = parse_heads(observed_heads)?;
+    let reviewed = dependency_fingerprint_at_observed_heads(doc, &observed)?;
     let current = doc
         .get_dependency_fingerprint()
         .unwrap_or_else(|| serde_json::json!({}).to_string());
-    if current != dependency_fingerprint {
+    if current != reviewed {
         return Err(rejected(
             "Dependencies changed while the trust dialog was open. Review before syncing.",
         ));
     }
     Ok(())
+}
+
+pub(crate) fn validate_dependencies_unchanged_since_observed(
+    doc: &NotebookDoc,
+    observed_heads: &[String],
+) -> GuardResult {
+    let observed = parse_heads(observed_heads)?;
+    let reviewed = dependency_fingerprint_at_observed_heads(doc, &observed)?;
+    let current = doc
+        .get_dependency_fingerprint()
+        .unwrap_or_else(|| serde_json::json!({}).to_string());
+    if current != reviewed {
+        return Err(rejected(
+            "Dependencies changed while the trust dialog was open. Review before approving.",
+        ));
+    }
+    Ok(())
+}
+
+fn dependency_fingerprint_at_observed_heads(
+    doc: &NotebookDoc,
+    observed: &[ChangeHash],
+) -> GuardResult<String> {
+    if observed.is_empty() {
+        return Err(rejected(
+            "Notebook state was not ready. Review before running again.",
+        ));
+    }
+    Ok(doc
+        .get_dependency_fingerprint_at_heads(observed)
+        .unwrap_or_else(|| serde_json::json!({}).to_string()))
 }
 
 fn diff_from_observed(
@@ -323,16 +354,27 @@ mod tests {
         let mut doc = code_doc();
         set_uv_dependencies(&mut doc, &["numpy"]);
         let observed_heads = doc.get_heads_hex();
-        let dependency_fingerprint = doc.get_dependency_fingerprint().unwrap();
 
         set_trust_metadata(&mut doc);
-        validate_sync_environment(&mut doc, &observed_heads, &dependency_fingerprint).unwrap();
+        validate_sync_environment(&doc, &observed_heads).unwrap();
 
         doc.add_uv_dependency("pandas").unwrap();
-        assert_rejected(validate_sync_environment(
-            &mut doc,
+        assert_rejected(validate_sync_environment(&doc, &observed_heads));
+    }
+
+    #[test]
+    fn approval_guard_checks_dependency_metadata_at_observed_heads() {
+        let mut doc = code_doc();
+        set_uv_dependencies(&mut doc, &["numpy"]);
+        let observed_heads = doc.get_heads_hex();
+
+        doc.update_source("cell-1", "x = 2").unwrap();
+        validate_dependencies_unchanged_since_observed(&doc, &observed_heads).unwrap();
+
+        doc.add_uv_dependency("pandas").unwrap();
+        assert_rejected(validate_dependencies_unchanged_since_observed(
+            &doc,
             &observed_heads,
-            &dependency_fingerprint,
         ));
     }
 

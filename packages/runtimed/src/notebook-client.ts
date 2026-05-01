@@ -152,14 +152,7 @@ export class NotebookClient {
     try {
       const response = await this.sendRequest({
         type: "sync_environment",
-        ...(guard
-          ? {
-              guard: {
-                observed_heads: guard.observed_heads,
-                dependency_fingerprint: guard.dependency_fingerprint,
-              },
-            }
-          : {}),
+        ...(guard ? { guard: { observed_heads: guard.observed_heads } } : {}),
       });
       if ((response as { result: string }).result === "error") {
         this.log.error("[notebook-client] Sync env failed:", (response as { error: string }).error);
@@ -172,13 +165,11 @@ export class NotebookClient {
   }
 
   /** Approve the current dependency metadata and let the daemon write trust fields. */
-  async approveTrust(dependencyFingerprint?: string): Promise<NotebookResponse> {
+  async approveTrust(observedHeads?: string[]): Promise<NotebookResponse> {
     try {
       return await this.sendRequest({
         type: "approve_trust",
-        ...(dependencyFingerprint !== undefined
-          ? { dependency_fingerprint: dependencyFingerprint }
-          : {}),
+        ...(observedHeads !== undefined ? { observed_heads: observedHeads } : {}),
       });
     } catch (e) {
       this.log.error("[notebook-client] Approve trust failed:", e);

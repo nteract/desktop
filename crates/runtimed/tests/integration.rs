@@ -892,7 +892,7 @@ async fn test_untrusted_launch_and_sync_environment_are_daemon_rejected() {
 }
 
 #[tokio::test]
-async fn test_sync_environment_guard_rejects_stale_dependency_fingerprint() {
+async fn test_sync_environment_guard_rejects_stale_observed_dependencies() {
     let temp_dir = TempDir::new().unwrap();
     let config = test_config(&temp_dir);
     let socket_path = config.socket_path.clone();
@@ -931,12 +931,12 @@ async fn test_sync_environment_guard_rejects_stale_dependency_fingerprint() {
                 .collect()
         })
         .unwrap();
+    handle.add_uv_dependency("requests").unwrap();
+    handle.confirm_sync().await.unwrap();
+
     let response = handle
         .send_request(NotebookRequest::SyncEnvironment {
-            guard: Some(DependencyGuard {
-                observed_heads,
-                dependency_fingerprint: "{}".to_string(),
-            }),
+            guard: Some(DependencyGuard { observed_heads }),
         })
         .await
         .unwrap();
