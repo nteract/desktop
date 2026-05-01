@@ -17,6 +17,7 @@ export {
 } from "runtimed";
 
 import {
+  KERNEL_ERROR_REASON,
   KERNEL_STATUS,
   RUNTIME_STATUS,
   runtimeStatusKey,
@@ -24,6 +25,13 @@ import {
   type RuntimeLifecycle,
   type RuntimeStatusKey,
 } from "runtimed";
+
+const ERROR_REASON_LABELS: Record<string, string> = {
+  [KERNEL_ERROR_REASON.MISSING_IPYKERNEL]: "ipykernel missing",
+  [KERNEL_ERROR_REASON.DEPENDENCY_CACHE_MISSING_IPYKERNEL]: "ipykernel missing",
+  [KERNEL_ERROR_REASON.IPYKERNEL_SITE_PACKAGES_MISMATCH]: "Python environment mismatch",
+  [KERNEL_ERROR_REASON.CONDA_ENV_YML_MISSING]: "Conda environment missing",
+};
 
 /**
  * User-facing label for each expanded [`RuntimeStatusKey`].
@@ -61,7 +69,7 @@ export const RUNTIME_STATUS_LABELS: Record<RuntimeStatusKey, string> = {
  */
 export function getStatusKeyLabel(key: RuntimeStatusKey, errorReason: string | null): string {
   if (key === RUNTIME_STATUS.ERROR && errorReason && errorReason.length > 0) {
-    return `error: ${errorReason}`;
+    return `error: ${ERROR_REASON_LABELS[errorReason] ?? "kernel failed"}`;
   }
   return RUNTIME_STATUS_LABELS[key];
 }

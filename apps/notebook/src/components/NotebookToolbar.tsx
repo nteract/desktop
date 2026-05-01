@@ -13,7 +13,7 @@ import { useCallback, useEffect, useState, type ReactElement, type ReactNode } f
 import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card";
 import { cn } from "@/lib/utils";
 import type { UpdateStatus } from "../hooks/useUpdater";
-import { KERNEL_ERROR_REASON, type EnvProgressState } from "runtimed";
+import { KERNEL_ERROR_REASON, type EnvProgressState, type ProjectContext } from "runtimed";
 import {
   getStatusKeyLabel,
   KERNEL_STATUS,
@@ -35,6 +35,9 @@ interface NotebookToolbarProps {
   errorReason: string | null;
   kernelErrorMessage?: string | null;
   envSource: string | null;
+  condaPython?: string | null;
+  condaChannels?: string[] | null;
+  projectContext?: ProjectContext | null;
   /** Pre-start hint: "uv" | "conda" | "pixi" | null, derived from notebook metadata */
   envTypeHint?: EnvBadgeVariant | null;
   envProgress: EnvProgressState | null;
@@ -63,6 +66,9 @@ export function NotebookToolbar({
   errorReason,
   kernelErrorMessage,
   envSource,
+  condaPython = null,
+  condaChannels = null,
+  projectContext = null,
   envTypeHint,
   envProgress,
   runtime = null,
@@ -411,9 +417,15 @@ export function NotebookToolbar({
           then tell the user to restart. */}
       {runtime === "python" &&
         lifecycle.lifecycle === "Error" &&
-        errorReason === KERNEL_ERROR_REASON.MISSING_IPYKERNEL &&
         envSource &&
-        renderMissingIpykernelPrompt(envSource)}
+        renderIpykernelErrorPrompt({
+          envSource,
+          errorReason,
+          errorDetails: kernelErrorMessage ?? null,
+          condaPython,
+          condaChannels,
+          projectContext,
+        })}
       {showCondaEnvYmlMissingBanner && (
         <CondaEnvYmlMissingBanner
           details={kernelErrorMessage}
@@ -437,12 +449,26 @@ export function NotebookToolbar({
  * restart alone now re-hits the same broken cache. Until we add an
  * in-place repair, the way out is to bump the dep hash — add, pin, or
  * remove anything in the notebook's deps — or clear the daemon cache. */
-function renderMissingIpykernelPrompt(envSource: string): ReactElement | null {
+function renderIpykernelErrorPrompt({
+  envSource,
+  errorReason,
+  errorDetails,
+  condaPython,
+  condaChannels,
+  projectContext,
+}: {
+  envSource: string;
+  errorReason: string | null;
+  errorDetails: string | null;
+  condaPython: string | null;
+  condaChannels: string[] | null;
+  projectContext: ProjectContext | null;
+}): ReactElement | null {
   // Pixi project: the .toml is the source of truth; user must add
   // ipykernel explicitly.
-  if (envSource.startsWith("pixi:")) {
+  if (errorReason === KERNEL_ERROR_REASON.MISSING_IPYKERNEL && envSource.startsWith("pixi:")) {
     return (
-      <MissingIpykernelBanner
+      <RuntimeErrorBanner
         headline="ipykernel not found in pixi.toml."
         instruction={
           <>
@@ -453,12 +479,23 @@ function renderMissingIpykernelPrompt(envSource: string): ReactElement | null {
       />
     );
   }
+
+  const contextItems = buildCondaContextItems(
+    envSource,
+    condaPython,
+    condaChannels,
+    projectContext,
+  );
+
   // Inline / PEP 723 / inline conda: env is a shared content-addressed
   // cache — we can't safely delete it from the launch path. Bump the
   // hash instead.
-  if (envSource === "uv:inline" || envSource === "uv:pep723" || envSource === "conda:inline") {
+  if (
+    errorReason === KERNEL_ERROR_REASON.DEPENDENCY_CACHE_MISSING_IPYKERNEL &&
+    (envSource === "uv:inline" || envSource === "uv:pep723" || envSource === "conda:inline")
+  ) {
     return (
-      <MissingIpykernelBanner
+      <RuntimeErrorBanner
         headline="Dependency cache is missing ipykernel."
         instruction={
           <>
@@ -466,10 +503,46 @@ function renderMissingIpykernelPrompt(envSource: string): ReactElement | null {
             or clear the daemon cache.
           </>
         }
+        contextItems={contextItems}
+        details={errorDetails}
+      />
+    );
+  }
+
+  if (errorReason === KERNEL_ERROR_REASON.IPYKERNEL_SITE_PACKAGES_MISMATCH) {
+    return (
+      <RuntimeErrorBanner
+        headline="Conda installed ipykernel outside this Python's import path."
+        instruction={
+          <>
+            Conda/Python ABI mismatch: pin Python in the dependency panel and rebuild the
+            environment, or clear the daemon cache.
+          </>
+        }
+        contextItems={contextItems}
+        details={errorDetails}
       />
     );
   }
   return null;
+}
+
+function buildCondaContextItems(
+  envSource: string,
+  condaPython: string | null,
+  condaChannels: string[] | null,
+  projectContext: ProjectContext | null,
+): string[] {
+  const items = [`Environment: ${envSource}`];
+  if (envSource.startsWith("conda:")) {
+    items.push(`Manager: conda`);
+    if (condaPython) items.push(`Python: ${condaPython}`);
+    if (condaChannels?.length) items.push(`Channels: ${condaChannels.join(", ")}`);
+  }
+  if (projectContext?.state === "Detected") {
+    items.push(`Project: ${projectContext.project_file.relative_to_notebook}`);
+  }
+  return items;
 }
 
 function CondaEnvYmlMissingBanner({
@@ -508,20 +581,38 @@ function CondaEnvYmlMissingBanner({
   );
 }
 
-function MissingIpykernelBanner({
+function RuntimeErrorBanner({
   headline,
   instruction,
+  contextItems = [],
+  details = null,
 }: {
   headline: string;
   instruction: ReactNode;
+  contextItems?: string[];
+  details?: string | null;
 }): ReactElement {
   return (
     <div className="border-t px-3 py-2">
       <div className="flex items-start gap-2 text-xs text-amber-700 dark:text-amber-400">
         <Info className="h-3.5 w-3.5 mt-0.5 shrink-0" />
-        <span>
-          <span className="font-medium">{headline}</span> {instruction}
-        </span>
+        <div className="min-w-0 space-y-1">
+          <div>
+            <span className="font-medium">{headline}</span> {instruction}
+          </div>
+          {contextItems.length > 0 && (
+            <div className="flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-amber-800/80 dark:text-amber-300/80">
+              {contextItems.map((item) => (
+                <span key={item}>{item}</span>
+              ))}
+            </div>
+          )}
+          {details && (
+            <pre className="max-h-24 overflow-y-auto whitespace-pre-wrap break-words rounded bg-amber-500/10 px-2 py-1 font-mono text-[11px] leading-relaxed text-amber-900 dark:text-amber-100">
+              {details}
+            </pre>
+          )}
+        </div>
       </div>
     </div>
   );

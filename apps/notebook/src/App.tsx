@@ -944,7 +944,6 @@ function AppContent() {
         if (response.result === "error") {
           logger.error("[App] kernel launch after trust approval failed:", response.error);
           setTrustApprovalHandoffPending(false);
-          setTrustActionNotice(response.error);
           return;
         }
         if (response.result === "guard_rejected") {
@@ -1597,6 +1596,9 @@ function AppContent() {
           errorReason={errorReason}
           kernelErrorMessage={errorDetails}
           envSource={envSource}
+          condaPython={condaDependencies?.python ?? null}
+          condaChannels={condaDependencies?.channels ?? null}
+          projectContext={runtimeState.project_context}
           envTypeHint={envTypeHint}
           envProgress={envProgress.isActive || envProgress.error ? envProgress : null}
           runtime={runtime}

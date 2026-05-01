@@ -409,7 +409,7 @@ describe("NotebookToolbar", () => {
       );
       // Prewarmed envs should never reach MissingIpykernel — defensive: render nothing.
       expect(screen.queryByText(/ipykernel not found/)).not.toBeInTheDocument();
-      expect(screen.queryByText(/ipykernel missing/)).not.toBeInTheDocument();
+      expect(screen.queryByText(/Dependency cache is missing ipykernel/)).not.toBeInTheDocument();
     });
   });
 
@@ -429,7 +429,7 @@ describe("NotebookToolbar", () => {
             runtime="python"
             kernelStatus={KERNEL_STATUS.ERROR}
             lifecycle={errorLifecycle}
-            errorReason={KERNEL_ERROR_REASON.MISSING_IPYKERNEL}
+            errorReason={KERNEL_ERROR_REASON.DEPENDENCY_CACHE_MISSING_IPYKERNEL}
             envSource={envSource}
           />,
         );
@@ -468,6 +468,78 @@ describe("NotebookToolbar", () => {
       );
       expect(screen.queryByText(/ipykernel missing from/)).not.toBeInTheDocument();
       expect(screen.queryByText(/ipykernel not found/)).not.toBeInTheDocument();
+    });
+
+    it("shows conda context and daemon diagnostics for stale inline caches", () => {
+      render(
+        <NotebookToolbar
+          {...baseProps}
+          runtime="python"
+          kernelStatus={KERNEL_STATUS.ERROR}
+          lifecycle={errorLifecycle}
+          errorReason={KERNEL_ERROR_REASON.DEPENDENCY_CACHE_MISSING_IPYKERNEL}
+          envSource="conda:inline"
+          condaPython="3.11"
+          condaChannels={["conda-forge"]}
+          projectContext={{
+            state: "Detected",
+            project_file: {
+              absolute_path: "/tmp/project/environment.yml",
+              relative_to_notebook: "environment.yml",
+              kind: "CondaEnvYml",
+            },
+            parsed: {
+              dependencies: ["numpy"],
+              dev_dependencies: [],
+              requires_python: "3.11",
+              prerelease: null,
+              extras: { kind: "EnvironmentYml", channels: ["conda-forge"], pip: [] },
+            },
+            observed_at: "2026-05-01T00:00:00Z",
+          }}
+          kernelErrorMessage={[
+            "ipykernel is not importable from the prepared conda:inline environment.",
+            "python: /tmp/env/bin/python",
+            "site-packages: /tmp/env/lib/python3.11/site-packages",
+          ].join("\n")}
+        />,
+      );
+
+      expect(screen.getByText("Environment: conda:inline")).toBeInTheDocument();
+      expect(screen.getByText("Manager: conda")).toBeInTheDocument();
+      expect(screen.getByText("Python: 3.11")).toBeInTheDocument();
+      expect(screen.getByText("Channels: conda-forge")).toBeInTheDocument();
+      expect(screen.getByText("Project: environment.yml")).toBeInTheDocument();
+      expect(screen.getByText(/site-packages: \/tmp\/env/)).toBeInTheDocument();
+    });
+
+    it("explains conda site-packages ABI mismatches with diagnostic details", () => {
+      render(
+        <NotebookToolbar
+          {...baseProps}
+          runtime="python"
+          kernelStatus={KERNEL_STATUS.ERROR}
+          lifecycle={errorLifecycle}
+          errorReason={KERNEL_ERROR_REASON.IPYKERNEL_SITE_PACKAGES_MISMATCH}
+          envSource="conda:inline"
+          condaPython="3.14t"
+          condaChannels={["conda-forge"]}
+          kernelErrorMessage={[
+            "ipykernel is installed outside the interpreter's importable site-packages path.",
+            "interpreter site-packages: /tmp/env/lib/python3.14t/site-packages",
+            "found ipykernel under:",
+            "  - /tmp/env/lib/python3.14/site-packages/ipykernel",
+          ].join("\n")}
+        />,
+      );
+
+      expect(
+        screen.getByText(/Conda installed ipykernel outside this Python's import path/),
+      ).toBeInTheDocument();
+      expect(screen.getByText(/Conda\/Python ABI mismatch/)).toBeInTheDocument();
+      expect(screen.getByText("Python: 3.14t")).toBeInTheDocument();
+      expect(screen.getByText(/python3\.14t\/site-packages/)).toBeInTheDocument();
+      expect(screen.queryByText("missing_ipykernel")).not.toBeInTheDocument();
     });
   });
 

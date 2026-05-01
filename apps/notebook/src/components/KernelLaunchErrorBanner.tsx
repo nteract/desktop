@@ -30,6 +30,8 @@ export function shouldShowKernelLaunchErrorBanner(params: {
   if (params.lifecycle.lifecycle !== "Error") return false;
   if (!params.errorDetails || params.errorDetails.length === 0) return false;
   if (params.errorReason === KERNEL_ERROR_REASON.MISSING_IPYKERNEL) return false;
+  if (params.errorReason === KERNEL_ERROR_REASON.DEPENDENCY_CACHE_MISSING_IPYKERNEL) return false;
+  if (params.errorReason === KERNEL_ERROR_REASON.IPYKERNEL_SITE_PACKAGES_MISMATCH) return false;
   if (params.errorReason === KERNEL_ERROR_REASON.CONDA_ENV_YML_MISSING) return false;
   if (params.runtime === "deno") return false;
   return true;

@@ -121,12 +121,22 @@ describe("shouldShowKernelLaunchErrorBanner", () => {
     ).toBe(false);
   });
 
-  it("hides for MissingIpykernel (toolbar prompt owns that UX)", () => {
+  it.each([
+    [KERNEL_ERROR_REASON.MISSING_IPYKERNEL, "ipykernel not declared"],
+    [
+      KERNEL_ERROR_REASON.DEPENDENCY_CACHE_MISSING_IPYKERNEL,
+      "ipykernel is not importable from the prepared inline environment",
+    ],
+    [
+      KERNEL_ERROR_REASON.IPYKERNEL_SITE_PACKAGES_MISMATCH,
+      "ipykernel is installed outside the interpreter's importable site-packages path",
+    ],
+  ])("hides for typed ipykernel reason %s (toolbar prompt owns that UX)", (reason, details) => {
     expect(
       shouldShowKernelLaunchErrorBanner({
         lifecycle: ERROR,
-        errorDetails: "ipykernel not declared",
-        errorReason: KERNEL_ERROR_REASON.MISSING_IPYKERNEL,
+        errorDetails: details,
+        errorReason: reason,
         runtime: "python",
       }),
     ).toBe(false);
