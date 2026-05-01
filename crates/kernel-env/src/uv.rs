@@ -68,7 +68,14 @@ pub async fn check_uv_available() -> bool {
 /// `nteract_kernel_launcher` package that the daemon injects via PYTHONPATH.
 /// The `bootstrap_dx` feature flag now gates launcher-vs-vanilla, not a
 /// PyPI install.
-pub const UV_BASE_PACKAGES: &[&str] = &["ipykernel", "ipywidgets", "anywidget", "nbformat", "uv"];
+pub const UV_BASE_PACKAGES: &[&str] = &[
+    "ipykernel",
+    "ipywidgets",
+    "anywidget",
+    "nbformat",
+    "pyarrow>=14",
+    "uv",
+];
 
 /// Compute the unified env hash for a notebook. Used by the captured-deps
 /// reopen path from the unified env resolution design (see
@@ -269,6 +276,7 @@ pub async fn prepare_environment_in(
         "ipywidgets".to_string(),
         "anywidget".to_string(),
         "nbformat".to_string(),
+        "pyarrow>=14".to_string(),
         "uv".to_string(), // For %uv magic in notebooks
     ];
     packages.extend(deps.dependencies.iter().cloned());

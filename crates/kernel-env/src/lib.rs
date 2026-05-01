@@ -159,6 +159,7 @@ mod strip_base_tests {
             "ipywidgets",
             "anywidget",
             "nbformat",
+            "pyarrow>=14",
             "uv",
             "pandas",
             "numpy",
@@ -172,10 +173,17 @@ mod strip_base_tests {
 
     #[test]
     fn strips_conda_base_leaves_user_defaults() {
-        let installed: Vec<String> = ["ipykernel", "ipywidgets", "anywidget", "nbformat", "scipy"]
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
+        let installed: Vec<String> = [
+            "ipykernel",
+            "ipywidgets",
+            "anywidget",
+            "nbformat",
+            "pyarrow>=14",
+            "scipy",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
         let result = strip_base(&installed, CONDA_BASE_PACKAGES);
         assert_eq!(result, vec!["scipy".to_string()]);
     }

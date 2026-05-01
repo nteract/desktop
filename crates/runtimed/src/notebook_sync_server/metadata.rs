@@ -2241,15 +2241,11 @@ pub(crate) async fn reset_starting_state(
 /// Returns `Ok((PooledEnv, actual_packages))` on success, `Err(())` on failure.
 pub(crate) async fn try_uv_pool_for_inline_deps(
     deps: &[String],
-    bootstrap_dx: bool,
     daemon: &std::sync::Arc<crate::daemon::Daemon>,
     room: &NotebookRoom,
     progress_handler: std::sync::Arc<dyn kernel_env::ProgressHandler>,
 ) -> Result<(crate::PooledEnv, Vec<String>), ()> {
-    // `inline_deps_with_bootstrap` is a shim since 0.2.0 — launcher
-    // vendoring replaced the `dx` PyPI install, so effective == inline.
-    // Kept so the call sites don't all have to shift on the same PR.
-    let effective_deps = crate::inline_env::inline_deps_with_bootstrap(deps, bootstrap_dx);
+    let effective_deps = crate::inline_env::inline_deps_with_required_packages(deps);
 
     // Quick pre-check: if any dep has version specifiers, skip pool entirely
     // (avoids consuming a pool env we'd have to discard)
@@ -2291,13 +2287,7 @@ pub(crate) async fn try_uv_pool_for_inline_deps(
             // before releasing the lease — otherwise the sweep races
             // with the launch handler's later `runtime_agent_env_path`
             // write and can delete the env mid-launch.
-            crate::inline_env::claim_pool_env_for_uv_inline_cache(
-                &mut env,
-                deps,
-                None,
-                bootstrap_dx,
-            )
-            .await;
+            crate::inline_env::claim_pool_env_for_uv_inline_cache(&mut env, deps, None).await;
             {
                 let mut ep = room.runtime_agent_env_path.write().await;
                 *ep = Some(env.venv_path.clone());
@@ -2328,13 +2318,8 @@ pub(crate) async fn try_uv_pool_for_inline_deps(
                     // the next restart cache-hits. See #2089 / #2083.
                     // Same claim-best-effort caveat as the Subset arm —
                     // install runtime ownership before releasing.
-                    crate::inline_env::claim_pool_env_for_uv_inline_cache(
-                        &mut env,
-                        deps,
-                        None,
-                        bootstrap_dx,
-                    )
-                    .await;
+                    crate::inline_env::claim_pool_env_for_uv_inline_cache(&mut env, deps, None)
+                        .await;
                     {
                         let mut ep = room.runtime_agent_env_path.write().await;
                         *ep = Some(env.venv_path.clone());
@@ -2382,6 +2367,8 @@ pub(crate) async fn try_conda_pool_for_inline_deps(
     room: &NotebookRoom,
     progress_handler: std::sync::Arc<dyn kernel_env::ProgressHandler>,
 ) -> Result<(crate::PooledEnv, Vec<String>), ()> {
+    let effective_deps = crate::inline_env::inline_deps_with_required_packages(deps);
+
     // Only use pool for default conda-forge channel
     let is_default_channels =
         channels.is_empty() || (channels.len() == 1 && channels[0] == "conda-forge");
@@ -2396,7 +2383,7 @@ pub(crate) async fn try_conda_pool_for_inline_deps(
     // Quick pre-check: if any dep has version specifiers, skip pool entirely
     let settings_packages = daemon.conda_pool_packages().await;
     if matches!(
-        crate::inline_env::compare_deps_to_pool(deps, &settings_packages),
+        crate::inline_env::compare_deps_to_pool(&effective_deps, &settings_packages),
         crate::inline_env::PoolDepRelation::Independent
     ) {
         debug!("[notebook-sync] Conda inline deps have version constraints, skipping pool reuse");
@@ -2416,7 +2403,7 @@ pub(crate) async fn try_conda_pool_for_inline_deps(
     };
 
     let actual_packages = env.prewarmed_packages.clone();
-    let relation = crate::inline_env::compare_deps_to_pool(deps, &actual_packages);
+    let relation = crate::inline_env::compare_deps_to_pool(&effective_deps, &actual_packages);
 
     match relation {
         crate::inline_env::PoolDepRelation::Subset => {
@@ -2449,7 +2436,7 @@ pub(crate) async fn try_conda_pool_for_inline_deps(
             // Passing only the delta would drop the original user packages
             // that are already installed in the pool env. See #2134.
             let conda_deps = kernel_env::CondaDependencies {
-                dependencies: deps.to_vec(),
+                dependencies: effective_deps.clone(),
                 channels: vec!["conda-forge".to_string()],
                 python: None,
                 env_id: None,
@@ -2925,8 +2912,8 @@ pub(crate) async fn auto_launch_kernel(
             room.state.clone(),
         ));
 
-    // Fetch feature flags now so inline env prep hashes match what the
-    // kernel will actually receive (bootstrap_dx changes the install set).
+    // Fetch feature flags now so inline cache hits can refresh vendored
+    // launcher files when bootstrap_dx is active.
     let feature_flags_for_inline = daemon.feature_flags().await;
     let bootstrap_dx = feature_flags_for_inline.bootstrap_dx;
 
@@ -2937,13 +2924,8 @@ pub(crate) async fn auto_launch_kernel(
                 "[notebook-sync] Preparing cached UV env for PEP 723 deps: {:?}",
                 deps
             );
-            match crate::inline_env::prepare_uv_inline_env(
-                deps,
-                None,
-                progress_handler.clone(),
-                bootstrap_dx,
-            )
-            .await
+            match crate::inline_env::prepare_uv_inline_env(deps, None, progress_handler.clone())
+                .await
             {
                 Ok(prepared) => {
                     info!(
@@ -2994,14 +2976,8 @@ pub(crate) async fn auto_launch_kernel(
                 (env, Some(deps))
             } else if prerelease.is_none() {
                 // Try pool reuse for bare deps without prerelease
-                match try_uv_pool_for_inline_deps(
-                    &deps,
-                    bootstrap_dx,
-                    &daemon,
-                    room,
-                    progress_handler.clone(),
-                )
-                .await
+                match try_uv_pool_for_inline_deps(&deps, &daemon, room, progress_handler.clone())
+                    .await
                 {
                     Ok((env, pool_pkgs)) => {
                         let mut pooled = env;
@@ -3018,7 +2994,6 @@ pub(crate) async fn auto_launch_kernel(
                             &deps,
                             prerelease.as_deref(),
                             progress_handler.clone(),
-                            bootstrap_dx,
                         )
                         .await
                         {
@@ -3053,7 +3028,6 @@ pub(crate) async fn auto_launch_kernel(
                     &deps,
                     prerelease.as_deref(),
                     progress_handler.clone(),
-                    bootstrap_dx,
                 )
                 .await
                 {
@@ -3361,6 +3335,7 @@ pub(crate) async fn auto_launch_kernel(
             .and_then(|s| s.runt.pixi.as_ref())
             .map(|p| p.dependencies.clone())
             .unwrap_or_default();
+        let deps = crate::inline_env::inline_deps_with_required_packages(&deps);
         if !deps.is_empty() {
             info!("[notebook-sync] pixi:inline deps for pixi exec: {:?}", deps);
             (None, Some(deps))
@@ -3370,8 +3345,9 @@ pub(crate) async fn auto_launch_kernel(
     } else if matches!(env_source, EnvSource::Pep723(PackageManager::Pixi)) {
         // PEP 723 deps via pixi exec -w (same mechanism as pixi:inline)
         if let Some(ref deps) = pep723_deps {
+            let deps = crate::inline_env::inline_deps_with_required_packages(deps);
             info!("[notebook-sync] pixi:pep723 deps for pixi exec: {:?}", deps);
-            (None, Some(deps.clone()))
+            (None, Some(deps))
         } else {
             (pooled_env, None)
         }

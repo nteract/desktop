@@ -150,21 +150,23 @@ pub(crate) fn inline_cache_dir() -> std::path::PathBuf {
     runt_workspace::daemon_base_dir().join("inline-envs")
 }
 
-/// Return inline deps unchanged.
-///
-/// Historically this appended `dx` when `bootstrap_dx` was set, so the
-/// PyPI package would land in the inline env and the dep-hash would
-/// distinguish bootstrap and non-bootstrap caches. Since 0.2.0 the
-/// launcher package (which carries everything dx used to provide)
-/// ships inside the daemon binary and is vendored via PYTHONPATH —
-/// the inline env contents are identical either way, and bootstrap
-/// vs non-bootstrap envs can share the cache.
-///
-/// Kept as a shim so callers don't all have to change on the same PR.
-/// `bootstrap_dx` is accepted and ignored — plan to drop the parameter
-/// once the field ripens into a pure launcher-module selector.
-pub(crate) fn inline_deps_with_bootstrap(deps: &[String], _bootstrap_dx: bool) -> Vec<String> {
-    deps.to_vec()
+fn has_dep_named(deps: &[String], name: &str) -> bool {
+    deps.iter()
+        .filter_map(|dep| extract_conda_package_name(dep).map(normalize_package_name))
+        .any(|bare| bare == name)
+}
+
+/// Return inline deps plus the managed runtime packages expected by notebook
+/// display helpers. User-provided versions win by package name.
+pub(crate) fn inline_deps_with_required_packages(deps: &[String]) -> Vec<String> {
+    let mut effective = deps.to_vec();
+    if !has_dep_named(&effective, "nbformat") {
+        effective.push("nbformat".to_string());
+    }
+    if !has_dep_named(&effective, "pyarrow") {
+        effective.push("pyarrow>=14".to_string());
+    }
+    effective
 }
 
 /// Prepare a cached UV environment with the given inline dependencies.
@@ -172,17 +174,13 @@ pub(crate) fn inline_deps_with_bootstrap(deps: &[String], _bootstrap_dx: bool) -
 /// If a cached environment with the same deps already exists, returns it
 /// immediately. Otherwise creates a new environment with uv venv + uv pip install.
 ///
-/// `bootstrap_dx` is accepted for call-site compatibility and currently
-/// ignored — launcher vendoring replaced the per-env `dx` PyPI install,
-/// so bootstrap and non-bootstrap envs are identical and share the cache.
 pub async fn prepare_uv_inline_env(
     deps: &[String],
     prerelease: Option<&str>,
     handler: Arc<dyn ProgressHandler>,
-    bootstrap_dx: bool,
 ) -> Result<PreparedEnv> {
     let uv_deps = kernel_env::UvDependencies {
-        dependencies: inline_deps_with_bootstrap(deps, bootstrap_dx),
+        dependencies: inline_deps_with_required_packages(deps),
         requires_python: Some(">=3.13".to_string()),
         prerelease: prerelease.map(|s| s.to_string()),
     };
@@ -206,7 +204,7 @@ pub async fn prepare_conda_inline_env(
     handler: Arc<dyn ProgressHandler>,
 ) -> Result<PreparedEnv> {
     let conda_deps = kernel_env::CondaDependencies {
-        dependencies: deps.to_vec(),
+        dependencies: inline_deps_with_required_packages(deps),
         channels: if channels.is_empty() {
             vec!["conda-forge".to_string()]
         } else {
@@ -241,10 +239,9 @@ pub async fn claim_pool_env_for_uv_inline_cache(
     env: &mut crate::PooledEnv,
     deps: &[String],
     prerelease: Option<&str>,
-    bootstrap_dx: bool,
 ) {
     let uv_deps = kernel_env::UvDependencies {
-        dependencies: inline_deps_with_bootstrap(deps, bootstrap_dx),
+        dependencies: inline_deps_with_required_packages(deps),
         requires_python: Some(">=3.13".to_string()),
         prerelease: prerelease.map(|s| s.to_string()),
     };
@@ -261,8 +258,9 @@ pub async fn claim_pool_env_for_conda_inline_cache(
     deps: &[String],
     channels: &[String],
 ) {
+    let dependencies = inline_deps_with_required_packages(deps);
     let conda_deps = kernel_env::CondaDependencies {
-        dependencies: deps.to_vec(),
+        dependencies,
         channels: if channels.is_empty() {
             vec!["conda-forge".to_string()]
         } else {
@@ -432,7 +430,7 @@ fn inline_dep_forbids_pool_reuse(dep: &str) -> bool {
 /// - `"conda-forge::numpy>=1.24"` → `Some("numpy")`
 /// - `"conda-forge::numpy"` → `Some("numpy")`
 /// - `""` → `None`
-fn extract_conda_package_name(dep: &str) -> Option<&str> {
+pub(crate) fn extract_conda_package_name(dep: &str) -> Option<&str> {
     let trimmed = dep.trim();
     if trimmed.is_empty() {
         return None;
@@ -458,7 +456,7 @@ fn extract_conda_package_name(dep: &str) -> Option<&str> {
 }
 
 /// Normalize a package name for comparison: lowercase, replace `_` with `-`.
-fn normalize_package_name(name: &str) -> String {
+pub(crate) fn normalize_package_name(name: &str) -> String {
     name.to_lowercase().replace('_', "-")
 }
 
@@ -559,20 +557,18 @@ pub fn compare_deps_to_pool(inline_deps: &[String], pool_packages: &[String]) ->
 /// Returns `Some(PreparedEnv)` on cache hit, `None` on miss.
 ///
 /// On hit, when `bootstrap_dx` is on, re-vendor the launcher into the
-/// cached venv before returning. Reason: since 0.2.0,
-/// `inline_deps_with_bootstrap` is a no-op and the env hash no longer
-/// differs by feature flag, so a pre-upgrade non-bootstrap cache entry
-/// (or a pre-0.2.0 single-file-launcher bootstrap entry) can answer a
-/// bootstrap launch. `vendor_into_venv` is idempotent + cleans up the
-/// legacy single-file module, so calling it unconditionally on hit
-/// brings the cached env up to today's layout before the kernel boots.
+/// cached venv before returning. This keeps cache entries with the correct
+/// vendored launcher layout launchable even if they predate the current
+/// package layout. `vendor_into_venv` is idempotent + cleans up the
+/// legacy single-file module, so calling it on hit brings the cached env up to
+/// today's layout before the kernel boots.
 pub async fn check_uv_inline_cache(
     deps: &[String],
     prerelease: Option<&str>,
     bootstrap_dx: bool,
 ) -> Option<PreparedEnv> {
     let uv_deps = kernel_env::UvDependencies {
-        dependencies: inline_deps_with_bootstrap(deps, bootstrap_dx),
+        dependencies: inline_deps_with_required_packages(deps),
         requires_python: Some(">=3.13".to_string()),
         prerelease: prerelease.map(|s| s.to_string()),
     };
@@ -615,8 +611,9 @@ pub async fn check_uv_inline_cache(
 /// stale cache entry (e.g. created by a buggy build that dropped packages)
 /// is treated as a miss and removed so the next code path can rebuild it.
 pub fn check_conda_inline_cache(deps: &[String], channels: &[String]) -> Option<PreparedEnv> {
+    let dependencies = inline_deps_with_required_packages(deps);
     let conda_deps = kernel_env::CondaDependencies {
-        dependencies: deps.to_vec(),
+        dependencies: dependencies.clone(),
         channels: if channels.is_empty() {
             vec!["conda-forge".to_string()]
         } else {
@@ -642,9 +639,9 @@ pub fn check_conda_inline_cache(deps: &[String], channels: &[String]) -> Option<
     // Verify that every requested package is actually installed.  The
     // python binary existing is necessary but not sufficient — a prior
     // buggy build may have cached an env missing some packages (#2137).
-    if !deps.is_empty() {
+    if !dependencies.is_empty() {
         let installed = conda_meta_package_names(&env_path);
-        for dep in deps {
+        for dep in &dependencies {
             let Some(name) = extract_conda_package_name(dep) else {
                 continue;
             };
@@ -1003,6 +1000,40 @@ mod tests {
         assert_eq!(normalize_package_name("Pandas"), "pandas");
         assert_eq!(normalize_package_name("scikit_learn"), "scikit-learn");
         assert_eq!(normalize_package_name("PyArrow"), "pyarrow");
+    }
+
+    #[test]
+    fn test_inline_deps_with_required_packages_adds_display_deps() {
+        let deps = vec!["pandas".to_string(), "numpy".to_string()];
+        assert_eq!(
+            inline_deps_with_required_packages(&deps),
+            vec![
+                "pandas".to_string(),
+                "numpy".to_string(),
+                "nbformat".to_string(),
+                "pyarrow>=14".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn test_inline_deps_with_required_packages_does_not_duplicate_overrides() {
+        let deps = vec![
+            "pandas".to_string(),
+            "nbformat==5.10.4".to_string(),
+            "PyArrow>=15".to_string(),
+        ];
+        assert_eq!(inline_deps_with_required_packages(&deps), deps);
+    }
+
+    #[test]
+    fn test_inline_deps_with_required_packages_does_not_duplicate_channel_qualified_pyarrow() {
+        let deps = vec![
+            "pandas".to_string(),
+            "nbformat".to_string(),
+            "conda-forge::pyarrow>=15".to_string(),
+        ];
+        assert_eq!(inline_deps_with_required_packages(&deps), deps);
     }
 
     #[test]

@@ -634,8 +634,8 @@ pub(crate) async fn handle(
             room.state.clone(),
         ));
 
-    // Fetch feature flags up front so inline env hashing matches
-    // the kernel's install set (bootstrap_dx adds `dx`).
+    // Fetch feature flags up front so inline cache hits can refresh vendored
+    // launcher files when bootstrap_dx is active.
     let feature_flags_for_inline = daemon.feature_flags().await;
     let bootstrap_dx = feature_flags_for_inline.bootstrap_dx;
 
@@ -669,7 +669,6 @@ pub(crate) async fn handle(
                 &deps,
                 None,
                 launch_progress_handler.clone(),
-                bootstrap_dx,
             )
             .await
             {
@@ -730,7 +729,6 @@ pub(crate) async fn handle(
                 // Try pool reuse for bare deps without prerelease
                 match try_uv_pool_for_inline_deps(
                     &deps,
-                    bootstrap_dx,
                     daemon,
                     room,
                     launch_progress_handler.clone(),
@@ -752,7 +750,6 @@ pub(crate) async fn handle(
                             &deps,
                             prerelease.as_deref(),
                             launch_progress_handler.clone(),
-                            bootstrap_dx,
                         )
                         .await
                         {
@@ -784,7 +781,6 @@ pub(crate) async fn handle(
                     &deps,
                     prerelease.as_deref(),
                     launch_progress_handler.clone(),
-                    bootstrap_dx,
                 )
                 .await
                 {
@@ -1108,6 +1104,7 @@ pub(crate) async fn handle(
             .and_then(|s| s.runt.pixi.as_ref())
             .map(|p| p.dependencies.clone())
             .unwrap_or_default();
+        let deps = crate::inline_env::inline_deps_with_required_packages(&deps);
         if !deps.is_empty() {
             info!(
                 "[notebook-sync] LaunchKernel: pixi:inline deps for pixi exec: {:?}",
@@ -1122,11 +1119,10 @@ pub(crate) async fn handle(
         let cells = room.doc.read().await.get_cells();
         match notebook_doc::pep723::find_pep723_in_cells(&cells) {
             Ok(Some(meta)) if !meta.dependencies.is_empty() => {
-                info!(
-                    "[notebook-sync] LaunchKernel: pixi:pep723 deps: {:?}",
-                    meta.dependencies
-                );
-                (None, Some(meta.dependencies))
+                let deps =
+                    crate::inline_env::inline_deps_with_required_packages(&meta.dependencies);
+                info!("[notebook-sync] LaunchKernel: pixi:pep723 deps: {:?}", deps);
+                (None, Some(deps))
             }
             _ => (pooled_env, None),
         }

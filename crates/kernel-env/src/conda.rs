@@ -53,7 +53,13 @@ pub fn default_cache_dir_conda() -> PathBuf {
 /// runtimed) and by the unified env design's capture step (`strip_base`) so
 /// the notebook's metadata records only user-level deps. Keep this in sync
 /// with the warmer.
-pub const CONDA_BASE_PACKAGES: &[&str] = &["ipykernel", "ipywidgets", "anywidget", "nbformat"];
+pub const CONDA_BASE_PACKAGES: &[&str] = &[
+    "ipykernel",
+    "ipywidgets",
+    "anywidget",
+    "nbformat",
+    "pyarrow>=14",
+];
 
 /// Compute the unified env hash for a notebook. Used by the captured-deps
 /// reopen path from the unified env resolution design (see
@@ -445,9 +451,15 @@ async fn install_conda_env(
     specs.push(MatchSpec::from_str("ipywidgets", match_spec_options)?);
     specs.push(MatchSpec::from_str("anywidget", match_spec_options)?);
     specs.push(MatchSpec::from_str("nbformat", match_spec_options)?);
+    specs.push(MatchSpec::from_str("pyarrow>=14", match_spec_options)?);
 
     for dep in &deps.dependencies {
-        if dep != "ipykernel" && dep != "ipywidgets" && dep != "anywidget" && dep != "nbformat" {
+        if dep != "ipykernel"
+            && dep != "ipywidgets"
+            && dep != "anywidget"
+            && dep != "nbformat"
+            && dep != "pyarrow>=14"
+        {
             specs.push(MatchSpec::from_str(dep, match_spec_options)?);
         }
     }
@@ -862,10 +874,16 @@ pub async fn sync_dependencies(env: &CondaEnvironment, deps: &CondaDependencies)
         MatchSpec::from_str("ipywidgets", match_spec_options)?,
         MatchSpec::from_str("anywidget", match_spec_options)?,
         MatchSpec::from_str("nbformat", match_spec_options)?,
+        MatchSpec::from_str("pyarrow>=14", match_spec_options)?,
     ];
 
     for dep in &deps.dependencies {
-        if dep != "ipykernel" && dep != "ipywidgets" && dep != "anywidget" && dep != "nbformat" {
+        if dep != "ipykernel"
+            && dep != "ipywidgets"
+            && dep != "anywidget"
+            && dep != "nbformat"
+            && dep != "pyarrow>=14"
+        {
             specs.push(MatchSpec::from_str(dep, match_spec_options)?);
         }
     }
@@ -1014,9 +1032,15 @@ fn build_spec_strings(deps: &CondaDependencies) -> Vec<String> {
     specs.push("ipywidgets".to_string());
     specs.push("anywidget".to_string());
     specs.push("nbformat".to_string());
+    specs.push("pyarrow>=14".to_string());
 
     for dep in &deps.dependencies {
-        if dep != "ipykernel" && dep != "ipywidgets" && dep != "anywidget" && dep != "nbformat" {
+        if dep != "ipykernel"
+            && dep != "ipywidgets"
+            && dep != "anywidget"
+            && dep != "nbformat"
+            && dep != "pyarrow>=14"
+        {
             specs.push(dep.clone());
         }
     }
