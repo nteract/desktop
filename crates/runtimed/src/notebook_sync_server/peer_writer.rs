@@ -36,8 +36,8 @@ pub(super) struct PeerRequestWorker {
 
 #[derive(Debug)]
 pub(super) enum RequestEnqueueError {
-    Full(notebook_protocol::protocol::NotebookRequestEnvelope),
-    Closed(notebook_protocol::protocol::NotebookRequestEnvelope),
+    Full(Box<notebook_protocol::protocol::NotebookRequestEnvelope>),
+    Closed(Box<notebook_protocol::protocol::NotebookRequestEnvelope>),
 }
 
 impl Drop for PeerWriterTask {
@@ -103,8 +103,12 @@ impl PeerRequestWorker {
         envelope: notebook_protocol::protocol::NotebookRequestEnvelope,
     ) -> Result<(), RequestEnqueueError> {
         self.tx.try_send(envelope).map_err(|e| match e {
-            mpsc::error::TrySendError::Full(envelope) => RequestEnqueueError::Full(envelope),
-            mpsc::error::TrySendError::Closed(envelope) => RequestEnqueueError::Closed(envelope),
+            mpsc::error::TrySendError::Full(envelope) => {
+                RequestEnqueueError::Full(Box::new(envelope))
+            }
+            mpsc::error::TrySendError::Closed(envelope) => {
+                RequestEnqueueError::Closed(Box::new(envelope))
+            }
         })
     }
 }
@@ -271,14 +275,14 @@ pub(super) fn enqueue_notebook_request(
                     "[notebook-sync] Peer request queue full for {} (peer_id={})",
                     notebook_id, peer_id
                 );
-                queue_request_error(writer, envelope.id, "Peer request queue full")?;
+                queue_request_error(writer, envelope.id.clone(), "Peer request queue full")?;
             }
             RequestEnqueueError::Closed(envelope) => {
                 warn!(
                     "[notebook-sync] Peer request worker stopped for {} (peer_id={})",
                     notebook_id, peer_id
                 );
-                queue_request_error(writer, envelope.id, "Peer request worker stopped")?;
+                queue_request_error(writer, envelope.id.clone(), "Peer request worker stopped")?;
                 anyhow::bail!("peer request worker stopped for {}", notebook_id);
             }
         }
