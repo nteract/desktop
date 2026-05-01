@@ -61,6 +61,30 @@ pub const CONDA_BASE_PACKAGES: &[&str] = &[
     "pyarrow>=14",
 ];
 
+const CONDA_GIL_SELECTOR: &str = "python-gil";
+
+fn conda_python_requests_free_threading(python: &str) -> bool {
+    python
+        .split(|ch: char| {
+            ch == ','
+                || ch == '='
+                || ch == '<'
+                || ch == '>'
+                || ch == '!'
+                || ch == '~'
+                || ch.is_whitespace()
+        })
+        .filter(|part| !part.is_empty())
+        .any(|part| part.ends_with('t'))
+}
+
+fn should_enforce_gil_python(deps: &CondaDependencies) -> bool {
+    !deps
+        .python
+        .as_deref()
+        .is_some_and(conda_python_requests_free_threading)
+}
+
 /// Compute the unified env hash for a notebook. Used by the captured-deps
 /// reopen path from the unified env resolution design (see
 /// `docs/superpowers/specs/2026-04-20-unified-env-resolution.md`).
@@ -101,6 +125,10 @@ pub fn compute_env_hash(deps: &CondaDependencies) -> String {
     if let Some(ref py) = deps.python {
         hasher.update(b"python:");
         hasher.update(py.as_bytes());
+    }
+
+    if should_enforce_gil_python(deps) {
+        hasher.update(b"python-abi:gil\n");
     }
 
     if let Some(ref env_id) = deps.env_id {
@@ -445,6 +473,9 @@ async fn install_conda_env(
         )?);
     } else {
         specs.push(MatchSpec::from_str("python>=3.13", match_spec_options)?);
+    }
+    if should_enforce_gil_python(deps) {
+        specs.push(MatchSpec::from_str(CONDA_GIL_SELECTOR, match_spec_options)?);
     }
 
     specs.push(MatchSpec::from_str("ipykernel", match_spec_options)?);
@@ -1027,6 +1058,9 @@ fn build_spec_strings(deps: &CondaDependencies) -> Vec<String> {
     } else {
         specs.push("python>=3.13".to_string());
     }
+    if should_enforce_gil_python(deps) {
+        specs.push(CONDA_GIL_SELECTOR.to_string());
+    }
 
     specs.push("ipykernel".to_string());
     specs.push("ipywidgets".to_string());
@@ -1211,5 +1245,75 @@ mod tests {
         let h1 = compute_unified_env_hash(&deps, "notebook-1");
         let h2 = compute_unified_env_hash(&deps, "notebook-2");
         assert_ne!(h1, h2);
+    }
+
+    #[test]
+    fn managed_specs_enforce_gil_python_by_default() {
+        let deps = CondaDependencies {
+            dependencies: vec!["numpy".into()],
+            channels: vec!["conda-forge".into()],
+            python: None,
+            env_id: None,
+        };
+
+        let specs = build_spec_strings(&deps);
+        assert!(specs.contains(&"python>=3.13".to_string()));
+        assert!(specs.contains(&CONDA_GIL_SELECTOR.to_string()));
+    }
+
+    #[test]
+    fn managed_specs_enforce_gil_python_for_normal_pin() {
+        let deps = CondaDependencies {
+            dependencies: vec!["numpy".into()],
+            channels: vec!["conda-forge".into()],
+            python: Some("3.11".into()),
+            env_id: None,
+        };
+
+        let specs = build_spec_strings(&deps);
+        assert!(specs.contains(&"python=3.11".to_string()));
+        assert!(specs.contains(&CONDA_GIL_SELECTOR.to_string()));
+    }
+
+    #[test]
+    fn explicit_free_threaded_pin_does_not_add_gil_selector() {
+        let deps = CondaDependencies {
+            dependencies: vec!["numpy".into()],
+            channels: vec!["conda-forge".into()],
+            python: Some("3.14t".into()),
+            env_id: None,
+        };
+
+        let specs = build_spec_strings(&deps);
+        assert!(specs.contains(&"python=3.14t".to_string()));
+        assert!(!specs.contains(&CONDA_GIL_SELECTOR.to_string()));
+    }
+
+    #[test]
+    fn free_threading_constraint_detection_is_explicit() {
+        assert!(conda_python_requests_free_threading("3.14t"));
+        assert!(conda_python_requests_free_threading(">=3.14t"));
+        assert!(conda_python_requests_free_threading(">=3.13,!=3.14t"));
+        assert!(!conda_python_requests_free_threading("3.14"));
+        assert!(!conda_python_requests_free_threading(">=3.13,<3.15"));
+    }
+
+    #[test]
+    fn gil_policy_changes_cache_identity() {
+        let gil_deps = CondaDependencies {
+            dependencies: vec!["numpy".into()],
+            channels: vec!["conda-forge".into()],
+            python: Some("3.14".into()),
+            env_id: None,
+        };
+        let free_threaded_deps = CondaDependencies {
+            python: Some("3.14t".into()),
+            ..gil_deps.clone()
+        };
+
+        assert_ne!(
+            compute_env_hash(&gil_deps),
+            compute_env_hash(&free_threaded_deps)
+        );
     }
 }

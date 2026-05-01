@@ -23,7 +23,11 @@ export type KernelActivity = "Unknown" | "Idle" | "Busy";
  * [`KERNEL_ERROR_REASON`] constants instead of bare string literals when
  * gating UI on a specific cause.
  */
-export type KernelErrorReasonKey = "missing_ipykernel" | "conda_env_yml_missing";
+export type KernelErrorReasonKey =
+  | "missing_ipykernel"
+  | "dependency_cache_missing_ipykernel"
+  | "ipykernel_site_packages_mismatch"
+  | "conda_env_yml_missing";
 
 /**
  * Typed error-reason strings. Mirrors `KernelErrorReason::as_str()` on
@@ -32,6 +36,8 @@ export type KernelErrorReasonKey = "missing_ipykernel" | "conda_env_yml_missing"
  */
 export const KERNEL_ERROR_REASON = {
   MISSING_IPYKERNEL: "missing_ipykernel",
+  DEPENDENCY_CACHE_MISSING_IPYKERNEL: "dependency_cache_missing_ipykernel",
+  IPYKERNEL_SITE_PACKAGES_MISMATCH: "ipykernel_site_packages_mismatch",
   /**
    * environment.yml declares a conda env that isn't built on this
    * machine. Daemon sets this instead of silently falling back to a

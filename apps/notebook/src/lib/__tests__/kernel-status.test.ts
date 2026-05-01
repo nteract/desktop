@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vite-plus/test";
+import { KERNEL_ERROR_REASON } from "runtimed";
 import {
   getTrustApprovalHandoffDisplayStatus,
   getLifecycleLabel,
@@ -81,10 +82,16 @@ describe("getLifecycleLabel", () => {
     }
   });
 
-  it("appends typed reason when lifecycle is Error", () => {
-    expect(getLifecycleLabel({ lifecycle: "Error" }, "missing_ipykernel")).toBe(
-      "error: missing_ipykernel",
+  it("shows a human typed reason label when lifecycle is Error", () => {
+    expect(getLifecycleLabel({ lifecycle: "Error" }, KERNEL_ERROR_REASON.MISSING_IPYKERNEL)).toBe(
+      "error: ipykernel missing",
     );
+    expect(
+      getLifecycleLabel(
+        { lifecycle: "Error" },
+        KERNEL_ERROR_REASON.IPYKERNEL_SITE_PACKAGES_MISMATCH,
+      ),
+    ).toBe("error: Python environment mismatch");
   });
 
   it("ignores reason for non-Error lifecycles", () => {
@@ -108,10 +115,16 @@ describe("getStatusKeyLabel", () => {
     }
   });
 
-  it("appends typed reason when key is error", () => {
-    expect(getStatusKeyLabel(RUNTIME_STATUS.ERROR, "missing_ipykernel")).toBe(
-      "error: missing_ipykernel",
+  it("shows a human typed reason label when key is error", () => {
+    expect(getStatusKeyLabel(RUNTIME_STATUS.ERROR, KERNEL_ERROR_REASON.MISSING_IPYKERNEL)).toBe(
+      "error: ipykernel missing",
     );
+    expect(
+      getStatusKeyLabel(
+        RUNTIME_STATUS.ERROR,
+        KERNEL_ERROR_REASON.DEPENDENCY_CACHE_MISSING_IPYKERNEL,
+      ),
+    ).toBe("error: ipykernel missing");
   });
 
   it("ignores reason for non-error keys", () => {

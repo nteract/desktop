@@ -28,6 +28,7 @@ pub mod daemon_telemetry;
 pub mod dx_blob_comm;
 pub mod embedded_plugins;
 pub mod inline_env;
+pub(crate) mod ipykernel_error;
 pub mod jupyter_kernel;
 pub mod kernel_connection;
 pub(crate) mod kernel_ports;

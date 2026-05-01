@@ -68,8 +68,48 @@ pub fn strip_base(installed: &[String], base: &[&str]) -> Vec<String> {
         .collect()
 }
 
-/// Check if a prepared UV venv or Conda env has `ipykernel` installed in its
-/// site-packages.
+/// Diagnostic result for checking whether a prepared Python environment can
+/// import `ipykernel`.
+#[cfg(feature = "runtime")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum IpykernelDiagnostic {
+    Present {
+        python_path: std::path::PathBuf,
+        purelib: std::path::PathBuf,
+    },
+    Missing {
+        python_path: std::path::PathBuf,
+        purelib: std::path::PathBuf,
+        import_error: Option<String>,
+    },
+    SitePackagesMismatch {
+        python_path: std::path::PathBuf,
+        purelib: std::path::PathBuf,
+        import_error: Option<String>,
+        candidates: Vec<std::path::PathBuf>,
+    },
+    InterpreterProbeFailed {
+        python_path: std::path::PathBuf,
+        message: String,
+    },
+}
+
+#[cfg(feature = "runtime")]
+impl IpykernelDiagnostic {
+    pub fn is_present(&self) -> bool {
+        matches!(self, Self::Present { .. })
+    }
+}
+
+#[cfg(feature = "runtime")]
+#[derive(Debug, serde::Deserialize)]
+struct IpykernelProbe {
+    purelib: String,
+    import_ok: bool,
+    error: Option<String>,
+}
+
+/// Check if a prepared UV venv or Conda env can import `ipykernel`.
 ///
 /// Used by the inline/pep723 launch paths to detect missing `ipykernel` before
 /// spawning the kernel. `prepare_environment_in` always adds `ipykernel` to
@@ -85,44 +125,85 @@ pub fn strip_base(installed: &[String], base: &[&str]) -> Vec<String> {
 /// false-negative a working env. The subprocess adds ~50ms; kernel launch
 /// is already seconds.
 ///
-/// Returns `false` on any failure (interpreter missing, spawn error,
-/// non-zero exit, empty output) — conservative: we'd rather surface a
-/// misleading "missing ipykernel" than try to launch a broken env.
-///
-/// Scans for a direct child directory named `ipykernel` or any
-/// `ipykernel-*.dist-info` metadata dir under site-packages.
 #[cfg(feature = "runtime")]
-pub fn venv_has_ipykernel(python_path: &std::path::Path) -> bool {
-    let Some(site_packages) = resolve_site_packages(python_path) else {
-        return false;
+pub fn diagnose_ipykernel(python_path: &std::path::Path) -> IpykernelDiagnostic {
+    let probe = match probe_ipykernel(python_path) {
+        Ok(probe) => probe,
+        Err(message) => {
+            return IpykernelDiagnostic::InterpreterProbeFailed {
+                python_path: python_path.to_path_buf(),
+                message,
+            };
+        }
     };
-    site_packages_has_ipykernel(&site_packages)
+
+    let purelib = std::path::PathBuf::from(probe.purelib);
+    if probe.import_ok {
+        return IpykernelDiagnostic::Present {
+            python_path: python_path.to_path_buf(),
+            purelib,
+        };
+    }
+
+    let candidates = sibling_site_packages_with_ipykernel(&purelib);
+    if !candidates.is_empty() {
+        return IpykernelDiagnostic::SitePackagesMismatch {
+            python_path: python_path.to_path_buf(),
+            purelib,
+            import_error: probe.error,
+            candidates,
+        };
+    }
+
+    IpykernelDiagnostic::Missing {
+        python_path: python_path.to_path_buf(),
+        purelib,
+        import_error: probe.error,
+    }
 }
 
-/// Ask the given interpreter for its site-packages path.
-///
-/// Uses `sysconfig.get_paths()['purelib']` which is the canonical
-/// pure-Python install target for that interpreter. Returns `None` if
-/// the interpreter cannot be executed or if the output is unexpected.
+/// Backward-compatible boolean wrapper for callers/tests that only need a gate.
 #[cfg(feature = "runtime")]
-fn resolve_site_packages(python_path: &std::path::Path) -> Option<std::path::PathBuf> {
+pub fn venv_has_ipykernel(python_path: &std::path::Path) -> bool {
+    diagnose_ipykernel(python_path).is_present()
+}
+
+#[cfg(feature = "runtime")]
+fn probe_ipykernel(python_path: &std::path::Path) -> Result<IpykernelProbe, String> {
     let output = std::process::Command::new(python_path)
         .args([
             "-c",
-            "import sysconfig; print(sysconfig.get_paths()['purelib'])",
+            r#"import json, sysconfig
+try:
+    import ipykernel  # noqa: F401
+    import_ok = True
+    error = None
+except Exception as exc:
+    import_ok = False
+    error = f"{type(exc).__name__}: {exc}"
+print(json.dumps({
+    "purelib": sysconfig.get_paths().get("purelib", ""),
+    "import_ok": import_ok,
+    "error": error,
+}))"#,
         ])
         .output()
-        .ok()?;
+        .map_err(|e| e.to_string())?;
     if !output.status.success() {
-        return None;
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(if stderr.is_empty() {
+            format!("interpreter exited with status {}", output.status)
+        } else {
+            stderr
+        });
     }
-    let sp = String::from_utf8(output.stdout).ok()?;
-    let sp = sp.trim();
-    if sp.is_empty() {
-        return None;
+    let stdout = String::from_utf8(output.stdout).map_err(|e| e.to_string())?;
+    let probe: IpykernelProbe =
+        serde_json::from_str(stdout.trim()).map_err(|e| format!("parse probe output: {e}"))?;
+    if probe.purelib.trim().is_empty() {
+        return Err("interpreter returned empty purelib".to_string());
     }
-    let path = std::path::PathBuf::from(sp);
-    path.is_dir().then_some(path)
+    Ok(probe)
 }
 
 #[cfg(feature = "runtime")]
@@ -146,6 +227,38 @@ fn site_packages_has_ipykernel(site_packages: &std::path::Path) -> bool {
         }
     }
     false
+}
+
+#[cfg(feature = "runtime")]
+fn sibling_site_packages_with_ipykernel(purelib: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let Some(python_dir) = purelib.parent() else {
+        return Vec::new();
+    };
+    let Some(lib_dir) = python_dir.parent() else {
+        return Vec::new();
+    };
+    let Ok(entries) = std::fs::read_dir(lib_dir) else {
+        return Vec::new();
+    };
+    let mut candidates = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path == python_dir || !path.is_dir() {
+            continue;
+        }
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        if !name.starts_with("python") {
+            continue;
+        }
+        let site_packages = path.join("site-packages");
+        if site_packages != purelib && site_packages_has_ipykernel(&site_packages) {
+            candidates.push(site_packages);
+        }
+    }
+    candidates.sort();
+    candidates
 }
 
 #[cfg(all(test, feature = "runtime"))]
@@ -290,5 +403,28 @@ mod site_packages_has_ipykernel_tests {
         assert!(!venv_has_ipykernel(std::path::Path::new(
             "/definitely/not/a/python/interpreter"
         )));
+    }
+
+    #[test]
+    fn sibling_site_packages_detects_abi_mismatch_candidate() {
+        let tmp = TempDir::new().unwrap();
+        let purelib = tmp.path().join("lib/python3.14t/site-packages");
+        let sibling = tmp.path().join("lib/python3.14/site-packages");
+        std::fs::create_dir_all(&purelib).unwrap();
+        std::fs::create_dir_all(sibling.join("ipykernel")).unwrap();
+
+        assert_eq!(
+            sibling_site_packages_with_ipykernel(&purelib),
+            vec![sibling]
+        );
+    }
+
+    #[test]
+    fn sibling_site_packages_ignores_current_purelib() {
+        let tmp = TempDir::new().unwrap();
+        let purelib = tmp.path().join("lib/python3.14/site-packages");
+        std::fs::create_dir_all(purelib.join("ipykernel")).unwrap();
+
+        assert!(sibling_site_packages_with_ipykernel(&purelib).is_empty());
     }
 }

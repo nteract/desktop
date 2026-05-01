@@ -210,6 +210,12 @@ pub enum KernelErrorReason {
     /// Pixi-managed environment is missing the `ipykernel` package.
     /// `NotebookToolbar` gates its "install ipykernel" prompt on this.
     MissingIpykernel,
+    /// A prepared inline dependency cache has Python but no importable
+    /// `ipykernel` package. Usually caused by a stale or partial cache.
+    DependencyCacheMissingIpykernel,
+    /// `ipykernel` exists on disk, but outside the interpreter's importable
+    /// site-packages path (for example a free-threaded Python ABI mismatch).
+    IpykernelSitePackagesMismatch,
     /// environment.yml declares a conda env (by `name:` or `prefix:`) that
     /// isn't built on this machine. Daemon sets this instead of silently
     /// falling back to a pool env, so the frontend can tell the user what
@@ -222,6 +228,8 @@ impl KernelErrorReason {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::MissingIpykernel => "missing_ipykernel",
+            Self::DependencyCacheMissingIpykernel => "dependency_cache_missing_ipykernel",
+            Self::IpykernelSitePackagesMismatch => "ipykernel_site_packages_mismatch",
             Self::CondaEnvYmlMissing => "conda_env_yml_missing",
         }
     }
@@ -229,6 +237,8 @@ impl KernelErrorReason {
     pub fn parse(s: &str) -> Option<Self> {
         match s {
             "missing_ipykernel" => Some(Self::MissingIpykernel),
+            "dependency_cache_missing_ipykernel" => Some(Self::DependencyCacheMissingIpykernel),
+            "ipykernel_site_packages_mismatch" => Some(Self::IpykernelSitePackagesMismatch),
             "conda_env_yml_missing" => Some(Self::CondaEnvYmlMissing),
             _ => None,
         }
@@ -447,6 +457,14 @@ mod tests {
             KernelErrorReason::CondaEnvYmlMissing.as_str(),
             "conda_env_yml_missing"
         );
+        assert_eq!(
+            KernelErrorReason::DependencyCacheMissingIpykernel.as_str(),
+            "dependency_cache_missing_ipykernel"
+        );
+        assert_eq!(
+            KernelErrorReason::IpykernelSitePackagesMismatch.as_str(),
+            "ipykernel_site_packages_mismatch"
+        );
     }
 
     #[test]
@@ -459,6 +477,14 @@ mod tests {
             KernelErrorReason::parse("conda_env_yml_missing"),
             Some(KernelErrorReason::CondaEnvYmlMissing)
         );
+        assert_eq!(
+            KernelErrorReason::parse("dependency_cache_missing_ipykernel"),
+            Some(KernelErrorReason::DependencyCacheMissingIpykernel)
+        );
+        assert_eq!(
+            KernelErrorReason::parse("ipykernel_site_packages_mismatch"),
+            Some(KernelErrorReason::IpykernelSitePackagesMismatch)
+        );
         assert_eq!(KernelErrorReason::parse(""), None);
         assert_eq!(KernelErrorReason::parse("bogus"), None);
         // Parse is case-sensitive — the CRDT and legacy phase channel
@@ -470,6 +496,8 @@ mod tests {
     fn error_reason_as_str_round_trips_through_parse() {
         let reasons = [
             KernelErrorReason::MissingIpykernel,
+            KernelErrorReason::DependencyCacheMissingIpykernel,
+            KernelErrorReason::IpykernelSitePackagesMismatch,
             KernelErrorReason::CondaEnvYmlMissing,
         ];
         for r in reasons {
