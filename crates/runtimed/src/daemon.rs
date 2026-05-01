@@ -4210,12 +4210,11 @@ impl Daemon {
 
     /// Create a single Conda environment using rattler and add it to the pool.
     async fn create_conda_env(self: &Arc<Self>) {
-        use rattler::{default_cache_dir, install::Installer, package_cache::PackageCache};
+        use rattler::{default_cache_dir, install::Installer};
         use rattler_conda_types::{
             Channel, ChannelConfig, GenericVirtualPackage, MatchSpec, ParseMatchSpecOptions,
             Platform,
         };
-        use rattler_repodata_gateway::Gateway;
         use rattler_solve::{resolvo, SolverImpl, SolverTask};
 
         let temp_id = format!("{}{}", crate::POOL_PREFIX_CONDA, uuid::Uuid::new_v4());
@@ -4359,24 +4358,21 @@ impl Daemon {
             }
         };
 
-        // Create gateway for fetching repodata
-        let gateway = Gateway::builder()
-            .with_cache_dir(rattler_cache_dir.join(rattler_cache::REPODATA_CACHE_DIR))
-            .with_package_cache(PackageCache::new(
-                rattler_cache_dir.join(rattler_cache::PACKAGE_CACHE_DIR),
-            ))
-            .with_client(download_client.clone())
-            .finish();
-
-        // Query repodata
         let install_platform = Platform::current();
         let platforms = vec![install_platform, Platform::NoArch];
+        let progress_handler = Arc::new(kernel_env::LogHandler);
 
-        info!("[runtimed] Fetching conda repodata from conda-forge...");
-        let repo_data = match gateway
-            .query(channels.clone(), platforms.clone(), specs.clone())
-            .recursive(true)
-            .await
+        info!("[runtimed] Resolving conda repodata from cache or conda-forge...");
+        let repo_data = match kernel_env::repodata::query_repodata_offline_first(
+            channels.clone(),
+            platforms,
+            specs.clone(),
+            &rattler_cache_dir,
+            download_client.clone(),
+            progress_handler,
+            "conda",
+        )
+        .await
         {
             Ok(data) => data,
             Err(e) => {
