@@ -279,8 +279,8 @@ export interface RuntimeState {
 export const DEFAULT_RUNTIME_STATE: RuntimeState = {
   kernel: {
     lifecycle: { lifecycle: "NotStarted" },
-    error_reason: null,
-    error_details: null,
+    error_reason: "",
+    error_details: "",
     name: "",
     language: "",
     env_source: "",

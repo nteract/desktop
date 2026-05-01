@@ -3429,6 +3429,22 @@ mod tests {
     }
 
     #[test]
+    fn read_state_does_not_duplicate_executing_entry_still_marked_queued() {
+        let mut doc = RuntimeStateDoc::new();
+        doc.create_execution_with_source("exec-1", "cell-1", "x = 1", 1)
+            .unwrap();
+        let executing = QueueEntry {
+            cell_id: "cell-1".to_string(),
+            execution_id: "exec-1".to_string(),
+        };
+        doc.set_queue(Some(&executing), &[]).unwrap();
+
+        let state = doc.read_state();
+        assert_eq!(state.queue.executing, Some(executing));
+        assert!(state.queue.queued.is_empty());
+    }
+
+    #[test]
     fn test_create_execution_idempotent() {
         let mut doc = RuntimeStateDoc::new();
         doc.create_execution("exec-1", "cell-1").unwrap();

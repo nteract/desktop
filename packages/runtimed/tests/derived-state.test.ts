@@ -50,4 +50,28 @@ describe("deriveQueueState", () => {
 
     expect(queue.queued).toEqual([{ cell_id: "cell-1", execution_id: "exec-1" }]);
   });
+
+  it("does not duplicate the executing entry while its execution is still queued", () => {
+    const queue = deriveQueueState({
+      ...DEFAULT_RUNTIME_STATE,
+      queue: {
+        executing: { cell_id: "cell-1", execution_id: "exec-1" },
+        queued: [],
+      },
+      executions: {
+        "exec-1": {
+          cell_id: "cell-1",
+          status: "queued",
+          execution_count: null,
+          success: null,
+          seq: 1,
+        },
+      },
+    });
+
+    expect(queue).toEqual({
+      executing: { cell_id: "cell-1", execution_id: "exec-1" },
+      queued: [],
+    });
+  });
 });
