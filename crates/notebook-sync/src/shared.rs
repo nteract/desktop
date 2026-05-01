@@ -8,6 +8,7 @@
 use automerge::sync;
 use automerge::sync::SyncDoc;
 use automerge::AutoCommit;
+use log::warn;
 use notebook_doc::presence::PresenceState;
 use runtime_doc::RuntimeStateDoc;
 
@@ -34,6 +35,9 @@ pub struct SharedDocState {
 
     /// Automerge sync protocol state for the RuntimeStateDoc peer.
     pub(crate) state_peer_state: sync::State,
+
+    #[cfg(test)]
+    panic_on_next_state_sync: bool,
 }
 
 impl SharedDocState {
@@ -49,6 +53,8 @@ impl SharedDocState {
             presence: PresenceState::new(),
             state_doc: RuntimeStateDoc::try_new_empty()?,
             state_peer_state: sync::State::new(),
+            #[cfg(test)]
+            panic_on_next_state_sync: false,
         })
     }
 
@@ -96,9 +102,70 @@ impl SharedDocState {
         &mut self,
         message: sync::Message,
     ) -> Result<(), automerge::AutomergeError> {
+        #[cfg(test)]
+        if self.panic_on_next_state_sync {
+            self.panic_on_next_state_sync = false;
+            panic!("injected RuntimeStateSync panic");
+        }
+
         self.state_doc
             .doc_mut()
             .sync()
             .receive_sync_message(&mut self.state_peer_state, message)
+    }
+
+    /// Rebuild the RuntimeStateDoc via save→load and reset its sync state.
+    ///
+    /// Used after catching an automerge panic during `RuntimeStateSync`
+    /// processing — the same recovery pattern as `rebuild_shared_doc_state`
+    /// for the notebook doc, but targeting the state doc.
+    pub fn rebuild_state_doc(&mut self) {
+        if !self.state_doc.rebuild_from_save() {
+            warn!(
+                "[notebook-sync] Failed to rebuild RuntimeStateDoc after panic; \
+                 resetting state sync protocol only"
+            );
+        }
+        self.state_peer_state = sync::State::new();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn panic_on_next_state_sync_for_test(&mut self) {
+        self.panic_on_next_state_sync = true;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rebuild_state_doc_preserves_state_and_restarts_sync_handshake() {
+        let mut state = SharedDocState::new(AutoCommit::new(), "test-notebook".into());
+        state
+            .state_doc
+            .create_execution_with_source("exec-1", "cell-1", "x = 1", 1)
+            .expect("execution created");
+
+        assert!(
+            state.generate_state_sync_message().is_some(),
+            "first sync round should advertise runtime-state changes"
+        );
+        assert!(
+            state.generate_state_sync_message().is_none(),
+            "peer state should suppress duplicate messages before rebuild"
+        );
+
+        state.rebuild_state_doc();
+
+        let runtime_state = state.state_doc.read_state();
+        assert!(
+            runtime_state.executions.contains_key("exec-1"),
+            "save/load rebuild must not drop runtime-state data"
+        );
+        assert!(
+            state.generate_state_sync_message().is_some(),
+            "reset sync state should force a fresh runtime-state handshake"
+        );
     }
 }
