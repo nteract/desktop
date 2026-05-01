@@ -144,7 +144,6 @@ pub struct GuardedNotebookProvenance {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DependencyGuard {
     pub observed_heads: Vec<String>,
-    pub dependency_fingerprint: String,
 }
 
 /// Typed environment kind for sync operations.
@@ -387,13 +386,13 @@ pub enum NotebookRequest {
     /// Approve the current dependency metadata for this notebook.
     ///
     /// The daemon signs the current runt metadata and writes the trust fields
-    /// into the Automerge document. `dependency_fingerprint` is supplied by
-    /// the frontend when approval is tied to an already-open trust dialog; if
-    /// the current dependency metadata no longer matches, the daemon returns
-    /// `GuardRejected` instead of signing stale content.
+    /// into the Automerge document. `observed_heads` is supplied when approval
+    /// is tied to an already-open trust dialog; the daemon reconstructs the
+    /// dependency metadata at those heads and refuses to sign if the current
+    /// dependency metadata no longer matches what the user reviewed.
     ApproveTrust {
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        dependency_fingerprint: Option<String>,
+        observed_heads: Option<Vec<String>>,
     },
 
     /// Approve creating/syncing a project-file environment for the current
@@ -849,7 +848,6 @@ mod tests {
     #[test]
     fn guarded_requests_round_trip() {
         let observed_heads = vec!["0123456789abcdef".to_string()];
-        let dependency_fingerprint = "{\"uv\":{\"dependencies\":[\"numpy\"]}}".to_string();
         let cases = vec![
             NotebookRequest::ExecuteCellGuarded {
                 cell_id: "cell-1".to_string(),
@@ -860,12 +858,11 @@ mod tests {
             },
             NotebookRequest::SyncEnvironment {
                 guard: Some(DependencyGuard {
-                    observed_heads,
-                    dependency_fingerprint,
+                    observed_heads: observed_heads.clone(),
                 }),
             },
             NotebookRequest::ApproveTrust {
-                dependency_fingerprint: Some("{\"uv\":{\"dependencies\":[\"numpy\"]}}".into()),
+                observed_heads: Some(observed_heads),
             },
             NotebookRequest::ApproveProjectEnvironment {
                 project_file_path: Some("/tmp/project/environment.yml".into()),
@@ -954,7 +951,6 @@ mod tests {
                     "action": "sync_environment",
                     "guard": {
                         "observed_heads": ["abc"],
-                        "dependency_fingerprint": "{}",
                     },
                 }),
             ),
@@ -962,7 +958,7 @@ mod tests {
                 "approve_trust",
                 serde_json::json!({
                     "action": "approve_trust",
-                    "dependency_fingerprint": "{}",
+                    "observed_heads": ["abc"],
                 }),
             ),
             (

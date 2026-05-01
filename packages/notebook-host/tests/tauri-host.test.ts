@@ -197,11 +197,11 @@ describe("createTauriHost()", () => {
     const host = createTauriHost({ transport: stubTransport });
     vi.mocked(stubTransport.sendRequest).mockResolvedValueOnce({ result: "ok" });
 
-    await expect(host.trust.approve({ dependencyFingerprint: "deps-v1" })).resolves.toBeUndefined();
+    await expect(host.trust.approve({ observedHeads: ["head-a"] })).resolves.toBeUndefined();
 
     expect(stubTransport.sendRequest).toHaveBeenCalledWith({
       type: "approve_trust",
-      dependency_fingerprint: "deps-v1",
+      observed_heads: ["head-a"],
     });
   });
 
@@ -212,7 +212,7 @@ describe("createTauriHost()", () => {
       reason: "Dependencies changed while the trust dialog was open.",
     });
 
-    await expect(host.trust.approve({ dependencyFingerprint: "stale" })).rejects.toThrow(
+    await expect(host.trust.approve({ observedHeads: ["stale-head"] })).rejects.toThrow(
       "Dependencies changed while the trust dialog was open.",
     );
   });

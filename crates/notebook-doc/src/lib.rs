@@ -472,6 +472,34 @@ impl NotebookDoc {
         None
     }
 
+    /// Read the notebook metadata as it existed at a historical head set.
+    pub fn get_metadata_snapshot_at_heads(
+        &self,
+        heads: &[automerge::ChangeHash],
+    ) -> Option<metadata::NotebookMetadataSnapshot> {
+        let meta_id = self.metadata_map_id_at(heads)?;
+
+        let kernelspec = read_json_value_at(&self.doc, &meta_id, "kernelspec", heads)
+            .and_then(|v| serde_json::from_value::<metadata::KernelspecSnapshot>(v).ok());
+        let language_info = read_json_value_at(&self.doc, &meta_id, "language_info", heads)
+            .and_then(|v| serde_json::from_value::<metadata::LanguageInfoSnapshot>(v).ok());
+        let runt = read_json_value_at(&self.doc, &meta_id, "runt", heads)
+            .and_then(|v| serde_json::from_value::<metadata::RuntMetadata>(v).ok());
+
+        let extras = scan_metadata_extras_at(&self.doc, &meta_id, heads);
+
+        if kernelspec.is_some() || language_info.is_some() || runt.is_some() || !extras.is_empty() {
+            return Some(metadata::NotebookMetadataSnapshot {
+                kernelspec,
+                language_info,
+                runt: runt.unwrap_or_default(),
+                extras,
+            });
+        }
+
+        None
+    }
+
     /// Write a typed metadata snapshot to the document.
     ///
     /// Writes each top-level key (`kernelspec`, `language_info`, `runt`) as native
@@ -589,6 +617,17 @@ impl NotebookDoc {
     /// Return a stable fingerprint of dependency metadata covered by trust approval.
     pub fn get_dependency_fingerprint(&self) -> Option<String> {
         Some(self.get_metadata_snapshot()?.dependency_fingerprint())
+    }
+
+    /// Return the dependency fingerprint as it existed at a historical head set.
+    pub fn get_dependency_fingerprint_at_heads(
+        &self,
+        heads: &[automerge::ChangeHash],
+    ) -> Option<String> {
+        Some(
+            self.get_metadata_snapshot_at_heads(heads)?
+                .dependency_fingerprint(),
+        )
     }
 
     // ── UV dependency convenience methods ─────────────────────────
@@ -2105,6 +2144,17 @@ impl NotebookDoc {
             })
     }
 
+    fn metadata_map_id_at(&self, heads: &[automerge::ChangeHash]) -> Option<ObjId> {
+        self.doc
+            .get_at(automerge::ROOT, "metadata", heads)
+            .ok()
+            .flatten()
+            .and_then(|(value, id)| match value {
+                automerge::Value::Object(ObjType::Map) => Some(id),
+                _ => None,
+            })
+    }
+
     fn cell_obj_id_at(
         &self,
         cells_id: &ObjId,
@@ -2272,6 +2322,60 @@ fn read_str_at<O: AsRef<automerge::ObjId>, P: Into<automerge::Prop>>(
         })
 }
 
+fn scalar_to_json_at(s: &automerge::ScalarValue) -> Option<serde_json::Value> {
+    match s {
+        automerge::ScalarValue::Null => Some(serde_json::Value::Null),
+        automerge::ScalarValue::Boolean(b) => Some(serde_json::Value::Bool(*b)),
+        automerge::ScalarValue::Int(i) => {
+            Some(serde_json::Value::Number(serde_json::Number::from(*i)))
+        }
+        automerge::ScalarValue::Uint(u) => {
+            Some(serde_json::Value::Number(serde_json::Number::from(*u)))
+        }
+        automerge::ScalarValue::F64(f) => Some(
+            serde_json::Number::from_f64(*f)
+                .map_or(serde_json::Value::Null, serde_json::Value::Number),
+        ),
+        automerge::ScalarValue::Str(s) => Some(serde_json::Value::String(s.to_string())),
+        _ => None,
+    }
+}
+
+fn read_json_value_at<P: Into<automerge::Prop>>(
+    doc: &AutoCommit,
+    parent: &ObjId,
+    prop: P,
+    heads: &[automerge::ChangeHash],
+) -> Option<serde_json::Value> {
+    let (value, obj_id) = doc.get_at(parent, prop, heads).ok().flatten()?;
+    match value {
+        automerge::Value::Scalar(s) => scalar_to_json_at(s.as_ref()),
+        automerge::Value::Object(ObjType::Map) => {
+            let mut map = serde_json::Map::new();
+            for key in doc.keys_at(&obj_id, heads) {
+                if let Some(v) = read_json_value_at(doc, &obj_id, key.as_str(), heads) {
+                    map.insert(key, v);
+                }
+            }
+            Some(serde_json::Value::Object(map))
+        }
+        automerge::Value::Object(ObjType::List) => {
+            let len = doc.length_at(&obj_id, heads);
+            let arr: Vec<serde_json::Value> = (0..len)
+                .map(|i| {
+                    read_json_value_at(doc, &obj_id, i, heads).unwrap_or(serde_json::Value::Null)
+                })
+                .collect();
+            Some(serde_json::Value::Array(arr))
+        }
+        automerge::Value::Object(ObjType::Text) => doc
+            .text_at(&obj_id, heads)
+            .ok()
+            .map(serde_json::Value::String),
+        _ => None,
+    }
+}
+
 // JSON/Automerge helpers - single source of truth in automunge crate.
 #[allow(deprecated)]
 pub use automunge::{
@@ -2338,6 +2442,23 @@ fn scan_metadata_extras(
             continue;
         }
         if let Some(value) = read_json_value(doc, meta_id, &key) {
+            extras.insert(key, value);
+        }
+    }
+    extras
+}
+
+fn scan_metadata_extras_at(
+    doc: &AutoCommit,
+    meta_id: &ObjId,
+    heads: &[automerge::ChangeHash],
+) -> std::collections::BTreeMap<String, serde_json::Value> {
+    let mut extras = std::collections::BTreeMap::new();
+    for key in doc.keys_at(meta_id, heads) {
+        if is_snapshot_reserved_metadata_key(&key) {
+            continue;
+        }
+        if let Some(value) = read_json_value_at(doc, meta_id, key.as_str(), heads) {
             extras.insert(key, value);
         }
     }
@@ -3984,6 +4105,25 @@ mod tests {
         // Read back via native keys
         let read_back = doc.get_metadata_snapshot().unwrap();
         assert_eq!(read_back, snapshot);
+    }
+
+    #[test]
+    fn test_dependency_fingerprint_at_heads_reads_historical_metadata() {
+        let mut doc = NotebookDoc::new("nb-dep-heads");
+        doc.add_uv_dependency("numpy").unwrap();
+        let observed_heads = doc.get_heads();
+        let observed_fingerprint = doc.get_dependency_fingerprint().unwrap();
+
+        doc.add_uv_dependency("pandas").unwrap();
+
+        assert_eq!(
+            doc.get_dependency_fingerprint_at_heads(&observed_heads),
+            Some(observed_fingerprint)
+        );
+        assert_ne!(
+            doc.get_dependency_fingerprint_at_heads(&observed_heads),
+            doc.get_dependency_fingerprint()
+        );
     }
 
     #[test]

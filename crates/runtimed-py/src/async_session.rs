@@ -207,7 +207,7 @@ impl AsyncSession {
         })
     }
 
-    /// Get the current dependency fingerprint used for guarded trust approval.
+    /// Get the current dependency fingerprint for diagnostics.
     fn dependency_fingerprint<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let state = Arc::clone(&self.state);
         future_into_py(py, async move {
@@ -216,15 +216,15 @@ impl AsyncSession {
     }
 
     /// Approve and sign the current dependency metadata.
-    #[pyo3(signature = (dependency_fingerprint=None))]
+    #[pyo3(signature = (observed_heads=None))]
     fn approve_trust<'py>(
         &self,
         py: Python<'py>,
-        dependency_fingerprint: Option<String>,
+        observed_heads: Option<Vec<String>>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let state = Arc::clone(&self.state);
         future_into_py(py, async move {
-            session_core::approve_trust(&state, dependency_fingerprint).await
+            session_core::approve_trust(&state, observed_heads).await
         })
     }
 

@@ -125,7 +125,7 @@ export interface HostBlobs {
  * current dependency metadata and apply the CRDT mutation.
  */
 export interface HostTrust {
-  approve(options?: { dependencyFingerprint?: string }): Promise<void>;
+  approve(options?: { observedHeads?: string[] }): Promise<void>;
 }
 
 /**

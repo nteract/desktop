@@ -18,12 +18,8 @@ pub(crate) async fn handle(
     }
 
     if let Some(guard) = guard {
-        let mut doc = room.doc.write().await;
-        if let Err(rejection) = guarded::validate_sync_environment(
-            &mut doc,
-            &guard.observed_heads,
-            &guard.dependency_fingerprint,
-        ) {
+        let doc = room.doc.read().await;
+        if let Err(rejection) = guarded::validate_sync_environment(&doc, &guard.observed_heads) {
             return rejection.into_response();
         }
     }

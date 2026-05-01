@@ -72,7 +72,6 @@ export interface GuardedNotebookProvenance {{
 
 export interface DependencyGuard {{
   observed_heads: string[];
-  dependency_fingerprint: string;
 }}
 
 export type PackageManager = "uv" | "conda" | "pixi" | (string & {{}});
@@ -159,7 +158,7 @@ export type NotebookRequest =
     }}
   | {{ type: "clone_as_ephemeral"; source_notebook_id: string }}
   | {{ type: "sync_environment"; guard?: DependencyGuard | null }}
-  | {{ type: "approve_trust"; dependency_fingerprint?: string | null }}
+  | {{ type: "approve_trust"; observed_heads?: string[] | null }}
   | {{ type: "approve_project_environment"; project_file_path?: string | null }}
   | {{ type: "get_doc_bytes" }};
 

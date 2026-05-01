@@ -9,6 +9,7 @@ use crate::notebook_sync_server::{
     auto_sign_in_place, check_and_update_trust_state, verify_trust_from_snapshot, NotebookRoom,
 };
 use crate::protocol::NotebookResponse;
+use crate::requests::guarded;
 use tracing::warn;
 
 const TRUST_APPROVAL_STALE_REASON: &str =
@@ -16,12 +17,12 @@ const TRUST_APPROVAL_STALE_REASON: &str =
 
 pub(crate) async fn handle(
     room: &NotebookRoom,
-    dependency_fingerprint: Option<String>,
+    observed_heads: Option<Vec<String>>,
 ) -> NotebookResponse {
     let (persist_bytes, trust_info) = {
         let mut doc = room.doc.write().await;
 
-        let trust_info = match apply_trust_approval(&mut doc, dependency_fingerprint.as_deref()) {
+        let trust_info = match apply_trust_approval(&mut doc, observed_heads.as_deref()) {
             Ok(trust_info) => trust_info,
             Err(error) => return error.into_response(),
         };
@@ -52,7 +53,7 @@ pub(crate) async fn handle(
 #[derive(Debug, PartialEq, Eq)]
 enum TrustApprovalError {
     NoMetadata,
-    StaleFingerprint,
+    StaleDependencies,
     Sign(String),
     Write(String),
 }
@@ -63,7 +64,7 @@ impl TrustApprovalError {
             TrustApprovalError::NoMetadata => NotebookResponse::Error {
                 error: "No metadata in Automerge doc".to_string(),
             },
-            TrustApprovalError::StaleFingerprint => NotebookResponse::GuardRejected {
+            TrustApprovalError::StaleDependencies => NotebookResponse::GuardRejected {
                 reason: TRUST_APPROVAL_STALE_REASON.to_string(),
             },
             TrustApprovalError::Sign(error) | TrustApprovalError::Write(error) => {
@@ -75,18 +76,16 @@ impl TrustApprovalError {
 
 fn apply_trust_approval(
     doc: &mut notebook_doc::NotebookDoc,
-    dependency_fingerprint: Option<&str>,
+    observed_heads: Option<&[String]>,
 ) -> Result<runt_trust::TrustInfo, TrustApprovalError> {
+    if let Some(observed_heads) = observed_heads {
+        guarded::validate_dependencies_unchanged_since_observed(doc, observed_heads)
+            .map_err(|_| TrustApprovalError::StaleDependencies)?;
+    }
+
     let Some(mut snapshot) = doc.get_metadata_snapshot() else {
         return Err(TrustApprovalError::NoMetadata);
     };
-
-    if let Some(expected) = dependency_fingerprint {
-        let current = snapshot.dependency_fingerprint();
-        if current != expected {
-            return Err(TrustApprovalError::StaleFingerprint);
-        }
-    }
 
     auto_sign_in_place(&mut snapshot).map_err(TrustApprovalError::Sign)?;
     let trust_info = verify_trust_from_snapshot(&snapshot).info;
@@ -121,9 +120,9 @@ mod tests {
     #[test]
     fn approval_writes_trust_fields_to_the_doc() {
         let mut doc = doc_with_uv_deps(&["numpy"]);
-        let fingerprint = doc.get_dependency_fingerprint().unwrap();
+        let observed_heads = doc.get_heads_hex();
 
-        apply_trust_approval(&mut doc, Some(&fingerprint)).unwrap();
+        apply_trust_approval(&mut doc, Some(&observed_heads)).unwrap();
 
         let approved = doc.get_metadata_snapshot().unwrap();
         assert!(approved.runt.trust_signature.is_some());
@@ -133,12 +132,14 @@ mod tests {
     }
 
     #[test]
-    fn approval_rejects_stale_dependency_fingerprint() {
+    fn approval_rejects_stale_observed_dependencies() {
         let mut doc = doc_with_uv_deps(&["numpy"]);
+        let observed_heads = doc.get_heads_hex();
+        doc.add_uv_dependency("pandas").unwrap();
 
-        let result = apply_trust_approval(&mut doc, Some("stale"));
+        let result = apply_trust_approval(&mut doc, Some(&observed_heads));
 
-        assert!(matches!(result, Err(TrustApprovalError::StaleFingerprint)));
+        assert!(matches!(result, Err(TrustApprovalError::StaleDependencies)));
         let snapshot = doc.get_metadata_snapshot().unwrap();
         assert!(snapshot.runt.trust_signature.is_none());
         assert!(snapshot.runt.trust_timestamp.is_none());

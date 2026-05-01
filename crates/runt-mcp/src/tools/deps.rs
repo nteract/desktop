@@ -283,9 +283,20 @@ fn dependency_fingerprint_for_handle(handle: &DocHandle) -> Option<String> {
         .map(|snapshot| snapshot.dependency_fingerprint())
 }
 
+fn observed_heads_for_handle(handle: &DocHandle) -> Option<Vec<String>> {
+    handle
+        .with_doc(|doc| {
+            doc.get_heads()
+                .iter()
+                .map(|head| head.to_string())
+                .collect()
+        })
+        .ok()
+}
+
 async fn approve_current_trust(
     handle: &DocHandle,
-    dependency_fingerprint: Option<String>,
+    observed_heads: Option<Vec<String>>,
     action: &str,
 ) -> Result<(), String> {
     if let Err(e) = handle.confirm_sync().await {
@@ -293,9 +304,7 @@ async fn approve_current_trust(
     }
 
     match handle
-        .send_request(NotebookRequest::ApproveTrust {
-            dependency_fingerprint,
-        })
+        .send_request(NotebookRequest::ApproveTrust { observed_heads })
         .await
     {
         Ok(NotebookResponse::Ok {}) => Ok(()),
@@ -524,11 +533,10 @@ pub async fn add_dependency(
             return tool_error(&e);
         }
     }
-    let dependency_fingerprint = dependency_fingerprint_for_handle(&handle);
     // For the response, use the first package as `package` for backward compat
     let package = packages.first().map(|s| s.as_str()).unwrap_or(raw_package);
 
-    if let Err(e) = approve_current_trust(&handle, dependency_fingerprint, "add_dependency").await {
+    if let Err(e) = approve_current_trust(&handle, None, "add_dependency").await {
         return tool_error(&e);
     }
 
@@ -627,19 +635,26 @@ pub async fn manage_dependencies(
         if has_edits {
             dependency_fingerprint_for_handle(&handle)
         } else {
-            params
-                .dependency_fingerprint
-                .clone()
-                .or_else(|| dependency_fingerprint_for_handle(&handle))
+            if let Some(expected) = params.dependency_fingerprint.as_deref() {
+                if before_fingerprint.as_deref() != Some(expected) {
+                    return tool_error(
+                        "Dependencies changed since review. Inspect the current dependencies before approving.",
+                    );
+                }
+            }
+            before_fingerprint.clone()
         }
     } else {
         None
     };
 
     if params.trust {
-        if let Err(e) =
-            approve_current_trust(&handle, approved_fingerprint.clone(), "manage_dependencies")
-                .await
+        let observed_heads = if has_edits {
+            None
+        } else {
+            observed_heads_for_handle(&handle)
+        };
+        if let Err(e) = approve_current_trust(&handle, observed_heads, "manage_dependencies").await
         {
             return tool_error(&e);
         }
@@ -690,12 +705,8 @@ pub async fn remove_dependency(
     let removed = remove_dep_for_manager(&handle, package, &manager)
         .map_err(|e| McpError::internal_error(e, None))?;
 
-    let dependency_fingerprint = dependency_fingerprint_for_handle(&handle);
-
     if removed {
-        if let Err(e) =
-            approve_current_trust(&handle, dependency_fingerprint, "remove_dependency").await
-        {
+        if let Err(e) = approve_current_trust(&handle, None, "remove_dependency").await {
             return tool_error(&e);
         }
     }
@@ -734,10 +745,20 @@ pub async fn approve_trust(
     let expected_fingerprint = supplied_fingerprint
         .clone()
         .or_else(|| current_fingerprint.clone());
+    if let Some(expected) = supplied_fingerprint.as_deref() {
+        if current_fingerprint.as_deref() != Some(expected) {
+            return tool_error(
+                "Dependencies changed since review. Inspect the current dependencies before approving.",
+            );
+        }
+    }
+    let observed_heads = if supplied_fingerprint.is_some() {
+        observed_heads_for_handle(&handle)
+    } else {
+        None
+    };
 
-    if let Err(e) =
-        approve_current_trust(&handle, expected_fingerprint.clone(), "approve_trust").await
-    {
+    if let Err(e) = approve_current_trust(&handle, observed_heads, "approve_trust").await {
         return tool_error(&e);
     }
 

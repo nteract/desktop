@@ -13,7 +13,7 @@ export type { TrustInfo, TyposquatWarning };
 export type TrustStatusType = TrustInfo["status"];
 
 interface ApproveTrustOptions {
-  dependencyFingerprint?: string;
+  observedHeads?: string[];
 }
 
 export function useTrust() {
@@ -122,7 +122,7 @@ export function useTrust() {
       setApprovalError(null);
       try {
         await host.trust.approve({
-          dependencyFingerprint: options?.dependencyFingerprint,
+          observedHeads: options?.observedHeads,
         });
         return true;
       } catch (e) {

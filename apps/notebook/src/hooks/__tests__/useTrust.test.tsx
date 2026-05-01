@@ -79,7 +79,7 @@ describe("useTrust", () => {
     const { result } = renderHook(() => useTrust());
 
     await act(async () => {
-      await expect(result.current.approveTrust({ dependencyFingerprint: "deps-v1" })).resolves.toBe(
+      await expect(result.current.approveTrust({ observedHeads: ["head-v1"] })).resolves.toBe(
         false,
       );
     });
@@ -89,9 +89,7 @@ describe("useTrust", () => {
     );
 
     await act(async () => {
-      await expect(result.current.approveTrust({ dependencyFingerprint: "deps-v2" })).resolves.toBe(
-        true,
-      );
+      await expect(result.current.approveTrust({ observedHeads: ["head-v2"] })).resolves.toBe(true);
     });
     expect(result.current.approvalError).toBeNull();
   });
