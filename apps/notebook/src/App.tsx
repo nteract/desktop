@@ -1183,7 +1183,7 @@ function AppContent() {
 
   const handleAddCell = useCallback(
     (type: "code" | "markdown" | "raw", afterCellId?: string | null) => {
-      addCell(type, afterCellId);
+      return addCell(type, afterCellId);
     },
     [addCell],
   );

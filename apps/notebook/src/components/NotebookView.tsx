@@ -34,6 +34,9 @@ import { CodeCell } from "./CodeCell";
 import { MarkdownCell } from "./MarkdownCell";
 import { RawCell } from "./RawCell";
 
+type AddCellResult = NotebookCell | null | void;
+type AddCellHandler = (type: "code" | "markdown", afterCellId?: string | null) => AddCellResult;
+
 interface NotebookViewProps {
   cellIds: string[];
   isLoading?: boolean;
@@ -45,7 +48,7 @@ interface NotebookViewProps {
   onExecuteCell: (cellId: string) => void;
   onInterruptKernel: () => void;
   onDeleteCell: (cellId: string) => void;
-  onAddCell: (type: "code" | "markdown", afterCellId?: string | null) => void;
+  onAddCell: AddCellHandler;
   onMoveCell: (cellId: string, afterCellId?: string | null) => void;
   onReportOutputMatchCount?: (cellId: string, count: number) => void;
   onSetCellSourceHidden?: (cellId: string, hidden: boolean) => void;
@@ -75,7 +78,7 @@ function CellAdder({
   cellType = "code",
 }: {
   afterCellId?: string | null;
-  onAdd: (type: "code" | "markdown", afterCellId?: string | null) => void;
+  onAdd: AddCellHandler;
   cellType?: string;
 }) {
   const ribbonClass = adderRibbonClasses[cellType] ?? defaultAdderRibbonClass;
@@ -286,7 +289,7 @@ function SortableCell({
     dragHandleProps?: Record<string, unknown>,
     isDragging?: boolean,
   ) => React.ReactNode;
-  onAddCell: (type: "code" | "markdown", afterCellId?: string | null) => void;
+  onAddCell: AddCellHandler;
   onDeleteCell: (cellId: string) => void;
   isHiddenInGroup?: boolean;
 }) {
@@ -533,8 +536,10 @@ function NotebookViewContent({
     if (isLoading || focusedCellId !== null || !canAcceptCellMutations) return;
     if (cellIds.length === 0) {
       if (!didAutoSeed.current) {
-        didAutoSeed.current = true;
-        onAddCell("code");
+        const seeded = onAddCell("code");
+        if (seeded !== null) {
+          didAutoSeed.current = true;
+        }
       }
     } else {
       onFocusCell(cellIds[0]);

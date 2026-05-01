@@ -45,7 +45,7 @@ import {
   setRuntimeState,
   useRuntimeState,
 } from "../lib/runtime-state";
-import type { JupyterOutput } from "../types";
+import type { JupyterOutput, NotebookCell } from "../types";
 import init, { NotebookHandle } from "../wasm/runtimed-wasm/runtimed_wasm.js";
 
 // Module-level WASM init — runs before React renders.
@@ -462,36 +462,19 @@ export function useAutomergeNotebook() {
   }, []);
 
   const addCell = useCallback(
-    (cellType: "code" | "markdown" | "raw", afterCellId?: string | null) => {
+    (cellType: "code" | "markdown" | "raw", afterCellId?: string | null): NotebookCell | null => {
       const handle = handleRef.current;
       const engine = engineRef.current;
-      const placeholderId = crypto.randomUUID();
-      const placeholder =
-        cellType === "code"
-          ? {
-              cell_type: "code" as const,
-              id: placeholderId,
-              source: "",
-              outputs: [],
-              execution_count: null,
-              metadata: {},
-            }
-          : {
-              cell_type: cellType,
-              id: placeholderId,
-              source: "",
-              metadata: {},
-            };
 
       if (!handle || !engine) {
         logger.debug("[automerge-notebook] addCell skipped: no handle/engine");
-        return placeholder;
+        return null;
       }
 
       if (!handle.has_cells_map()) {
         logger.debug("[automerge-notebook] addCell skipped: cells map not synced yet");
         setCanAcceptCellMutations(false);
-        return placeholder;
+        return null;
       }
 
       const cellId = crypto.randomUUID();
@@ -500,22 +483,30 @@ export function useAutomergeNotebook() {
       } catch (error) {
         logger.warn("[automerge-notebook] addCell failed:", error);
         refreshCanAcceptCellMutations(handle);
-        return placeholder;
+        return null;
       }
       rematerializeCellsSync(handle);
       engine.flush();
       setFocusedCellId(cellId);
 
       const cell = getNotebookCellsSnapshot().find((c) => c.id === cellId);
-      return (
-        cell ?? {
-          cell_type: cellType,
+      if (cell) return cell;
+      if (cellType === "code") {
+        return {
+          cell_type: "code",
           id: cellId,
           source: "",
-          ...(cellType === "code" ? { outputs: [], execution_count: null } : {}),
+          outputs: [],
+          execution_count: null,
           metadata: {},
-        }
-      );
+        };
+      }
+      return {
+        cell_type: cellType,
+        id: cellId,
+        source: "",
+        metadata: {},
+      };
     },
     [refreshCanAcceptCellMutations, rematerializeCellsSync],
   );
