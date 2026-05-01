@@ -522,6 +522,7 @@ impl NotebookRoom {
             ephemeral,
             crate::trusted_packages::TrustedPackageStore::unavailable("not configured"),
         )
+        .expect("create test notebook room runtime state")
     }
 
     pub fn new_fresh_with_trusted_packages(
@@ -531,7 +532,7 @@ impl NotebookRoom {
         blob_store: Arc<BlobStore>,
         ephemeral: bool,
         trusted_packages: crate::trusted_packages::TrustedPackageStore,
-    ) -> Self {
+    ) -> anyhow::Result<Self> {
         let id = uuid;
         // Use uuid string as the notebook_id for doc filename derivation and NotebookDoc construction.
         let notebook_id_str = uuid.to_string();
@@ -632,7 +633,11 @@ impl NotebookRoom {
         );
 
         let (state_changed_tx, _) = broadcast::channel(16);
-        let state = runtime_doc::RuntimeStateHandle::new(RuntimeStateDoc::new(), state_changed_tx);
+        let state = runtime_doc::RuntimeStateHandle::new(
+            RuntimeStateDoc::try_new()
+                .map_err(|e| anyhow::anyhow!("create runtime state doc: {e}"))?,
+            state_changed_tx,
+        );
 
         // Seed path on the runtime-state doc so connecting peers see it via sync.
         if let Some(p) = path.as_ref() {
@@ -645,7 +650,7 @@ impl NotebookRoom {
             None => RoomPersistence::ephemeral(),
         };
 
-        Self {
+        Ok(Self {
             id,
             doc: Arc::new(RwLock::new(doc)),
             broadcasts: RoomBroadcasts::default(),
@@ -665,7 +670,7 @@ impl NotebookRoom {
             runtime_agent_generation: Arc::new(AtomicU64::new(0)),
             next_queue_seq: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             current_runtime_agent_id: Arc::new(RwLock::new(None)),
-        }
+        })
     }
 
     /// Create a new room by loading a persisted document or creating a fresh one.

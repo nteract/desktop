@@ -351,11 +351,10 @@ impl RuntimeStateDoc {
     /// Starts from the canonical runtime-state schema seed so every peer has
     /// the same root object IDs before the first sync round, then switches to
     /// the daemon actor for live runtime-state writes.
-    #[allow(clippy::expect_used, clippy::new_without_default)]
-    pub fn new() -> Self {
-        let mut doc = Self::schema_seed_doc();
+    pub fn try_new() -> Result<Self, RuntimeStateError> {
+        let mut doc = Self::schema_seed_doc()?;
         doc.set_actor(ActorId::from(b"runtimed:state" as &[u8]));
-        Self { doc }
+        Ok(Self { doc })
     }
 
     /// Create a new `RuntimeStateDoc` with scaffolding and a custom actor.
@@ -363,11 +362,10 @@ impl RuntimeStateDoc {
     /// Used by the runtime agent to create its own doc with a unique actor
     /// for runtime-agent-authored writes. The schema scaffold remains the
     /// canonical seed history shared with the coordinator and frontend.
-    #[allow(clippy::expect_used)]
-    pub fn new_with_actor(actor_label: &str) -> Self {
-        let mut doc = Self::schema_seed_doc();
+    pub fn try_new_with_actor(actor_label: &str) -> Result<Self, RuntimeStateError> {
+        let mut doc = Self::schema_seed_doc()?;
         doc.set_actor(ActorId::from(actor_label.as_bytes()));
-        Self { doc }
+        Ok(Self { doc })
     }
 
     /// Create a bootstrap `RuntimeStateDoc` for read-only clients.
@@ -375,23 +373,36 @@ impl RuntimeStateDoc {
     /// The document starts from the canonical schema seed, not from an empty
     /// AutoCommit, so the first RuntimeStateSync frame can merge into the
     /// shared root scaffold instead of replacing local encoding/actor state.
-    pub fn new_empty() -> Self {
-        let mut doc = Self::schema_seed_doc();
+    pub fn try_new_empty() -> Result<Self, RuntimeStateError> {
+        let mut doc = Self::schema_seed_doc()?;
         doc.set_actor(ActorId::random());
-        Self { doc }
+        Ok(Self { doc })
     }
 
-    #[allow(clippy::expect_used)]
-    fn schema_seed_doc() -> AutoCommit {
+    #[allow(clippy::new_without_default)]
+    pub fn new() -> Self {
+        Self::try_new().unwrap_or_else(|err| panic!("seed runtime state schema: {err}"))
+    }
+
+    pub fn new_with_actor(actor_label: &str) -> Self {
+        Self::try_new_with_actor(actor_label)
+            .unwrap_or_else(|err| panic!("seed runtime state schema: {err}"))
+    }
+
+    pub fn new_empty() -> Self {
+        Self::try_new_empty().unwrap_or_else(|err| panic!("seed runtime state schema: {err}"))
+    }
+
+    fn schema_seed_doc() -> Result<AutoCommit, RuntimeStateError> {
         let mut doc = AutoCommit::new();
         doc.set_actor(ActorId::from(RUNTIME_STATE_SCHEMA_SEED_ACTOR.as_bytes()));
-        scaffold_runtime_state_schema(&mut doc).expect("seed runtime state schema");
+        scaffold_runtime_state_schema(&mut doc)?;
         let _ = doc.commit_with(
             CommitOptions::default()
                 .with_message("Seed nteract runtime state schema")
                 .with_time(0),
         );
-        doc
+        Ok(doc)
     }
 
     /// Create a RuntimeStateDoc from a pre-existing Automerge document.

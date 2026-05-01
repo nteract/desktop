@@ -89,7 +89,8 @@ pub async fn run_runtime_agent(
 
     // -- 2. Bootstrap RuntimeStateDoc ---------------------------------------
 
-    let state_doc = RuntimeStateDoc::new_with_actor(&runtime_agent_id);
+    let state_doc = RuntimeStateDoc::try_new_with_actor(&runtime_agent_id)
+        .map_err(|e| anyhow::anyhow!("create runtime-agent state doc: {e}"))?;
     let mut coordinator_sync_state = automerge::sync::State::new();
     let (state_changed_tx, mut state_changed_rx) = broadcast::channel::<()>(64);
     // Keep a clone of the sender for the reconnect "kick" path that needs

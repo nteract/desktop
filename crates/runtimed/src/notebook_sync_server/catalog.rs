@@ -34,17 +34,29 @@ pub async fn find_room_by_path(
 ///
 /// For .ipynb files, a file watcher is spawned to detect external changes.
 /// Also inserts an entry into `path_index` when `path` is `Some`.
+#[cfg(test)]
 pub async fn get_or_create_room(
     rooms: &NotebookRooms,
     path_index: &Arc<tokio::sync::Mutex<PathIndex>>,
     uuid: uuid::Uuid,
     options: RoomCreationOptions<'_>,
 ) -> Arc<NotebookRoom> {
+    get_or_create_room_result(rooms, path_index, uuid, options)
+        .await
+        .unwrap_or_else(|err| panic!("create notebook room runtime state: {err}"))
+}
+
+pub async fn get_or_create_room_result(
+    rooms: &NotebookRooms,
+    path_index: &Arc<tokio::sync::Mutex<PathIndex>>,
+    uuid: uuid::Uuid,
+    options: RoomCreationOptions<'_>,
+) -> anyhow::Result<Arc<NotebookRoom>> {
     // Fast path: room already exists.
     {
         let rooms_guard = rooms.lock().await;
         if let Some(existing) = rooms_guard.get(&uuid) {
-            return existing.clone();
+            return Ok(existing.clone());
         }
     }
 
@@ -57,14 +69,14 @@ pub async fn get_or_create_room(
         options.blob_store,
         options.ephemeral,
         options.trusted_packages,
-    ));
+    )?);
 
     {
         let mut rooms_guard = rooms.lock().await;
         // Double-check in case of a race: another task may have created the room
         // between our unlock above and acquiring the write lock here.
         if let Some(existing) = rooms_guard.get(&uuid) {
-            return existing.clone();
+            return Ok(existing.clone());
         }
         rooms_guard.insert(uuid, room.clone());
     }
@@ -94,5 +106,5 @@ pub async fn get_or_create_room(
         NotebookFileBinding::bind_existing(&room, notebook_path).await;
     }
 
-    room
+    Ok(room)
 }

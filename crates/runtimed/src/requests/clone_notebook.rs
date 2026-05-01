@@ -16,7 +16,9 @@ use uuid::Uuid;
 
 use crate::blob_store::BlobStore;
 use crate::daemon::Daemon;
-use crate::notebook_sync_server::{get_or_create_room, NotebookRoom, NotebookRooms, PathIndex};
+use crate::notebook_sync_server::{
+    get_or_create_room_result, NotebookRoom, NotebookRooms, PathIndex,
+};
 use crate::protocol::NotebookResponse;
 
 /// Dispatcher entry point — unwraps the Daemon pieces for the inner fn.
@@ -68,7 +70,7 @@ pub(crate) async fn handle_inner(
     let clone_uuid = Uuid::new_v4();
 
     // 4. Create the new ephemeral room (empty).
-    let clone_room = get_or_create_room(
+    let clone_room = match get_or_create_room_result(
         rooms,
         path_index,
         clone_uuid,
@@ -80,7 +82,15 @@ pub(crate) async fn handle_inner(
             trusted_packages: source_room.trusted_packages.clone(),
         },
     )
-    .await;
+    .await
+    {
+        Ok(room) => room,
+        Err(e) => {
+            return NotebookResponse::Error {
+                error: format!("Failed to create clone runtime state: {e}"),
+            };
+        }
+    };
 
     // 5. Seed the room's working_dir so project-file resolution finds the
     //    same pyproject.toml / environment.yml / pixi.toml the source uses.

@@ -42,6 +42,10 @@ pub enum SyncError {
     /// Serialization/deserialization error.
     #[error("Serialization error: {0}")]
     Serialization(String),
+
+    /// Runtime state document setup or mutation failed.
+    #[error("Runtime state error: {0}")]
+    RuntimeState(#[from] runtime_doc::RuntimeStateError),
 }
 
 impl From<serde_json::Error> for SyncError {

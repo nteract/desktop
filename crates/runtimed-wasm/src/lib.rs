@@ -430,14 +430,15 @@ fn walk_and_resolve_comm_state(
 impl NotebookHandle {
     /// Create a new empty notebook document.
     #[wasm_bindgen(constructor)]
-    pub fn new(notebook_id: &str) -> NotebookHandle {
-        NotebookHandle {
+    pub fn new(notebook_id: &str) -> Result<NotebookHandle, JsError> {
+        Ok(NotebookHandle {
             doc: NotebookDoc::new_with_encoding(
                 notebook_id,
                 notebook_doc::TextEncoding::Utf16CodeUnit,
             ),
             sync_state: sync::State::new(),
-            state_doc: RuntimeStateDoc::new_empty(),
+            state_doc: RuntimeStateDoc::try_new_empty()
+                .map_err(|e| JsError::new(&format!("create runtime state doc failed: {}", e)))?,
             state_sync_state: sync::State::new(),
             prev_execution_outputs: std::collections::HashMap::new(),
             prev_output_by_id: std::collections::HashMap::new(),
@@ -446,18 +447,19 @@ impl NotebookHandle {
             metadata_fingerprint_cache: None,
             mime_priority: Vec::new(),
             blob_port: None,
-        }
+        })
     }
 
     /// Create a bootstrap handle for sync — no notebook ID, just skeleton + encoding + actor.
     ///
     /// This is the preferred constructor for sync-only clients. The daemon
     /// populates the full document via Automerge sync.
-    pub fn create_bootstrap(actor_label: &str) -> NotebookHandle {
-        NotebookHandle {
+    pub fn create_bootstrap(actor_label: &str) -> Result<NotebookHandle, JsError> {
+        Ok(NotebookHandle {
             doc: NotebookDoc::bootstrap(notebook_doc::TextEncoding::Utf16CodeUnit, actor_label),
             sync_state: sync::State::new(),
-            state_doc: RuntimeStateDoc::new_empty(),
+            state_doc: RuntimeStateDoc::try_new_empty()
+                .map_err(|e| JsError::new(&format!("create runtime state doc failed: {}", e)))?,
             state_sync_state: sync::State::new(),
             prev_execution_outputs: std::collections::HashMap::new(),
             prev_output_by_id: std::collections::HashMap::new(),
@@ -466,21 +468,21 @@ impl NotebookHandle {
             metadata_fingerprint_cache: None,
             mime_priority: Vec::new(),
             blob_port: None,
-        }
+        })
     }
 
     /// Create a handle with the bootstrap skeleton for sync.
     ///
     /// Deprecated — use [`create_bootstrap()`](Self::create_bootstrap) which
     /// requires an actor label.
-    pub fn create_empty() -> NotebookHandle {
+    pub fn create_empty() -> Result<NotebookHandle, JsError> {
         Self::create_bootstrap("anonymous")
     }
 
     /// Create a bootstrap handle with a specific actor identity.
     ///
     /// Deprecated — use [`create_bootstrap()`](Self::create_bootstrap).
-    pub fn create_empty_with_actor(actor_label: &str) -> NotebookHandle {
+    pub fn create_empty_with_actor(actor_label: &str) -> Result<NotebookHandle, JsError> {
         Self::create_bootstrap(actor_label)
     }
 
@@ -491,7 +493,8 @@ impl NotebookHandle {
         Ok(NotebookHandle {
             doc,
             sync_state: sync::State::new(),
-            state_doc: RuntimeStateDoc::new_empty(),
+            state_doc: RuntimeStateDoc::try_new_empty()
+                .map_err(|e| JsError::new(&format!("create runtime state doc failed: {}", e)))?,
             state_sync_state: sync::State::new(),
             prev_execution_outputs: std::collections::HashMap::new(),
             prev_output_by_id: std::collections::HashMap::new(),

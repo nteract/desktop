@@ -372,7 +372,7 @@ where
     R: AsyncRead + Unpin + Send + 'static,
     W: AsyncWrite + Unpin + Send + 'static,
 {
-    let mut shared_state = SharedDocState::new(doc, notebook_id.clone());
+    let mut shared_state = SharedDocState::try_new(doc, notebook_id.clone())?;
     shared_state.peer_state = peer_state;
 
     let shared = Arc::new(Mutex::new(shared_state));
