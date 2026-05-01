@@ -64,16 +64,24 @@ enum Commands {
         blob_store_dir: Option<PathBuf>,
 
         /// Number of UV environments to maintain
-        #[arg(long, default_value = "3")]
+        #[arg(
+            long,
+            default_value_t = runtimed_client::settings_doc::DEFAULT_UV_POOL_SIZE as usize
+        )]
         uv_pool_size: usize,
 
         /// Number of Conda environments to maintain
-        #[arg(long, default_value = "3")]
+        #[arg(
+            long,
+            default_value_t = runtimed_client::settings_doc::DEFAULT_CONDA_POOL_SIZE as usize
+        )]
         conda_pool_size: usize,
 
         /// Number of Pixi environments to maintain
-        /// Default matches DEFAULT_PIXI_POOL_SIZE in settings_doc.rs
-        #[arg(long, default_value = "2")]
+        #[arg(
+            long,
+            default_value_t = runtimed_client::settings_doc::DEFAULT_PIXI_POOL_SIZE as usize
+        )]
         pixi_pool_size: usize,
     },
 
@@ -313,7 +321,14 @@ async fn main() -> anyhow::Result<()> {
                         conda_pool_size,
                         pixi_pool_size,
                     ),
-                    _ => (None, None, None, 3, 3, 2),
+                    _ => (
+                        None,
+                        None,
+                        None,
+                        runtimed_client::settings_doc::DEFAULT_UV_POOL_SIZE as usize,
+                        runtimed_client::settings_doc::DEFAULT_CONDA_POOL_SIZE as usize,
+                        runtimed_client::settings_doc::DEFAULT_PIXI_POOL_SIZE as usize,
+                    ),
                 };
 
             run_daemon(

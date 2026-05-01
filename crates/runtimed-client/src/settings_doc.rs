@@ -177,10 +177,33 @@ pub const MIN_KEEP_ALIVE_SECS: u64 = 5;
 /// Maximum keep-alive duration (7 days) for notebook rooms.
 pub const MAX_KEEP_ALIVE_SECS: u64 = 604800;
 
-pub const DEFAULT_UV_POOL_SIZE: u64 = 3;
-pub const DEFAULT_CONDA_POOL_SIZE: u64 = 3;
-pub const DEFAULT_PIXI_POOL_SIZE: u64 = 2;
+pub const DEFAULT_POOL_SIZE: u64 = 1;
+pub const DEFAULT_SELECTED_POOL_SIZE: u64 = 2;
+pub const DEFAULT_UV_POOL_SIZE: u64 = DEFAULT_POOL_SIZE;
+pub const DEFAULT_CONDA_POOL_SIZE: u64 = DEFAULT_POOL_SIZE;
+pub const DEFAULT_PIXI_POOL_SIZE: u64 = DEFAULT_POOL_SIZE;
 pub const MAX_POOL_SIZE: u64 = 20;
+
+pub fn default_pool_sizes_for_python_env(env: &PythonEnvType) -> (u64, u64, u64) {
+    match env {
+        PythonEnvType::Uv => (
+            DEFAULT_SELECTED_POOL_SIZE,
+            DEFAULT_POOL_SIZE,
+            DEFAULT_POOL_SIZE,
+        ),
+        PythonEnvType::Conda => (
+            DEFAULT_POOL_SIZE,
+            DEFAULT_SELECTED_POOL_SIZE,
+            DEFAULT_POOL_SIZE,
+        ),
+        PythonEnvType::Pixi => (
+            DEFAULT_POOL_SIZE,
+            DEFAULT_POOL_SIZE,
+            DEFAULT_SELECTED_POOL_SIZE,
+        ),
+        PythonEnvType::Other(_) => (DEFAULT_POOL_SIZE, DEFAULT_POOL_SIZE, DEFAULT_POOL_SIZE),
+    }
+}
 
 /// Snapshot of all synced settings.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
@@ -301,9 +324,9 @@ impl Default for SyncedSettings {
             pixi: PixiDefaults::default(),
             keep_alive_secs: DEFAULT_KEEP_ALIVE_SECS,
             onboarding_completed: false,
-            uv_pool_size: DEFAULT_UV_POOL_SIZE,
-            conda_pool_size: DEFAULT_CONDA_POOL_SIZE,
-            pixi_pool_size: DEFAULT_PIXI_POOL_SIZE,
+            uv_pool_size: default_pool_sizes_for_python_env(&PythonEnvType::default()).0,
+            conda_pool_size: default_pool_sizes_for_python_env(&PythonEnvType::default()).1,
+            pixi_pool_size: default_pool_sizes_for_python_env(&PythonEnvType::default()).2,
             bootstrap_dx: false,
             install_id: String::new(),
             telemetry_enabled: true,
@@ -431,23 +454,6 @@ impl SettingsDoc {
 
         // nteract/dx kernel bootstrap (opt-in)
         let _ = doc.put(automerge::ROOT, "bootstrap_dx", defaults.bootstrap_dx);
-
-        // Pool sizes
-        let _ = doc.put(
-            automerge::ROOT,
-            "uv_pool_size",
-            defaults.uv_pool_size as i64,
-        );
-        let _ = doc.put(
-            automerge::ROOT,
-            "conda_pool_size",
-            defaults.conda_pool_size as i64,
-        );
-        let _ = doc.put(
-            automerge::ROOT,
-            "pixi_pool_size",
-            defaults.pixi_pool_size as i64,
-        );
 
         // Telemetry defaults (install_id left empty until first heartbeat)
         let _ = doc.put(automerge::ROOT, "install_id", "");
@@ -946,6 +952,13 @@ impl SettingsDoc {
             }
         };
 
+        let default_python_env = self
+            .get("default_python_env")
+            .and_then(|s| s.parse().ok())
+            .unwrap_or_default();
+        let (default_uv_pool_size, default_conda_pool_size, default_pixi_pool_size) =
+            default_pool_sizes_for_python_env(&default_python_env);
+
         SyncedSettings {
             theme: self
                 .get("theme")
@@ -959,10 +972,7 @@ impl SettingsDoc {
                 .get("default_runtime")
                 .and_then(|s| s.parse().ok())
                 .unwrap_or_default(),
-            default_python_env: self
-                .get("default_python_env")
-                .and_then(|s| s.parse().ok())
-                .unwrap_or_default(),
+            default_python_env,
             uv: UvDefaults {
                 default_packages: uv_packages,
             },
@@ -981,15 +991,13 @@ impl SettingsDoc {
                 // Check if this is an existing user by looking for other settings
                 self.get("theme").is_some() || self.get("default_runtime").is_some()
             }),
-            uv_pool_size: self
-                .get_u64("uv_pool_size")
-                .unwrap_or(defaults.uv_pool_size),
+            uv_pool_size: self.get_u64("uv_pool_size").unwrap_or(default_uv_pool_size),
             conda_pool_size: self
                 .get_u64("conda_pool_size")
-                .unwrap_or(defaults.conda_pool_size),
+                .unwrap_or(default_conda_pool_size),
             pixi_pool_size: self
                 .get_u64("pixi_pool_size")
-                .unwrap_or(defaults.pixi_pool_size),
+                .unwrap_or(default_pixi_pool_size),
             bootstrap_dx: self
                 .get_bool("bootstrap_dx")
                 .unwrap_or(defaults.bootstrap_dx),
@@ -1098,10 +1106,10 @@ impl SettingsDoc {
 
         // Pool sizes: uv_pool_size, conda_pool_size, pixi_pool_size
         if let Some(uv_pool) = json.get("uv_pool_size").and_then(|v| v.as_u64()) {
-            let current = self.get_u64("uv_pool_size");
-            if current != Some(uv_pool) {
+            let current = self.get_all().uv_pool_size;
+            if current != uv_pool {
                 info!(
-                    "[settings] apply_json_changes: uv_pool_size changed {:?} -> {}",
+                    "[settings] apply_json_changes: uv_pool_size changed {} -> {}",
                     current, uv_pool
                 );
                 self.put_u64("uv_pool_size", uv_pool);
@@ -1109,10 +1117,10 @@ impl SettingsDoc {
             }
         }
         if let Some(conda_pool) = json.get("conda_pool_size").and_then(|v| v.as_u64()) {
-            let current = self.get_u64("conda_pool_size");
-            if current != Some(conda_pool) {
+            let current = self.get_all().conda_pool_size;
+            if current != conda_pool {
                 info!(
-                    "[settings] apply_json_changes: conda_pool_size changed {:?} -> {}",
+                    "[settings] apply_json_changes: conda_pool_size changed {} -> {}",
                     current, conda_pool
                 );
                 self.put_u64("conda_pool_size", conda_pool);
@@ -1120,10 +1128,10 @@ impl SettingsDoc {
             }
         }
         if let Some(pixi_pool) = json.get("pixi_pool_size").and_then(|v| v.as_u64()) {
-            let current = self.get_u64("pixi_pool_size");
-            if current != Some(pixi_pool) {
+            let current = self.get_all().pixi_pool_size;
+            if current != pixi_pool {
                 info!(
-                    "[settings] apply_json_changes: pixi_pool_size changed {:?} -> {}",
+                    "[settings] apply_json_changes: pixi_pool_size changed {} -> {}",
                     current, pixi_pool
                 );
                 self.put_u64("pixi_pool_size", pixi_pool);
@@ -1257,8 +1265,41 @@ mod tests {
         assert_eq!(settings.theme, ThemeMode::System);
         assert_eq!(settings.default_runtime, Runtime::Python);
         assert_eq!(settings.default_python_env, PythonEnvType::Uv);
+        assert_eq!(settings.uv_pool_size, DEFAULT_SELECTED_POOL_SIZE);
+        assert_eq!(settings.conda_pool_size, DEFAULT_POOL_SIZE);
+        assert_eq!(settings.pixi_pool_size, DEFAULT_POOL_SIZE);
         assert!(settings.uv.default_packages.is_empty());
         assert!(settings.conda.default_packages.is_empty());
+    }
+
+    #[test]
+    fn test_selected_python_env_gets_larger_default_pool() {
+        let mut doc = SettingsDoc::new();
+        doc.put("default_python_env", "conda");
+        let settings = doc.get_all();
+        assert_eq!(settings.uv_pool_size, DEFAULT_POOL_SIZE);
+        assert_eq!(settings.conda_pool_size, DEFAULT_SELECTED_POOL_SIZE);
+        assert_eq!(settings.pixi_pool_size, DEFAULT_POOL_SIZE);
+
+        doc.put("default_python_env", "pixi");
+        let settings = doc.get_all();
+        assert_eq!(settings.uv_pool_size, DEFAULT_POOL_SIZE);
+        assert_eq!(settings.conda_pool_size, DEFAULT_POOL_SIZE);
+        assert_eq!(settings.pixi_pool_size, DEFAULT_SELECTED_POOL_SIZE);
+    }
+
+    #[test]
+    fn test_explicit_pool_sizes_override_selected_env_defaults() {
+        let mut doc = SettingsDoc::new();
+        doc.put("default_python_env", "pixi");
+        doc.put_u64("uv_pool_size", 4);
+        doc.put_u64("conda_pool_size", 5);
+        doc.put_u64("pixi_pool_size", 6);
+
+        let settings = doc.get_all();
+        assert_eq!(settings.uv_pool_size, 4);
+        assert_eq!(settings.conda_pool_size, 5);
+        assert_eq!(settings.pixi_pool_size, 6);
     }
 
     #[test]

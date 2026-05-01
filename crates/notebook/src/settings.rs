@@ -11,7 +11,7 @@
 //!
 //! Uses `runtimed::settings_doc::SyncedSettings` as the canonical settings type.
 
-use runtimed::settings_doc::SyncedSettings;
+use runtimed::settings_doc::{default_pool_sizes_for_python_env, SyncedSettings};
 use std::path::PathBuf;
 
 // Re-export types that notebook code uses from runtimed
@@ -39,19 +39,21 @@ pub fn load_settings() -> SyncedSettings {
         Err(_) => return SyncedSettings::default(),
     };
 
-    // Fast path: if the whole file deserializes cleanly, use it directly.
-    if let Ok(settings) = serde_json::from_str::<SyncedSettings>(&contents) {
-        return settings;
-    }
-
-    // Slow path: parse as Value, extract each field individually so one bad
-    // value doesn't lose every other valid setting.
     let json: serde_json::Value = match serde_json::from_str(&contents) {
         Ok(v) => v,
         Err(_) => return SyncedSettings::default(),
     };
+
+    // Fast path: if the whole file deserializes cleanly, use it directly,
+    // then fill any missing pool-size keys from the selected Python env.
+    if let Ok(settings) = serde_json::from_value::<SyncedSettings>(json.clone()) {
+        return apply_selected_pool_defaults(settings, &json);
+    }
+
+    // Slow path: extract each field individually so one bad value doesn't lose
+    // every other valid setting.
     let defaults = SyncedSettings::default();
-    SyncedSettings {
+    let settings = SyncedSettings {
         theme: json
             .get("theme")
             .and_then(|v| serde_json::from_value(v.clone()).ok())
@@ -128,7 +130,26 @@ pub fn load_settings() -> SyncedSettings {
         telemetry_last_mcp_ping_at: json
             .get("telemetry_last_mcp_ping_at")
             .and_then(|v| v.as_u64()),
+    };
+
+    apply_selected_pool_defaults(settings, &json)
+}
+
+fn apply_selected_pool_defaults(
+    mut settings: SyncedSettings,
+    json: &serde_json::Value,
+) -> SyncedSettings {
+    let (uv, conda, pixi) = default_pool_sizes_for_python_env(&settings.default_python_env);
+    if json.get("uv_pool_size").is_none() {
+        settings.uv_pool_size = uv;
     }
+    if json.get("conda_pool_size").is_none() {
+        settings.conda_pool_size = conda;
+    }
+    if json.get("pixi_pool_size").is_none() {
+        settings.pixi_pool_size = pixi;
+    }
+    settings
 }
 
 #[cfg(test)]
@@ -159,9 +180,9 @@ mod tests {
             pixi: PixiDefaults::default(),
             keep_alive_secs: 30,
             onboarding_completed: false,
-            uv_pool_size: 3,
-            conda_pool_size: 3,
-            pixi_pool_size: 2,
+            uv_pool_size: 4,
+            conda_pool_size: 5,
+            pixi_pool_size: 6,
             bootstrap_dx: false,
             ..SyncedSettings::default()
         };
@@ -197,6 +218,41 @@ mod tests {
         assert_eq!(parsed.theme, ThemeMode::System);
         assert!(parsed.uv.default_packages.is_empty());
         assert!(parsed.conda.default_packages.is_empty());
+    }
+
+    #[test]
+    fn test_missing_pool_sizes_follow_selected_python_env() {
+        let json: serde_json::Value =
+            serde_json::from_str(r#"{"default_python_env": "conda"}"#).unwrap();
+        let settings = apply_selected_pool_defaults(
+            serde_json::from_value::<SyncedSettings>(json.clone()).unwrap(),
+            &json,
+        );
+
+        assert_eq!(settings.uv_pool_size, 1);
+        assert_eq!(settings.conda_pool_size, 2);
+        assert_eq!(settings.pixi_pool_size, 1);
+    }
+
+    #[test]
+    fn test_explicit_pool_sizes_override_selected_python_env_defaults() {
+        let json: serde_json::Value = serde_json::from_str(
+            r#"{
+                "default_python_env": "pixi",
+                "uv_pool_size": 4,
+                "conda_pool_size": 5,
+                "pixi_pool_size": 6
+            }"#,
+        )
+        .unwrap();
+        let settings = apply_selected_pool_defaults(
+            serde_json::from_value::<SyncedSettings>(json.clone()).unwrap(),
+            &json,
+        );
+
+        assert_eq!(settings.uv_pool_size, 4);
+        assert_eq!(settings.conda_pool_size, 5);
+        assert_eq!(settings.pixi_pool_size, 6);
     }
 
     #[test]
