@@ -81,6 +81,7 @@ e2e-webdriver = ["tauri-plugin-webdriver"]
 tempfile = "3"
 
 [build-dependencies]
+build-metadata = { path = "../build-metadata" }
 serde_json = { workspace = true }
 tauri-build = { version = "2", features = [] }
 

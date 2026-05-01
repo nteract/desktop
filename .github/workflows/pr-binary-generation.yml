@@ -69,6 +69,8 @@ jobs:
     name: Build ${{ inputs.target_os == 'linux' && 'Linux x64' || inputs.target_os == 'macos' && 'macOS' || 'Windows x64' }} binary
     needs: [resolve-pr]
     runs-on: ${{ inputs.target_os == 'linux' && 'ubuntu-22.04' || inputs.target_os == 'macos' && 'macos-14-xlarge' || 'windows-latest' }}
+    env:
+      NTERACT_BUILD_GIT_HASH: ${{ needs.resolve-pr.outputs.head_sha }}
 
     steps:
       - name: Checkout pinned PR commit
