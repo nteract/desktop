@@ -52,6 +52,7 @@ env:
   TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
   TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
   RUNT_BUILD_CHANNEL: ${{ inputs.version_suffix }}
+  NTERACT_BUILD_GIT_HASH: ${{ github.sha }}
 
 jobs:
   compute-version:

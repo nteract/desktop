@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "crates/build-metadata",
     "crates/runt",
     "crates/runt-trust",
     "crates/runt-workspace",

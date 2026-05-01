@@ -864,6 +864,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "build-metadata"
+version = "0.1.0"
+
+[[package]]
 name = "bumpalo"
 version = "3.20.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4495,6 +4499,7 @@ name = "notebook"
 version = "2.3.5"
 dependencies = [
  "anyhow",
+ "build-metadata",
  "chrono",
  "clap",
  "cocoa",
@@ -6932,6 +6937,7 @@ name = "runt"
 version = "2.3.5"
 dependencies = [
  "anyhow",
+ "build-metadata",
  "chrono",
  "clap",
  "colored",
@@ -7047,6 +7053,7 @@ dependencies = [
  "async-rust-lsp",
  "automerge",
  "base64 0.22.1",
+ "build-metadata",
  "bytes",
  "chrono",
  "clap",
@@ -7107,6 +7114,7 @@ version = "2.3.5"
 dependencies = [
  "automerge",
  "base64 0.22.1",
+ "build-metadata",
  "chrono",
  "dirs",
  "libc",

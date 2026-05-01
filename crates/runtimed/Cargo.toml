@@ -108,6 +108,8 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 libc = "0.2"
 nix = { version = "0.31", features = ["signal", "process"] }
 
+[build-dependencies]
+build-metadata = { path = "../build-metadata" }
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.52", features = ["Win32_Storage_FileSystem", "Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_System_JobObjects", "Win32_System_Threading"] }
 
