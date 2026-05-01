@@ -1,16 +1,16 @@
 /**
- * Build pre-built renderer plugin artifacts.
+ * Build pre-built renderer plugin artifacts into a single canonical dir.
  *
- * Produces two sets of outputs:
- *   1. apps/notebook/src/renderer-plugins/ : core IIFE + 4 CJS plugins for the notebook app
- *   2. crates/runt-mcp/assets/plugins/     : MCP-wrapped plugins for the daemon's MCP server
+ * Output: `apps/notebook/src/renderer-plugins/` - core IIFE + CJS plugins.
+ * Stable bundles (plotly, vega, leaflet, markdown, isolated-renderer) are
+ * LFS-tracked; sift.{js,css} stay gitignored because they re-embed
+ * sift-wasm's wasm-bindgen glue and must be rebuilt in lockstep.
  *
- * Both directories are gitignored. CI rebuilds them as a prerequisite step
- * before any job that compiles the runtimed daemon (which `include_bytes!`s
- * them) or runs the notebook Vite build (which loads them at runtime).
+ * The notebook Vite app loads these CJS bundles directly. runtimed
+ * `include_bytes!`-es them, and the blob server wraps `.js` responses with
+ * the MCP App IIFE loader at serve time - no second on-disk copy.
  *
- * Run locally after a fresh clone, or when renderer source or vendored
- * libraries change:
+ * Run locally after a fresh clone, or when renderer source changes:
  *
  *   cargo xtask renderer-plugins
  */
@@ -25,13 +25,11 @@ import {
   RENDERER_ROLLDOWN_CHECKS,
   RENDERER_PLUGINS,
 } from "../src/build/renderer-plugin-builder.ts";
-import { wrapForMcpApp } from "../apps/mcp-app/src/lib/wrap-plugin.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, "..");
 
 const notebookPluginDir = path.join(repoRoot, "apps/notebook/src/renderer-plugins");
-const mcpPluginDir = path.join(repoRoot, "crates/runt-mcp/assets/plugins");
 
 async function buildCoreIIFE(): Promise<{ code: string; css: string }> {
   const srcDir = path.join(repoRoot, "src");
@@ -117,28 +115,19 @@ async function buildCoreIIFE(): Promise<{ code: string; css: string }> {
 
 async function main() {
   fs.mkdirSync(notebookPluginDir, { recursive: true });
-  fs.mkdirSync(mcpPluginDir, { recursive: true });
 
   // Build core IIFE and renderer plugins in parallel
   const [iife, plugins] = await Promise.all([buildCoreIIFE(), buildAllRendererPlugins(RENDERER_PLUGINS)]);
 
-  // Write core IIFE (notebook only — MCP doesn't use the IIFE)
   fs.writeFileSync(path.join(notebookPluginDir, "isolated-renderer.js"), iife.code);
   fs.writeFileSync(path.join(notebookPluginDir, "isolated-renderer.css"), iife.css);
   console.log(
     `  isolated-renderer: ${(iife.code.length / 1024).toFixed(0)} kB JS, ${(iife.css.length / 1024).toFixed(0)} kB CSS`,
   );
 
-  // Write renderer plugins (both notebook and MCP)
   for (const { name, code, css } of plugins) {
-    // Notebook: raw CJS
     fs.writeFileSync(path.join(notebookPluginDir, `${name}.js`), code);
     if (css) fs.writeFileSync(path.join(notebookPluginDir, `${name}.css`), css);
-
-    // MCP: wrapped for MCP app
-    const wrapped = wrapForMcpApp(code);
-    fs.writeFileSync(path.join(mcpPluginDir, `${name}.js`), wrapped);
-    if (css) fs.writeFileSync(path.join(mcpPluginDir, `${name}.css`), css);
 
     const sizeParts = [`${(code.length / 1024).toFixed(0)} kB JS`];
     if (css) sizeParts.push(`${(css.length / 1024).toFixed(0)} kB CSS`);

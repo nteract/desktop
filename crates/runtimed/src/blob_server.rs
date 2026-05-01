@@ -190,10 +190,12 @@ async fn serve_blob(store: &BlobStore, hash: &str) -> Response<Full<Bytes>> {
 
 /// Serve a renderer plugin asset.
 ///
+/// `.js` responses are wrapped in the MCP App IIFE loader on the way out
+/// (see [`wrap_for_mcp_app`]). `.css` / `.wasm` are passed through untouched.
 /// Dev worktree daemons prefer the workspace's on-disk plugin assets so
-/// `cargo xtask renderer-plugins` can update MCP Apps without requiring a
-/// daemon rebuild. Release builds, and dev builds missing an on-disk asset,
-/// continue to use the embedded assets.
+/// `cargo xtask renderer-plugins` can refresh bundles without a daemon
+/// rebuild; release builds and dev builds missing an on-disk asset fall
+/// through to the embedded copy.
 async fn serve_plugin(name: &str) -> Response<Full<Bytes>> {
     if !is_valid_plugin_name(name) {
         return text_response(StatusCode::NOT_FOUND, "Not Found");
@@ -230,7 +232,10 @@ fn dev_plugin_assets_dir() -> Option<PathBuf> {
     }
 
     let workspace = runt_workspace::get_workspace_path()?;
-    Some(workspace.join("crates/runt-mcp/assets/plugins"))
+    // Canonical dev source: the notebook renderer-plugin dir. The raw CJS
+    // bundles living here are wrapped on the way out by `wrap_for_mcp_app`
+    // for MCP App consumers and served verbatim to the notebook app.
+    Some(workspace.join("apps/notebook/src/renderer-plugins"))
 }
 
 async fn serve_dev_plugin_file(name: &str, dir: &Path) -> Option<Response<Full<Bytes>>> {
@@ -238,19 +243,22 @@ async fn serve_dev_plugin_file(name: &str, dir: &Path) -> Option<Response<Full<B
     let path = dir.join(name);
 
     match tokio::fs::read(&path).await {
-        Ok(bytes) => Some(
-            Response::builder()
-                .status(StatusCode::OK)
-                .header("Content-Type", content_type)
-                .header("Content-Length", bytes.len().to_string())
-                .header("Cache-Control", "no-store")
-                .header("Access-Control-Allow-Origin", "*")
-                .header("X-Content-Type-Options", "nosniff")
-                .body(Full::new(Bytes::from(bytes)))
-                .unwrap_or_else(|_| {
-                    text_response(StatusCode::INTERNAL_SERVER_ERROR, "Internal Server Error")
-                }),
-        ),
+        Ok(bytes) => {
+            let body = transform_plugin_body(name, bytes);
+            Some(
+                Response::builder()
+                    .status(StatusCode::OK)
+                    .header("Content-Type", content_type)
+                    .header("Content-Length", body.len().to_string())
+                    .header("Cache-Control", "no-store")
+                    .header("Access-Control-Allow-Origin", "*")
+                    .header("X-Content-Type-Options", "nosniff")
+                    .body(Full::new(Bytes::from(body)))
+                    .unwrap_or_else(|_| {
+                        text_response(StatusCode::INTERNAL_SERVER_ERROR, "Internal Server Error")
+                    }),
+            )
+        }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
         Err(e) => {
             warn!(
@@ -268,23 +276,71 @@ async fn serve_dev_plugin_file(name: &str, dir: &Path) -> Option<Response<Full<B
 
 /// Serve an embedded renderer plugin asset (JS, CSS, or WASM).
 ///
-/// Plugins are embedded in the binary at compile time via `include_bytes!`
-/// and served directly from memory — zero-copy via `Bytes::from_static`.
+/// Plugins are embedded in the binary at compile time via `include_bytes!`.
+/// `.css` and `.wasm` are served zero-copy via `Bytes::from_static`; `.js`
+/// gets run through [`wrap_for_mcp_app`] because runtimed embeds the raw CJS
+/// bundle from the notebook renderer-plugin dir (one canonical location,
+/// two shapes at the edge).
 fn serve_embedded_plugin(name: &str) -> Response<Full<Bytes>> {
-    match embedded_plugins::get(name) {
-        Some((bytes, content_type)) => Response::builder()
-            .status(StatusCode::OK)
-            .header("Content-Type", content_type)
-            .header("Content-Length", bytes.len().to_string())
-            .header("Cache-Control", "public, max-age=86400")
-            .header("Access-Control-Allow-Origin", "*")
-            .header("X-Content-Type-Options", "nosniff")
-            .body(Full::new(Bytes::from_static(bytes)))
-            .unwrap_or_else(|_| {
-                text_response(StatusCode::INTERNAL_SERVER_ERROR, "Internal Server Error")
-            }),
-        None => text_response(StatusCode::NOT_FOUND, "Not Found"),
+    let Some((bytes, content_type)) = embedded_plugins::get(name) else {
+        return text_response(StatusCode::NOT_FOUND, "Not Found");
+    };
+
+    let (body, body_len) = if name.ends_with(".js") {
+        let wrapped = wrap_for_mcp_app(bytes);
+        let len = wrapped.len();
+        (Full::new(Bytes::from(wrapped)), len)
+    } else {
+        (Full::new(Bytes::from_static(bytes)), bytes.len())
+    };
+
+    Response::builder()
+        .status(StatusCode::OK)
+        .header("Content-Type", content_type)
+        .header("Content-Length", body_len.to_string())
+        .header("Cache-Control", "public, max-age=86400")
+        .header("Access-Control-Allow-Origin", "*")
+        .header("X-Content-Type-Options", "nosniff")
+        .body(body)
+        .unwrap_or_else(|_| {
+            text_response(StatusCode::INTERNAL_SERVER_ERROR, "Internal Server Error")
+        })
+}
+
+/// Apply the MCP App IIFE wrapper to a renderer-plugin body, if the body is
+/// JavaScript. Non-`.js` assets pass through untouched.
+///
+/// Equivalent to `apps/mcp-app/src/lib/wrap-plugin.js::wrapForMcpApp` - the
+/// `embedded_plugins_wrap_matches_js_helper` test in
+/// `embedded_plugins.rs` pins the two in lockstep.
+fn transform_plugin_body(name: &str, raw: Vec<u8>) -> Vec<u8> {
+    if name.ends_with(".js") {
+        wrap_for_mcp_app(&raw)
+    } else {
+        raw
     }
+}
+
+/// Wrap a raw CJS renderer plugin in an IIFE for MCP App loading.
+///
+/// The wrapper matches `apps/mcp-app/src/lib/wrap-plugin.js::wrapForMcpApp`
+/// byte-for-byte (the `wrap_for_mcp_app_matches_js_helper` test pins this).
+///
+/// Steps:
+///   1. Local `module`/`exports`/`require` so the plugin doesn't leak into
+///      global scope.
+///   2. `require` resolves via `window.__nteract.require` so React and the
+///      other MCP App-provided deps are reachable.
+///   3. If the plugin exported an `install(nteract)` function, call it with
+///      `window.__nteract` so it self-registers.
+pub(crate) fn wrap_for_mcp_app(code: &[u8]) -> Vec<u8> {
+    const PROLOGUE: &[u8] = b"(function(){\nvar exports={},module={exports:exports};\nvar require=window.__nteract.require;\n";
+    const EPILOGUE: &[u8] = b"\n;var _i=module.exports&&module.exports.install;\nif(typeof _i==='function')_i(window.__nteract)\n})();";
+    let mut out = Vec::with_capacity(PROLOGUE.len() + code.len() + EPILOGUE.len());
+    out.extend_from_slice(PROLOGUE);
+    out.extend_from_slice(code);
+    out.extend_from_slice(EPILOGUE);
+    out
 }
 
 /// Build a simple text response.
@@ -540,7 +596,34 @@ mod tests {
             response_header(&response, "access-control-allow-origin"),
             Some("*".into())
         );
-        assert_eq!(response_body(response).await, b"dev plotly");
+        // Dev-path .js is wrapped on serve, same as the embedded path.
+        let body = response_body(response).await;
+        let expected = wrap_for_mcp_app(b"dev plotly");
+        assert_eq!(body, expected);
+    }
+
+    #[tokio::test]
+    async fn test_dev_filesystem_css_passes_through_unwrapped() {
+        let dir = TempDir::new().unwrap();
+        let plugin_dir = dir.path().join("plugins");
+        tokio::fs::create_dir_all(&plugin_dir).await.unwrap();
+        tokio::fs::write(plugin_dir.join("markdown.css"), b".md{color:red}")
+            .await
+            .unwrap();
+
+        let response = serve_plugin_with_dev_assets("markdown.css", Some(&plugin_dir)).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response_body(response).await, b".md{color:red}");
+    }
+
+    #[test]
+    fn wrap_for_mcp_app_matches_js_helper() {
+        // Byte-equal pin against apps/mcp-app/src/lib/wrap-plugin.js.
+        // If the JS helper is updated, copy the template here verbatim.
+        let raw = "module.exports = { install: (n) => n.register('x', {}) };";
+        let wrapped = wrap_for_mcp_app(raw.as_bytes());
+        let expected = "(function(){\nvar exports={},module={exports:exports};\nvar require=window.__nteract.require;\nmodule.exports = { install: (n) => n.register('x', {}) };\n;var _i=module.exports&&module.exports.install;\nif(typeof _i==='function')_i(window.__nteract)\n})();";
+        assert_eq!(std::str::from_utf8(&wrapped).unwrap(), expected);
     }
 
     #[tokio::test]

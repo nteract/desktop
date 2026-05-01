@@ -67,7 +67,6 @@ python/nteract/src/nteract/_widget.html
 # wasm-pack outputs, rebuilt on every `cargo xtask build` via xtask's
 # volatile-wasm force-rebuild path.
 /apps/notebook/src/wasm/runtimed-wasm/
-/crates/runt-mcp/assets/plugins/
 /crates/sift-wasm/pkg/
 
 # Python artifacts
