@@ -25,6 +25,7 @@ import { cn } from "@/lib/utils";
 import { usePresenceContext } from "../contexts/PresenceContext";
 import { EditorRegistryProvider, useEditorRegistry } from "../hooks/useEditorRegistry";
 import { useExecutingCellIds, useFocusedCellId, useSearchCurrentMatch } from "../lib/cell-ui-state";
+import { decideExecutionResnap } from "../lib/execution-resnap";
 import { logger } from "../lib/logger";
 import { getNotebookCellsSnapshot, useCell, useMaterializeVersion } from "../lib/notebook-cells";
 import { getCellOutputsSnapshot, useOutputsVersion } from "../lib/notebook-outputs";
@@ -370,6 +371,7 @@ function NotebookViewContent({
   const executingCellIds = useExecutingCellIds();
   const searchCurrentMatch = useSearchCurrentMatch();
   const executionResnapUntilRef = useRef(0);
+  const executionResnapCancelledRef = useRef(false);
   const previousExecutingSizeRef = useRef(executingCellIds.size);
   // Ref for cellIds so renderCell can read the latest list without
   // depending on the array identity. This prevents recreating
@@ -531,15 +533,26 @@ function NotebookViewContent({
   useEffect(() => {
     const previousSize = previousExecutingSizeRef.current;
     previousExecutingSizeRef.current = executingCellIds.size;
-    if (executingCellIds.size > 0) {
+    if (executingCellIds.size === 0) {
+      if (previousSize > 0 && !executionResnapCancelledRef.current) {
+        executionResnapUntilRef.current = Date.now() + 2000;
+      }
+      executionResnapCancelledRef.current = false;
+    } else if (previousSize === 0) {
+      executionResnapCancelledRef.current = false;
       executionResnapUntilRef.current = Date.now() + 3500;
-    } else if (previousSize > 0) {
-      executionResnapUntilRef.current = Date.now() + 2000;
+    } else if (!executionResnapCancelledRef.current) {
+      executionResnapUntilRef.current = Date.now() + 3500;
     }
   }, [executingCellIds]);
 
+  useEffect(() => {
+    executionResnapCancelledRef.current = false;
+  }, [focusedCellId]);
+
   const cancelExecutionResnap = useCallback(() => {
-    if (executionResnapUntilRef.current === 0) return;
+    if (executionResnapUntilRef.current === 0 && executionResnapCancelledRef.current) return;
+    executionResnapCancelledRef.current = true;
     executionResnapUntilRef.current = 0;
     cancelResnapCell();
   }, [cancelResnapCell]);
@@ -579,10 +592,16 @@ function NotebookViewContent({
   }, [cancelExecutionResnap]);
 
   useEffect(() => {
-    if (!focusedCellId || outputsVersion === 0) return;
-    if (executingCellIds.size > 0) {
-      executionResnapUntilRef.current = Date.now() + 3500;
-    } else if (Date.now() > executionResnapUntilRef.current) {
+    const decision = decideExecutionResnap({
+      focusedCellId,
+      outputsVersion,
+      executingCellCount: executingCellIds.size,
+      resnapCancelled: executionResnapCancelledRef.current,
+      resnapUntil: executionResnapUntilRef.current,
+      now: Date.now(),
+    });
+    executionResnapUntilRef.current = decision.nextResnapUntil;
+    if (!decision.shouldResnap || !focusedCellId) {
       return;
     }
     resnapCell(focusedCellId);
