@@ -461,6 +461,10 @@ fn expected_pool_package_hash(env_type: EnvType, packages: &[String]) -> String 
     hasher.update(b"\n");
     hasher.update(env_type.to_string().as_bytes());
     hasher.update(b"\n");
+    hasher.update(std::env::consts::OS.as_bytes());
+    hasher.update(b"\n");
+    hasher.update(std::env::consts::ARCH.as_bytes());
+    hasher.update(b"\n");
     for package in sorted {
         hasher.update(package.as_bytes());
         hasher.update(b"\n");
@@ -645,16 +649,30 @@ impl Pool {
         self.failure_state = FailureState::default();
     }
 
-    fn pop_retired_path_after_replacement(&mut self) -> Option<PathBuf> {
-        let retired = self.retired_paths.iter().next().cloned();
-        if let Some(path) = &retired {
-            self.retired_paths.remove(path);
+    fn retired_paths_after_replacement(&mut self) -> Vec<PathBuf> {
+        let mut retired = Vec::new();
+        if let Some(path) = self.retired_paths.iter().next().cloned() {
+            self.retired_paths.remove(&path);
+            retired.push(path);
+        }
+
+        if self.available.len() >= self.target {
+            retired.extend(self.retired_paths.drain());
         }
         retired
     }
 
     fn retire_path(&mut self, path: PathBuf) {
         self.retired_paths.insert(pool_env_root(&path));
+    }
+
+    fn retire_path_if_fallback_needed(&mut self, path: PathBuf) -> bool {
+        if self.available.len() + self.retired_paths.len() < self.target {
+            self.retire_path(path);
+            true
+        } else {
+            false
+        }
     }
 
     /// Mark that warming failed with error details.
@@ -1882,8 +1900,11 @@ impl Daemon {
                         pool_package_hash_matches(&env_path, EnvType::Uv, &uv_prewarmed).await;
                     let mut pool = self.uv_pool.lock().await;
                     if !hash_matches {
-                        pool.retire_path(env_path.clone());
-                        retired_found += 1;
+                        if pool.retire_path_if_fallback_needed(env_path.clone()) {
+                            retired_found += 1;
+                        } else {
+                            orphans.push(env_path);
+                        }
                     } else if pool.available.len() < pool.target {
                         pool.available.push_back(PoolEntry {
                             env: PooledEnv {
@@ -1922,8 +1943,11 @@ impl Daemon {
                             .await;
                     let mut pool = self.conda_pool.lock().await;
                     if !hash_matches {
-                        pool.retire_path(env_path.clone());
-                        retired_found += 1;
+                        if pool.retire_path_if_fallback_needed(env_path.clone()) {
+                            retired_found += 1;
+                        } else {
+                            orphans.push(env_path);
+                        }
                     } else if pool.available.len() < pool.target {
                         pool.available.push_back(PoolEntry {
                             env: PooledEnv {
@@ -1960,8 +1984,11 @@ impl Daemon {
                         pool_package_hash_matches(&env_path, EnvType::Pixi, &pixi_prewarmed).await;
                     let mut pool = self.pixi_pool.lock().await;
                     if !hash_matches {
-                        pool.retire_path(env_path.clone());
-                        retired_found += 1;
+                        if pool.retire_path_if_fallback_needed(env_path.clone()) {
+                            retired_found += 1;
+                        } else {
+                            orphans.push(env_path);
+                        }
                     } else if pool.available.len() < pool.target {
                         pool.available.push_back(PoolEntry {
                             env: PooledEnv {
@@ -4616,10 +4643,10 @@ impl Daemon {
                         python_path,
                         prewarmed_packages: conda_install_packages,
                     });
-                    pool.pop_retired_path_after_replacement()
+                    pool.retired_paths_after_replacement()
                 };
-                if let Some(path) = retired_to_delete {
-                    spawn_env_deletions(vec![path]);
+                if !retired_to_delete.is_empty() {
+                    spawn_env_deletions(retired_to_delete);
                 }
 
                 {
@@ -4801,10 +4828,10 @@ impl Daemon {
                         python_path: env.python_path,
                         prewarmed_packages,
                     });
-                    pool.pop_retired_path_after_replacement()
+                    pool.retired_paths_after_replacement()
                 };
-                if let Some(path) = retired_to_delete {
-                    spawn_env_deletions(vec![path]);
+                if !retired_to_delete.is_empty() {
+                    spawn_env_deletions(retired_to_delete);
                 }
                 self.update_pool_doc().await;
             }
@@ -5199,10 +5226,10 @@ impl Daemon {
                         python_path,
                         prewarmed_packages: install_packages,
                     });
-                    pool.pop_retired_path_after_replacement()
+                    pool.retired_paths_after_replacement()
                 };
-                if let Some(path) = retired_to_delete {
-                    spawn_env_deletions(vec![path]);
+                if !retired_to_delete.is_empty() {
+                    spawn_env_deletions(retired_to_delete);
                 }
                 self.update_pool_doc().await;
             }
@@ -6650,7 +6677,7 @@ mod tests {
     }
 
     #[test]
-    fn test_pop_retired_path_after_successful_replacement_returns_one_path() {
+    fn test_retired_paths_after_successful_replacement_returns_one_path_below_target() {
         let temp_dir = TempDir::new().unwrap();
         let mut pool = Pool::new(3, 3600);
         let retired_root = temp_dir.path().join("runtimed-uv-retired");
@@ -6658,10 +6685,44 @@ mod tests {
 
         let env = create_test_env(&temp_dir, "runtimed-uv-fresh");
         pool.add(env);
-        let retired = pool.pop_retired_path_after_replacement();
+        let retired = pool.retired_paths_after_replacement();
 
-        assert_eq!(retired, Some(retired_root));
+        assert_eq!(retired, vec![retired_root]);
         assert!(pool.retired_paths.is_empty());
+    }
+
+    #[test]
+    fn test_retired_paths_after_successful_replacement_drains_surplus_at_target() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut pool = Pool::new(1, 3600);
+        let retired_a = temp_dir.path().join("runtimed-uv-retired-a");
+        let retired_b = temp_dir.path().join("runtimed-uv-retired-b");
+        pool.retire_path(retired_a.clone());
+        pool.retire_path(retired_b.clone());
+
+        let env = create_test_env(&temp_dir, "runtimed-uv-fresh");
+        pool.add(env);
+        let retired = pool.retired_paths_after_replacement();
+
+        let retired_set: std::collections::HashSet<_> = retired.into_iter().collect();
+        assert_eq!(retired_set.len(), 2);
+        assert!(retired_set.contains(&retired_a));
+        assert!(retired_set.contains(&retired_b));
+        assert!(pool.retired_paths.is_empty());
+    }
+
+    #[test]
+    fn test_warming_failure_keeps_retired_paths_tracked() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut pool = Pool::new(1, 3600);
+        let retired_root = temp_dir.path().join("runtimed-uv-retired");
+        pool.retire_path(retired_root.clone());
+        pool.mark_warming(1);
+
+        pool.warming_failed_with_error(None);
+
+        assert!(pool.retired_paths.contains(&retired_root));
+        assert!(pool.tracked_paths().contains(&retired_root));
     }
 
     #[test]
@@ -6681,6 +6742,24 @@ mod tests {
             expected_pool_package_hash(EnvType::Uv, &packages),
             expected_pool_package_hash(EnvType::Conda, &packages)
         );
+    }
+
+    #[test]
+    fn test_expected_pool_package_hash_includes_platform() {
+        let packages = vec!["ipykernel".to_string()];
+        let hash = expected_pool_package_hash(EnvType::Uv, &packages);
+        let mut manual = Sha256::new();
+        manual.update(POOL_PACKAGE_HASH_VERSION.as_bytes());
+        manual.update(b"\n");
+        manual.update(EnvType::Uv.to_string().as_bytes());
+        manual.update(b"\n");
+        manual.update(std::env::consts::OS.as_bytes());
+        manual.update(b"\n");
+        manual.update(std::env::consts::ARCH.as_bytes());
+        manual.update(b"\n");
+        manual.update(b"ipykernel\n");
+
+        assert_eq!(hash, hex::encode(manual.finalize()));
     }
 
     #[tokio::test]
@@ -6723,6 +6802,35 @@ mod tests {
         assert!(pool.available.is_empty());
         assert!(pool.retired_paths.contains(&root));
         assert!(root.exists(), "retired legacy env should stay on disk");
+    }
+
+    #[tokio::test]
+    async fn find_existing_environments_orphans_surplus_missing_package_hashes() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = DaemonConfig {
+            uv_pool_size: 1,
+            ..lease_test_config(&temp_dir)
+        };
+        std::fs::create_dir_all(&config.cache_dir).unwrap();
+        let env_a = create_test_env_in(&config.cache_dir, "runtimed-uv-legacy-a");
+        let env_b = create_test_env_in(&config.cache_dir, "runtimed-uv-legacy-b");
+        let root_a = pool_env_root(&env_a.venv_path);
+        let root_b = pool_env_root(&env_b.venv_path);
+
+        let daemon = Daemon::new(config).unwrap();
+        daemon.find_existing_environments().await;
+
+        let pool = daemon.uv_pool.lock().await;
+        assert!(pool.available.is_empty());
+        assert_eq!(pool.retired_paths.len(), 1);
+        assert!(
+            pool.retired_paths.contains(&root_a) || pool.retired_paths.contains(&root_b),
+            "one legacy env should be protected as offline fallback"
+        );
+        assert!(
+            !pool.retired_paths.contains(&root_a) || !pool.retired_paths.contains(&root_b),
+            "surplus legacy env should become an orphan instead of permanent retired state"
+        );
     }
 
     // ── Blob GC correctness (spec 1) ─────────────────────────────────
