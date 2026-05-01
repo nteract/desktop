@@ -355,7 +355,15 @@ function AppContent() {
   // NotebookClient for sending kernel commands via transport. The host's
   // transport is the single instance shared with the SyncEngine in
   // useAutomergeNotebook — no more separate connection per consumer.
-  const notebookClient = useMemo(() => new NotebookClient({ transport: host.transport }), [host]);
+  const notebookClient = useMemo(
+    () =>
+      new NotebookClient({
+        transport: host.transport,
+        getRequiredHeads: () => getHandle()?.get_heads_hex() ?? [],
+        flushBeforeRequiredHeadsRequest: () => getEngine()?.flush(),
+      }),
+    [host, getHandle, getEngine],
+  );
 
   // Daemon-owned kernel execution
   const {
@@ -1097,9 +1105,6 @@ function AppContent() {
       executingCellsRef.current.add(cellId);
 
       try {
-        const requiredHeads = getHandle()?.get_heads_hex() ?? [];
-        getEngine()?.flush();
-
         // Starting a fresh execution updates the cell's execution_id pointer,
         // and output rendering follows that pointer.
 
@@ -1113,7 +1118,7 @@ function AppContent() {
           // For startup races (e.g. daemon already auto-starting), still try execute.
           if (!started && pendingKernelStartRef.current) return;
         }
-        const response = await executeCell(cellId, { required_heads: requiredHeads });
+        const response = await executeCell(cellId);
         if (response.result === "error") {
           logger.error("[App] handleExecuteCell: daemon error", response.error);
         } else if (response.result === "no_kernel") {
@@ -1121,7 +1126,7 @@ function AppContent() {
           logger.warn("[App] handleExecuteCell: no kernel, attempting restart");
           const restarted = await tryStartKernel();
           if (restarted) {
-            const retry = await executeCell(cellId, { required_heads: requiredHeads });
+            const retry = await executeCell(cellId);
             if (retry.result === "error") {
               logger.error("[App] handleExecuteCell: daemon error after restart", retry.error);
             } else if (retry.result === "no_kernel") {
@@ -1138,15 +1143,7 @@ function AppContent() {
         }, 150);
       }
     },
-    [
-      sessionReady,
-      getHandle,
-      getEngine,
-      kernelStatus,
-      tryStartKernel,
-      captureExecuteTrustAction,
-      executeCell,
-    ],
+    [sessionReady, kernelStatus, tryStartKernel, captureExecuteTrustAction, executeCell],
   );
 
   const handleAddCell = useCallback(
@@ -1195,9 +1192,6 @@ function AppContent() {
     }
     runAllInFlightRef.current = true;
     try {
-      const requiredHeads = getHandle()?.get_heads_hex() ?? [];
-      getEngine()?.flush();
-
       // Start kernel via daemon if not running or awaiting trust
       if (
         kernelStatus === KERNEL_STATUS.NOT_STARTED ||
@@ -1217,7 +1211,7 @@ function AppContent() {
       }
 
       // Daemon reads cell sources from Automerge doc and queues them
-      const response = await daemonRunAllCells({ required_heads: requiredHeads });
+      const response = await daemonRunAllCells();
       if (response.result === "error") {
         logger.error("[App] handleRunAllCells: daemon error", response.error);
       } else if (response.result === "no_kernel") {
@@ -1226,15 +1220,7 @@ function AppContent() {
     } finally {
       runAllInFlightRef.current = false;
     }
-  }, [
-    sessionReady,
-    kernelStatus,
-    tryStartKernel,
-    captureRunAllTrustAction,
-    getHandle,
-    getEngine,
-    daemonRunAllCells,
-  ]);
+  }, [sessionReady, kernelStatus, tryStartKernel, captureRunAllTrustAction, daemonRunAllCells]);
 
   const handleRestartAndRunAll = useCallback(async () => {
     // The daemon clears visible outputs by moving cells to fresh execution

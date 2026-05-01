@@ -59,15 +59,21 @@ const nullLogger: SyncEngineLogger = {
 export interface NotebookClientOptions {
   transport: NotebookTransport;
   logger?: SyncEngineLogger;
+  getRequiredHeads?: () => string[];
+  flushBeforeRequiredHeadsRequest?: () => void;
 }
 
 export class NotebookClient {
   private readonly transport: NotebookTransport;
   private readonly log: SyncEngineLogger;
+  private readonly getRequiredHeads?: () => string[];
+  private readonly flushBeforeRequiredHeadsRequest?: () => void;
 
   constructor(opts: NotebookClientOptions) {
     this.transport = opts.transport;
     this.log = opts.logger ?? nullLogger;
+    this.getRequiredHeads = opts.getRequiredHeads;
+    this.flushBeforeRequiredHeadsRequest = opts.flushBeforeRequiredHeadsRequest;
   }
 
   /** Send a typed request and return the response. */
@@ -75,7 +81,16 @@ export class NotebookClient {
     request: NotebookRequest,
     options?: NotebookRequestOptions,
   ): Promise<NotebookResponse> {
-    return this.transport.sendRequest(request, options) as Promise<NotebookResponse>;
+    if (options) {
+      return this.transport.sendRequest(request, options) as Promise<NotebookResponse>;
+    }
+    return this.transport.sendRequest(request) as Promise<NotebookResponse>;
+  }
+
+  private requiredHeadsOptions(): NotebookRequestOptions | undefined {
+    const required_heads = this.getRequiredHeads?.() ?? [];
+    this.flushBeforeRequiredHeadsRequest?.();
+    return required_heads.length ? { required_heads } : undefined;
   }
 
   /** Launch a kernel via the daemon. */
@@ -99,7 +114,7 @@ export class NotebookClient {
   }
 
   /** Execute a cell (daemon reads source from synced document). */
-  async executeCell(cellId: string, options?: NotebookRequestOptions): Promise<NotebookResponse> {
+  async executeCell(cellId: string): Promise<NotebookResponse> {
     this.log.debug("[notebook-client] Executing cell:", cellId);
     try {
       return await this.sendRequest(
@@ -107,7 +122,7 @@ export class NotebookClient {
           type: "execute_cell",
           cell_id: cellId,
         },
-        options,
+        this.requiredHeadsOptions(),
       );
     } catch (e) {
       this.log.error("[notebook-client] Execute failed:", e);
@@ -197,10 +212,10 @@ export class NotebookClient {
   }
 
   /** Run all code cells (daemon reads from synced doc). */
-  async runAllCells(options?: NotebookRequestOptions): Promise<NotebookResponse> {
+  async runAllCells(): Promise<NotebookResponse> {
     this.log.debug("[notebook-client] Running all cells");
     try {
-      return await this.sendRequest({ type: "run_all_cells" }, options);
+      return await this.sendRequest({ type: "run_all_cells" }, this.requiredHeadsOptions());
     } catch (e) {
       this.log.error("[notebook-client] Run all cells failed:", e);
       throw e;
