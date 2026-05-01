@@ -81,6 +81,14 @@ export type MimeBundle = Record<string, unknown>;
  */
 let daemonCommSender: ((message: unknown) => Promise<void>) | null = null;
 
+function isLaunchErrorHandledByRuntimeBanner(error: string): boolean {
+  return (
+    error.includes("ipykernel not found in pixi.toml") ||
+    error.includes("ipykernel not found in prepared ") ||
+    error.includes("environment.yml declares conda env")
+  );
+}
+
 /**
  * Update the daemon comm sender reference.
  * Called by AppContent when daemon kernel is initialized.
@@ -944,6 +952,9 @@ function AppContent() {
         if (response.result === "error") {
           logger.error("[App] kernel launch after trust approval failed:", response.error);
           setTrustApprovalHandoffPending(false);
+          if (!isLaunchErrorHandledByRuntimeBanner(response.error)) {
+            setTrustActionNotice(response.error);
+          }
           return;
         }
         if (response.result === "guard_rejected") {

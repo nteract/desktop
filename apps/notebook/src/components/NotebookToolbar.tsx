@@ -125,6 +125,10 @@ export function NotebookToolbar({
   // has been smoothed over sub-60ms blips; every other sub-state (launching,
   // resolving, …) passes through untouched with its richer label.
   const kernelStatusText = getStatusKeyLabel(statusKey, errorReason);
+  const hasToolbarHandledIpykernelError =
+    errorReason === KERNEL_ERROR_REASON.MISSING_IPYKERNEL ||
+    errorReason === KERNEL_ERROR_REASON.DEPENDENCY_CACHE_MISSING_IPYKERNEL ||
+    errorReason === KERNEL_ERROR_REASON.IPYKERNEL_SITE_PACKAGES_MISMATCH;
   const envErrorMessage = envProgress?.error ?? null;
   const envStatusText = envProgress?.statusText ?? kernelStatusText;
   const kernelStatusDescription = envProgress?.isActive
@@ -418,6 +422,7 @@ export function NotebookToolbar({
       {runtime === "python" &&
         lifecycle.lifecycle === "Error" &&
         envSource &&
+        hasToolbarHandledIpykernelError &&
         renderIpykernelErrorPrompt({
           envSource,
           errorReason,

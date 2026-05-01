@@ -1290,6 +1290,15 @@ mod tests {
     }
 
     #[test]
+    fn free_threading_constraint_detection_is_explicit() {
+        assert!(conda_python_requests_free_threading("3.14t"));
+        assert!(conda_python_requests_free_threading(">=3.14t"));
+        assert!(conda_python_requests_free_threading(">=3.13,!=3.14t"));
+        assert!(!conda_python_requests_free_threading("3.14"));
+        assert!(!conda_python_requests_free_threading(">=3.13,<3.15"));
+    }
+
+    #[test]
     fn gil_policy_changes_cache_identity() {
         let gil_deps = CondaDependencies {
             dependencies: vec!["numpy".into()],
