@@ -1,5 +1,5 @@
 import { EditorView } from "@codemirror/view";
-import { createContext, type ReactNode, useCallback, useContext } from "react";
+import { createContext, type ReactNode, useCallback, useContext, useEffect, useRef } from "react";
 import { logger } from "../lib/logger";
 
 interface EditorRegistryContextType {
@@ -8,7 +8,72 @@ interface EditorRegistryContextType {
 
 const EditorRegistryContext = createContext<EditorRegistryContextType | null>(null);
 
+export const FOCUSED_CELL_RESNAP_DURATION_MS = 2500;
+
+type FocusedCellResnapOptions = {
+  durationMs?: number;
+};
+
+// Outputs often render after Shift-Enter navigation. Keep the newly focused
+// cell pinned briefly while the notebook DOM settles, then release manual scroll.
+export function startFocusedCellResnap(
+  cellElement: Element,
+  options: FocusedCellResnapOptions = {},
+): () => void {
+  const win = cellElement.ownerDocument.defaultView;
+  if (!win) return () => {};
+
+  let active = true;
+  let animationFrame: number | null = null;
+  let timeoutId: number | null = null;
+
+  const snapIntoView = () => {
+    if (!active || animationFrame !== null) return;
+    animationFrame = win.requestAnimationFrame(() => {
+      animationFrame = null;
+      if (!active || !cellElement.isConnected) return;
+      cellElement.scrollIntoView({ block: "nearest", behavior: "auto" });
+    });
+  };
+
+  const observedElement = cellElement.parentElement ?? cellElement;
+  const resizeObserver =
+    typeof win.ResizeObserver === "function" ? new win.ResizeObserver(snapIntoView) : null;
+  resizeObserver?.observe(observedElement);
+
+  const mutationObserver =
+    typeof win.MutationObserver === "function" ? new win.MutationObserver(snapIntoView) : null;
+  mutationObserver?.observe(observedElement, {
+    childList: true,
+    subtree: true,
+  });
+
+  const cleanup = () => {
+    active = false;
+    if (animationFrame !== null) {
+      win.cancelAnimationFrame(animationFrame);
+      animationFrame = null;
+    }
+    if (timeoutId !== null) {
+      win.clearTimeout(timeoutId);
+      timeoutId = null;
+    }
+    resizeObserver?.disconnect();
+    mutationObserver?.disconnect();
+  };
+
+  timeoutId = win.setTimeout(cleanup, options.durationMs ?? FOCUSED_CELL_RESNAP_DURATION_MS);
+
+  return cleanup;
+}
+
 export function EditorRegistryProvider({ children }: { children: ReactNode }) {
+  const stopFocusedCellResnapRef = useRef<(() => void) | null>(null);
+
+  useEffect(() => {
+    return () => stopFocusedCellResnapRef.current?.();
+  }, []);
+
   // Focus a cell's editor using DOM lookup - bypasses registration timing issues
   const focusCell = useCallback((cellId: string, cursorPosition: "start" | "end") => {
     // Find the cell element by data attribute
@@ -17,6 +82,9 @@ export function EditorRegistryProvider({ children }: { children: ReactNode }) {
       logger.warn(`[cell-nav] Cell element not found: ${cellId.slice(0, 8)}`);
       return;
     }
+
+    stopFocusedCellResnapRef.current?.();
+    stopFocusedCellResnapRef.current = startFocusedCellResnap(cellElement);
 
     // Scroll the cell container into the notebook viewport
     cellElement.scrollIntoView({ block: "nearest", behavior: "smooth" });
