@@ -150,6 +150,9 @@ const BRAND_COLORS = {
   },
 };
 
+const IDLE_POOL_POLL_ATTEMPTS = 10;
+const WARMING_POOL_POLL_ATTEMPTS = 180;
+
 /**
  * First-launch onboarding screen with paged wizard.
  *
@@ -168,7 +171,6 @@ export default function App() {
   ]);
   const [daemonReady, setDaemonReady] = useState(false);
   const [daemonFailed, setDaemonFailed] = useState(false);
-  const [poolReady, setPoolReady] = useState(false);
   const [setupComplete, setSetupComplete] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -182,7 +184,15 @@ export default function App() {
         setDaemonReady(true);
         setDaemonFailed(false);
         setSteps((prev) =>
-          prev.map((s) => (s.id === "daemon" ? { ...s, status: "completed" } : s)),
+          prev.map((s) => {
+            if (s.id === "daemon") {
+              return { ...s, status: "completed" };
+            }
+            if (s.id === "tools" && s.status !== "completed") {
+              return { ...s, label: "Checking environments", status: "in_progress" };
+            }
+            return s;
+          }),
         );
         setErrorMessage(null);
       } else if (status.status === "failed") {
@@ -221,30 +231,72 @@ export default function App() {
     };
   }, []);
 
-  // Poll for pool readiness once daemon is ready
+  // Poll for pool readiness once daemon is ready. The pool is useful progress
+  // detail, but first-run onboarding should not block on prewarming: a ready
+  // daemon can create notebooks and launch kernels while environments continue
+  // warming in the background.
   useEffect(() => {
-    if (!daemonReady || poolReady) return;
+    if (!daemonReady) return;
 
     setSteps((prev) => prev.map((s) => (s.id === "tools" ? { ...s, status: "in_progress" } : s)));
 
     let cancelled = false;
+    let attempts = 0;
     const pollPool = async () => {
       while (!cancelled) {
+        attempts += 1;
         try {
           const state = await invoke<{
-            uv: { available: number };
-            conda: { available: number };
+            uv: { available: number; warming: number };
+            conda: { available: number; warming: number };
+            pixi: { available: number; warming: number };
           }>("get_pool_status");
 
-          if (state.uv.available > 0 || state.conda.available > 0) {
-            setPoolReady(true);
+          const available = state.uv.available + state.conda.available + state.pixi.available;
+          const warming = state.uv.warming + state.conda.warming + state.pixi.warming;
+
+          if (available > 0) {
             setSteps((prev) =>
-              prev.map((s) => (s.id === "tools" ? { ...s, status: "completed" } : s)),
+              prev.map((s) =>
+                s.id === "tools" ? { ...s, label: "Environments ready", status: "completed" } : s,
+              ),
+            );
+            return;
+          }
+
+          if (warming > 0) {
+            setSteps((prev) =>
+              prev.map((s) =>
+                s.id === "tools"
+                  ? { ...s, label: "Warming environments", status: "in_progress" }
+                  : s,
+              ),
+            );
+            if (attempts >= WARMING_POOL_POLL_ATTEMPTS) {
+              setSteps((prev) =>
+                prev.map((s) =>
+                  s.id === "tools" ? { ...s, label: "Runtime ready", status: "completed" } : s,
+                ),
+              );
+              return;
+            }
+          } else if (attempts >= IDLE_POOL_POLL_ATTEMPTS) {
+            setSteps((prev) =>
+              prev.map((s) =>
+                s.id === "tools" ? { ...s, label: "Runtime ready", status: "completed" } : s,
+              ),
             );
             return;
           }
         } catch {
-          // Pool not ready yet
+          if (attempts >= IDLE_POOL_POLL_ATTEMPTS) {
+            setSteps((prev) =>
+              prev.map((s) =>
+                s.id === "tools" ? { ...s, label: "Runtime ready", status: "completed" } : s,
+              ),
+            );
+            return;
+          }
         }
         await new Promise((resolve) => setTimeout(resolve, 1000));
       }
@@ -254,7 +306,7 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [daemonReady, poolReady]);
+  }, [daemonReady]);
 
   // Handle runtime selection
   const handleRuntimeSelect = useCallback((selected: Runtime) => {
@@ -286,7 +338,7 @@ export default function App() {
   const handleChoice = useCallback(
     async (telemetryEnabled: boolean) => {
       if (!runtime || !pythonEnv) return;
-      if (!daemonReady || !poolReady) return;
+      if (!daemonReady) return;
       if (isSubmitting) return;
       setIsSubmitting(true);
 
@@ -332,7 +384,7 @@ export default function App() {
         setErrorMessage("Failed to save settings. Please try again.");
       }
     },
-    [daemonReady, poolReady, runtime, pythonEnv, isSubmitting],
+    [daemonReady, runtime, pythonEnv, isSubmitting],
   );
 
   // Fallback path when the daemon failed to install. Still records the
@@ -363,12 +415,7 @@ export default function App() {
   const progressPercent = (completedSteps / totalSteps) * 100;
 
   const canProceed =
-    page === 2 &&
-    runtime !== null &&
-    pythonEnv !== null &&
-    daemonReady &&
-    poolReady &&
-    !setupComplete;
+    page === 2 && runtime !== null && pythonEnv !== null && daemonReady && !setupComplete;
 
   // Page titles based on selections
   const page2Title = runtime === "deno" ? "Ok but if you did use Python..." : "Python Environment";
