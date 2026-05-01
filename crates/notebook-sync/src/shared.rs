@@ -38,15 +38,23 @@ pub struct SharedDocState {
 
 impl SharedDocState {
     /// Create a new shared state with the given document and notebook ID.
-    pub fn new(doc: AutoCommit, notebook_id: String) -> Self {
-        Self {
+    pub fn try_new(
+        doc: AutoCommit,
+        notebook_id: String,
+    ) -> Result<Self, runtime_doc::RuntimeStateError> {
+        Ok(Self {
             doc,
             peer_state: sync::State::new(),
             notebook_id,
             presence: PresenceState::new(),
-            state_doc: RuntimeStateDoc::new_empty(),
+            state_doc: RuntimeStateDoc::try_new_empty()?,
             state_peer_state: sync::State::new(),
-        }
+        })
+    }
+
+    pub fn new(doc: AutoCommit, notebook_id: String) -> Self {
+        Self::try_new(doc, notebook_id)
+            .unwrap_or_else(|err| panic!("create bootstrap runtime state doc: {err}"))
     }
 
     /// Get a reference to the notebook ID.

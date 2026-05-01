@@ -2048,7 +2048,7 @@ impl Daemon {
                             None => (uuid::Uuid::new_v4(), Some(canonical)),
                         }
                     };
-                    crate::notebook_sync_server::get_or_create_room(
+                    crate::notebook_sync_server::get_or_create_room_result(
                         &self.notebook_rooms,
                         &self.path_index,
                         ns_uuid,
@@ -2060,7 +2060,7 @@ impl Daemon {
                             trusted_packages: self.trusted_packages.clone(),
                         },
                     )
-                    .await
+                    .await?
                 };
                 self.mark_rooms_ever_seen();
                 let (reader, writer) = tokio::io::split(stream);
@@ -2347,7 +2347,7 @@ impl Daemon {
             } else {
                 let uuid = uuid::Uuid::new_v4();
                 let path = Some(canonical_path.clone());
-                crate::notebook_sync_server::get_or_create_room(
+                crate::notebook_sync_server::get_or_create_room_result(
                     &self.notebook_rooms,
                     &self.path_index,
                     uuid,
@@ -2359,7 +2359,7 @@ impl Daemon {
                         trusted_packages: self.trusted_packages.clone(),
                     },
                 )
-                .await
+                .await?
             }
         };
         self.mark_rooms_ever_seen();
@@ -2533,7 +2533,7 @@ impl Daemon {
         // always a UUID (new room) or an existing UUID (session restore).
         let docs_dir = self.config.notebook_docs_dir.clone();
         let uuid = uuid::Uuid::parse_str(&notebook_id).unwrap_or_else(|_| uuid::Uuid::new_v4());
-        let room = crate::notebook_sync_server::get_or_create_room(
+        let room = crate::notebook_sync_server::get_or_create_room_result(
             &self.notebook_rooms,
             &self.path_index,
             uuid,
@@ -2545,7 +2545,7 @@ impl Daemon {
                 trusted_packages: self.trusted_packages.clone(),
             },
         )
-        .await;
+        .await?;
         self.mark_rooms_ever_seen();
 
         // Populate the room's doc with the empty notebook content — but only if the
