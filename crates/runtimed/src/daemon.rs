@@ -339,6 +339,50 @@ fn parse_uv_error(stderr: &str) -> Option<PackageInstallError> {
     None
 }
 
+fn uv_pip_install_args(python_path: &Path, packages: &[String], offline: bool) -> Vec<String> {
+    let mut args = vec![
+        "pip".to_string(),
+        "install".to_string(),
+        "--link-mode".to_string(),
+        "hardlink".to_string(),
+        "--python".to_string(),
+        python_path.to_string_lossy().to_string(),
+    ];
+    if offline {
+        args.push("--offline".to_string());
+    }
+    args.extend(packages.iter().cloned());
+    args
+}
+
+const UV_OFFLINE_INSTALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+const UV_ONLINE_INSTALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(180);
+
+enum UvInstallAttempt {
+    Completed(std::process::Output),
+    SpawnError(std::io::Error),
+    Timeout,
+}
+
+async fn run_uv_pip_install(
+    uv_path: &Path,
+    install_args: &[String],
+    timeout: std::time::Duration,
+) -> UvInstallAttempt {
+    let mut command = tokio::process::Command::new(uv_path);
+    command
+        .args(install_args)
+        .kill_on_drop(true)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    match tokio::time::timeout(timeout, command.output()).await {
+        Ok(Ok(output)) => UvInstallAttempt::Completed(output),
+        Ok(Err(e)) => UvInstallAttempt::SpawnError(e),
+        Err(_) => UvInstallAttempt::Timeout,
+    }
+}
+
 /// Outcome of a warmup script execution.
 enum WarmupOutcome {
     /// Warmup succeeded — environment is ready.
@@ -5055,33 +5099,50 @@ impl Daemon {
         };
         let install_packages = uv_prewarmed_packages(&user_default_packages);
 
-        // Install packages (180 second timeout)
-        // Use hardlink mode to share files from uv's global cache,
-        // dramatically reducing per-env disk usage. uv falls back to
-        // copies automatically if hardlinks aren't supported.
-        let mut install_args = vec![
-            "pip".to_string(),
-            "install".to_string(),
-            "--link-mode".to_string(),
-            "hardlink".to_string(),
-            "--python".to_string(),
-            python_path.to_string_lossy().to_string(),
-        ];
-        install_args.extend(install_packages.clone());
-
-        let install_result = tokio::time::timeout(
-            std::time::Duration::from_secs(180),
-            tokio::process::Command::new(&uv_path)
-                .args(&install_args)
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
-                .output(),
+        // Install packages (180 second timeout per attempt). Try uv's cache
+        // first so offline users with cached wheels do not take the network
+        // path just to warm a background pool entry.
+        let offline_install_args = uv_pip_install_args(&python_path, &install_packages, true);
+        let install_result = match run_uv_pip_install(
+            &uv_path,
+            &offline_install_args,
+            UV_OFFLINE_INSTALL_TIMEOUT,
         )
-        .await;
+        .await
+        {
+            UvInstallAttempt::Completed(output) if output.status.success() => {
+                info!("[runtimed] UV packages installed from local cache (offline mode)");
+                UvInstallAttempt::Completed(output)
+            }
+            UvInstallAttempt::Completed(output) => {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                info!(
+                    "[runtimed] UV offline install missed cache, falling back to network-capable install: {}",
+                    stderr.lines().take(3).collect::<Vec<_>>().join(" ")
+                );
+                let install_args = uv_pip_install_args(&python_path, &install_packages, false);
+                run_uv_pip_install(&uv_path, &install_args, UV_ONLINE_INSTALL_TIMEOUT).await
+            }
+            UvInstallAttempt::SpawnError(e) => {
+                warn!(
+                    "[runtimed] Failed to run uv offline install, falling back to network-capable install: {}",
+                    e
+                );
+                let install_args = uv_pip_install_args(&python_path, &install_packages, false);
+                run_uv_pip_install(&uv_path, &install_args, UV_ONLINE_INSTALL_TIMEOUT).await
+            }
+            UvInstallAttempt::Timeout => {
+                warn!(
+                    "[runtimed] UV offline install timed out, falling back to network-capable install"
+                );
+                let install_args = uv_pip_install_args(&python_path, &install_packages, false);
+                run_uv_pip_install(&uv_path, &install_args, UV_ONLINE_INSTALL_TIMEOUT).await
+            }
+        };
 
         match install_result {
-            Ok(Ok(output)) if output.status.success() => {}
-            Ok(Ok(output)) => {
+            UvInstallAttempt::Completed(output) if output.status.success() => {}
+            UvInstallAttempt::Completed(output) => {
                 let stderr = String::from_utf8_lossy(&output.stderr);
                 let parsed_error = parse_uv_error(&stderr);
 
@@ -5122,7 +5183,7 @@ impl Daemon {
                 guard.fail_with(parsed_error).await;
                 return;
             }
-            Ok(Err(e)) => {
+            UvInstallAttempt::SpawnError(e) => {
                 error!("[runtimed] Failed to run uv pip install: {}", e);
                 tokio::fs::remove_dir_all(&venv_path).await.ok();
                 guard
@@ -5134,7 +5195,7 @@ impl Daemon {
                     .await;
                 return;
             }
-            Err(_) => {
+            UvInstallAttempt::Timeout => {
                 error!("[runtimed] Timeout installing packages (180s)");
                 tokio::fs::remove_dir_all(&venv_path).await.ok();
                 guard
@@ -6194,6 +6255,53 @@ mod tests {
 
         let result = parse_uv_error(stderr);
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_uv_pip_install_args_offline_first_shape() {
+        let packages = vec!["ipykernel".to_string(), "ipywidgets".to_string()];
+        let args = uv_pip_install_args(Path::new("/tmp/env/bin/python"), &packages, true);
+
+        assert_eq!(
+            args,
+            vec![
+                "pip",
+                "install",
+                "--link-mode",
+                "hardlink",
+                "--python",
+                "/tmp/env/bin/python",
+                "--offline",
+                "ipykernel",
+                "ipywidgets",
+            ]
+        );
+    }
+
+    #[test]
+    fn test_uv_pip_install_args_online_fallback_shape() {
+        let packages = vec!["ipykernel".to_string(), "ipywidgets".to_string()];
+        let args = uv_pip_install_args(Path::new("/tmp/env/bin/python"), &packages, false);
+
+        assert_eq!(
+            args,
+            vec![
+                "pip",
+                "install",
+                "--link-mode",
+                "hardlink",
+                "--python",
+                "/tmp/env/bin/python",
+                "ipykernel",
+                "ipywidgets",
+            ]
+        );
+        assert!(!args.iter().any(|arg| arg == "--offline"));
+    }
+
+    #[test]
+    fn test_uv_offline_probe_has_shorter_timeout_than_online_fallback() {
+        assert!(UV_OFFLINE_INSTALL_TIMEOUT < UV_ONLINE_INSTALL_TIMEOUT);
     }
 
     #[test]
