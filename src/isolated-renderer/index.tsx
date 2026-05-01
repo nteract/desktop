@@ -198,7 +198,8 @@ type MessageHandler = (type: string, payload: unknown) => void;
 
 let messageHandler: MessageHandler | null = null;
 
-const LAYOUT_PULSE_DELAYS_MS = [0, 32, 96, 192, 384, 768, 1200];
+const LAYOUT_PULSE_DELAYS_MS = [0, 160, 600];
+let layoutPulseTimers: number[] = [];
 
 function pulseRendererLayout(): void {
   window.dispatchEvent(new Event("resize"));
@@ -215,10 +216,15 @@ function pulseRendererLayout(): void {
 }
 
 function scheduleRendererLayoutPulses(): void {
+  for (const timer of layoutPulseTimers) {
+    window.clearTimeout(timer);
+  }
+  layoutPulseTimers = [];
   for (const delay of LAYOUT_PULSE_DELAYS_MS) {
-    window.setTimeout(() => {
+    const timer = window.setTimeout(() => {
       requestAnimationFrame(pulseRendererLayout);
     }, delay);
+    layoutPulseTimers.push(timer);
   }
 }
 

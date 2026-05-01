@@ -376,7 +376,7 @@ function NotebookViewContent({
   // renderCell (and remounting widget iframes) on structural changes.
   const cellIdsRef = useRef(cellIds);
   cellIdsRef.current = cellIds;
-  const { focusCell, resnapCell } = useEditorRegistry();
+  const { cancelResnapCell, focusCell, resnapCell } = useEditorRegistry();
 
   // Track full materializations for cross-cell derived state
   const materializeVersion = useMaterializeVersion();
@@ -537,6 +537,46 @@ function NotebookViewContent({
       executionResnapUntilRef.current = Date.now() + 2000;
     }
   }, [executingCellIds]);
+
+  const cancelExecutionResnap = useCallback(() => {
+    if (executionResnapUntilRef.current === 0) return;
+    executionResnapUntilRef.current = 0;
+    cancelResnapCell();
+  }, [cancelResnapCell]);
+
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      const target = event.target as Element | null;
+      if (
+        target?.closest(".cm-content") ||
+        target instanceof HTMLInputElement ||
+        target instanceof HTMLTextAreaElement ||
+        target?.getAttribute("contenteditable") === "true"
+      ) {
+        return;
+      }
+      if (
+        event.key === "PageUp" ||
+        event.key === "PageDown" ||
+        event.key === "Home" ||
+        event.key === "End"
+      ) {
+        cancelExecutionResnap();
+      }
+    };
+
+    container.addEventListener("wheel", cancelExecutionResnap, { passive: true });
+    container.addEventListener("touchmove", cancelExecutionResnap, { passive: true });
+    window.addEventListener("keydown", handleKeyDown, true);
+    return () => {
+      container.removeEventListener("wheel", cancelExecutionResnap);
+      container.removeEventListener("touchmove", cancelExecutionResnap);
+      window.removeEventListener("keydown", handleKeyDown, true);
+    };
+  }, [cancelExecutionResnap]);
 
   useEffect(() => {
     if (!focusedCellId || outputsVersion === 0) return;
