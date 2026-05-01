@@ -82,8 +82,10 @@
 //! ```
 
 use automerge::{
-    sync, sync::SyncDoc, transaction::Transactable, ActorId, AutoCommit, AutomergeError, ObjId,
-    ObjType, ReadDoc, ScalarValue, Value, ROOT,
+    sync,
+    sync::SyncDoc,
+    transaction::{CommitOptions, Transactable},
+    ActorId, AutoCommit, AutomergeError, ObjId, ObjType, ReadDoc, ScalarValue, Value, ROOT,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -331,6 +333,8 @@ impl RuntimeState {
 
 use crate::RuntimeStateError;
 
+const RUNTIME_STATE_SCHEMA_SEED_ACTOR: &str = "nteract:runtime-state-schema:v1";
+
 // ── RuntimeStateDoc ─────────────────────────────────────────────────
 
 /// Per-notebook ephemeral Automerge document for runtime state.
@@ -344,214 +348,50 @@ pub struct RuntimeStateDoc {
 impl RuntimeStateDoc {
     /// Create a new `RuntimeStateDoc` for the **daemon** with schema scaffolded.
     ///
-    /// Sets a deterministic actor ID (`"runtimed:state"`) and scaffolds the
-    /// full schema so that all keys exist before the first sync round.
-    /// Clients must use [`Self::new_empty()`] instead to avoid
-    /// `DuplicateSeqNumber` conflicts from a second doc with the same actor.
+    /// Starts from the canonical runtime-state schema seed so every peer has
+    /// the same root object IDs before the first sync round, then switches to
+    /// the daemon actor for live runtime-state writes.
     #[allow(clippy::expect_used, clippy::new_without_default)]
     pub fn new() -> Self {
-        let mut doc = AutoCommit::new();
+        let mut doc = Self::schema_seed_doc();
         doc.set_actor(ActorId::from(b"runtimed:state" as &[u8]));
-
-        // kernel/
-        let kernel = doc
-            .put_object(&ROOT, "kernel", ObjType::Map)
-            .expect("scaffold kernel");
-        doc.put(&kernel, "name", "").expect("scaffold kernel.name");
-        doc.put(&kernel, "language", "")
-            .expect("scaffold kernel.language");
-        doc.put(&kernel, "env_source", "")
-            .expect("scaffold kernel.env_source");
-        doc.put(&kernel, "runtime_agent_id", "")
-            .expect("scaffold kernel.runtime_agent_id");
-        doc.put(&kernel, "lifecycle", "NotStarted")
-            .expect("scaffold kernel.lifecycle");
-        doc.put(&kernel, "activity", "")
-            .expect("scaffold kernel.activity");
-        doc.put(&kernel, "error_reason", "")
-            .expect("scaffold kernel.error_reason");
-        doc.put(&kernel, "error_details", "")
-            .expect("scaffold kernel.error_details");
-
-        // queue/
-        let queue = doc
-            .put_object(&ROOT, "queue", ObjType::Map)
-            .expect("scaffold queue");
-        doc.put(&queue, "executing", ScalarValue::Null)
-            .expect("scaffold queue.executing");
-        doc.put(&queue, "executing_execution_id", ScalarValue::Null)
-            .expect("scaffold queue.executing_execution_id");
-        doc.put_object(&queue, "queued", ObjType::List)
-            .expect("scaffold queue.queued");
-        doc.put_object(&queue, "queued_execution_ids", ObjType::List)
-            .expect("scaffold queue.queued_execution_ids");
-
-        // executions/ — keyed by execution_id, tracks lifecycle
-        doc.put_object(&ROOT, "executions", ObjType::Map)
-            .expect("scaffold executions");
-
-        // env/
-        let env = doc
-            .put_object(&ROOT, "env", ObjType::Map)
-            .expect("scaffold env");
-        doc.put(&env, "in_sync", true)
-            .expect("scaffold env.in_sync");
-        doc.put_object(&env, "added", ObjType::List)
-            .expect("scaffold env.added");
-        doc.put_object(&env, "removed", ObjType::List)
-            .expect("scaffold env.removed");
-        doc.put(&env, "channels_changed", false)
-            .expect("scaffold env.channels_changed");
-        doc.put(&env, "deno_changed", false)
-            .expect("scaffold env.deno_changed");
-        doc.put_object(&env, "prewarmed_packages", ObjType::List)
-            .expect("scaffold env.prewarmed_packages");
-        doc.put(&env, "progress", ScalarValue::Null)
-            .expect("scaffold env.progress");
-
-        // trust/
-        let trust = doc
-            .put_object(&ROOT, "trust", ObjType::Map)
-            .expect("scaffold trust");
-        doc.put(&trust, "status", "no_dependencies")
-            .expect("scaffold trust.status");
-        doc.put(&trust, "needs_approval", false)
-            .expect("scaffold trust.needs_approval");
-        doc.put_object(&trust, "approved_uv_dependencies", ObjType::List)
-            .expect("scaffold trust.approved_uv_dependencies");
-        doc.put_object(&trust, "approved_conda_dependencies", ObjType::List)
-            .expect("scaffold trust.approved_conda_dependencies");
-        doc.put_object(&trust, "approved_pixi_dependencies", ObjType::List)
-            .expect("scaffold trust.approved_pixi_dependencies");
-        doc.put_object(&trust, "approved_pixi_pypi_dependencies", ObjType::List)
-            .expect("scaffold trust.approved_pixi_pypi_dependencies");
-
-        // project_context/ — daemon-observed project-file context
-        scaffold_project_context(&mut doc);
-
-        // comms/ — keyed by comm_id, tracks widget state
-        doc.put_object(&ROOT, "comms", ObjType::Map)
-            .expect("scaffold comms");
-
-        // display_index/ — Map<display_id, List<Str>> for O(1) display_id lookup
-        doc.put_object(&ROOT, "display_index", ObjType::Map)
-            .expect("scaffold display_index");
-
-        // last_saved
-        doc.put(&ROOT, "last_saved", ScalarValue::Null)
-            .expect("scaffold last_saved");
-
-        // path — the notebook's .ipynb path; null for untitled
-        doc.put(&ROOT, "path", ScalarValue::Null)
-            .expect("scaffold path");
-
         Self { doc }
     }
 
     /// Create a new `RuntimeStateDoc` with scaffolding and a custom actor.
     ///
     /// Used by the runtime agent to create its own doc with a unique actor
-    /// that won't conflict with the coordinator's `"runtimed:state"` actor.
-    /// The schema is identical — all scaffolding ops use the custom actor.
+    /// for runtime-agent-authored writes. The schema scaffold remains the
+    /// canonical seed history shared with the coordinator and frontend.
     #[allow(clippy::expect_used)]
     pub fn new_with_actor(actor_label: &str) -> Self {
-        let mut doc = AutoCommit::new();
+        let mut doc = Self::schema_seed_doc();
         doc.set_actor(ActorId::from(actor_label.as_bytes()));
-
-        // Identical scaffolding as new(), but with a different actor
-        let kernel = doc
-            .put_object(&ROOT, "kernel", ObjType::Map)
-            .expect("scaffold kernel");
-        doc.put(&kernel, "name", "").expect("scaffold kernel.name");
-        doc.put(&kernel, "language", "")
-            .expect("scaffold kernel.language");
-        doc.put(&kernel, "env_source", "")
-            .expect("scaffold kernel.env_source");
-        doc.put(&kernel, "runtime_agent_id", "")
-            .expect("scaffold kernel.runtime_agent_id");
-        doc.put(&kernel, "lifecycle", "NotStarted")
-            .expect("scaffold kernel.lifecycle");
-        doc.put(&kernel, "activity", "")
-            .expect("scaffold kernel.activity");
-        doc.put(&kernel, "error_reason", "")
-            .expect("scaffold kernel.error_reason");
-        doc.put(&kernel, "error_details", "")
-            .expect("scaffold kernel.error_details");
-
-        let queue = doc
-            .put_object(&ROOT, "queue", ObjType::Map)
-            .expect("scaffold queue");
-        doc.put(&queue, "executing", automerge::ScalarValue::Null)
-            .expect("scaffold queue.executing");
-        doc.put(
-            &queue,
-            "executing_execution_id",
-            automerge::ScalarValue::Null,
-        )
-        .expect("scaffold queue.executing_execution_id");
-        doc.put_object(&queue, "queued", ObjType::List)
-            .expect("scaffold queue.queued");
-        doc.put_object(&queue, "queued_execution_ids", ObjType::List)
-            .expect("scaffold queue.queued_execution_ids");
-
-        doc.put_object(&ROOT, "executions", ObjType::Map)
-            .expect("scaffold executions");
-
-        let env = doc
-            .put_object(&ROOT, "env", ObjType::Map)
-            .expect("scaffold env");
-        doc.put(&env, "in_sync", true)
-            .expect("scaffold env.in_sync");
-        doc.put_object(&env, "added", ObjType::List)
-            .expect("scaffold env.added");
-        doc.put_object(&env, "removed", ObjType::List)
-            .expect("scaffold env.removed");
-        doc.put_object(&env, "prewarmed_packages", ObjType::List)
-            .expect("scaffold env.prewarmed_packages");
-        doc.put(&env, "progress", ScalarValue::Null)
-            .expect("scaffold env.progress");
-
-        let trust = doc
-            .put_object(&ROOT, "trust", ObjType::Map)
-            .expect("scaffold trust");
-        doc.put(&trust, "status", "no_dependencies")
-            .expect("scaffold trust.status");
-        doc.put(&trust, "needs_approval", false)
-            .expect("scaffold trust.needs_approval");
-        doc.put_object(&trust, "approved_uv_dependencies", ObjType::List)
-            .expect("scaffold trust.approved_uv_dependencies");
-        doc.put_object(&trust, "approved_conda_dependencies", ObjType::List)
-            .expect("scaffold trust.approved_conda_dependencies");
-        doc.put_object(&trust, "approved_pixi_dependencies", ObjType::List)
-            .expect("scaffold trust.approved_pixi_dependencies");
-        doc.put_object(&trust, "approved_pixi_pypi_dependencies", ObjType::List)
-            .expect("scaffold trust.approved_pixi_pypi_dependencies");
-
-        scaffold_project_context(&mut doc);
-
-        doc.put_object(&ROOT, "comms", ObjType::Map)
-            .expect("scaffold comms");
-        doc.put_object(&ROOT, "display_index", ObjType::Map)
-            .expect("scaffold display_index");
-        doc.put(&ROOT, "last_saved", automerge::ScalarValue::Null)
-            .expect("scaffold last_saved");
-        doc.put(&ROOT, "path", automerge::ScalarValue::Null)
-            .expect("scaffold path");
-
         Self { doc }
     }
 
-    /// Create an empty `RuntimeStateDoc` for read-only clients.
+    /// Create a bootstrap `RuntimeStateDoc` for read-only clients.
     ///
-    /// The document starts empty with a random actor ID. All state
-    /// arrives via Automerge sync from the daemon. This avoids
-    /// `DuplicateSeqNumber` conflicts that would occur if the client
-    /// scaffolded the same schema with the same actor ID as the daemon.
+    /// The document starts from the canonical schema seed, not from an empty
+    /// AutoCommit, so the first RuntimeStateSync frame can merge into the
+    /// shared root scaffold instead of replacing local encoding/actor state.
     pub fn new_empty() -> Self {
-        Self {
-            doc: AutoCommit::new(),
-            // No scaffolding — sync populates everything
-        }
+        let mut doc = Self::schema_seed_doc();
+        doc.set_actor(ActorId::random());
+        Self { doc }
+    }
+
+    #[allow(clippy::expect_used)]
+    fn schema_seed_doc() -> AutoCommit {
+        let mut doc = AutoCommit::new();
+        doc.set_actor(ActorId::from(RUNTIME_STATE_SCHEMA_SEED_ACTOR.as_bytes()));
+        scaffold_runtime_state_schema(&mut doc).expect("seed runtime state schema");
+        let _ = doc.commit_with(
+            CommitOptions::default()
+                .with_message("Seed nteract runtime state schema")
+                .with_time(0),
+        );
+        doc
     }
 
     /// Create a RuntimeStateDoc from a pre-existing Automerge document.
@@ -2413,7 +2253,7 @@ impl RuntimeStateDoc {
             })
             .unwrap_or_default();
 
-        let queue_state = queue
+        let mut queue_state = queue
             .as_ref()
             .map(|q| {
                 let executing_cid = self.read_opt_str(q, "executing");
@@ -2455,6 +2295,13 @@ impl RuntimeStateDoc {
                 map
             })
             .unwrap_or_default();
+
+        queue_state
+            .queued
+            .extend(synthesize_queued_entries_from_executions(
+                &queue_state,
+                &executions,
+            ));
 
         let env_state = env
             .as_ref()
@@ -2721,38 +2568,110 @@ impl RuntimeStateDoc {
 /// All scalar fields start empty; `state` starts at `"pending"`. The
 /// daemon is the sole writer in production; clients rely on sync to
 /// populate the real values.
-#[allow(clippy::expect_used)]
-fn scaffold_project_context(doc: &mut AutoCommit) {
-    let pc = doc
-        .put_object(&ROOT, "project_context", ObjType::Map)
-        .expect("scaffold project_context");
-    doc.put(&pc, "state", "pending")
-        .expect("scaffold project_context.state");
-    doc.put(&pc, "observed_at", "")
-        .expect("scaffold project_context.observed_at");
-    doc.put(&pc, "kind", "")
-        .expect("scaffold project_context.kind");
-    doc.put(&pc, "absolute_path", "")
-        .expect("scaffold project_context.absolute_path");
-    doc.put(&pc, "relative_to_notebook", "")
-        .expect("scaffold project_context.relative_to_notebook");
-    doc.put(&pc, "unreadable_path", "")
-        .expect("scaffold project_context.unreadable_path");
-    doc.put(&pc, "unreadable_reason", "")
-        .expect("scaffold project_context.unreadable_reason");
-    let parsed = doc
-        .put_object(&pc, "parsed", ObjType::Map)
-        .expect("scaffold project_context.parsed");
-    doc.put_object(&parsed, "dependencies", ObjType::List)
-        .expect("scaffold project_context.parsed.dependencies");
-    doc.put_object(&parsed, "dev_dependencies", ObjType::List)
-        .expect("scaffold project_context.parsed.dev_dependencies");
-    doc.put(&parsed, "requires_python", ScalarValue::Null)
-        .expect("scaffold project_context.parsed.requires_python");
-    doc.put(&parsed, "prerelease", ScalarValue::Null)
-        .expect("scaffold project_context.parsed.prerelease");
-    doc.put(&parsed, "extras", "")
-        .expect("scaffold project_context.parsed.extras");
+fn scaffold_project_context(doc: &mut AutoCommit) -> Result<(), RuntimeStateError> {
+    let pc = doc.put_object(&ROOT, "project_context", ObjType::Map)?;
+    doc.put(&pc, "state", "pending")?;
+    doc.put(&pc, "observed_at", "")?;
+    doc.put(&pc, "kind", "")?;
+    doc.put(&pc, "absolute_path", "")?;
+    doc.put(&pc, "relative_to_notebook", "")?;
+    doc.put(&pc, "unreadable_path", "")?;
+    doc.put(&pc, "unreadable_reason", "")?;
+    let parsed = doc.put_object(&pc, "parsed", ObjType::Map)?;
+    doc.put_object(&parsed, "dependencies", ObjType::List)?;
+    doc.put_object(&parsed, "dev_dependencies", ObjType::List)?;
+    doc.put(&parsed, "requires_python", ScalarValue::Null)?;
+    doc.put(&parsed, "prerelease", ScalarValue::Null)?;
+    doc.put(&parsed, "extras", "")?;
+    Ok(())
+}
+
+fn scaffold_runtime_state_schema(doc: &mut AutoCommit) -> Result<(), RuntimeStateError> {
+    let kernel = doc.put_object(&ROOT, "kernel", ObjType::Map)?;
+    doc.put(&kernel, "name", "")?;
+    doc.put(&kernel, "language", "")?;
+    doc.put(&kernel, "env_source", "")?;
+    doc.put(&kernel, "runtime_agent_id", "")?;
+    doc.put(&kernel, "lifecycle", "NotStarted")?;
+    doc.put(&kernel, "activity", "")?;
+    doc.put(&kernel, "error_reason", "")?;
+    doc.put(&kernel, "error_details", "")?;
+
+    let queue = doc.put_object(&ROOT, "queue", ObjType::Map)?;
+    doc.put(&queue, "executing", ScalarValue::Null)?;
+    doc.put(&queue, "executing_execution_id", ScalarValue::Null)?;
+    doc.put_object(&queue, "queued", ObjType::List)?;
+    doc.put_object(&queue, "queued_execution_ids", ObjType::List)?;
+
+    doc.put_object(&ROOT, "executions", ObjType::Map)?;
+
+    let env = doc.put_object(&ROOT, "env", ObjType::Map)?;
+    doc.put(&env, "in_sync", true)?;
+    doc.put_object(&env, "added", ObjType::List)?;
+    doc.put_object(&env, "removed", ObjType::List)?;
+    doc.put(&env, "channels_changed", false)?;
+    doc.put(&env, "deno_changed", false)?;
+    doc.put_object(&env, "prewarmed_packages", ObjType::List)?;
+    doc.put(&env, "progress", ScalarValue::Null)?;
+
+    let trust = doc.put_object(&ROOT, "trust", ObjType::Map)?;
+    doc.put(&trust, "status", "no_dependencies")?;
+    doc.put(&trust, "needs_approval", false)?;
+    doc.put_object(&trust, "approved_uv_dependencies", ObjType::List)?;
+    doc.put_object(&trust, "approved_conda_dependencies", ObjType::List)?;
+    doc.put_object(&trust, "approved_pixi_dependencies", ObjType::List)?;
+    doc.put_object(&trust, "approved_pixi_pypi_dependencies", ObjType::List)?;
+
+    scaffold_project_context(doc)?;
+
+    doc.put_object(&ROOT, "comms", ObjType::Map)?;
+    doc.put_object(&ROOT, "display_index", ObjType::Map)?;
+    doc.put(&ROOT, "last_saved", ScalarValue::Null)?;
+    doc.put(&ROOT, "path", ScalarValue::Null)?;
+    Ok(())
+}
+
+fn synthesize_queued_entries_from_executions(
+    queue_state: &QueueState,
+    executions: &HashMap<String, ExecutionState>,
+) -> Vec<QueueEntry> {
+    let executing_execution_id = queue_state
+        .executing
+        .as_ref()
+        .map(|entry| entry.execution_id.as_str());
+    let mut known_execution_ids: HashSet<&str> = queue_state
+        .queued
+        .iter()
+        .map(|entry| entry.execution_id.as_str())
+        .collect();
+    if let Some(eid) = executing_execution_id {
+        known_execution_ids.insert(eid);
+    }
+
+    let mut queued_from_executions: Vec<_> = executions
+        .iter()
+        .filter(|(execution_id, exec)| {
+            exec.status == "queued" && !known_execution_ids.contains(execution_id.as_str())
+        })
+        .collect();
+    queued_from_executions.sort_by(|(a_id, a), (b_id, b)| {
+        match (a.seq, b.seq) {
+            (Some(a_seq), Some(b_seq)) if a_seq != b_seq => a_seq.cmp(&b_seq),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            _ => std::cmp::Ordering::Equal,
+        }
+        .then_with(|| a_id.cmp(b_id))
+        .then_with(|| a.cell_id.cmp(&b.cell_id))
+    });
+
+    queued_from_executions
+        .into_iter()
+        .map(|(execution_id, exec)| QueueEntry {
+            cell_id: exec.cell_id.clone(),
+            execution_id: execution_id.clone(),
+        })
+        .collect()
 }
 
 /// Result of [`RuntimeStateDoc::receive_sync_and_foreign_comms`].
@@ -3179,6 +3098,42 @@ mod tests {
     }
 
     #[test]
+    fn new_empty_uses_canonical_schema_seed() {
+        let daemon = RuntimeStateDoc::new();
+        let client = RuntimeStateDoc::new_empty();
+
+        for key in [
+            "kernel",
+            "queue",
+            "executions",
+            "env",
+            "trust",
+            "project_context",
+            "comms",
+            "display_index",
+        ] {
+            assert_eq!(
+                daemon.doc().get_all(ROOT, key).unwrap_or_default().len(),
+                1,
+                "daemon should have exactly one {key} root object"
+            );
+            assert_eq!(
+                client.doc().get_all(ROOT, key).unwrap_or_default().len(),
+                1,
+                "client should have exactly one {key} root object"
+            );
+        }
+
+        let mut seeded_daemon = RuntimeStateDoc::new();
+        let mut seeded_client = RuntimeStateDoc::new_empty();
+        assert_eq!(
+            seeded_daemon.get_heads(),
+            seeded_client.get_heads(),
+            "daemon and client should start from the same seed history"
+        );
+    }
+
+    #[test]
     fn test_sync_between_two_docs() {
         let mut daemon_doc = RuntimeStateDoc::new();
         daemon_doc
@@ -3219,7 +3174,8 @@ mod tests {
             .set_last_saved(Some("2025-01-15T12:00:00Z"))
             .unwrap();
 
-        // Client uses new_empty() — random actor, no scaffolding.
+        // Client uses new_empty() — canonical schema seed, random actor,
+        // and no client-authored state writes.
         let mut client_doc = RuntimeStateDoc::new_empty();
         let mut daemon_sync = sync::State::new();
         let mut client_sync = sync::State::new();
@@ -3382,6 +3338,61 @@ mod tests {
         let queued = doc.get_queued_executions();
         assert_eq!(queued.len(), 2);
         assert_eq!(queued[0].0, "exec-2");
+    }
+
+    #[test]
+    fn read_state_projects_queued_executions_before_kernel_queue_catches_up() {
+        let mut doc = RuntimeStateDoc::new();
+        doc.create_execution_with_source("exec-2", "cell-2", "y = 2", 2)
+            .unwrap();
+        doc.create_execution_with_source("exec-1", "cell-1", "x = 1", 1)
+            .unwrap();
+
+        let state = doc.read_state();
+        assert_eq!(
+            state.queue.queued,
+            vec![
+                QueueEntry {
+                    cell_id: "cell-1".to_string(),
+                    execution_id: "exec-1".to_string(),
+                },
+                QueueEntry {
+                    cell_id: "cell-2".to_string(),
+                    execution_id: "exec-2".to_string(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn read_state_does_not_duplicate_runtime_agent_queue_entries() {
+        let mut doc = RuntimeStateDoc::new();
+        doc.create_execution_with_source("exec-1", "cell-1", "x = 1", 1)
+            .unwrap();
+        let queued = [QueueEntry {
+            cell_id: "cell-1".to_string(),
+            execution_id: "exec-1".to_string(),
+        }];
+        doc.set_queue(None, &queued).unwrap();
+
+        let state = doc.read_state();
+        assert_eq!(state.queue.queued, queued);
+    }
+
+    #[test]
+    fn read_state_does_not_duplicate_executing_entry_still_marked_queued() {
+        let mut doc = RuntimeStateDoc::new();
+        doc.create_execution_with_source("exec-1", "cell-1", "x = 1", 1)
+            .unwrap();
+        let executing = QueueEntry {
+            cell_id: "cell-1".to_string(),
+            execution_id: "exec-1".to_string(),
+        };
+        doc.set_queue(Some(&executing), &[]).unwrap();
+
+        let state = doc.read_state();
+        assert_eq!(state.queue.executing, Some(executing));
+        assert!(state.queue.queued.is_empty());
     }
 
     #[test]
@@ -5169,12 +5180,14 @@ mod tests {
     }
 
     #[test]
-    fn empty_doc_reads_as_kernel_state_default() {
+    fn bootstrap_doc_reads_as_not_started() {
         let doc = RuntimeStateDoc::new_empty();
         let s = doc.read_state().kernel;
-        assert_eq!(s, KernelState::default());
+        assert_eq!(s.status, KernelState::default().status);
+        assert_eq!(s.starting_phase, KernelState::default().starting_phase);
         assert_eq!(s.lifecycle, RuntimeLifecycle::NotStarted);
-        assert_eq!(s.error_reason, None);
+        assert_eq!(s.error_reason, Some(String::new()));
+        assert_eq!(s.error_details, Some(String::new()));
     }
 
     #[test]
@@ -5564,9 +5577,9 @@ mod tests {
     }
 
     #[test]
-    fn project_context_new_empty_is_pending_without_scaffold() {
-        // new_empty() doesn't scaffold at all. Readers should treat the
-        // missing map as Pending rather than panicking.
+    fn project_context_new_empty_is_pending_from_schema_seed() {
+        // new_empty() uses the canonical schema seed. Before the daemon
+        // writes project context, readers should treat that scaffold as Pending.
         let doc = RuntimeStateDoc::new_empty();
         assert_eq!(doc.project_context(), ProjectContext::Pending);
     }
@@ -5726,9 +5739,9 @@ mod tests {
 
     #[test]
     fn read_state_project_context_defaults_to_pending() {
-        // A freshly scaffolded doc and an un-scaffolded (new_empty) doc
-        // both report `Pending`. Nothing between the scaffold and the
-        // first daemon write should look like `Detected`.
+        // Daemon and client bootstrap docs both report `Pending`. Nothing
+        // between the scaffold and the first daemon write should look like
+        // `Detected`.
         assert_eq!(
             RuntimeStateDoc::new().read_state().project_context,
             ProjectContext::Pending
