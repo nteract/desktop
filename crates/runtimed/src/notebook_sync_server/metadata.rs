@@ -3284,6 +3284,15 @@ pub(crate) async fn auto_launch_kernel(
                     e
                 );
             }
+            // The banner stays lit until a terminal phase is written. Emit Ready so
+            // it clears whether the sync completed or we fell through to the existing env.
+            progress_handler.on_progress(
+                "conda",
+                kernel_env::EnvProgressPhase::Ready {
+                    env_path: conda_prefix.to_string_lossy().into_owned(),
+                    python_path: python_path.to_string_lossy().into_owned(),
+                },
+            );
             let env = Some(crate::PooledEnv {
                 env_type: crate::EnvType::Conda,
                 venv_path: conda_prefix,
