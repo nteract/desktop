@@ -4,6 +4,7 @@ import { logger } from "../lib/logger";
 
 interface EditorRegistryContextType {
   focusCell: (cellId: string, cursorPosition: "start" | "end") => void;
+  resnapCell: (cellId: string) => void;
 }
 
 const EditorRegistryContext = createContext<EditorRegistryContextType | null>(null);
@@ -13,6 +14,21 @@ export const FOCUSED_CELL_RESNAP_DURATION_MS = 2500;
 type FocusedCellResnapOptions = {
   durationMs?: number;
 };
+
+function pulseLayoutForCell(cellElement: Element): void {
+  const win = cellElement.ownerDocument.defaultView;
+  if (!win) return;
+
+  const scrollContainer = cellElement.closest('[data-notebook-scroll-container="true"]');
+  scrollContainer?.dispatchEvent(new Event("scroll", { bubbles: true }));
+  win.dispatchEvent(new Event("resize"));
+}
+
+function snapCellIntoView(cellElement: Element): void {
+  if (!cellElement.isConnected) return;
+  cellElement.scrollIntoView({ block: "nearest", behavior: "auto" });
+  pulseLayoutForCell(cellElement);
+}
 
 // Outputs often render after Shift-Enter navigation. Keep the newly focused
 // cell pinned briefly while the notebook DOM settles, then release manual scroll.
@@ -32,7 +48,7 @@ export function startFocusedCellResnap(
     animationFrame = win.requestAnimationFrame(() => {
       animationFrame = null;
       if (!active || !cellElement.isConnected) return;
-      cellElement.scrollIntoView({ block: "nearest", behavior: "auto" });
+      snapCellIntoView(cellElement);
     });
   };
 
@@ -74,6 +90,18 @@ export function EditorRegistryProvider({ children }: { children: ReactNode }) {
     return () => stopFocusedCellResnapRef.current?.();
   }, []);
 
+  const resnapCell = useCallback((cellId: string) => {
+    const cellElement = document.querySelector(`[data-cell-id="${CSS.escape(cellId)}"]`);
+    if (!cellElement) {
+      logger.warn(`[cell-nav] Cell element not found: ${cellId.slice(0, 8)}`);
+      return;
+    }
+
+    stopFocusedCellResnapRef.current?.();
+    stopFocusedCellResnapRef.current = startFocusedCellResnap(cellElement);
+    snapCellIntoView(cellElement);
+  }, []);
+
   // Focus a cell's editor using DOM lookup - bypasses registration timing issues
   const focusCell = useCallback((cellId: string, cursorPosition: "start" | "end") => {
     // Find the cell element by data attribute
@@ -85,6 +113,7 @@ export function EditorRegistryProvider({ children }: { children: ReactNode }) {
 
     stopFocusedCellResnapRef.current?.();
     stopFocusedCellResnapRef.current = startFocusedCellResnap(cellElement);
+    pulseLayoutForCell(cellElement);
 
     // Scroll the cell container into the notebook viewport
     cellElement.scrollIntoView({ block: "nearest", behavior: "smooth" });
@@ -115,7 +144,7 @@ export function EditorRegistryProvider({ children }: { children: ReactNode }) {
   }, []);
 
   return (
-    <EditorRegistryContext.Provider value={{ focusCell }}>
+    <EditorRegistryContext.Provider value={{ focusCell, resnapCell }}>
       {children}
     </EditorRegistryContext.Provider>
   );

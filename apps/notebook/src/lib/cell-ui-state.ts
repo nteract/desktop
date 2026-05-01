@@ -96,11 +96,19 @@ export function getFocusedCellId(): string | null {
   return _focusedCellId;
 }
 
+export function getExecutingCellIdsSnapshot(): Set<string> {
+  return _executingCellIds;
+}
+
 // ── Hooks ───────────────────────────────────────────────────────────────
 
 /** Subscribe to the focused cell ID. */
 export function useFocusedCellId(): string | null {
   return useSyncExternalStore(subscribeFocus, getFocusSnapshot);
+}
+
+export function useExecutingCellIds(): Set<string> {
+  return useSyncExternalStore(subscribeExecuting, getExecutingCellIdsSnapshot);
 }
 
 /** Returns true only when this specific cell is focused. */
@@ -181,6 +189,11 @@ export function useIsGroupExecuting(
 function subscribeFocus(cb: () => void): () => void {
   _focusSubscribers.add(cb);
   return () => _focusSubscribers.delete(cb);
+}
+
+function subscribeExecuting(cb: () => void): () => void {
+  _executingSubscribers.add(cb);
+  return () => _executingSubscribers.delete(cb);
 }
 
 function getFocusSnapshot(): string | null {

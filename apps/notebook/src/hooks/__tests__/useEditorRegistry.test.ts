@@ -52,6 +52,11 @@ describe("startFocusedCellResnap", () => {
 
   it("snaps the focused cell back into view while the DOM is settling", async () => {
     const list = document.createElement("div");
+    list.dataset.notebookScrollContainer = "true";
+    const scrollListener = vi.fn();
+    const resizeListener = vi.fn();
+    list.addEventListener("scroll", scrollListener);
+    window.addEventListener("resize", resizeListener);
     const cell = document.createElement("section");
     const scrollIntoView = vi.fn();
     cell.scrollIntoView = scrollIntoView;
@@ -67,8 +72,11 @@ describe("startFocusedCellResnap", () => {
     await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
 
     expect(scrollIntoView).toHaveBeenCalledWith({ block: "nearest", behavior: "auto" });
+    expect(scrollListener).toHaveBeenCalled();
+    expect(resizeListener).toHaveBeenCalled();
 
     cleanup();
+    window.removeEventListener("resize", resizeListener);
   });
 
   it("disconnects automatically after the resnap window closes", async () => {

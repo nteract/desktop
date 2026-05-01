@@ -24,7 +24,7 @@ import { ErrorBoundary } from "@/lib/error-boundary";
 import { cn } from "@/lib/utils";
 import { usePresenceContext } from "../contexts/PresenceContext";
 import { EditorRegistryProvider, useEditorRegistry } from "../hooks/useEditorRegistry";
-import { useFocusedCellId, useSearchCurrentMatch } from "../lib/cell-ui-state";
+import { useExecutingCellIds, useFocusedCellId, useSearchCurrentMatch } from "../lib/cell-ui-state";
 import { logger } from "../lib/logger";
 import { getNotebookCellsSnapshot, useCell, useMaterializeVersion } from "../lib/notebook-cells";
 import { getCellOutputsSnapshot, useOutputsVersion } from "../lib/notebook-outputs";
@@ -367,13 +367,16 @@ function NotebookViewContent({
 
   // Read transient UI state from the store instead of props
   const focusedCellId = useFocusedCellId();
+  const executingCellIds = useExecutingCellIds();
   const searchCurrentMatch = useSearchCurrentMatch();
+  const executionResnapUntilRef = useRef(0);
+  const previousExecutingSizeRef = useRef(executingCellIds.size);
   // Ref for cellIds so renderCell can read the latest list without
   // depending on the array identity. This prevents recreating
   // renderCell (and remounting widget iframes) on structural changes.
   const cellIdsRef = useRef(cellIds);
   cellIdsRef.current = cellIds;
-  const { focusCell } = useEditorRegistry();
+  const { focusCell, resnapCell } = useEditorRegistry();
 
   // Track full materializations for cross-cell derived state
   const materializeVersion = useMaterializeVersion();
@@ -524,6 +527,26 @@ function NotebookViewContent({
       cellEl.scrollIntoView({ block: "nearest", behavior: "smooth" });
     }
   }, [searchCurrentMatch]);
+
+  useEffect(() => {
+    const previousSize = previousExecutingSizeRef.current;
+    previousExecutingSizeRef.current = executingCellIds.size;
+    if (executingCellIds.size > 0) {
+      executionResnapUntilRef.current = Date.now() + 3500;
+    } else if (previousSize > 0) {
+      executionResnapUntilRef.current = Date.now() + 2000;
+    }
+  }, [executingCellIds]);
+
+  useEffect(() => {
+    if (!focusedCellId || outputsVersion === 0) return;
+    if (executingCellIds.size > 0) {
+      executionResnapUntilRef.current = Date.now() + 3500;
+    } else if (Date.now() > executionResnapUntilRef.current) {
+      return;
+    }
+    resnapCell(focusedCellId);
+  }, [executingCellIds, focusedCellId, outputsVersion, resnapCell]);
 
   // ── Auto-seed first cell for empty notebooks ───────────────────────
   // For new notebooks the daemon creates zero cells. Once sync completes
@@ -765,6 +788,7 @@ function NotebookViewContent({
       ref={containerRef}
       className="flex-1 overflow-y-auto overflow-x-clip overscroll-x-contain py-4 pl-8 pr-2"
       style={{ contain: "paint", overflowAnchor: "none" }}
+      data-notebook-scroll-container="true"
       data-notebook-synced={!isLoading && cellIds.length > 0}
       data-session-runtime-state={sessionRuntimeState ?? "unknown"}
       data-session-ready={sessionRuntimeState === "ready"}
