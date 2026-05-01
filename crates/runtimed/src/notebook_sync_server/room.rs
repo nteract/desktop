@@ -541,9 +541,10 @@ impl NotebookRoom {
 
         // For untitled notebooks (path is None), the persisted Automerge doc is their
         // only content record — there's no .ipynb on disk. Load it if it exists
-        // so content survives daemon restarts.
+        // so content survives daemon restarts, preserving even legacy pre-seed history.
         // For saved notebooks (path is Some), .ipynb is the source of truth, so
-        // delete stale persisted docs and start fresh (daemon loads from disk).
+        // delete stale persisted docs and start fresh from the canonical schema seed
+        // before the daemon imports file contents from disk.
         let runtimed_actor = "runtimed";
         let mut doc = if !ephemeral && path.is_none() && persist_path.exists() {
             info!(
