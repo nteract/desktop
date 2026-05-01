@@ -394,9 +394,15 @@ impl RuntimeStateDoc {
     }
 
     fn schema_seed_doc() -> Result<AutoCommit, RuntimeStateError> {
+        Self::schema_seed_doc_with(scaffold_runtime_state_schema)
+    }
+
+    fn schema_seed_doc_with(
+        scaffold: impl FnOnce(&mut AutoCommit) -> Result<(), RuntimeStateError>,
+    ) -> Result<AutoCommit, RuntimeStateError> {
         let mut doc = AutoCommit::new();
         doc.set_actor(ActorId::from(RUNTIME_STATE_SCHEMA_SEED_ACTOR.as_bytes()));
-        scaffold_runtime_state_schema(&mut doc)?;
+        scaffold(&mut doc)?;
         let _ = doc.commit_with(
             CommitOptions::default()
                 .with_message("Seed nteract runtime state schema")
@@ -2874,6 +2880,19 @@ mod tests {
         assert_eq!(state.trust.status, "no_dependencies");
         assert!(!state.trust.needs_approval);
         assert!(state.last_saved.is_none());
+    }
+
+    #[test]
+    fn schema_seed_doc_returns_scaffold_errors() {
+        let err = RuntimeStateDoc::schema_seed_doc_with(|_| {
+            Err(RuntimeStateError::MissingScaffold("injected"))
+        })
+        .unwrap_err();
+
+        assert!(matches!(
+            err,
+            RuntimeStateError::MissingScaffold("injected")
+        ));
     }
 
     #[test]
