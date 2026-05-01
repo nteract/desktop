@@ -259,13 +259,19 @@ export default function App() {
       while (!cancelled) {
         attempts += 1;
         try {
-          const state = await invoke<{
-            uv: { available: number; warming: number };
-            conda: { available: number; warming: number };
-            pixi: { available: number; warming: number };
-          }>("get_pool_status");
+          const state = await invoke<
+            Partial<
+              Record<
+                PythonEnv,
+                {
+                  available: number;
+                  warming: number;
+                }
+              >
+            >
+          >("get_pool_status");
 
-          const selected = state[pythonEnv];
+          const selected = state[pythonEnv] ?? { available: 0, warming: 0 };
           const available = selected.available;
           const warming = selected.warming;
 
