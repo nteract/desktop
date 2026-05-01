@@ -270,7 +270,8 @@ export function useDaemonKernel({
   );
 
   const executeCell = useCallback(
-    (cellId: string) => client.executeCell(cellId) as Promise<NotebookResponse>,
+    (cellId: string, options?: { required_heads?: string[] }) =>
+      client.executeCell(cellId, options) as Promise<NotebookResponse>,
     [client],
   );
 
@@ -302,7 +303,8 @@ export function useDaemonKernel({
   );
 
   const runAllCells = useCallback(
-    () => client.runAllCells() as Promise<NotebookResponse>,
+    (options?: { required_heads?: string[] }) =>
+      client.runAllCells(options) as Promise<NotebookResponse>,
     [client],
   );
 

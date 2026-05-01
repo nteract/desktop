@@ -89,6 +89,7 @@ pub enum SyncCommand {
     /// Send a request to the daemon and wait for a response.
     SendRequest {
         request: NotebookRequest,
+        required_heads: Vec<String>,
         reply: oneshot::Sender<Result<NotebookResponse, SyncError>>,
         /// Optional broadcast sender for delivering broadcasts during long-running
         /// requests (e.g., LaunchKernel with environment progress updates).
@@ -407,10 +408,11 @@ impl SyncReactor {
         match cmd {
             SyncCommand::SendRequest {
                 request,
+                required_heads,
                 reply,
                 broadcast_tx,
             } => {
-                self.register_request(writer, request, reply, broadcast_tx)
+                self.register_request(writer, request, required_heads, reply, broadcast_tx)
                     .await;
             }
 
@@ -803,6 +805,7 @@ impl SyncReactor {
         &mut self,
         writer: &mut W,
         request: NotebookRequest,
+        required_heads: Vec<String>,
         reply: oneshot::Sender<Result<NotebookResponse, SyncError>>,
         broadcast_tx: Option<broadcast::Sender<NotebookBroadcast>>,
     ) {
@@ -810,6 +813,7 @@ impl SyncReactor {
         let deadline = Instant::now() + crate::relay_task::request_timeout(&request);
         let envelope = NotebookRequestEnvelope {
             id: Some(id.clone()),
+            required_heads,
             request,
         };
 
@@ -1784,6 +1788,7 @@ mod tests {
             let mut reader = connection::FramedReader::spawn(BufReader::new(server_read), 64);
             let mut writer = BufWriter::new(server_write);
             let mut ids = Vec::new();
+            let mut required_heads = Vec::new();
 
             while ids.len() < 2 {
                 let frame = timeout(Duration::from_secs(15), reader.recv())
@@ -1796,8 +1801,13 @@ mod tests {
                 }
                 let envelope: NotebookRequestEnvelope =
                     serde_json::from_slice(&frame.payload).expect("request envelope");
+                required_heads.push(envelope.required_heads);
                 ids.push(envelope.id.expect("request id"));
             }
+            assert!(required_heads.iter().any(Vec::is_empty));
+            assert!(required_heads
+                .iter()
+                .any(|heads| heads == &vec!["b".repeat(64)]));
 
             send_typed_json_frame(
                 &mut writer,
@@ -1839,7 +1849,8 @@ mod tests {
         let (progress_tx, mut progress_rx) = broadcast::channel(8);
         let first =
             handle.send_request_with_broadcast(NotebookRequest::GetDocBytes {}, progress_tx);
-        let second = handle.send_request(NotebookRequest::GetDocBytes {});
+        let second =
+            handle.send_request_after_heads(NotebookRequest::GetDocBytes {}, vec!["b".repeat(64)]);
 
         let (first_response, second_response) = tokio::join!(first, second);
         let first_response = first_response.expect("first response");

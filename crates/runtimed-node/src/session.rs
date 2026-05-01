@@ -659,11 +659,14 @@ async fn queue_existing_cell(state: &Arc<Mutex<SessionState>>, cell_id: &str) ->
             .ok_or_else(|| Error::from_reason("Not connected"))?
             .clone()
     };
-    handle.confirm_sync().await.map_err(to_napi_err)?;
+    let required_heads = handle.current_heads_hex().map_err(to_napi_err)?;
     let response = handle
-        .send_request(NotebookRequest::ExecuteCell {
-            cell_id: cell_id.to_string(),
-        })
+        .send_request_after_heads(
+            NotebookRequest::ExecuteCell {
+                cell_id: cell_id.to_string(),
+            },
+            required_heads,
+        )
         .await
         .map_err(to_napi_err)?;
     match response {

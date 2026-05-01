@@ -56,6 +56,11 @@ export function sendPresenceFrame(
 /** Callback for receiving inbound frames from the daemon. */
 export type FrameListener = (payload: number[]) => void;
 
+export interface NotebookRequestOptions {
+  /** Causal precondition: daemon must have these notebook heads before handling. */
+  required_heads?: string[];
+}
+
 /**
  * Pluggable connection layer between SyncEngine and the daemon.
  *
@@ -90,7 +95,7 @@ export interface NotebookTransport {
    * - WebSocketTransport: serializes as frame type 0x01 with correlation ID
    * - DirectTransport: delegates to a configurable handler
    */
-  sendRequest(request: unknown): Promise<unknown>;
+  sendRequest(request: unknown, options?: NotebookRequestOptions): Promise<unknown>;
 
   /** Whether the transport is currently connected. */
   readonly connected: boolean;

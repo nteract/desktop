@@ -9,7 +9,7 @@
  */
 
 import type { SyncEngineLogger } from "./sync-engine";
-import type { NotebookTransport } from "./transport";
+import type { NotebookRequestOptions, NotebookTransport } from "./transport";
 import type {
   CommRequestMessage,
   CompletionItem,
@@ -71,8 +71,11 @@ export class NotebookClient {
   }
 
   /** Send a typed request and return the response. */
-  async sendRequest(request: NotebookRequest): Promise<NotebookResponse> {
-    return this.transport.sendRequest(request) as Promise<NotebookResponse>;
+  async sendRequest(
+    request: NotebookRequest,
+    options?: NotebookRequestOptions,
+  ): Promise<NotebookResponse> {
+    return this.transport.sendRequest(request, options) as Promise<NotebookResponse>;
   }
 
   /** Launch a kernel via the daemon. */
@@ -96,13 +99,16 @@ export class NotebookClient {
   }
 
   /** Execute a cell (daemon reads source from synced document). */
-  async executeCell(cellId: string): Promise<NotebookResponse> {
+  async executeCell(cellId: string, options?: NotebookRequestOptions): Promise<NotebookResponse> {
     this.log.debug("[notebook-client] Executing cell:", cellId);
     try {
-      return await this.sendRequest({
-        type: "execute_cell",
-        cell_id: cellId,
-      });
+      return await this.sendRequest(
+        {
+          type: "execute_cell",
+          cell_id: cellId,
+        },
+        options,
+      );
     } catch (e) {
       this.log.error("[notebook-client] Execute failed:", e);
       throw e;
@@ -191,10 +197,10 @@ export class NotebookClient {
   }
 
   /** Run all code cells (daemon reads from synced doc). */
-  async runAllCells(): Promise<NotebookResponse> {
+  async runAllCells(options?: NotebookRequestOptions): Promise<NotebookResponse> {
     this.log.debug("[notebook-client] Running all cells");
     try {
-      return await this.sendRequest({ type: "run_all_cells" });
+      return await this.sendRequest({ type: "run_all_cells" }, options);
     } catch (e) {
       this.log.error("[notebook-client] Run all cells failed:", e);
       throw e;

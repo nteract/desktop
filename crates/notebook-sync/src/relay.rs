@@ -37,6 +37,7 @@ pub enum RelayCommand {
     SendRequest {
         id: String,
         request: NotebookRequest,
+        required_heads: Vec<String>,
         reply: oneshot::Sender<Result<NotebookResponse, SyncError>>,
         /// Optional broadcast sender for delivering broadcasts during long-running
         /// requests (e.g., LaunchKernel with environment progress updates).
@@ -133,7 +134,7 @@ impl RelayHandle {
         &self,
         request: NotebookRequest,
     ) -> Result<NotebookResponse, SyncError> {
-        self.send_request_inner(request, None).await
+        self.send_request_inner(request, Vec::new(), None).await
     }
 
     /// Send a request with a broadcast channel for real-time progress updates.
@@ -146,12 +147,14 @@ impl RelayHandle {
         request: NotebookRequest,
         broadcast_tx: broadcast::Sender<NotebookBroadcast>,
     ) -> Result<NotebookResponse, SyncError> {
-        self.send_request_inner(request, Some(broadcast_tx)).await
+        self.send_request_inner(request, Vec::new(), Some(broadcast_tx))
+            .await
     }
 
     async fn send_request_inner(
         &self,
         request: NotebookRequest,
+        required_heads: Vec<String>,
         broadcast_tx: Option<broadcast::Sender<NotebookBroadcast>>,
     ) -> Result<NotebookResponse, SyncError> {
         let timeout = crate::relay_task::request_timeout(&request);
@@ -164,6 +167,7 @@ impl RelayHandle {
             .send(RelayCommand::SendRequest {
                 id: id.clone(),
                 request,
+                required_heads,
                 reply: reply_tx,
                 broadcast_tx,
             })

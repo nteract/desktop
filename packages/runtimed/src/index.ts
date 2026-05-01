@@ -10,7 +10,7 @@ export { SyncEngine } from "./sync-engine";
 export type { SyncEngineOptions, SyncEngineLogger } from "./sync-engine";
 
 // Transport
-export type { NotebookTransport, FrameListener } from "./transport";
+export type { FrameListener, NotebookRequestOptions, NotebookTransport } from "./transport";
 export {
   FrameType,
   sendAutomergeSyncFrame,

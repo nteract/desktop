@@ -1097,13 +1097,8 @@ function AppContent() {
       executingCellsRef.current.add(cellId);
 
       try {
-        // Flush pending source sync so daemon has latest code before executing.
-        // flushAndWait() guarantees any in-flight debounced flush has landed,
-        // then sends remaining changes and awaits delivery.
-        if (!(await flushSync())) {
-          logger.warn("[App] handleExecuteCell: source sync failed, skipping");
-          return;
-        }
+        const requiredHeads = getHandle()?.get_heads_hex() ?? [];
+        getEngine()?.flush();
 
         // Starting a fresh execution updates the cell's execution_id pointer,
         // and output rendering follows that pointer.
@@ -1118,7 +1113,7 @@ function AppContent() {
           // For startup races (e.g. daemon already auto-starting), still try execute.
           if (!started && pendingKernelStartRef.current) return;
         }
-        const response = await executeCell(cellId);
+        const response = await executeCell(cellId, { required_heads: requiredHeads });
         if (response.result === "error") {
           logger.error("[App] handleExecuteCell: daemon error", response.error);
         } else if (response.result === "no_kernel") {
@@ -1126,7 +1121,7 @@ function AppContent() {
           logger.warn("[App] handleExecuteCell: no kernel, attempting restart");
           const restarted = await tryStartKernel();
           if (restarted) {
-            const retry = await executeCell(cellId);
+            const retry = await executeCell(cellId, { required_heads: requiredHeads });
             if (retry.result === "error") {
               logger.error("[App] handleExecuteCell: daemon error after restart", retry.error);
             } else if (retry.result === "no_kernel") {
@@ -1143,7 +1138,15 @@ function AppContent() {
         }, 150);
       }
     },
-    [sessionReady, flushSync, kernelStatus, tryStartKernel, captureExecuteTrustAction, executeCell],
+    [
+      sessionReady,
+      getHandle,
+      getEngine,
+      kernelStatus,
+      tryStartKernel,
+      captureExecuteTrustAction,
+      executeCell,
+    ],
   );
 
   const handleAddCell = useCallback(
@@ -1192,11 +1195,8 @@ function AppContent() {
     }
     runAllInFlightRef.current = true;
     try {
-      // Flush pending source sync so daemon has latest code
-      if (!(await flushSync())) {
-        logger.warn("[App] handleRunAllCells: source sync failed, skipping");
-        return;
-      }
+      const requiredHeads = getHandle()?.get_heads_hex() ?? [];
+      getEngine()?.flush();
 
       // Start kernel via daemon if not running or awaiting trust
       if (
@@ -1217,7 +1217,7 @@ function AppContent() {
       }
 
       // Daemon reads cell sources from Automerge doc and queues them
-      const response = await daemonRunAllCells();
+      const response = await daemonRunAllCells({ required_heads: requiredHeads });
       if (response.result === "error") {
         logger.error("[App] handleRunAllCells: daemon error", response.error);
       } else if (response.result === "no_kernel") {
@@ -1231,7 +1231,8 @@ function AppContent() {
     kernelStatus,
     tryStartKernel,
     captureRunAllTrustAction,
-    flushSync,
+    getHandle,
+    getEngine,
     daemonRunAllCells,
   ]);
 

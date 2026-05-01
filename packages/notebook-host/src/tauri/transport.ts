@@ -19,6 +19,7 @@ import {
   FrameType,
   type FrameListener,
   type NotebookRequest,
+  type NotebookRequestOptions,
   type NotebookResponse,
   type NotebookTransport,
 } from "runtimed";
@@ -113,7 +114,7 @@ export class TauriTransport implements NotebookTransport {
     return unlisten;
   }
 
-  async sendRequest(request: unknown): Promise<unknown> {
+  async sendRequest(request: unknown, options?: NotebookRequestOptions): Promise<unknown> {
     const req = request as NotebookRequest;
     const id = crypto.randomUUID();
 
@@ -123,7 +124,12 @@ export class TauriTransport implements NotebookTransport {
     // TS uses `type:` as the discriminator internally, so translate on
     // the way out.
     const { type, ...rest } = req as { type: string } & Record<string, unknown>;
-    const envelope = { id, action: type, ...rest };
+    const envelope = {
+      id,
+      ...(options?.required_heads?.length ? { required_heads: options.required_heads } : {}),
+      action: type,
+      ...rest,
+    };
     const payload = new TextEncoder().encode(JSON.stringify(envelope));
 
     const timeoutMs = requestTimeoutMs(req);
