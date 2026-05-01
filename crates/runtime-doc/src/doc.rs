@@ -2704,13 +2704,13 @@ fn synthesize_queued_entries_from_executions(
         .collect();
     queued_from_executions.sort_by(|(a_id, a), (b_id, b)| {
         match (a.seq, b.seq) {
-            (Some(a_seq), Some(b_seq)) => a_seq.cmp(&b_seq),
+            (Some(a_seq), Some(b_seq)) if a_seq != b_seq => a_seq.cmp(&b_seq),
             (Some(_), None) => std::cmp::Ordering::Less,
             (None, Some(_)) => std::cmp::Ordering::Greater,
-            (None, None) => a_id.cmp(b_id),
+            _ => std::cmp::Ordering::Equal,
         }
-        .then_with(|| a.cell_id.cmp(&b.cell_id))
         .then_with(|| a_id.cmp(b_id))
+        .then_with(|| a.cell_id.cmp(&b.cell_id))
     });
 
     queue_state.queued.extend(
@@ -3176,9 +3176,9 @@ mod tests {
         let mut seeded_daemon = RuntimeStateDoc::new();
         let mut seeded_client = RuntimeStateDoc::new_empty();
         assert_eq!(
-            seeded_daemon.get_heads().first().copied(),
-            seeded_client.get_heads().first().copied(),
-            "daemon and client should start from the same seed change"
+            seeded_daemon.get_heads(),
+            seeded_client.get_heads(),
+            "daemon and client should start from the same seed history"
         );
     }
 
