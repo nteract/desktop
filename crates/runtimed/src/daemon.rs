@@ -386,7 +386,9 @@ struct Pool {
 const MIN_WARM_BASES: usize = 2;
 
 fn package_name(dep: &str) -> &str {
-    dep.trim()
+    let trimmed = dep.trim();
+    let after_channel = trimmed.rsplit("::").next().unwrap_or(trimmed);
+    after_channel
         .split(['<', '>', '=', '!', '~', '[', ';', ' '])
         .next()
         .unwrap_or("")
@@ -5168,11 +5170,47 @@ impl Daemon {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use notebook_protocol::protocol::FeatureFlags;
     use std::path::PathBuf;
     use tempfile::TempDir;
 
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
+
+    fn bootstrap_dx_flags() -> FeatureFlags {
+        FeatureFlags { bootstrap_dx: true }
+    }
+
+    #[test]
+    fn test_package_name_strips_conda_channel_qualifier() {
+        assert_eq!(package_name("conda-forge::pyarrow>=14"), "pyarrow");
+        assert_eq!(package_name("defaults::PyArrow"), "PyArrow");
+        assert_eq!(package_name("pyarrow >= 15"), "pyarrow");
+    }
+
+    #[test]
+    fn test_uv_prewarmed_packages_adds_pyarrow_for_bootstrap_dx() {
+        assert!(uv_prewarmed_packages(&[], FeatureFlags::default())
+            .iter()
+            .all(|pkg| !package_name(pkg).eq_ignore_ascii_case("pyarrow")));
+
+        let packages = uv_prewarmed_packages(&[], bootstrap_dx_flags());
+        assert!(packages.iter().any(|pkg| pkg == "pyarrow>=14"));
+    }
+
+    #[test]
+    fn test_conda_prewarmed_packages_does_not_duplicate_channel_qualified_pyarrow() {
+        let packages = conda_prewarmed_packages(
+            &["conda-forge::pyarrow>=15".to_string()],
+            bootstrap_dx_flags(),
+        );
+        let pyarrow_count = packages
+            .iter()
+            .filter(|pkg| package_name(pkg).eq_ignore_ascii_case("pyarrow"))
+            .count();
+        assert_eq!(pyarrow_count, 1);
+        assert!(!packages.iter().any(|pkg| pkg == "pyarrow>=14"));
+    }
 
     #[cfg(unix)]
     #[tokio::test]

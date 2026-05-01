@@ -2246,9 +2246,8 @@ pub(crate) async fn try_uv_pool_for_inline_deps(
     room: &NotebookRoom,
     progress_handler: std::sync::Arc<dyn kernel_env::ProgressHandler>,
 ) -> Result<(crate::PooledEnv, Vec<String>), ()> {
-    // `inline_deps_with_bootstrap` is a shim since 0.2.0 — launcher
-    // vendoring replaced the `dx` PyPI install, so effective == inline.
-    // Kept so the call sites don't all have to shift on the same PR.
+    // `inline_deps_with_bootstrap` adds the bootstrap-only parquet encoder
+    // while keeping the launcher package itself vendored by the daemon.
     let effective_deps = crate::inline_env::inline_deps_with_bootstrap(deps, bootstrap_dx);
 
     // Quick pre-check: if any dep has version specifiers, skip pool entirely

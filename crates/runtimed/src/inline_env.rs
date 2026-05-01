@@ -152,9 +152,7 @@ pub(crate) fn inline_cache_dir() -> std::path::PathBuf {
 
 fn has_dep_named(deps: &[String], name: &str) -> bool {
     deps.iter()
-        .filter_map(|dep| {
-            split_bare_and_constraint(dep).map(|(bare, _)| normalize_package_name(bare))
-        })
+        .filter_map(|dep| extract_conda_package_name(dep).map(normalize_package_name))
         .any(|bare| bare == name)
 }
 
@@ -1033,6 +1031,12 @@ mod tests {
     #[test]
     fn test_inline_deps_with_bootstrap_does_not_duplicate_pyarrow() {
         let deps = vec!["pandas".to_string(), "PyArrow>=15".to_string()];
+        assert_eq!(inline_deps_with_bootstrap(&deps, true), deps);
+    }
+
+    #[test]
+    fn test_inline_deps_with_bootstrap_does_not_duplicate_channel_qualified_pyarrow() {
+        let deps = vec!["pandas".to_string(), "conda-forge::pyarrow>=15".to_string()];
         assert_eq!(inline_deps_with_bootstrap(&deps, true), deps);
     }
 
