@@ -7,6 +7,7 @@ This is a map. Subsystem details live in `contributing/`, auto-loaded rules live
 Codex-specific repo skills live in `.codex/skills/`. Prefer them when the task matches:
 - `nteract-daemon-dev` for per-worktree daemon lifecycle, socket setup, and daemon-backed verification
 - `nteract-python-bindings` for `maturin develop`, venv selection, and MCP server work
+- `nteract-automerge-protocol` for Automerge semantics, sync state, typed frame protocol, storage boundaries, and samod/subduction-informed protocol design
 - `nteract-notebook-sync` for Automerge ownership, output manifests, and sync-path changes
 - `nteract-testing` for choosing and running the right verification path
 
