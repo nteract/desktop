@@ -662,12 +662,20 @@ impl Pool {
         retired
     }
 
+    fn retired_paths_if_available_at_target(&mut self) -> Vec<PathBuf> {
+        if self.available.len() >= self.target {
+            self.retired_paths.drain().collect()
+        } else {
+            Vec::new()
+        }
+    }
+
     fn retire_path(&mut self, path: PathBuf) {
         self.retired_paths.insert(pool_env_root(&path));
     }
 
     fn retire_path_if_fallback_needed(&mut self, path: PathBuf) -> bool {
-        if self.available.len() + self.retired_paths.len() < self.target {
+        if self.available.len() + self.retired_paths.len() + self.warming < self.target {
             self.retire_path(path);
             true
         } else {
@@ -4032,10 +4040,11 @@ impl Daemon {
                 (target, pkgs)
             };
 
-            let (retired_count, deficit, should_retry, backoff_info) = {
+            let (retired_count, retired_to_delete, deficit, should_retry, backoff_info) = {
                 let mut pool = self.uv_pool.lock().await;
                 pool.set_target(target);
                 let retired = pool.retire_mismatched_packages(&expected_packages);
+                let retired_to_delete = pool.retired_paths_if_available_at_target();
                 let d = pool.deficit();
                 let retry = pool.should_retry();
                 let info = if pool.failure_state.consecutive_failures > 0 {
@@ -4052,7 +4061,7 @@ impl Daemon {
                 if d > 0 && retry {
                     pool.mark_warming(d);
                 }
-                (retired, d, retry, info)
+                (retired, retired_to_delete, d, retry, info)
             };
 
             if retired_count > 0 {
@@ -4064,6 +4073,9 @@ impl Daemon {
                 // see ghost entries while the pool is in backoff or waiting
                 // for the next warm tick.
                 self.update_pool_doc().await;
+            }
+            if !retired_to_delete.is_empty() {
+                spawn_env_deletions(retired_to_delete);
             }
 
             if deficit > 0 {
@@ -4135,10 +4147,11 @@ impl Daemon {
                 (target, pkgs)
             };
 
-            let (retired_count, deficit, should_retry, backoff_info) = {
+            let (retired_count, retired_to_delete, deficit, should_retry, backoff_info) = {
                 let mut pool = self.conda_pool.lock().await;
                 pool.set_target(target);
                 let retired = pool.retire_mismatched_packages(&expected_packages);
+                let retired_to_delete = pool.retired_paths_if_available_at_target();
                 let d = pool.deficit();
                 let retry = pool.should_retry();
                 let info = if pool.failure_state.consecutive_failures > 0 {
@@ -4155,7 +4168,7 @@ impl Daemon {
                 if d > 0 && retry {
                     pool.mark_warming(d);
                 }
-                (retired, d, retry, info)
+                (retired, retired_to_delete, d, retry, info)
             };
 
             if retired_count > 0 {
@@ -4164,6 +4177,9 @@ impl Daemon {
                     retired_count
                 );
                 self.update_pool_doc().await;
+            }
+            if !retired_to_delete.is_empty() {
+                spawn_env_deletions(retired_to_delete);
             }
 
             if deficit > 0 {
@@ -4245,10 +4261,11 @@ impl Daemon {
                 (target, pkgs)
             };
 
-            let (retired_count, deficit, should_retry, backoff_info) = {
+            let (retired_count, retired_to_delete, deficit, should_retry, backoff_info) = {
                 let mut pool = self.pixi_pool.lock().await;
                 pool.set_target(target);
                 let retired = pool.retire_mismatched_packages(&expected_packages);
+                let retired_to_delete = pool.retired_paths_if_available_at_target();
                 let d = pool.deficit();
                 let retry = pool.should_retry();
                 let info = if pool.failure_state.consecutive_failures > 0 {
@@ -4265,7 +4282,7 @@ impl Daemon {
                 if d > 0 && retry {
                     pool.mark_warming(d);
                 }
-                (retired, d, retry, info)
+                (retired, retired_to_delete, d, retry, info)
             };
 
             if retired_count > 0 {
@@ -4274,6 +4291,9 @@ impl Daemon {
                     retired_count
                 );
                 self.update_pool_doc().await;
+            }
+            if !retired_to_delete.is_empty() {
+                spawn_env_deletions(retired_to_delete);
             }
 
             if deficit > 0 {
@@ -6712,6 +6732,25 @@ mod tests {
     }
 
     #[test]
+    fn test_retired_paths_if_available_at_target_drains_target_zero() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut pool = Pool::new(2, 3600);
+        let retired_a = temp_dir.path().join("runtimed-uv-retired-a");
+        let retired_b = temp_dir.path().join("runtimed-uv-retired-b");
+        pool.retire_path(retired_a.clone());
+        pool.retire_path(retired_b.clone());
+        pool.set_target(0);
+
+        let retired = pool.retired_paths_if_available_at_target();
+
+        let retired_set: std::collections::HashSet<_> = retired.into_iter().collect();
+        assert_eq!(retired_set.len(), 2);
+        assert!(retired_set.contains(&retired_a));
+        assert!(retired_set.contains(&retired_b));
+        assert!(pool.retired_paths.is_empty());
+    }
+
+    #[test]
     fn test_warming_failure_keeps_retired_paths_tracked() {
         let temp_dir = TempDir::new().unwrap();
         let mut pool = Pool::new(1, 3600);
@@ -6781,6 +6820,34 @@ mod tests {
 
         let pool = daemon.uv_pool.lock().await;
         assert_eq!(pool.available.len(), 1);
+        assert!(pool.retired_paths.is_empty());
+    }
+
+    #[tokio::test]
+    async fn find_existing_environments_recovers_pixi_matching_package_hash() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = DaemonConfig {
+            pixi_pool_size: 1,
+            ..lease_test_config(&temp_dir)
+        };
+        std::fs::create_dir_all(&config.cache_dir).unwrap();
+        let project_dir = config.cache_dir.join("runtimed-pixi-matching");
+        let venv_path = project_dir.join(".pixi").join("envs").join("default");
+        let python_path = venv_path.join("bin").join("python");
+        std::fs::create_dir_all(python_path.parent().unwrap()).unwrap();
+        std::fs::write(&python_path, "").unwrap();
+        std::fs::write(venv_path.join(".warmed"), "").unwrap();
+        let expected = pixi_prewarmed_packages(&[]);
+        write_pool_package_hash(&project_dir, EnvType::Pixi, &expected)
+            .await
+            .unwrap();
+
+        let daemon = Daemon::new(config).unwrap();
+        daemon.find_existing_environments().await;
+
+        let pool = daemon.pixi_pool.lock().await;
+        assert_eq!(pool.available.len(), 1);
+        assert_eq!(pool.available.front().unwrap().env.venv_path, venv_path);
         assert!(pool.retired_paths.is_empty());
     }
 
