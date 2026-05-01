@@ -198,6 +198,36 @@ type MessageHandler = (type: string, payload: unknown) => void;
 
 let messageHandler: MessageHandler | null = null;
 
+const LAYOUT_PULSE_DELAYS_MS = [0, 160, 600];
+let layoutPulseTimers: number[] = [];
+
+function pulseRendererLayout(): void {
+  window.dispatchEvent(new Event("resize"));
+  window.dispatchEvent(new Event("scroll"));
+  document.dispatchEvent(new Event("scroll"));
+  document.body?.dispatchEvent(new Event("scroll"));
+  window.parent.postMessage(
+    {
+      type: "resize",
+      payload: { height: document.body.scrollHeight },
+    },
+    "*",
+  );
+}
+
+function scheduleRendererLayoutPulses(): void {
+  for (const timer of layoutPulseTimers) {
+    window.clearTimeout(timer);
+  }
+  layoutPulseTimers = [];
+  for (const delay of LAYOUT_PULSE_DELAYS_MS) {
+    const timer = window.setTimeout(() => {
+      requestAnimationFrame(pulseRendererLayout);
+    }, delay);
+    layoutPulseTimers.push(timer);
+  }
+}
+
 function setupMessageListener() {
   // Create JSON-RPC transport — handles nteract/* methods from the host
   rpcTransport = new JsonRpcTransport(window.parent, window.parent);
@@ -297,6 +327,7 @@ function IsolatedRendererApp() {
             "*",
           );
         });
+        scheduleRendererLayoutPulses();
         break;
       }
 
@@ -324,6 +355,7 @@ function IsolatedRendererApp() {
             "*",
           );
         });
+        scheduleRendererLayoutPulses();
         break;
       }
 
@@ -338,6 +370,7 @@ function IsolatedRendererApp() {
             "*",
           );
         });
+        scheduleRendererLayoutPulses();
         break;
 
       case "theme": {
