@@ -34,7 +34,7 @@ import { CodeCell } from "./CodeCell";
 import { MarkdownCell } from "./MarkdownCell";
 import { RawCell } from "./RawCell";
 
-type AddCellResult = NotebookCell | null | void;
+type AddCellResult = NotebookCell | null;
 type AddCellHandler = (type: "code" | "markdown", afterCellId?: string | null) => AddCellResult;
 
 interface NotebookViewProps {
