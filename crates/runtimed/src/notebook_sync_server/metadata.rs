@@ -168,6 +168,15 @@ pub(crate) fn get_inline_conda_channels(snapshot: &NotebookMetadataSnapshot) -> 
     vec!["conda-forge".to_string()]
 }
 
+/// Extract the optional Python version constraint from inline Conda metadata.
+pub(crate) fn get_inline_conda_python(snapshot: &NotebookMetadataSnapshot) -> Option<String> {
+    snapshot
+        .runt
+        .conda
+        .as_ref()
+        .and_then(|conda| conda.python.clone())
+}
+
 /// Extract dependency entries from a pixi.toml or pyproject.toml with [tool.pixi].
 ///
 /// Section-aware: only collects `key = value` lines from `[dependencies]`,
@@ -2363,6 +2372,7 @@ pub(crate) async fn try_uv_pool_for_inline_deps(
 pub(crate) async fn try_conda_pool_for_inline_deps(
     deps: &[String],
     channels: &[String],
+    python: Option<&str>,
     daemon: &std::sync::Arc<crate::daemon::Daemon>,
     room: &NotebookRoom,
     progress_handler: std::sync::Arc<dyn kernel_env::ProgressHandler>,
@@ -2377,6 +2387,11 @@ pub(crate) async fn try_conda_pool_for_inline_deps(
             "[notebook-sync] Conda inline deps use non-default channels {:?}, skipping pool reuse",
             channels
         );
+        return Err(());
+    }
+
+    if python.is_some() {
+        debug!("[notebook-sync] Conda inline deps pin Python, skipping pool reuse");
         return Err(());
     }
 
@@ -2412,8 +2427,10 @@ pub(crate) async fn try_conda_pool_for_inline_deps(
             // restart cache-hits. See #2089 / #2083. The claim is
             // best-effort, so install runtime ownership before releasing
             // the lease (see try_uv_pool_for_inline_deps for rationale).
-            crate::inline_env::claim_pool_env_for_conda_inline_cache(&mut env, deps, channels)
-                .await;
+            crate::inline_env::claim_pool_env_for_conda_inline_cache(
+                &mut env, deps, channels, None,
+            )
+            .await;
             {
                 let mut ep = room.runtime_agent_env_path.write().await;
                 *ep = Some(env.venv_path.clone());
@@ -2456,7 +2473,7 @@ pub(crate) async fn try_conda_pool_for_inline_deps(
                     // caveat as the Subset arm — install runtime
                     // ownership before releasing.
                     crate::inline_env::claim_pool_env_for_conda_inline_cache(
-                        &mut env, deps, channels,
+                        &mut env, deps, channels, None,
                     )
                     .await;
                     {
@@ -3060,9 +3077,13 @@ pub(crate) async fn auto_launch_kernel(
                 .as_ref()
                 .map(get_inline_conda_channels)
                 .unwrap_or_else(|| vec!["conda-forge".to_string()]);
+            let python = metadata_snapshot.as_ref().and_then(get_inline_conda_python);
+            let python = python.as_deref();
 
             // Fast path: check inline env cache first (instant on hit)
-            if let Some(cached) = crate::inline_env::check_conda_inline_cache(&deps, &channels) {
+            if let Some(cached) =
+                crate::inline_env::check_conda_inline_cache(&deps, &channels, python)
+            {
                 info!(
                     "[notebook-sync] Conda inline cache hit at {:?}",
                     cached.python_path
@@ -3079,6 +3100,7 @@ pub(crate) async fn auto_launch_kernel(
                 match try_conda_pool_for_inline_deps(
                     &deps,
                     &channels,
+                    python,
                     &daemon,
                     room,
                     progress_handler.clone(),
@@ -3099,6 +3121,7 @@ pub(crate) async fn auto_launch_kernel(
                         match crate::inline_env::prepare_conda_inline_env(
                             &deps,
                             &channels,
+                            python,
                             progress_handler.clone(),
                         )
                         .await
@@ -3379,11 +3402,17 @@ pub(crate) async fn auto_launch_kernel(
             | EnvSource::Pep723(PackageManager::Uv)
     ) {
         if let Some(ref env) = pooled_env {
-            if !kernel_env::venv_has_ipykernel(&env.python_path) {
+            let diagnostic = kernel_env::diagnose_ipykernel(&env.python_path);
+            if !diagnostic.is_present() {
                 warn!(
-                    "[notebook-sync] prepared env at {:?} ({}) is missing ipykernel — cannot launch kernel",
+                    "[notebook-sync] prepared env at {:?} ({}) cannot import ipykernel: {:?}",
                     env.venv_path,
-                    env_source.as_str()
+                    env_source.as_str(),
+                    diagnostic
+                );
+                let (reason, details) = crate::ipykernel_error::classify_ipykernel_diagnostic(
+                    &diagnostic,
+                    env_source.as_str(),
                 );
                 // Don't delete the env dir here: it's a content-addressed
                 // cache shared with any other notebook using the same
@@ -3396,9 +3425,10 @@ pub(crate) async fn auto_launch_kernel(
                 // error and let the user edit deps to bump the hash.
                 let env_source_label = env_source.as_str().to_string();
                 if let Err(e) = room.state.with_doc(|sd| {
-                    sd.set_lifecycle_with_error(
+                    sd.set_lifecycle_with_error_details(
                         &RuntimeLifecycle::Error,
-                        Some(KernelErrorReason::MissingIpykernel),
+                        Some(reason),
+                        Some(&details),
                     )?;
                     sd.set_kernel_info("python", "python", &env_source_label)?;
                     Ok(())

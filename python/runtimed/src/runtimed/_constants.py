@@ -22,7 +22,12 @@ from typing import Final, Literal
 #: Typed error-reason strings on ``kernel.error_reason``. Mirrors
 #: ``KernelErrorReason::as_str()`` in the Rust ``runtime_doc`` crate and
 #: ``KERNEL_ERROR_REASON`` in the TypeScript ``@runtimed`` package.
-KernelErrorReasonKey = Literal["missing_ipykernel", "conda_env_yml_missing"]
+KernelErrorReasonKey = Literal[
+    "missing_ipykernel",
+    "dependency_cache_missing_ipykernel",
+    "ipykernel_site_packages_mismatch",
+    "conda_env_yml_missing",
+]
 
 
 class KERNEL_ERROR_REASON:
@@ -35,6 +40,12 @@ class KERNEL_ERROR_REASON:
     """
 
     MISSING_IPYKERNEL: Final[KernelErrorReasonKey] = "missing_ipykernel"
+    DEPENDENCY_CACHE_MISSING_IPYKERNEL: Final[KernelErrorReasonKey] = (
+        "dependency_cache_missing_ipykernel"
+    )
+    IPYKERNEL_SITE_PACKAGES_MISMATCH: Final[KernelErrorReasonKey] = (
+        "ipykernel_site_packages_mismatch"
+    )
     #: environment.yml declares a conda env that isn't built on this
     #: machine. Daemon sets this instead of silently falling back to a
     #: pool env so the frontend can render a specific "build your env"

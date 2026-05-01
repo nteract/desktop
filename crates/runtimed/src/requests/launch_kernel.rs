@@ -19,7 +19,7 @@ use crate::notebook_sync_server::{
     acquire_prewarmed_env_with_capture, build_launched_config, captured_env_for_runtime,
     captured_env_source_override, check_and_broadcast_sync_state, check_inline_deps,
     extract_pixi_toml_deps, format_conda_env_yml_build_details, get_inline_conda_channels,
-    get_inline_conda_deps, get_inline_uv_deps, get_inline_uv_prerelease,
+    get_inline_conda_deps, get_inline_conda_python, get_inline_uv_deps, get_inline_uv_prerelease,
     missing_conda_env_yml_decision, project_environment_build_approved,
     promote_inline_deps_to_project, publish_kernel_state_presence, reset_starting_state,
     reset_starting_state_with_outcome, resolve_metadata_snapshot,
@@ -810,9 +810,13 @@ pub(crate) async fn handle(
                 .as_ref()
                 .map(get_inline_conda_channels)
                 .unwrap_or_else(|| vec!["conda-forge".to_string()]);
+            let python = metadata_snapshot.as_ref().and_then(get_inline_conda_python);
+            let python = python.as_deref();
 
             // Fast path: check inline env cache first (instant on hit)
-            if let Some(cached) = crate::inline_env::check_conda_inline_cache(&deps, &channels) {
+            if let Some(cached) =
+                crate::inline_env::check_conda_inline_cache(&deps, &channels, python)
+            {
                 info!(
                     "[notebook-sync] LaunchKernel: Conda inline cache hit at {:?}",
                     cached.python_path
@@ -829,6 +833,7 @@ pub(crate) async fn handle(
                 match try_conda_pool_for_inline_deps(
                     &deps,
                     &channels,
+                    python,
                     daemon,
                     room,
                     launch_progress_handler.clone(),
@@ -849,6 +854,7 @@ pub(crate) async fn handle(
                         match crate::inline_env::prepare_conda_inline_env(
                             &deps,
                             &channels,
+                            python,
                             launch_progress_handler.clone(),
                         )
                         .await
@@ -1146,11 +1152,17 @@ pub(crate) async fn handle(
             | EnvSource::Pep723(PackageManager::Uv)
     ) {
         if let Some(ref env) = pooled_env {
-            if !kernel_env::venv_has_ipykernel(&env.python_path) {
+            let diagnostic = kernel_env::diagnose_ipykernel(&env.python_path);
+            if !diagnostic.is_present() {
                 warn!(
-                    "[launch-kernel] prepared env at {:?} ({}) is missing ipykernel — cannot launch kernel",
+                    "[launch-kernel] prepared env at {:?} ({}) cannot import ipykernel: {:?}",
                     env.venv_path,
-                    parsed_resolved.as_str()
+                    parsed_resolved.as_str(),
+                    diagnostic
+                );
+                let (reason, details) = crate::ipykernel_error::classify_ipykernel_diagnostic(
+                    &diagnostic,
+                    parsed_resolved.as_str(),
                 );
                 // Don't delete the env dir: for inline/pep723 it's a
                 // content-addressed cache shared across notebooks and
@@ -1172,9 +1184,10 @@ pub(crate) async fn handle(
                 reset_starting_state(room, None).await;
                 let env_source_label = parsed_resolved.as_str().to_string();
                 if let Err(e) = room.state.with_doc(|sd| {
-                    sd.set_lifecycle_with_error(
+                    sd.set_lifecycle_with_error_details(
                         &RuntimeLifecycle::Error,
-                        Some(KernelErrorReason::MissingIpykernel),
+                        Some(reason),
+                        Some(&details),
                     )?;
                     sd.set_kernel_info("python", "python", &env_source_label)?;
                     Ok(())

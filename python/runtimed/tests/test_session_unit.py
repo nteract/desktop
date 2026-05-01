@@ -244,6 +244,20 @@ class TestKernelErrorReasonConstants:
         """``CONDA_ENV_YML_MISSING`` matches the Rust enum's wire string."""
         assert runtimed.KERNEL_ERROR_REASON.CONDA_ENV_YML_MISSING == "conda_env_yml_missing"
 
+    def test_dependency_cache_missing_ipykernel_value(self):
+        """``DEPENDENCY_CACHE_MISSING_IPYKERNEL`` matches the Rust enum's wire string."""
+        assert (
+            runtimed.KERNEL_ERROR_REASON.DEPENDENCY_CACHE_MISSING_IPYKERNEL
+            == "dependency_cache_missing_ipykernel"
+        )
+
+    def test_ipykernel_site_packages_mismatch_value(self):
+        """``IPYKERNEL_SITE_PACKAGES_MISMATCH`` matches the Rust enum's wire string."""
+        assert (
+            runtimed.KERNEL_ERROR_REASON.IPYKERNEL_SITE_PACKAGES_MISMATCH
+            == "ipykernel_site_packages_mismatch"
+        )
+
 
 class TestCreateNotebookValidation:
     """Test create_notebook working_dir validation on NativeAsyncClient."""

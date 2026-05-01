@@ -201,6 +201,7 @@ pub async fn prepare_uv_inline_env(
 pub async fn prepare_conda_inline_env(
     deps: &[String],
     channels: &[String],
+    python: Option<&str>,
     handler: Arc<dyn ProgressHandler>,
 ) -> Result<PreparedEnv> {
     let conda_deps = kernel_env::CondaDependencies {
@@ -210,7 +211,7 @@ pub async fn prepare_conda_inline_env(
         } else {
             channels.to_vec()
         },
-        python: None,
+        python: python.map(str::to_string),
         env_id: None,
     };
 
@@ -257,6 +258,7 @@ pub async fn claim_pool_env_for_conda_inline_cache(
     env: &mut crate::PooledEnv,
     deps: &[String],
     channels: &[String],
+    python: Option<&str>,
 ) {
     let dependencies = inline_deps_with_required_packages(deps);
     let conda_deps = kernel_env::CondaDependencies {
@@ -266,7 +268,7 @@ pub async fn claim_pool_env_for_conda_inline_cache(
         } else {
             channels.to_vec()
         },
-        python: None,
+        python: python.map(str::to_string),
         env_id: None,
     };
     let hash = kernel_env::conda::compute_env_hash(&conda_deps);
@@ -610,7 +612,11 @@ pub async fn check_uv_inline_cache(
 /// every requested package has a corresponding `conda-meta/` record.  A
 /// stale cache entry (e.g. created by a buggy build that dropped packages)
 /// is treated as a miss and removed so the next code path can rebuild it.
-pub fn check_conda_inline_cache(deps: &[String], channels: &[String]) -> Option<PreparedEnv> {
+pub fn check_conda_inline_cache(
+    deps: &[String],
+    channels: &[String],
+    python: Option<&str>,
+) -> Option<PreparedEnv> {
     let dependencies = inline_deps_with_required_packages(deps);
     let conda_deps = kernel_env::CondaDependencies {
         dependencies: dependencies.clone(),
@@ -619,7 +625,7 @@ pub fn check_conda_inline_cache(deps: &[String], channels: &[String]) -> Option<
         } else {
             channels.to_vec()
         },
-        python: None,
+        python: python.map(str::to_string),
         env_id: None,
     };
 
