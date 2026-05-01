@@ -355,23 +355,28 @@ fn uv_pip_install_args(python_path: &Path, packages: &[String], offline: bool) -
     args
 }
 
+const UV_OFFLINE_INSTALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+const UV_ONLINE_INSTALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(180);
+
 enum UvInstallAttempt {
     Completed(std::process::Output),
     SpawnError(std::io::Error),
     Timeout,
 }
 
-async fn run_uv_pip_install(uv_path: &Path, install_args: &[String]) -> UvInstallAttempt {
-    match tokio::time::timeout(
-        std::time::Duration::from_secs(180),
-        tokio::process::Command::new(uv_path)
-            .args(install_args)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .output(),
-    )
-    .await
-    {
+async fn run_uv_pip_install(
+    uv_path: &Path,
+    install_args: &[String],
+    timeout: std::time::Duration,
+) -> UvInstallAttempt {
+    let mut command = tokio::process::Command::new(uv_path);
+    command
+        .args(install_args)
+        .kill_on_drop(true)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    match tokio::time::timeout(timeout, command.output()).await {
         Ok(Ok(output)) => UvInstallAttempt::Completed(output),
         Ok(Err(e)) => UvInstallAttempt::SpawnError(e),
         Err(_) => UvInstallAttempt::Timeout,
@@ -5098,7 +5103,13 @@ impl Daemon {
         // first so offline users with cached wheels do not take the network
         // path just to warm a background pool entry.
         let offline_install_args = uv_pip_install_args(&python_path, &install_packages, true);
-        let install_result = match run_uv_pip_install(&uv_path, &offline_install_args).await {
+        let install_result = match run_uv_pip_install(
+            &uv_path,
+            &offline_install_args,
+            UV_OFFLINE_INSTALL_TIMEOUT,
+        )
+        .await
+        {
             UvInstallAttempt::Completed(output) if output.status.success() => {
                 info!("[runtimed] UV packages installed from local cache (offline mode)");
                 UvInstallAttempt::Completed(output)
@@ -5110,7 +5121,7 @@ impl Daemon {
                     stderr.lines().take(3).collect::<Vec<_>>().join(" ")
                 );
                 let install_args = uv_pip_install_args(&python_path, &install_packages, false);
-                run_uv_pip_install(&uv_path, &install_args).await
+                run_uv_pip_install(&uv_path, &install_args, UV_ONLINE_INSTALL_TIMEOUT).await
             }
             UvInstallAttempt::SpawnError(e) => {
                 warn!(
@@ -5118,14 +5129,14 @@ impl Daemon {
                     e
                 );
                 let install_args = uv_pip_install_args(&python_path, &install_packages, false);
-                run_uv_pip_install(&uv_path, &install_args).await
+                run_uv_pip_install(&uv_path, &install_args, UV_ONLINE_INSTALL_TIMEOUT).await
             }
             UvInstallAttempt::Timeout => {
                 warn!(
                     "[runtimed] UV offline install timed out, falling back to network-capable install"
                 );
                 let install_args = uv_pip_install_args(&python_path, &install_packages, false);
-                run_uv_pip_install(&uv_path, &install_args).await
+                run_uv_pip_install(&uv_path, &install_args, UV_ONLINE_INSTALL_TIMEOUT).await
             }
         };
 
@@ -6286,6 +6297,11 @@ mod tests {
             ]
         );
         assert!(!args.iter().any(|arg| arg == "--offline"));
+    }
+
+    #[test]
+    fn test_uv_offline_probe_has_shorter_timeout_than_online_fallback() {
+        assert!(UV_OFFLINE_INSTALL_TIMEOUT < UV_ONLINE_INSTALL_TIMEOUT);
     }
 
     #[test]
