@@ -254,6 +254,14 @@ pub enum SaveErrorKind {
 pub struct NotebookRequestEnvelope {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
+    /// Causal precondition for handling this request.
+    ///
+    /// When present, the daemon must not evaluate the request until its
+    /// notebook document has incorporated every listed Automerge change hash.
+    /// The document may have advanced beyond these heads; this is a
+    /// containment check, not an equality check.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub required_heads: Vec<String>,
     #[serde(flatten)]
     pub request: NotebookRequest,
 }
@@ -812,16 +820,19 @@ mod tests {
     fn request_envelope_flattens_and_round_trips() {
         let env = NotebookRequestEnvelope {
             id: Some("req-1".into()),
+            required_heads: vec!["a".repeat(64)],
             request: NotebookRequest::ExecuteCell {
                 cell_id: "cell-42".into(),
             },
         };
         let json = serde_json::to_value(&env).expect("serialize");
         assert_eq!(json["id"], "req-1");
+        assert_eq!(json["required_heads"][0], "a".repeat(64));
         assert_eq!(json["action"], "execute_cell");
         assert_eq!(json["cell_id"], "cell-42");
         let parsed: NotebookRequestEnvelope = serde_json::from_value(json).expect("deserialize");
         assert_eq!(parsed.id.as_deref(), Some("req-1"));
+        assert_eq!(parsed.required_heads, vec!["a".repeat(64)]);
         assert!(matches!(
             parsed.request,
             NotebookRequest::ExecuteCell { cell_id } if cell_id == "cell-42"

@@ -1351,23 +1351,25 @@ pub(crate) async fn queue_cell(
         }
     }
 
-    let response = {
+    let handle = {
         let st = state.lock().await;
-
-        let handle = st
-            .handle
+        st.handle
             .as_ref()
-            .ok_or_else(|| to_py_err("Not connected"))?;
-
-        handle.confirm_sync().await.map_err(to_py_err)?;
-
-        handle
-            .send_request(NotebookRequest::ExecuteCell {
-                cell_id: cell_id.to_string(),
-            })
-            .await
-            .map_err(to_py_err)?
+            .ok_or_else(|| to_py_err("Not connected"))?
+            .clone()
     };
+
+    let required_heads = handle.current_heads_hex().map_err(to_py_err)?;
+
+    let response = handle
+        .send_request_after_heads(
+            NotebookRequest::ExecuteCell {
+                cell_id: cell_id.to_string(),
+            },
+            required_heads,
+        )
+        .await
+        .map_err(to_py_err)?;
 
     match response {
         NotebookResponse::CellQueued { execution_id, .. } => {
@@ -1470,10 +1472,10 @@ pub(crate) async fn queue_all_cells(
             .clone()
     };
 
-    handle.confirm_sync().await.map_err(to_py_err)?;
+    let required_heads = handle.current_heads_hex().map_err(to_py_err)?;
 
     let response = handle
-        .send_request(NotebookRequest::RunAllCells {})
+        .send_request_after_heads(NotebookRequest::RunAllCells {}, required_heads)
         .await
         .map_err(to_py_err)?;
 

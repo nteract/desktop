@@ -571,6 +571,19 @@ impl DocHandle {
         &self,
         request: NotebookRequest,
     ) -> Result<NotebookResponse, SyncError> {
+        self.send_request_after_heads(request, Vec::new()).await
+    }
+
+    /// Send a request after the daemon has incorporated the required heads.
+    ///
+    /// This is a causal precondition: the daemon may evaluate the request
+    /// against a newer document, but it must first have every listed change in
+    /// its local Automerge history.
+    pub async fn send_request_after_heads(
+        &self,
+        request: NotebookRequest,
+        required_heads: Vec<String>,
+    ) -> Result<NotebookResponse, SyncError> {
         debug!(
             "[doc-handle] send_request: {:?} ({})",
             std::mem::discriminant(&request),
@@ -580,6 +593,7 @@ impl DocHandle {
         self.cmd_tx
             .send(SyncCommand::SendRequest {
                 request,
+                required_heads,
                 reply: reply_tx,
                 broadcast_tx: None,
             })
@@ -604,12 +618,24 @@ impl DocHandle {
         self.cmd_tx
             .send(SyncCommand::SendRequest {
                 request,
+                required_heads: Vec::new(),
                 reply: reply_tx,
                 broadcast_tx: Some(broadcast_tx),
             })
             .await
             .map_err(|_| SyncError::Disconnected)?;
         reply_rx.await.map_err(|_| SyncError::Disconnected)?
+    }
+
+    /// Get the current document heads as protocol hex strings.
+    pub fn current_heads_hex(&self) -> Result<Vec<String>, SyncError> {
+        let mut state = self.doc.lock().map_err(|_| SyncError::LockPoisoned)?;
+        Ok(state
+            .doc
+            .get_heads()
+            .into_iter()
+            .map(|head| head.to_string())
+            .collect())
     }
 
     /// Confirm that the daemon has merged our current local heads.

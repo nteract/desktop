@@ -121,6 +121,7 @@ where
                 RelayCommand::SendRequest {
                     id,
                     request,
+                    required_heads,
                     reply,
                     broadcast_tx,
                 } => {
@@ -129,6 +130,7 @@ where
                         &mut pending,
                         id,
                         request,
+                        required_heads,
                         reply,
                         broadcast_tx,
                     )
@@ -196,11 +198,13 @@ async fn handle_send_request<W: AsyncWrite + Unpin>(
     pending: &mut HashMap<String, PendingEntry>,
     id: String,
     request: NotebookRequest,
+    required_heads: Vec<String>,
     reply: oneshot::Sender<Result<NotebookResponse, SyncError>>,
     broadcast_tx: Option<tokio::sync::broadcast::Sender<NotebookBroadcast>>,
 ) {
     let envelope = NotebookRequestEnvelope {
         id: Some(id.clone()),
+        required_heads,
         request,
     };
 

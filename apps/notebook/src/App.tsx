@@ -355,7 +355,15 @@ function AppContent() {
   // NotebookClient for sending kernel commands via transport. The host's
   // transport is the single instance shared with the SyncEngine in
   // useAutomergeNotebook — no more separate connection per consumer.
-  const notebookClient = useMemo(() => new NotebookClient({ transport: host.transport }), [host]);
+  const notebookClient = useMemo(
+    () =>
+      new NotebookClient({
+        transport: host.transport,
+        getRequiredHeads: () => getHandle()?.get_heads_hex() ?? [],
+        flushBeforeRequiredHeadsRequest: () => getEngine()?.flush(),
+      }),
+    [host, getHandle, getEngine],
+  );
 
   // Daemon-owned kernel execution
   const {
@@ -1097,14 +1105,6 @@ function AppContent() {
       executingCellsRef.current.add(cellId);
 
       try {
-        // Flush pending source sync so daemon has latest code before executing.
-        // flushAndWait() guarantees any in-flight debounced flush has landed,
-        // then sends remaining changes and awaits delivery.
-        if (!(await flushSync())) {
-          logger.warn("[App] handleExecuteCell: source sync failed, skipping");
-          return;
-        }
-
         // Starting a fresh execution updates the cell's execution_id pointer,
         // and output rendering follows that pointer.
 
@@ -1143,7 +1143,7 @@ function AppContent() {
         }, 150);
       }
     },
-    [sessionReady, flushSync, kernelStatus, tryStartKernel, captureExecuteTrustAction, executeCell],
+    [sessionReady, kernelStatus, tryStartKernel, captureExecuteTrustAction, executeCell],
   );
 
   const handleAddCell = useCallback(
@@ -1192,12 +1192,6 @@ function AppContent() {
     }
     runAllInFlightRef.current = true;
     try {
-      // Flush pending source sync so daemon has latest code
-      if (!(await flushSync())) {
-        logger.warn("[App] handleRunAllCells: source sync failed, skipping");
-        return;
-      }
-
       // Start kernel via daemon if not running or awaiting trust
       if (
         kernelStatus === KERNEL_STATUS.NOT_STARTED ||
@@ -1226,14 +1220,7 @@ function AppContent() {
     } finally {
       runAllInFlightRef.current = false;
     }
-  }, [
-    sessionReady,
-    kernelStatus,
-    tryStartKernel,
-    captureRunAllTrustAction,
-    flushSync,
-    daemonRunAllCells,
-  ]);
+  }, [sessionReady, kernelStatus, tryStartKernel, captureRunAllTrustAction, daemonRunAllCells]);
 
   const handleRestartAndRunAll = useCallback(async () => {
     // The daemon clears visible outputs by moving cells to fresh execution

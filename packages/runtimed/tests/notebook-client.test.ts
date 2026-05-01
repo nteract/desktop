@@ -14,6 +14,28 @@ function stubClient() {
   return { client: new NotebookClient({ transport }), sendRequest };
 }
 
+function stubClientWithHeads(heads: string[]) {
+  const sendRequest = vi.fn().mockResolvedValue({ result: "cell_queued", execution_id: "exec-1" });
+  const flush = vi.fn();
+  const transport = {
+    sendFrame: async () => {},
+    onFrame: () => () => {},
+    sendRequest,
+    connected: true,
+    disconnect: () => {},
+  } satisfies NotebookTransport;
+
+  return {
+    client: new NotebookClient({
+      transport,
+      getRequiredHeads: () => heads,
+      flushBeforeRequiredHeadsRequest: flush,
+    }),
+    flush,
+    sendRequest,
+  };
+}
+
 describe("NotebookClient", () => {
   it("emits unguarded sync_environment requests", async () => {
     const { client, sendRequest } = stubClient();
@@ -65,5 +87,29 @@ describe("NotebookClient", () => {
       type: "clone_as_ephemeral",
       source_notebook_id: "source-1",
     });
+  });
+
+  it("attaches required heads to daemon-managed execute requests", async () => {
+    const { client, flush, sendRequest } = stubClientWithHeads(["head-a"]);
+
+    await client.executeCell("cell-1");
+
+    expect(flush).toHaveBeenCalledOnce();
+    expect(sendRequest).toHaveBeenCalledWith(
+      { type: "execute_cell", cell_id: "cell-1" },
+      { required_heads: ["head-a"] },
+    );
+  });
+
+  it("attaches required heads to daemon-managed run-all requests", async () => {
+    const { client, flush, sendRequest } = stubClientWithHeads(["head-a", "head-b"]);
+
+    await client.runAllCells();
+
+    expect(flush).toHaveBeenCalledOnce();
+    expect(sendRequest).toHaveBeenCalledWith(
+      { type: "run_all_cells" },
+      { required_heads: ["head-a", "head-b"] },
+    );
   });
 });

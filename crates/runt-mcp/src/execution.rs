@@ -38,7 +38,7 @@ pub struct ExecutionResult {
 
 /// Execute a cell and wait for completion.
 ///
-/// 1. Calls `confirm_sync()` to ensure the daemon has the latest cell source.
+/// 1. Captures current Automerge heads as a causal precondition.
 /// 2. Sends `ExecuteCell` request.
 /// 3. Polls RuntimeStateDoc until the execution reaches terminal status.
 /// 4. Collects and resolves outputs from the CRDT.
@@ -53,16 +53,22 @@ pub async fn execute_and_wait(
     blob_base_url: &Option<String>,
     blob_store_path: &Option<std::path::PathBuf>,
 ) -> ExecutionResult {
-    // Step 1: Ensure daemon has our latest edits
-    if let Err(e) = handle.confirm_sync().await {
-        warn!("confirm_sync failed before execution: {e}");
-    }
+    // Step 1: Capture the source version this command is meant to observe.
+    let required_heads = match handle.current_heads_hex() {
+        Ok(heads) => heads,
+        Err(e) => {
+            warn!("failed to capture notebook heads before execution: {e}");
+            Vec::new()
+        }
+    };
 
     // Step 2: Submit execution request
     let request = NotebookRequest::ExecuteCell {
         cell_id: cell_id.to_string(),
     };
-    let response = handle.send_request(request).await;
+    let response = handle
+        .send_request_after_heads(request, required_heads)
+        .await;
 
     let execution_id = match response {
         Ok(NotebookResponse::CellQueued { execution_id, .. }) => Some(execution_id),
@@ -182,16 +188,22 @@ pub struct RunAllResult {
 
 /// Queue all cells for execution without waiting for completion.
 ///
-/// 1. Calls `confirm_sync()` to ensure the daemon has the latest cell sources.
+/// 1. Captures current Automerge heads as a causal precondition.
 /// 2. Sends `RunAllCells` request.
 ///
 /// Returns immediately with the queued cell→execution ID mapping.
 pub async fn run_all_and_queue(handle: &DocHandle) -> RunAllResult {
-    if let Err(e) = handle.confirm_sync().await {
-        warn!("confirm_sync failed before run_all_cells: {e}");
-    }
+    let required_heads = match handle.current_heads_hex() {
+        Ok(heads) => heads,
+        Err(e) => {
+            warn!("failed to capture notebook heads before run_all_cells: {e}");
+            Vec::new()
+        }
+    };
 
-    let response = handle.send_request(NotebookRequest::RunAllCells {}).await;
+    let response = handle
+        .send_request_after_heads(NotebookRequest::RunAllCells {}, required_heads)
+        .await;
 
     let cell_execution_ids: HashMap<String, String> = match response {
         Ok(NotebookResponse::AllCellsQueued { queued }) => queued
