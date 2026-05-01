@@ -63,6 +63,11 @@ import {
 } from "./lib/cell-ui-state";
 import { startCursorDispatch } from "./lib/cursor-registry";
 import { getTrustApprovalHandoffDisplayStatus, KERNEL_STATUS } from "./lib/kernel-status";
+import {
+  type PendingTrustAction,
+  pendingActionDependencyFingerprint,
+  refreshPendingActionDependencyFingerprint,
+} from "./lib/trust-actions";
 import { useObservable } from "./lib/use-observable";
 import { logger } from "./lib/logger";
 import { getNotebookCellsSnapshot } from "./lib/notebook-cells";
@@ -73,20 +78,6 @@ import type { JupyterOutput } from "./types";
 
 /** MIME bundle type for output data */
 export type MimeBundle = Record<string, unknown>;
-
-type PendingTrustAction =
-  | {
-      kind: "execute_cell";
-      cellId: string;
-      provenance: GuardedNotebookProvenance;
-      dependencyFingerprint: string;
-    }
-  | {
-      kind: "run_all";
-      provenance: GuardedNotebookProvenance;
-      dependencyFingerprint: string;
-    }
-  | { kind: "sync_deps"; provenance: DependencyGuard };
 
 const EMPTY_DEPENDENCY_FINGERPRINT = "{}";
 
@@ -719,14 +710,17 @@ function AppContent() {
     };
   }, [captureDependencyFingerprint, captureNotebookProvenance]);
 
-  const pendingActionDependencyFingerprint = useCallback(
-    (action: PendingTrustAction | null): string | undefined => {
-      if (!action) return undefined;
-      return action.kind === "sync_deps"
-        ? action.provenance.dependency_fingerprint
-        : action.dependencyFingerprint;
+  const refreshBlockedTrustActionDependencyFingerprint = useCallback(
+    (action: PendingTrustAction | null) => {
+      if (!action) return;
+      const refreshed = refreshPendingActionDependencyFingerprint(
+        action,
+        captureDependencyFingerprint(),
+      );
+      pendingTrustActionRef.current = refreshed;
+      setPendingTrustAction(refreshed);
     },
-    [],
+    [captureDependencyFingerprint],
   );
 
   // Check trust and start kernel if trusted, otherwise show dialog.
@@ -1000,6 +994,9 @@ function AppContent() {
     const success = await approveTrust(
       dependencyFingerprint ? { dependencyFingerprint } : undefined,
     );
+    if (!success) {
+      refreshBlockedTrustActionDependencyFingerprint(action);
+    }
     if (success && pendingKernelStartRef.current) {
       pendingKernelStartRef.current = false;
       setTrustApprovalHandoffPending(true);
@@ -1014,7 +1011,7 @@ function AppContent() {
   }, [
     approveTrust,
     handleTrustApprovedLaunch,
-    pendingActionDependencyFingerprint,
+    refreshBlockedTrustActionDependencyFingerprint,
     runTrustApprovedAction,
     setBlockedTrustAction,
   ]);
@@ -1025,6 +1022,9 @@ function AppContent() {
     const success = await approveTrust(
       dependencyFingerprint ? { dependencyFingerprint } : undefined,
     );
+    if (!success) {
+      refreshBlockedTrustActionDependencyFingerprint(action);
+    }
     if (success && pendingKernelStartRef.current) {
       pendingKernelStartRef.current = false;
       setTrustApprovalHandoffPending(true);
@@ -1037,7 +1037,7 @@ function AppContent() {
   }, [
     approveTrust,
     handleTrustApprovedLaunch,
-    pendingActionDependencyFingerprint,
+    refreshBlockedTrustActionDependencyFingerprint,
     setBlockedTrustAction,
   ]);
 
