@@ -1106,10 +1106,10 @@ impl SettingsDoc {
 
         // Pool sizes: uv_pool_size, conda_pool_size, pixi_pool_size
         if let Some(uv_pool) = json.get("uv_pool_size").and_then(|v| v.as_u64()) {
-            let current = self.get_all().uv_pool_size;
-            if current != uv_pool {
+            let current = self.get_u64("uv_pool_size");
+            if current != Some(uv_pool) {
                 info!(
-                    "[settings] apply_json_changes: uv_pool_size changed {} -> {}",
+                    "[settings] apply_json_changes: uv_pool_size changed {:?} -> {}",
                     current, uv_pool
                 );
                 self.put_u64("uv_pool_size", uv_pool);
@@ -1117,10 +1117,10 @@ impl SettingsDoc {
             }
         }
         if let Some(conda_pool) = json.get("conda_pool_size").and_then(|v| v.as_u64()) {
-            let current = self.get_all().conda_pool_size;
-            if current != conda_pool {
+            let current = self.get_u64("conda_pool_size");
+            if current != Some(conda_pool) {
                 info!(
-                    "[settings] apply_json_changes: conda_pool_size changed {} -> {}",
+                    "[settings] apply_json_changes: conda_pool_size changed {:?} -> {}",
                     current, conda_pool
                 );
                 self.put_u64("conda_pool_size", conda_pool);
@@ -1128,10 +1128,10 @@ impl SettingsDoc {
             }
         }
         if let Some(pixi_pool) = json.get("pixi_pool_size").and_then(|v| v.as_u64()) {
-            let current = self.get_all().pixi_pool_size;
-            if current != pixi_pool {
+            let current = self.get_u64("pixi_pool_size");
+            if current != Some(pixi_pool) {
                 info!(
-                    "[settings] apply_json_changes: pixi_pool_size changed {} -> {}",
+                    "[settings] apply_json_changes: pixi_pool_size changed {:?} -> {}",
                     current, pixi_pool
                 );
                 self.put_u64("pixi_pool_size", pixi_pool);
@@ -1300,6 +1300,24 @@ mod tests {
         assert_eq!(settings.uv_pool_size, 4);
         assert_eq!(settings.conda_pool_size, 5);
         assert_eq!(settings.pixi_pool_size, 6);
+    }
+
+    #[test]
+    fn test_apply_json_changes_persists_pool_size_matching_dynamic_default() {
+        let mut doc = SettingsDoc::new();
+
+        assert!(doc.apply_json_changes(&serde_json::json!({
+            "uv_pool_size": DEFAULT_SELECTED_POOL_SIZE
+        })));
+        assert_eq!(
+            doc.get_u64("uv_pool_size"),
+            Some(DEFAULT_SELECTED_POOL_SIZE)
+        );
+
+        assert!(doc.apply_json_changes(&serde_json::json!({
+            "default_python_env": "conda"
+        })));
+        assert_eq!(doc.get_all().uv_pool_size, DEFAULT_SELECTED_POOL_SIZE);
     }
 
     #[test]
@@ -1733,12 +1751,14 @@ mod tests {
 
     #[test]
     fn test_apply_json_changes_no_change_when_matching() {
-        let doc = SettingsDoc::new();
+        let mut doc = SettingsDoc::new();
+        doc.put_u64("uv_pool_size", DEFAULT_SELECTED_POOL_SIZE);
+        doc.put_u64("conda_pool_size", DEFAULT_POOL_SIZE);
+        doc.put_u64("pixi_pool_size", DEFAULT_POOL_SIZE);
         let settings = doc.get_all();
 
-        // Write current values back — should detect no change
+        // Write current persisted values back — should detect no change.
         let json = serde_json::to_value(&settings).unwrap();
-        let mut doc = SettingsDoc::new();
         let changed = doc.apply_json_changes(&json);
         assert!(!changed);
     }

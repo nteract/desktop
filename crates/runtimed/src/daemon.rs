@@ -103,6 +103,9 @@ impl Default for DaemonConfig {
             execution_store_dir: crate::default_execution_store_dir(),
             notebook_docs_dir: crate::default_notebook_docs_dir(),
             trusted_packages_db_path: crate::trusted_packages_db_path(),
+            // These config defaults gate whether each warmer is enabled. The
+            // effective target comes from synced settings so the selected
+            // Python environment can default to a larger pool.
             uv_pool_size: runtimed_client::settings_doc::DEFAULT_UV_POOL_SIZE as usize,
             conda_pool_size: runtimed_client::settings_doc::DEFAULT_CONDA_POOL_SIZE as usize,
             pixi_pool_size: runtimed_client::settings_doc::DEFAULT_PIXI_POOL_SIZE as usize,

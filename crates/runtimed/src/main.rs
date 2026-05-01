@@ -63,21 +63,21 @@ enum Commands {
         #[arg(long)]
         blob_store_dir: Option<PathBuf>,
 
-        /// Number of UV environments to maintain
+        /// Initial UV pool gate; synced settings choose the effective target
         #[arg(
             long,
             default_value_t = runtimed_client::settings_doc::DEFAULT_UV_POOL_SIZE as usize
         )]
         uv_pool_size: usize,
 
-        /// Number of Conda environments to maintain
+        /// Initial Conda pool gate; synced settings choose the effective target
         #[arg(
             long,
             default_value_t = runtimed_client::settings_doc::DEFAULT_CONDA_POOL_SIZE as usize
         )]
         conda_pool_size: usize,
 
-        /// Number of Pixi environments to maintain
+        /// Initial Pixi pool gate; synced settings choose the effective target
         #[arg(
             long,
             default_value_t = runtimed_client::settings_doc::DEFAULT_PIXI_POOL_SIZE as usize
