@@ -706,6 +706,12 @@ pub(crate) async fn restart_kernel(
     // runs. Env progress moved off the broadcast channel (it's CRDT state
     // now), so we read the projected phase directly and dedupe by a stable
     // key so we don't spam the same step repeatedly.
+    //
+    // The progress field is a single-slot snapshot, so cache-hit paths that
+    // race through `CacheHit → Ready` between two ticks (or before the
+    // first tick fires) leave the last-write visible but the intermediate
+    // phases lost. Snapshot once more after the launch response resolves
+    // so at minimum the terminal phase lands in `progress_messages`.
     let response = {
         tokio::pin!(launch_fut);
         let deadline = tokio::time::Instant::now() + launch_timeout;
@@ -716,29 +722,23 @@ pub(crate) async fn restart_kernel(
         loop {
             tokio::select! {
                 resp = &mut launch_fut => {
-                    break resp.map_err(to_py_err)?;
+                    let response = resp.map_err(to_py_err)?;
+                    // Drain the latest progress phase written by the daemon right
+                    // before it returned the launch response. Without this,
+                    // instant cache-hits produce an empty progress list.
+                    snapshot_env_progress(
+                        &handle,
+                        &mut progress_messages,
+                        &mut last_progress_key,
+                    );
+                    break response;
                 }
                 _ = poll_tick.tick() => {
-                    if let Ok(rs) = handle.get_runtime_state() {
-                        if let Some(value) = rs.env.progress.as_ref() {
-                            let env_type = value
-                                .get("env_type")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("env")
-                                .to_string();
-                            if let Ok(phase) =
-                                serde_json::from_value::<EnvProgressPhase>(value.clone())
-                            {
-                                let key = env_progress_dedupe_key(&env_type, &phase);
-                                if last_progress_key.as_deref() != Some(&key) {
-                                    last_progress_key = Some(key);
-                                    let text = env_progress_message(&phase);
-                                    progress_messages
-                                        .push(format!("[{}] {}", env_type, text));
-                                }
-                            }
-                        }
-                    }
+                    snapshot_env_progress(
+                        &handle,
+                        &mut progress_messages,
+                        &mut last_progress_key,
+                    );
                 }
                 _ = tokio::time::sleep_until(deadline) => {
                     return Err(to_py_err(
@@ -2273,6 +2273,37 @@ async fn resolve_blob_paths(socket_path: &Path) -> (Option<String>, Option<PathB
 // =========================================================================
 
 use kernel_env::EnvProgressPhase;
+
+/// Read the current `env.progress` snapshot from `handle` and append a
+/// formatted line to `messages` if the phase key is new. Shared by the
+/// tick path and the post-launch drain so cache-hit races don't swallow
+/// the terminal phase.
+fn snapshot_env_progress(
+    handle: &DocHandle,
+    messages: &mut Vec<String>,
+    last_key: &mut Option<String>,
+) {
+    let Ok(rs) = handle.get_runtime_state() else {
+        return;
+    };
+    let Some(value) = rs.env.progress.as_ref() else {
+        return;
+    };
+    let env_type = value
+        .get("env_type")
+        .and_then(|v| v.as_str())
+        .unwrap_or("env")
+        .to_string();
+    let Ok(phase) = serde_json::from_value::<EnvProgressPhase>(value.clone()) else {
+        return;
+    };
+    let key = env_progress_dedupe_key(&env_type, &phase);
+    if last_key.as_deref() == Some(&key) {
+        return;
+    }
+    *last_key = Some(key);
+    messages.push(format!("[{}] {}", env_type, env_progress_message(&phase)));
+}
 
 fn env_progress_message(phase: &EnvProgressPhase) -> String {
     match phase {

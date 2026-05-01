@@ -14,7 +14,7 @@
 
 // ── Types ────────────────────────────────────────────────────────────
 
-/** Callback for broadcast events (kernel status, output, env progress, etc.) */
+/** Callback for broadcast events (kernel Comm messages — widget updates, button clicks). */
 export type BroadcastSubscriber = (payload: unknown) => void;
 
 /** Callback for presence events (cursor, selection, snapshot, left, heartbeat) */

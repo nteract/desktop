@@ -269,7 +269,11 @@ export class SyncEngine {
    */
   readonly cellChanges$: Observable<CellChangeset | null>;
 
-  /** Daemon broadcast payloads (kernel status, output, env progress, text attributions). */
+  /**
+   * Daemon broadcast payloads. Only Comm traffic (ipywidget messages,
+   * custom widget events) flows here — kernel status, execution, outputs,
+   * env progress, and text attributions all live in RuntimeStateDoc now.
+   */
   readonly broadcasts$: Observable<unknown>;
 
   /** Remote peer presence updates (cursor, selection, snapshot, left, heartbeat). */
