@@ -24,8 +24,11 @@ fn main() {
         if !path.exists() {
             panic!(
                 "Missing renderer plugin asset: {}\n\n\
-                 These artifacts are gitignored. Run `cargo xtask wasm` \
-                 from the workspace root to (re)build them.",
+                 Stable bundles (plotly, vega, leaflet, markdown, \
+                 isolated-renderer) are LFS-tracked - run `git lfs pull` \
+                 if your checkout has the pointer files only.\n\
+                 Volatile bundles (sift.*, sift_wasm.wasm) are gitignored - \
+                 run `cargo xtask wasm` from the workspace root to rebuild.",
                 path.display(),
             );
         }

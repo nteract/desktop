@@ -2516,40 +2516,89 @@ fn run_cmd(cmd: &str, args: &[&str]) {
 /// explicit `cargo xtask wasm` step. `runtimed`'s `build.rs` panics with a
 /// "run `cargo xtask wasm`" message if you bypass xtask and invoke `cargo
 /// build` directly.
+/// Make sure build artifacts on disk match the current source tree.
+///
+/// Two tiers, matching each artifact's churn profile:
+///
+/// - **Volatile wasm** (`runtimed-wasm`, `sift-wasm`) is rebuilt unconditionally
+///   via `ensure_volatile_wasm_built()`. TypeScript bindings and wasm-bindgen
+///   glue change every week, and a file-existence probe can't catch "the
+///   .wasm file exists but was built from an older HEAD" - the failure mode
+///   from the day a `git pull` added `has_cells_map`/`clear_outputs` to
+///   runtimed-wasm but the pre-existing `.d.ts` made the frontend TS build
+///   fail. Cargo's own fingerprinting makes a source-unchanged rebuild cheap.
+///
+/// - **Renderer plugin bundles** (`plotly.js`, `vega.js`, `markdown.*`,
+///   `leaflet.*`, `isolated-renderer.*`) change rarely and are LFS-tracked, so
+///   a fresh checkout already has them on disk. We rebuild if they're missing
+///   (e.g. a checkout without LFS hydration) or if `sift.js` / `sift.css` are
+///   missing or were built against a different wasm-bindgen glue than the one
+///   just produced. Sift outputs stay gitignored because they re-embed
+///   sift-wasm's `__wbg_*` hashes and must move in lockstep with it.
 fn ensure_build_artifacts() {
-    let probes = [
-        "apps/notebook/src/wasm/runtimed-wasm/runtimed_wasm_bg.wasm",
-        "crates/sift-wasm/pkg/sift_wasm_bg.wasm",
-        "apps/notebook/src/renderer-plugins/sift.js",
-        "crates/runt-mcp/assets/plugins/sift_wasm.wasm",
+    let glue_before = fs::read("crates/sift-wasm/pkg/sift_wasm.js").ok();
+    ensure_volatile_wasm_built();
+    let glue_after = fs::read("crates/sift-wasm/pkg/sift_wasm.js").ok();
+
+    let notebook_plugin_dir = Path::new("apps/notebook/src/renderer-plugins");
+    let stable_probes = [
+        "plotly.js",
+        "vega.js",
+        "leaflet.js",
+        "leaflet.css",
+        "markdown.js",
+        "markdown.css",
+        "isolated-renderer.js",
+        "isolated-renderer.css",
     ];
-    let missing: Vec<&str> = probes
+    let missing_stable: Vec<&str> = stable_probes
         .iter()
         .copied()
-        .filter(|p| !Path::new(p).exists())
+        .filter(|p| !notebook_plugin_dir.join(p).exists())
         .collect();
-    if missing.is_empty() {
-        // Sanity check: the runtimed-wasm binary should still start with the
-        // WebAssembly magic. Catches the rare case of a truncated or stomped
-        // output without forcing a full rebuild on every call.
-        let wasm = Path::new("apps/notebook/src/wasm/runtimed-wasm/runtimed_wasm_bg.wasm");
-        if let Ok(bytes) = fs::read(wasm) {
-            if !bytes.starts_with(b"\0asm") {
-                eprintln!(
-                    "Warning: {} is not a valid WebAssembly binary; rebuilding via cargo xtask wasm",
-                    wasm.display()
-                );
-                cmd_wasm(None, false);
-            }
-        }
-        return;
-    }
+    let sift_missing = !notebook_plugin_dir.join("sift.js").exists()
+        || !notebook_plugin_dir.join("sift.css").exists();
+    let glue_changed = match (&glue_before, &glue_after) {
+        (Some(a), Some(b)) => a != b,
+        _ => true,
+    };
 
-    println!("Build artifacts missing; running cargo xtask wasm first:");
-    for p in &missing {
-        println!("  - {p}");
+    if !missing_stable.is_empty() || sift_missing || glue_changed {
+        if !missing_stable.is_empty() {
+            println!("Stable renderer plugin bundles missing; rebuilding:");
+            for p in &missing_stable {
+                println!("  - apps/notebook/src/renderer-plugins/{p}");
+            }
+            println!(
+                "(If these should already be on disk, run `git lfs pull` to hydrate LFS-tracked bundles.)"
+            );
+        } else if sift_missing {
+            println!("[xtask] sift renderer bundle missing; rebuilding renderer plugins");
+        } else if glue_changed {
+            println!(
+                "[xtask] sift-wasm glue changed; rebuilding renderer plugins so sift.js re-embeds the fresh __wbg_* names"
+            );
+        }
+        cmd_renderer_plugins();
     }
-    cmd_wasm(None, false);
+}
+
+/// Always (re)build runtimed-wasm and sift-wasm before the build pulls in
+/// their outputs via TS / Vite. wasm-pack delegates to cargo, which uses its
+/// own fingerprint; a no-source-change rebuild is cheap.
+///
+/// Exists because the old "file exists → skip" probe couldn't detect a stale
+/// `.d.ts`: the .wasm on disk was fine, but the TypeScript bindings didn't
+/// include types for methods added to the Rust source since the last build.
+/// Forcing wasm-pack every time closes that window.
+fn ensure_volatile_wasm_built() {
+    ensure_workspace_root_cwd();
+    require_tool("wasm-pack", WASM_PACK_INSTALL);
+
+    println!("[xtask] rebuilding runtimed-wasm (refreshes .d.ts bindings)");
+    cmd_wasm(Some("runtimed"), true);
+    println!("[xtask] rebuilding sift-wasm");
+    cmd_wasm(Some("sift"), true);
 }
 
 /// Build the MCP Apps widget (apps/mcp-app) and copy it into the Python
