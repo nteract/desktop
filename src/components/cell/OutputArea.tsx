@@ -523,6 +523,7 @@ export function OutputArea({
     <div
       data-slot="output-area"
       className={cn("output-area pl-6 pr-3", isPreloadOnly && "hidden", className)}
+      style={{ overflowAnchor: "none" }}
     >
       {/* Collapse toggle */}
       {hasCollapseControl && (

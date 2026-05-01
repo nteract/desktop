@@ -7,6 +7,100 @@ interface EditorRegistryContextType {
 }
 
 const EditorRegistryContext = createContext<EditorRegistryContextType | null>(null);
+const SCROLL_PIN_DURATION_MS = 2500;
+const SCROLL_PIN_MARGIN_PX = 12;
+
+let cancelActiveScrollPin: (() => void) | null = null;
+
+function getNearestScrollContainer(element: Element): HTMLElement | null {
+  let current = element.parentElement;
+  while (current) {
+    const { overflowY } = window.getComputedStyle(current);
+    if (overflowY === "auto" || overflowY === "scroll" || overflowY === "overlay") {
+      return current;
+    }
+    current = current.parentElement;
+  }
+  return null;
+}
+
+function getScrollContentElement(container: HTMLElement, cellElement: Element): Element {
+  let current = cellElement;
+  while (current.parentElement && current.parentElement !== container) {
+    current = current.parentElement;
+  }
+  return current.parentElement === container ? current : (container.firstElementChild ?? container);
+}
+
+function isAnchorVisible(container: HTMLElement, anchor: Element): boolean {
+  const containerRect = container.getBoundingClientRect();
+  const anchorRect = anchor.getBoundingClientRect();
+  return (
+    anchorRect.top >= containerRect.top + SCROLL_PIN_MARGIN_PX &&
+    anchorRect.bottom <= containerRect.bottom - SCROLL_PIN_MARGIN_PX
+  );
+}
+
+function startScrollPin(cellElement: Element, anchorElement: Element) {
+  cancelActiveScrollPin?.();
+  cancelActiveScrollPin = null;
+
+  const scrollContainer = getNearestScrollContainer(cellElement);
+  if (!scrollContainer || typeof ResizeObserver === "undefined") return;
+
+  const contentElement = getScrollContentElement(scrollContainer, cellElement);
+  let frameId: number | null = null;
+  let timeoutId: number | null = null;
+  let isCancelled = false;
+
+  const keepAnchorVisible = () => {
+    frameId = null;
+    if (isCancelled) return;
+    if (!cellElement.isConnected || !anchorElement.isConnected) {
+      cleanup();
+      return;
+    }
+    if (
+      cellElement.contains(document.activeElement) &&
+      !isAnchorVisible(scrollContainer, anchorElement)
+    ) {
+      anchorElement.scrollIntoView({ block: "nearest", behavior: "auto" });
+    }
+  };
+
+  const scheduleKeepVisible = () => {
+    if (frameId !== null || isCancelled) return;
+    frameId = window.requestAnimationFrame(keepAnchorVisible);
+  };
+
+  const observer = new ResizeObserver(scheduleKeepVisible);
+
+  function cleanup() {
+    if (isCancelled) return;
+    isCancelled = true;
+    observer.disconnect();
+    scrollContainer.removeEventListener("wheel", cleanup);
+    scrollContainer.removeEventListener("touchstart", cleanup);
+    if (frameId !== null) {
+      window.cancelAnimationFrame(frameId);
+      frameId = null;
+    }
+    if (timeoutId !== null) {
+      window.clearTimeout(timeoutId);
+      timeoutId = null;
+    }
+    if (cancelActiveScrollPin === cleanup) {
+      cancelActiveScrollPin = null;
+    }
+  }
+
+  observer.observe(contentElement);
+  scrollContainer.addEventListener("wheel", cleanup, { passive: true });
+  scrollContainer.addEventListener("touchstart", cleanup, { passive: true });
+  timeoutId = window.setTimeout(cleanup, SCROLL_PIN_DURATION_MS);
+  scheduleKeepVisible();
+  cancelActiveScrollPin = cleanup;
+}
 
 export function EditorRegistryProvider({ children }: { children: ReactNode }) {
   // Focus a cell's editor using DOM lookup - bypasses registration timing issues
@@ -44,6 +138,7 @@ export function EditorRegistryProvider({ children }: { children: ReactNode }) {
       scrollIntoView: true,
     });
     view.focus();
+    startScrollPin(cellElement, view.dom);
   }, []);
 
   return (
