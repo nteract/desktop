@@ -177,10 +177,44 @@ pub const MIN_KEEP_ALIVE_SECS: u64 = 5;
 /// Maximum keep-alive duration (7 days) for notebook rooms.
 pub const MAX_KEEP_ALIVE_SECS: u64 = 604800;
 
-pub const DEFAULT_UV_POOL_SIZE: u64 = 3;
-pub const DEFAULT_CONDA_POOL_SIZE: u64 = 3;
-pub const DEFAULT_PIXI_POOL_SIZE: u64 = 2;
+pub const DEFAULT_POOL_SIZE: u64 = 1;
+pub const DEFAULT_SELECTED_POOL_SIZE: u64 = 2;
+pub const DEFAULT_UV_POOL_SIZE: u64 = DEFAULT_POOL_SIZE;
+pub const DEFAULT_CONDA_POOL_SIZE: u64 = DEFAULT_POOL_SIZE;
+pub const DEFAULT_PIXI_POOL_SIZE: u64 = DEFAULT_POOL_SIZE;
 pub const MAX_POOL_SIZE: u64 = 20;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PoolSizeDefaults {
+    pub uv_pool_size: u64,
+    pub conda_pool_size: u64,
+    pub pixi_pool_size: u64,
+}
+
+pub fn default_pool_sizes_for_python_env(env: &PythonEnvType) -> PoolSizeDefaults {
+    match env {
+        PythonEnvType::Uv => PoolSizeDefaults {
+            uv_pool_size: DEFAULT_SELECTED_POOL_SIZE,
+            conda_pool_size: DEFAULT_POOL_SIZE,
+            pixi_pool_size: DEFAULT_POOL_SIZE,
+        },
+        PythonEnvType::Conda => PoolSizeDefaults {
+            uv_pool_size: DEFAULT_POOL_SIZE,
+            conda_pool_size: DEFAULT_SELECTED_POOL_SIZE,
+            pixi_pool_size: DEFAULT_POOL_SIZE,
+        },
+        PythonEnvType::Pixi => PoolSizeDefaults {
+            uv_pool_size: DEFAULT_POOL_SIZE,
+            conda_pool_size: DEFAULT_POOL_SIZE,
+            pixi_pool_size: DEFAULT_SELECTED_POOL_SIZE,
+        },
+        PythonEnvType::Other(_) => PoolSizeDefaults {
+            uv_pool_size: DEFAULT_POOL_SIZE,
+            conda_pool_size: DEFAULT_POOL_SIZE,
+            pixi_pool_size: DEFAULT_POOL_SIZE,
+        },
+    }
+}
 
 /// Snapshot of all synced settings.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
@@ -291,6 +325,7 @@ impl SyncedSettings {
 
 impl Default for SyncedSettings {
     fn default() -> Self {
+        let pool_sizes = default_pool_sizes_for_python_env(&PythonEnvType::default());
         Self {
             theme: ThemeMode::default(),
             color_theme: ColorTheme::default(),
@@ -301,9 +336,9 @@ impl Default for SyncedSettings {
             pixi: PixiDefaults::default(),
             keep_alive_secs: DEFAULT_KEEP_ALIVE_SECS,
             onboarding_completed: false,
-            uv_pool_size: DEFAULT_UV_POOL_SIZE,
-            conda_pool_size: DEFAULT_CONDA_POOL_SIZE,
-            pixi_pool_size: DEFAULT_PIXI_POOL_SIZE,
+            uv_pool_size: pool_sizes.uv_pool_size,
+            conda_pool_size: pool_sizes.conda_pool_size,
+            pixi_pool_size: pool_sizes.pixi_pool_size,
             bootstrap_dx: false,
             install_id: String::new(),
             telemetry_enabled: true,
@@ -431,23 +466,6 @@ impl SettingsDoc {
 
         // nteract/dx kernel bootstrap (opt-in)
         let _ = doc.put(automerge::ROOT, "bootstrap_dx", defaults.bootstrap_dx);
-
-        // Pool sizes
-        let _ = doc.put(
-            automerge::ROOT,
-            "uv_pool_size",
-            defaults.uv_pool_size as i64,
-        );
-        let _ = doc.put(
-            automerge::ROOT,
-            "conda_pool_size",
-            defaults.conda_pool_size as i64,
-        );
-        let _ = doc.put(
-            automerge::ROOT,
-            "pixi_pool_size",
-            defaults.pixi_pool_size as i64,
-        );
 
         // Telemetry defaults (install_id left empty until first heartbeat)
         let _ = doc.put(automerge::ROOT, "install_id", "");
@@ -946,6 +964,12 @@ impl SettingsDoc {
             }
         };
 
+        let default_python_env = self
+            .get("default_python_env")
+            .and_then(|s| s.parse().ok())
+            .unwrap_or_default();
+        let pool_sizes = default_pool_sizes_for_python_env(&default_python_env);
+
         SyncedSettings {
             theme: self
                 .get("theme")
@@ -959,10 +983,7 @@ impl SettingsDoc {
                 .get("default_runtime")
                 .and_then(|s| s.parse().ok())
                 .unwrap_or_default(),
-            default_python_env: self
-                .get("default_python_env")
-                .and_then(|s| s.parse().ok())
-                .unwrap_or_default(),
+            default_python_env,
             uv: UvDefaults {
                 default_packages: uv_packages,
             },
@@ -983,13 +1004,13 @@ impl SettingsDoc {
             }),
             uv_pool_size: self
                 .get_u64("uv_pool_size")
-                .unwrap_or(defaults.uv_pool_size),
+                .unwrap_or(pool_sizes.uv_pool_size),
             conda_pool_size: self
                 .get_u64("conda_pool_size")
-                .unwrap_or(defaults.conda_pool_size),
+                .unwrap_or(pool_sizes.conda_pool_size),
             pixi_pool_size: self
                 .get_u64("pixi_pool_size")
-                .unwrap_or(defaults.pixi_pool_size),
+                .unwrap_or(pool_sizes.pixi_pool_size),
             bootstrap_dx: self
                 .get_bool("bootstrap_dx")
                 .unwrap_or(defaults.bootstrap_dx),
@@ -1257,8 +1278,59 @@ mod tests {
         assert_eq!(settings.theme, ThemeMode::System);
         assert_eq!(settings.default_runtime, Runtime::Python);
         assert_eq!(settings.default_python_env, PythonEnvType::Uv);
+        assert_eq!(settings.uv_pool_size, DEFAULT_SELECTED_POOL_SIZE);
+        assert_eq!(settings.conda_pool_size, DEFAULT_POOL_SIZE);
+        assert_eq!(settings.pixi_pool_size, DEFAULT_POOL_SIZE);
         assert!(settings.uv.default_packages.is_empty());
         assert!(settings.conda.default_packages.is_empty());
+    }
+
+    #[test]
+    fn test_selected_python_env_gets_larger_default_pool() {
+        let mut doc = SettingsDoc::new();
+        doc.put("default_python_env", "conda");
+        let settings = doc.get_all();
+        assert_eq!(settings.uv_pool_size, DEFAULT_POOL_SIZE);
+        assert_eq!(settings.conda_pool_size, DEFAULT_SELECTED_POOL_SIZE);
+        assert_eq!(settings.pixi_pool_size, DEFAULT_POOL_SIZE);
+
+        doc.put("default_python_env", "pixi");
+        let settings = doc.get_all();
+        assert_eq!(settings.uv_pool_size, DEFAULT_POOL_SIZE);
+        assert_eq!(settings.conda_pool_size, DEFAULT_POOL_SIZE);
+        assert_eq!(settings.pixi_pool_size, DEFAULT_SELECTED_POOL_SIZE);
+    }
+
+    #[test]
+    fn test_explicit_pool_sizes_override_selected_env_defaults() {
+        let mut doc = SettingsDoc::new();
+        doc.put("default_python_env", "pixi");
+        doc.put_u64("uv_pool_size", 4);
+        doc.put_u64("conda_pool_size", 5);
+        doc.put_u64("pixi_pool_size", 6);
+
+        let settings = doc.get_all();
+        assert_eq!(settings.uv_pool_size, 4);
+        assert_eq!(settings.conda_pool_size, 5);
+        assert_eq!(settings.pixi_pool_size, 6);
+    }
+
+    #[test]
+    fn test_apply_json_changes_persists_pool_size_matching_dynamic_default() {
+        let mut doc = SettingsDoc::new();
+
+        assert!(doc.apply_json_changes(&serde_json::json!({
+            "uv_pool_size": DEFAULT_SELECTED_POOL_SIZE
+        })));
+        assert_eq!(
+            doc.get_u64("uv_pool_size"),
+            Some(DEFAULT_SELECTED_POOL_SIZE)
+        );
+
+        assert!(doc.apply_json_changes(&serde_json::json!({
+            "default_python_env": "conda"
+        })));
+        assert_eq!(doc.get_all().uv_pool_size, DEFAULT_SELECTED_POOL_SIZE);
     }
 
     #[test]
@@ -1692,12 +1764,14 @@ mod tests {
 
     #[test]
     fn test_apply_json_changes_no_change_when_matching() {
-        let doc = SettingsDoc::new();
+        let mut doc = SettingsDoc::new();
+        doc.put_u64("uv_pool_size", DEFAULT_SELECTED_POOL_SIZE);
+        doc.put_u64("conda_pool_size", DEFAULT_POOL_SIZE);
+        doc.put_u64("pixi_pool_size", DEFAULT_POOL_SIZE);
         let settings = doc.get_all();
 
-        // Write current values back — should detect no change
+        // Write current persisted values back — should detect no change.
         let json = serde_json::to_value(&settings).unwrap();
-        let mut doc = SettingsDoc::new();
         let changed = doc.apply_json_changes(&json);
         assert!(!changed);
     }

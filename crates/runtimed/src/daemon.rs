@@ -103,9 +103,12 @@ impl Default for DaemonConfig {
             execution_store_dir: crate::default_execution_store_dir(),
             notebook_docs_dir: crate::default_notebook_docs_dir(),
             trusted_packages_db_path: crate::trusted_packages_db_path(),
-            uv_pool_size: 3,
-            conda_pool_size: 3,
-            pixi_pool_size: 2,
+            // These config defaults gate whether each warmer is enabled. The
+            // effective target comes from synced settings so the selected
+            // Python environment can default to a larger pool.
+            uv_pool_size: runtimed_client::settings_doc::DEFAULT_UV_POOL_SIZE as usize,
+            conda_pool_size: runtimed_client::settings_doc::DEFAULT_CONDA_POOL_SIZE as usize,
+            pixi_pool_size: runtimed_client::settings_doc::DEFAULT_PIXI_POOL_SIZE as usize,
             max_age_secs: 172800, // 2 days
             lock_dir: None,
             room_eviction_delay_ms: None,
@@ -3895,16 +3898,15 @@ impl Daemon {
             // the settings lock across the pool lock.
             let (target, expected_packages) = {
                 let settings = self.settings.read().await;
+                let synced = settings.get_all();
                 let target = if self.config.uv_pool_size == 0 {
                     0 // Test mode: explicit 0 in config means don't warm
                 } else {
-                    settings
-                        .get_u64("uv_pool_size")
-                        .unwrap_or(runtimed_client::settings_doc::DEFAULT_UV_POOL_SIZE)
+                    synced
+                        .uv_pool_size
                         .min(runtimed_client::settings_doc::MAX_POOL_SIZE)
                         as usize
                 };
-                let synced = settings.get_all();
                 let pkgs = uv_prewarmed_packages(&synced.uv.default_packages);
                 (target, pkgs)
             };
@@ -4000,16 +4002,15 @@ impl Daemon {
             // Snapshot expected package list and target pool size (issue #1915).
             let (target, expected_packages) = {
                 let settings = self.settings.read().await;
+                let synced = settings.get_all();
                 let target = if self.config.conda_pool_size == 0 {
                     0 // Test mode: explicit 0 in config means don't warm
                 } else {
-                    settings
-                        .get_u64("conda_pool_size")
-                        .unwrap_or(runtimed_client::settings_doc::DEFAULT_CONDA_POOL_SIZE)
+                    synced
+                        .conda_pool_size
                         .min(runtimed_client::settings_doc::MAX_POOL_SIZE)
                         as usize
                 };
-                let synced = settings.get_all();
                 let pkgs = conda_prewarmed_packages(&synced.conda.default_packages);
                 (target, pkgs)
             };
@@ -4112,16 +4113,15 @@ impl Daemon {
             // Snapshot expected package list and target pool size (issue #1915).
             let (target, expected_packages) = {
                 let settings = self.settings.read().await;
+                let synced = settings.get_all();
                 let target = if self.config.pixi_pool_size == 0 {
                     0 // Test mode: explicit 0 in config means don't warm
                 } else {
-                    settings
-                        .get_u64("pixi_pool_size")
-                        .unwrap_or(runtimed_client::settings_doc::DEFAULT_PIXI_POOL_SIZE)
+                    synced
+                        .pixi_pool_size
                         .min(runtimed_client::settings_doc::MAX_POOL_SIZE)
                         as usize
                 };
-                let synced = settings.get_all();
                 let pkgs = pixi_prewarmed_packages(&synced.pixi.default_packages);
                 (target, pkgs)
             };
@@ -5813,8 +5813,18 @@ mod tests {
     #[test]
     fn test_daemon_config_default() {
         let config = DaemonConfig::default();
-        assert_eq!(config.uv_pool_size, 3);
-        assert_eq!(config.conda_pool_size, 3);
+        assert_eq!(
+            config.uv_pool_size,
+            runtimed_client::settings_doc::DEFAULT_UV_POOL_SIZE as usize
+        );
+        assert_eq!(
+            config.conda_pool_size,
+            runtimed_client::settings_doc::DEFAULT_CONDA_POOL_SIZE as usize
+        );
+        assert_eq!(
+            config.pixi_pool_size,
+            runtimed_client::settings_doc::DEFAULT_PIXI_POOL_SIZE as usize
+        );
         #[cfg(unix)]
         assert!(config
             .socket_path

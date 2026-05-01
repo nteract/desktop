@@ -2372,20 +2372,20 @@ async fn test_pool_size_config_honored() {
     // Test 2: Verify that apply_json_changes() correctly updates pool sizes
     let mut settings_doc2 = runtimed_client::settings_doc::SettingsDoc::new();
 
-    // Initially, pool sizes should have default values (3, 3, 2)
+    // Initially, pool sizes should have dynamic defaults: base 1, selected env 2.
     assert_eq!(
-        settings_doc2.get_u64("uv_pool_size"),
-        Some(3),
+        settings_doc2.get_all().uv_pool_size,
+        2,
         "UV pool should start with default value"
     );
     assert_eq!(
-        settings_doc2.get_u64("conda_pool_size"),
-        Some(3),
+        settings_doc2.get_all().conda_pool_size,
+        1,
         "Conda pool should start with default value"
     );
     assert_eq!(
-        settings_doc2.get_u64("pixi_pool_size"),
-        Some(2),
+        settings_doc2.get_all().pixi_pool_size,
+        1,
         "Pixi pool should start with default value"
     );
 
