@@ -4,6 +4,9 @@
 
 This is a map. Subsystem details live in `contributing/`, auto-loaded rules live in `.claude/rules/`, and operational recipes live in `.claude/skills/` and `.codex/skills/`. Run `cargo xtask help` for build commands.
 
+Claude-specific skills live in `.claude/skills/`. Use when the task matches:
+- `notebook-layout-rendering` for frontend visual stability: stable DOM order, CSS order positioning, iframe lifecycle across reorders, scroll anchoring during output growth, layout pulses, and ResizeObserver scroll pinning
+
 Codex-specific repo skills live in `.codex/skills/`. Prefer them when the task matches:
 - `nteract-daemon-dev` for per-worktree daemon lifecycle, socket setup, and daemon-backed verification
 - `nteract-python-bindings` for `maturin develop`, venv selection, and MCP server work
