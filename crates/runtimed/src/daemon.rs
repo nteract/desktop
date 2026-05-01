@@ -11,6 +11,7 @@ use std::time::Instant;
 
 use anyhow::Context;
 use notify_debouncer_mini::DebounceEventResult;
+use sha2::{Digest, Sha256};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::{Mutex, Notify};
 use tracing::{debug, error, info, warn};
@@ -370,6 +371,11 @@ fn spawn_env_deletions(paths: Vec<PathBuf>) {
 struct Pool {
     /// Available environments ready for use.
     available: VecDeque<PoolEntry>,
+    /// Pool-root paths that were found on disk but whose package marker does
+    /// not match the current expected package set. Keep these tracked so
+    /// orphan GC does not delete a potentially working env while replacement
+    /// warming may fail offline.
+    retired_paths: std::collections::HashSet<PathBuf>,
     /// Number currently being created (reservation counter for deficit math).
     warming: usize,
     /// Paths of environments currently being warmed up (for GC protection).
@@ -387,6 +393,8 @@ struct Pool {
 }
 
 const MIN_WARM_BASES: usize = 2;
+const POOL_PACKAGE_HASH_FILE: &str = ".runt-pool-packages.sha256";
+const POOL_PACKAGE_HASH_VERSION: &str = "v1";
 
 fn has_package_named(packages: &[String], name: &str) -> bool {
     packages
@@ -444,6 +452,53 @@ fn pixi_prewarmed_packages(extra: &[String]) -> Vec<String> {
     packages
 }
 
+fn expected_pool_package_hash(env_type: EnvType, packages: &[String]) -> String {
+    let mut sorted = packages.to_vec();
+    sorted.sort();
+
+    let mut hasher = Sha256::new();
+    hasher.update(POOL_PACKAGE_HASH_VERSION.as_bytes());
+    hasher.update(b"\n");
+    hasher.update(env_type.to_string().as_bytes());
+    hasher.update(b"\n");
+    for package in sorted {
+        hasher.update(package.as_bytes());
+        hasher.update(b"\n");
+    }
+    hex::encode(hasher.finalize())
+}
+
+async fn write_pool_package_hash(
+    env_root: &Path,
+    env_type: EnvType,
+    packages: &[String],
+) -> std::io::Result<()> {
+    tokio::fs::write(
+        env_root.join(POOL_PACKAGE_HASH_FILE),
+        expected_pool_package_hash(env_type, packages),
+    )
+    .await
+}
+
+async fn pool_package_hash_matches(
+    env_root: &Path,
+    env_type: EnvType,
+    packages: &[String],
+) -> bool {
+    let marker_path = env_root.join(POOL_PACKAGE_HASH_FILE);
+    match tokio::fs::read_to_string(&marker_path).await {
+        Ok(stored) => stored.trim() == expected_pool_package_hash(env_type, packages),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
+        Err(e) => {
+            warn!(
+                "[runtimed] Failed to read pool package marker {:?}: {}",
+                marker_path, e
+            );
+            false
+        }
+    }
+}
+
 /// Settings changes that arrive close together (e.g. a user adding several
 /// default packages in the Settings panel, each dispatching its own sync
 /// round trip) would otherwise trigger a separate pool eviction + rewarm
@@ -461,6 +516,7 @@ impl Pool {
     fn new(target: usize, max_age_secs: u64) -> Self {
         Self {
             available: VecDeque::new(),
+            retired_paths: std::collections::HashSet::new(),
             warming: 0,
             warming_paths: std::collections::HashSet::new(),
             leased_paths: std::collections::HashSet::new(),
@@ -512,26 +568,26 @@ impl Pool {
         removed_paths
     }
 
-    /// Evict pool entries whose installed package set no longer matches the
-    /// current expected list, returning the pool-root paths so the caller can
-    /// delete them from disk.
+    /// Retire pool entries whose installed package set no longer matches the
+    /// current expected list, returning the number retired.
     ///
     /// Compares `PooledEnv::prewarmed_packages` as a sorted list against the
     /// caller-provided expected list. This catches changes to `uv.default_packages`,
     /// `conda.default_packages`, `pixi.default_packages`, and managed runtime
     /// package defaults.
     ///
-    /// Returned paths are normalised via [`pool_env_root`] so callers delete the
-    /// top-level pool directory (Pixi envs are nested under `.pixi/envs/default`
-    /// but GC and eviction must both operate on the `runtimed-pixi-*` root).
+    /// Retired paths are normalised via [`pool_env_root`] and kept in
+    /// `tracked_paths` so orphan GC does not remove a potentially working env
+    /// before a replacement has been warmed successfully. A later successful
+    /// warm deletes one retired env for the same pool kind.
     ///
     /// Note: envs that are still warming are not affected. Their `prewarmed_packages`
     /// is the snapshot the warming task captured at install time; once they finish,
-    /// the next sweep here will evict them if the expected list has drifted again.
-    fn evict_mismatched_packages(&mut self, expected: &[String]) -> Vec<PathBuf> {
+    /// the next sweep here will retire them if the expected list has drifted again.
+    fn retire_mismatched_packages(&mut self, expected: &[String]) -> usize {
         let mut expected_sorted: Vec<String> = expected.to_vec();
         expected_sorted.sort();
-        let mut evicted = Vec::new();
+        let mut retired = 0;
         let mut kept = VecDeque::new();
         for entry in self.available.drain(..) {
             let mut entry_pkgs = entry.env.prewarmed_packages.clone();
@@ -539,11 +595,13 @@ impl Pool {
             if entry_pkgs == expected_sorted {
                 kept.push_back(entry);
             } else {
-                evicted.push(pool_env_root(&entry.env.venv_path));
+                self.retired_paths
+                    .insert(pool_env_root(&entry.env.venv_path));
+                retired += 1;
             }
         }
         self.available = kept;
-        evicted
+        retired
     }
 
     /// Take an environment from the pool.
@@ -585,6 +643,18 @@ impl Pool {
         self.warming = self.warming.saturating_sub(1);
         // Reset failure state on success
         self.failure_state = FailureState::default();
+    }
+
+    fn pop_retired_path_after_replacement(&mut self) -> Option<PathBuf> {
+        let retired = self.retired_paths.iter().next().cloned();
+        if let Some(path) = &retired {
+            self.retired_paths.remove(path);
+        }
+        retired
+    }
+
+    fn retire_path(&mut self, path: PathBuf) {
+        self.retired_paths.insert(pool_env_root(&path));
     }
 
     /// Mark that warming failed with error details.
@@ -693,6 +763,7 @@ impl Pool {
         for entry in &self.available {
             tracked.insert(pool_env_root(&entry.env.venv_path));
         }
+        tracked.extend(self.retired_paths.iter().cloned());
         tracked.extend(self.warming_paths.iter().cloned());
         tracked.extend(self.leased_paths.iter().cloned());
         tracked
@@ -1792,6 +1863,7 @@ impl Daemon {
         let mut uv_found = 0;
         let mut conda_found = 0;
         let mut pixi_found = 0;
+        let mut retired_found = 0;
         let mut orphans: Vec<PathBuf> = Vec::new();
 
         while let Ok(Some(entry)) = entries.next_entry().await {
@@ -1806,8 +1878,13 @@ impl Daemon {
                 let python_path = env_path.join("bin").join("python");
 
                 if python_path.exists() {
+                    let hash_matches =
+                        pool_package_hash_matches(&env_path, EnvType::Uv, &uv_prewarmed).await;
                     let mut pool = self.uv_pool.lock().await;
-                    if pool.available.len() < pool.target {
+                    if !hash_matches {
+                        pool.retire_path(env_path.clone());
+                        retired_found += 1;
+                    } else if pool.available.len() < pool.target {
                         pool.available.push_back(PoolEntry {
                             env: PooledEnv {
                                 env_type: EnvType::Uv,
@@ -1840,8 +1917,14 @@ impl Daemon {
                 let python_path = env_path.join("bin").join("python");
 
                 if python_path.exists() {
+                    let hash_matches =
+                        pool_package_hash_matches(&env_path, EnvType::Conda, &conda_prewarmed)
+                            .await;
                     let mut pool = self.conda_pool.lock().await;
-                    if pool.available.len() < pool.target {
+                    if !hash_matches {
+                        pool.retire_path(env_path.clone());
+                        retired_found += 1;
+                    } else if pool.available.len() < pool.target {
                         pool.available.push_back(PoolEntry {
                             env: PooledEnv {
                                 env_type: EnvType::Conda,
@@ -1873,8 +1956,13 @@ impl Daemon {
                 let python_path = venv_path.join("bin").join("python");
 
                 if python_path.exists() && venv_path.join(".warmed").exists() {
+                    let hash_matches =
+                        pool_package_hash_matches(&env_path, EnvType::Pixi, &pixi_prewarmed).await;
                     let mut pool = self.pixi_pool.lock().await;
-                    if pool.available.len() < pool.target {
+                    if !hash_matches {
+                        pool.retire_path(env_path.clone());
+                        retired_found += 1;
+                    } else if pool.available.len() < pool.target {
                         pool.available.push_back(PoolEntry {
                             env: PooledEnv {
                                 env_type: EnvType::Pixi,
@@ -1903,6 +1991,12 @@ impl Daemon {
             info!(
                 "[runtimed] Found {} existing UV, {} Conda, {} Pixi environments",
                 uv_found, conda_found, pixi_found
+            );
+        }
+        if retired_found > 0 {
+            info!(
+                "[runtimed] Retired {} existing pool environment(s) with stale package markers",
+                retired_found
             );
         }
 
@@ -3911,10 +4005,10 @@ impl Daemon {
                 (target, pkgs)
             };
 
-            let (evicted_paths, deficit, should_retry, backoff_info) = {
+            let (retired_count, deficit, should_retry, backoff_info) = {
                 let mut pool = self.uv_pool.lock().await;
                 pool.set_target(target);
-                let evicted = pool.evict_mismatched_packages(&expected_packages);
+                let retired = pool.retire_mismatched_packages(&expected_packages);
                 let d = pool.deficit();
                 let retry = pool.should_retry();
                 let info = if pool.failure_state.consecutive_failures > 0 {
@@ -3931,16 +4025,15 @@ impl Daemon {
                 if d > 0 && retry {
                     pool.mark_warming(d);
                 }
-                (evicted, d, retry, info)
+                (retired, d, retry, info)
             };
 
-            if !evicted_paths.is_empty() {
+            if retired_count > 0 {
                 info!(
-                    "[runtimed] UV pool: evicting {} env(s) after settings change",
-                    evicted_paths.len()
+                    "[runtimed] UV pool: retiring {} env(s) after settings change",
+                    retired_count
                 );
-                spawn_env_deletions(evicted_paths);
-                // Publish the post-eviction state immediately so clients don't
+                // Publish the post-retirement state immediately so clients don't
                 // see ghost entries while the pool is in backoff or waiting
                 // for the next warm tick.
                 self.update_pool_doc().await;
@@ -4015,10 +4108,10 @@ impl Daemon {
                 (target, pkgs)
             };
 
-            let (evicted_paths, deficit, should_retry, backoff_info) = {
+            let (retired_count, deficit, should_retry, backoff_info) = {
                 let mut pool = self.conda_pool.lock().await;
                 pool.set_target(target);
-                let evicted = pool.evict_mismatched_packages(&expected_packages);
+                let retired = pool.retire_mismatched_packages(&expected_packages);
                 let d = pool.deficit();
                 let retry = pool.should_retry();
                 let info = if pool.failure_state.consecutive_failures > 0 {
@@ -4035,15 +4128,14 @@ impl Daemon {
                 if d > 0 && retry {
                     pool.mark_warming(d);
                 }
-                (evicted, d, retry, info)
+                (retired, d, retry, info)
             };
 
-            if !evicted_paths.is_empty() {
+            if retired_count > 0 {
                 info!(
-                    "[runtimed] Conda pool: evicting {} env(s) after settings change",
-                    evicted_paths.len()
+                    "[runtimed] Conda pool: retiring {} env(s) after settings change",
+                    retired_count
                 );
-                spawn_env_deletions(evicted_paths);
                 self.update_pool_doc().await;
             }
 
@@ -4126,10 +4218,10 @@ impl Daemon {
                 (target, pkgs)
             };
 
-            let (evicted_paths, deficit, should_retry, backoff_info) = {
+            let (retired_count, deficit, should_retry, backoff_info) = {
                 let mut pool = self.pixi_pool.lock().await;
                 pool.set_target(target);
-                let evicted = pool.evict_mismatched_packages(&expected_packages);
+                let retired = pool.retire_mismatched_packages(&expected_packages);
                 let d = pool.deficit();
                 let retry = pool.should_retry();
                 let info = if pool.failure_state.consecutive_failures > 0 {
@@ -4146,15 +4238,14 @@ impl Daemon {
                 if d > 0 && retry {
                     pool.mark_warming(d);
                 }
-                (evicted, d, retry, info)
+                (retired, d, retry, info)
             };
 
-            if !evicted_paths.is_empty() {
+            if retired_count > 0 {
                 info!(
-                    "[runtimed] Pixi pool: evicting {} env(s) after settings change",
-                    evicted_paths.len()
+                    "[runtimed] Pixi pool: retiring {} env(s) after settings change",
+                    retired_count
                 );
-                spawn_env_deletions(evicted_paths);
                 self.update_pool_doc().await;
             }
 
@@ -4507,8 +4598,17 @@ impl Daemon {
 
         match warmup_outcome {
             WarmupOutcome::Ok => {
-                guard.commit();
+                if let Err(e) =
+                    write_pool_package_hash(&env_path, EnvType::Conda, &conda_install_packages)
+                        .await
                 {
+                    warn!(
+                        "[runtimed] Failed to write Conda pool package marker for {:?}: {}",
+                        env_path, e
+                    );
+                }
+                guard.commit();
+                let retired_to_delete = {
                     let mut pool = self.conda_pool.lock().await;
                     pool.add(PooledEnv {
                         env_type: EnvType::Conda,
@@ -4516,6 +4616,10 @@ impl Daemon {
                         python_path,
                         prewarmed_packages: conda_install_packages,
                     });
+                    pool.pop_retired_path_after_replacement()
+                };
+                if let Some(path) = retired_to_delete {
+                    spawn_env_deletions(vec![path]);
                 }
 
                 {
@@ -4680,8 +4784,16 @@ impl Daemon {
                 }
 
                 info!("[runtimed] Pixi environment ready at {:?}", env.project_dir);
-                guard.commit();
+                if let Err(e) =
+                    write_pool_package_hash(&project_dir, EnvType::Pixi, &prewarmed_packages).await
                 {
+                    warn!(
+                        "[runtimed] Failed to write Pixi pool package marker for {:?}: {}",
+                        project_dir, e
+                    );
+                }
+                guard.commit();
+                let retired_to_delete = {
                     let mut pool = self.pixi_pool.lock().await;
                     pool.add(PooledEnv {
                         env_type: EnvType::Pixi,
@@ -4689,6 +4801,10 @@ impl Daemon {
                         python_path: env.python_path,
                         prewarmed_packages,
                     });
+                    pool.pop_retired_path_after_replacement()
+                };
+                if let Some(path) = retired_to_delete {
+                    spawn_env_deletions(vec![path]);
                 }
                 self.update_pool_doc().await;
             }
@@ -5066,8 +5182,16 @@ impl Daemon {
         match warmup_outcome {
             WarmupOutcome::Ok => {
                 info!("[runtimed] UV environment ready at {:?}", venv_path);
-                guard.commit();
+                if let Err(e) =
+                    write_pool_package_hash(&venv_path, EnvType::Uv, &install_packages).await
                 {
+                    warn!(
+                        "[runtimed] Failed to write UV pool package marker for {:?}: {}",
+                        venv_path, e
+                    );
+                }
+                guard.commit();
+                let retired_to_delete = {
                     let mut pool = self.uv_pool.lock().await;
                     pool.add(PooledEnv {
                         env_type: EnvType::Uv,
@@ -5075,6 +5199,10 @@ impl Daemon {
                         python_path,
                         prewarmed_packages: install_packages,
                     });
+                    pool.pop_retired_path_after_replacement()
+                };
+                if let Some(path) = retired_to_delete {
+                    spawn_env_deletions(vec![path]);
                 }
                 self.update_pool_doc().await;
             }
@@ -5219,7 +5347,11 @@ mod tests {
     }
 
     fn create_test_env(temp_dir: &TempDir, name: &str) -> PooledEnv {
-        let venv_path = temp_dir.path().join(name);
+        create_test_env_in(temp_dir.path(), name)
+    }
+
+    fn create_test_env_in(parent: &Path, name: &str) -> PooledEnv {
+        let venv_path = parent.join(name);
         std::fs::create_dir_all(&venv_path).unwrap();
 
         #[cfg(windows)]
@@ -5252,6 +5384,7 @@ mod tests {
         assert_eq!(pool.available.len(), 0);
         assert_eq!(pool.warming, 0);
         assert!(pool.leased_paths.is_empty());
+        assert!(pool.retired_paths.is_empty());
     }
 
     #[test]
@@ -5296,10 +5429,12 @@ mod tests {
         let available_env = create_test_env(&temp_dir, "runtimed-uv-available");
         let leased_env = create_test_env(&temp_dir, "runtimed-uv-leased");
         let warming = temp_dir.path().join("runtimed-uv-warming");
+        let retired = temp_dir.path().join("runtimed-uv-retired");
 
         pool.add(available_env.clone());
         pool.add(leased_env.clone());
         pool.register_warming_path(warming.clone());
+        pool.retire_path(retired.clone());
 
         let (taken, stale) = pool.take();
         assert!(taken.is_some());
@@ -5309,6 +5444,7 @@ mod tests {
         assert!(tracked.contains(&pool_env_root(&available_env.venv_path)));
         assert!(tracked.contains(&pool_env_root(&leased_env.venv_path)));
         assert!(tracked.contains(&warming));
+        assert!(tracked.contains(&retired));
     }
 
     /// Build a minimal `DaemonConfig` for in-process tests. Pool sizes
@@ -6406,10 +6542,10 @@ mod tests {
         assert!(pool.warming_paths.contains(&path3));
     }
 
-    // ── Pool eviction on settings change (issue #1915) ───────────────
+    // ── Pool retirement on settings change (issue #1915) ─────────────
 
     #[test]
-    fn test_evict_mismatched_packages_removes_stale_entries() {
+    fn test_retire_mismatched_packages_removes_stale_entries_from_available() {
         let temp_dir = TempDir::new().unwrap();
         let mut pool = Pool::new(3, 3600);
 
@@ -6417,16 +6553,17 @@ mod tests {
         e1.prewarmed_packages = vec!["ipykernel".into(), "pandas".into()];
         let mut e2 = create_test_env(&temp_dir, "runtimed-uv-b");
         e2.prewarmed_packages = vec!["ipykernel".into(), "numpy".into()];
-        let e2_path = e2.venv_path.clone();
+        let e2_root = pool_env_root(&e2.venv_path);
         pool.add(e1);
         pool.add(e2);
         assert_eq!(pool.available.len(), 2);
 
         let expected = vec!["ipykernel".to_string(), "pandas".to_string()];
-        let evicted = pool.evict_mismatched_packages(&expected);
+        let retired = pool.retire_mismatched_packages(&expected);
 
-        assert_eq!(evicted, vec![e2_path]);
+        assert_eq!(retired, 1);
         assert_eq!(pool.available.len(), 1);
+        assert!(pool.retired_paths.contains(&e2_root));
         assert_eq!(
             pool.available.front().unwrap().env.prewarmed_packages,
             vec!["ipykernel".to_string(), "pandas".to_string()]
@@ -6434,7 +6571,7 @@ mod tests {
     }
 
     #[test]
-    fn test_evict_mismatched_packages_ignores_order() {
+    fn test_retire_mismatched_packages_ignores_order() {
         let temp_dir = TempDir::new().unwrap();
         let mut pool = Pool::new(3, 3600);
 
@@ -6443,14 +6580,15 @@ mod tests {
         pool.add(env);
 
         let expected = vec!["numpy".into(), "ipykernel".into(), "pandas".into()];
-        let evicted = pool.evict_mismatched_packages(&expected);
+        let retired = pool.retire_mismatched_packages(&expected);
 
-        assert!(evicted.is_empty(), "sorted equality should ignore order");
+        assert_eq!(retired, 0, "sorted equality should ignore order");
         assert_eq!(pool.available.len(), 1);
+        assert!(pool.retired_paths.is_empty());
     }
 
     #[test]
-    fn test_evict_mismatched_packages_evicts_all_when_all_stale() {
+    fn test_retire_mismatched_packages_retires_all_when_all_stale() {
         let temp_dir = TempDir::new().unwrap();
         let mut pool = Pool::new(3, 3600);
 
@@ -6463,25 +6601,27 @@ mod tests {
 
         // Settings added a new default package — every env is now stale.
         let expected = vec!["ipykernel".to_string(), "pandas".to_string()];
-        let evicted = pool.evict_mismatched_packages(&expected);
+        let retired = pool.retire_mismatched_packages(&expected);
 
-        assert_eq!(evicted.len(), 3);
+        assert_eq!(retired, 3);
         assert!(pool.available.is_empty());
+        assert_eq!(pool.retired_paths.len(), 3);
     }
 
     #[test]
-    fn test_evict_mismatched_packages_empty_pool_is_noop() {
+    fn test_retire_mismatched_packages_empty_pool_is_noop() {
         let mut pool = Pool::new(3, 3600);
-        let evicted = pool.evict_mismatched_packages(&["ipykernel".to_string()]);
-        assert!(evicted.is_empty());
+        let retired = pool.retire_mismatched_packages(&["ipykernel".to_string()]);
+        assert_eq!(retired, 0);
         assert!(pool.available.is_empty());
+        assert!(pool.retired_paths.is_empty());
     }
 
     #[test]
-    fn test_evict_mismatched_packages_returns_pool_root_for_nested_venv() {
-        // Pixi envs live at `runtimed-pixi-*/.pixi/envs/default`. Eviction
-        // must return the pool root so `spawn_env_deletions` removes the
-        // whole directory, not just the inner venv.
+    fn test_retire_mismatched_packages_tracks_pool_root_for_nested_venv() {
+        // Pixi envs live at `runtimed-pixi-*/.pixi/envs/default`. Retirement
+        // must track the pool root so orphan GC protects the whole directory,
+        // not just the inner venv.
         let temp_dir = TempDir::new().unwrap();
         let mut pool = Pool::new(3, 3600);
 
@@ -6500,13 +6640,89 @@ mod tests {
         });
 
         let expected = vec!["ipykernel".to_string(), "pandas".to_string()];
-        let evicted = pool.evict_mismatched_packages(&expected);
+        let retired = pool.retire_mismatched_packages(&expected);
 
-        assert_eq!(
-            evicted,
-            vec![pool_root],
-            "nested venv should evict by pool root, not inner venv path"
+        assert_eq!(retired, 1);
+        assert!(
+            pool.retired_paths.contains(&pool_root),
+            "nested venv should retire by pool root, not inner venv path"
         );
+    }
+
+    #[test]
+    fn test_pop_retired_path_after_successful_replacement_returns_one_path() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut pool = Pool::new(3, 3600);
+        let retired_root = temp_dir.path().join("runtimed-uv-retired");
+        pool.retire_path(retired_root.clone());
+
+        let env = create_test_env(&temp_dir, "runtimed-uv-fresh");
+        pool.add(env);
+        let retired = pool.pop_retired_path_after_replacement();
+
+        assert_eq!(retired, Some(retired_root));
+        assert!(pool.retired_paths.is_empty());
+    }
+
+    #[test]
+    fn test_expected_pool_package_hash_ignores_package_order() {
+        let a = vec!["pandas".to_string(), "ipykernel".to_string()];
+        let b = vec!["ipykernel".to_string(), "pandas".to_string()];
+        assert_eq!(
+            expected_pool_package_hash(EnvType::Uv, &a),
+            expected_pool_package_hash(EnvType::Uv, &b)
+        );
+    }
+
+    #[test]
+    fn test_expected_pool_package_hash_includes_env_type() {
+        let packages = vec!["ipykernel".to_string()];
+        assert_ne!(
+            expected_pool_package_hash(EnvType::Uv, &packages),
+            expected_pool_package_hash(EnvType::Conda, &packages)
+        );
+    }
+
+    #[tokio::test]
+    async fn find_existing_environments_recovers_matching_package_hash() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = DaemonConfig {
+            uv_pool_size: 1,
+            ..lease_test_config(&temp_dir)
+        };
+        std::fs::create_dir_all(&config.cache_dir).unwrap();
+        let expected = uv_prewarmed_packages(&[]);
+        let env = create_test_env_in(&config.cache_dir, "runtimed-uv-matching");
+        write_pool_package_hash(&env.venv_path, EnvType::Uv, &expected)
+            .await
+            .unwrap();
+
+        let daemon = Daemon::new(config).unwrap();
+        daemon.find_existing_environments().await;
+
+        let pool = daemon.uv_pool.lock().await;
+        assert_eq!(pool.available.len(), 1);
+        assert!(pool.retired_paths.is_empty());
+    }
+
+    #[tokio::test]
+    async fn find_existing_environments_retires_missing_package_hash_without_deleting() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = DaemonConfig {
+            uv_pool_size: 1,
+            ..lease_test_config(&temp_dir)
+        };
+        std::fs::create_dir_all(&config.cache_dir).unwrap();
+        let env = create_test_env_in(&config.cache_dir, "runtimed-uv-legacy");
+        let root = pool_env_root(&env.venv_path);
+
+        let daemon = Daemon::new(config).unwrap();
+        daemon.find_existing_environments().await;
+
+        let pool = daemon.uv_pool.lock().await;
+        assert!(pool.available.is_empty());
+        assert!(pool.retired_paths.contains(&root));
+        assert!(root.exists(), "retired legacy env should stay on disk");
     }
 
     // ── Blob GC correctness (spec 1) ─────────────────────────────────
