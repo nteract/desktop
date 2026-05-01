@@ -729,6 +729,29 @@ function AppContent() {
     [],
   );
 
+  const refreshPendingActionDependencyFingerprint = useCallback(
+    (action: PendingTrustAction | null) => {
+      if (!action) return;
+      const dependencyFingerprint = captureDependencyFingerprint();
+      const refreshed: PendingTrustAction =
+        action.kind === "sync_deps"
+          ? {
+              ...action,
+              provenance: {
+                ...action.provenance,
+                dependency_fingerprint: dependencyFingerprint,
+              },
+            }
+          : {
+              ...action,
+              dependencyFingerprint,
+            };
+      pendingTrustActionRef.current = refreshed;
+      setPendingTrustAction(refreshed);
+    },
+    [captureDependencyFingerprint],
+  );
+
   // Check trust and start kernel if trusted, otherwise show dialog.
   // Returns true if kernel was started, false if trust dialog opened or error.
   const tryStartKernel = useCallback(
@@ -1000,6 +1023,9 @@ function AppContent() {
     const success = await approveTrust(
       dependencyFingerprint ? { dependencyFingerprint } : undefined,
     );
+    if (!success) {
+      refreshPendingActionDependencyFingerprint(action);
+    }
     if (success && pendingKernelStartRef.current) {
       pendingKernelStartRef.current = false;
       setTrustApprovalHandoffPending(true);
@@ -1015,6 +1041,7 @@ function AppContent() {
     approveTrust,
     handleTrustApprovedLaunch,
     pendingActionDependencyFingerprint,
+    refreshPendingActionDependencyFingerprint,
     runTrustApprovedAction,
     setBlockedTrustAction,
   ]);
@@ -1025,6 +1052,9 @@ function AppContent() {
     const success = await approveTrust(
       dependencyFingerprint ? { dependencyFingerprint } : undefined,
     );
+    if (!success) {
+      refreshPendingActionDependencyFingerprint(action);
+    }
     if (success && pendingKernelStartRef.current) {
       pendingKernelStartRef.current = false;
       setTrustApprovalHandoffPending(true);
@@ -1038,6 +1068,7 @@ function AppContent() {
     approveTrust,
     handleTrustApprovedLaunch,
     pendingActionDependencyFingerprint,
+    refreshPendingActionDependencyFingerprint,
     setBlockedTrustAction,
   ]);
 
