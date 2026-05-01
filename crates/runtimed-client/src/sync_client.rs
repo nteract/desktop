@@ -15,8 +15,8 @@ use tokio::io::{AsyncRead, AsyncWrite};
 
 use crate::connection::{self, Handshake};
 use crate::settings_doc::{
-    read_nested_list, split_comma_list, ColorTheme, CondaDefaults, PixiDefaults, SyncedSettings,
-    ThemeMode, UvDefaults,
+    default_pool_sizes_for_python_env, read_nested_list, split_comma_list, ColorTheme,
+    CondaDefaults, PixiDefaults, SyncedSettings, ThemeMode, UvDefaults,
 };
 
 /// Error type for sync client operations.
@@ -421,6 +421,11 @@ pub fn get_all_from_doc(doc: &AutoCommit) -> SyncedSettings {
         }
     };
 
+    let default_python_env = get_str("default_python_env")
+        .and_then(|s| s.parse().ok())
+        .unwrap_or_default();
+    let pool_sizes = default_pool_sizes_for_python_env(&default_python_env);
+
     SyncedSettings {
         theme: get_str("theme")
             .and_then(|s| serde_json::from_str::<ThemeMode>(&format!("\"{s}\"")).ok())
@@ -431,9 +436,7 @@ pub fn get_all_from_doc(doc: &AutoCommit) -> SyncedSettings {
         default_runtime: get_str("default_runtime")
             .and_then(|s| s.parse().ok())
             .unwrap_or_default(),
-        default_python_env: get_str("default_python_env")
-            .and_then(|s| s.parse().ok())
-            .unwrap_or_default(),
+        default_python_env,
         uv: UvDefaults {
             default_packages: uv_packages,
         },
@@ -448,9 +451,9 @@ pub fn get_all_from_doc(doc: &AutoCommit) -> SyncedSettings {
         // assume they're upgrading from before onboarding was added → treat as completed
         onboarding_completed: get_bool("onboarding_completed")
             .unwrap_or_else(|| get_str("theme").is_some() || get_str("default_runtime").is_some()),
-        uv_pool_size: get_u64("uv_pool_size").unwrap_or(defaults.uv_pool_size),
-        conda_pool_size: get_u64("conda_pool_size").unwrap_or(defaults.conda_pool_size),
-        pixi_pool_size: get_u64("pixi_pool_size").unwrap_or(defaults.pixi_pool_size),
+        uv_pool_size: get_u64("uv_pool_size").unwrap_or(pool_sizes.uv_pool_size),
+        conda_pool_size: get_u64("conda_pool_size").unwrap_or(pool_sizes.conda_pool_size),
+        pixi_pool_size: get_u64("pixi_pool_size").unwrap_or(pool_sizes.pixi_pool_size),
         bootstrap_dx: get_bool("bootstrap_dx").unwrap_or(defaults.bootstrap_dx),
         install_id: get_str("install_id").unwrap_or_default(),
         telemetry_enabled: get_bool("telemetry_enabled").unwrap_or(true),
@@ -510,6 +513,18 @@ mod tests {
         assert_eq!(settings.theme, ThemeMode::Dark);
         assert_eq!(settings.default_runtime, Runtime::Deno);
         assert_eq!(settings.default_python_env, PythonEnvType::Conda);
+    }
+
+    #[test]
+    fn test_get_all_pool_defaults_follow_selected_python_env() {
+        let mut doc = AutoCommit::new();
+        doc.put(automerge::ROOT, "default_python_env", "pixi")
+            .unwrap();
+
+        let settings = get_all_from_doc(&doc);
+        assert_eq!(settings.uv_pool_size, 1);
+        assert_eq!(settings.conda_pool_size, 1);
+        assert_eq!(settings.pixi_pool_size, 2);
     }
 
     #[test]

@@ -139,15 +139,15 @@ fn apply_selected_pool_defaults(
     mut settings: SyncedSettings,
     json: &serde_json::Value,
 ) -> SyncedSettings {
-    let (uv, conda, pixi) = default_pool_sizes_for_python_env(&settings.default_python_env);
+    let pool_sizes = default_pool_sizes_for_python_env(&settings.default_python_env);
     if json.get("uv_pool_size").is_none() {
-        settings.uv_pool_size = uv;
+        settings.uv_pool_size = pool_sizes.uv_pool_size;
     }
     if json.get("conda_pool_size").is_none() {
-        settings.conda_pool_size = conda;
+        settings.conda_pool_size = pool_sizes.conda_pool_size;
     }
     if json.get("pixi_pool_size").is_none() {
-        settings.pixi_pool_size = pixi;
+        settings.pixi_pool_size = pool_sizes.pixi_pool_size;
     }
     settings
 }

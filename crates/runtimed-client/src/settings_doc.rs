@@ -184,24 +184,35 @@ pub const DEFAULT_CONDA_POOL_SIZE: u64 = DEFAULT_POOL_SIZE;
 pub const DEFAULT_PIXI_POOL_SIZE: u64 = DEFAULT_POOL_SIZE;
 pub const MAX_POOL_SIZE: u64 = 20;
 
-pub fn default_pool_sizes_for_python_env(env: &PythonEnvType) -> (u64, u64, u64) {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PoolSizeDefaults {
+    pub uv_pool_size: u64,
+    pub conda_pool_size: u64,
+    pub pixi_pool_size: u64,
+}
+
+pub fn default_pool_sizes_for_python_env(env: &PythonEnvType) -> PoolSizeDefaults {
     match env {
-        PythonEnvType::Uv => (
-            DEFAULT_SELECTED_POOL_SIZE,
-            DEFAULT_POOL_SIZE,
-            DEFAULT_POOL_SIZE,
-        ),
-        PythonEnvType::Conda => (
-            DEFAULT_POOL_SIZE,
-            DEFAULT_SELECTED_POOL_SIZE,
-            DEFAULT_POOL_SIZE,
-        ),
-        PythonEnvType::Pixi => (
-            DEFAULT_POOL_SIZE,
-            DEFAULT_POOL_SIZE,
-            DEFAULT_SELECTED_POOL_SIZE,
-        ),
-        PythonEnvType::Other(_) => (DEFAULT_POOL_SIZE, DEFAULT_POOL_SIZE, DEFAULT_POOL_SIZE),
+        PythonEnvType::Uv => PoolSizeDefaults {
+            uv_pool_size: DEFAULT_SELECTED_POOL_SIZE,
+            conda_pool_size: DEFAULT_POOL_SIZE,
+            pixi_pool_size: DEFAULT_POOL_SIZE,
+        },
+        PythonEnvType::Conda => PoolSizeDefaults {
+            uv_pool_size: DEFAULT_POOL_SIZE,
+            conda_pool_size: DEFAULT_SELECTED_POOL_SIZE,
+            pixi_pool_size: DEFAULT_POOL_SIZE,
+        },
+        PythonEnvType::Pixi => PoolSizeDefaults {
+            uv_pool_size: DEFAULT_POOL_SIZE,
+            conda_pool_size: DEFAULT_POOL_SIZE,
+            pixi_pool_size: DEFAULT_SELECTED_POOL_SIZE,
+        },
+        PythonEnvType::Other(_) => PoolSizeDefaults {
+            uv_pool_size: DEFAULT_POOL_SIZE,
+            conda_pool_size: DEFAULT_POOL_SIZE,
+            pixi_pool_size: DEFAULT_POOL_SIZE,
+        },
     }
 }
 
@@ -314,6 +325,7 @@ impl SyncedSettings {
 
 impl Default for SyncedSettings {
     fn default() -> Self {
+        let pool_sizes = default_pool_sizes_for_python_env(&PythonEnvType::default());
         Self {
             theme: ThemeMode::default(),
             color_theme: ColorTheme::default(),
@@ -324,9 +336,9 @@ impl Default for SyncedSettings {
             pixi: PixiDefaults::default(),
             keep_alive_secs: DEFAULT_KEEP_ALIVE_SECS,
             onboarding_completed: false,
-            uv_pool_size: default_pool_sizes_for_python_env(&PythonEnvType::default()).0,
-            conda_pool_size: default_pool_sizes_for_python_env(&PythonEnvType::default()).1,
-            pixi_pool_size: default_pool_sizes_for_python_env(&PythonEnvType::default()).2,
+            uv_pool_size: pool_sizes.uv_pool_size,
+            conda_pool_size: pool_sizes.conda_pool_size,
+            pixi_pool_size: pool_sizes.pixi_pool_size,
             bootstrap_dx: false,
             install_id: String::new(),
             telemetry_enabled: true,
@@ -956,8 +968,7 @@ impl SettingsDoc {
             .get("default_python_env")
             .and_then(|s| s.parse().ok())
             .unwrap_or_default();
-        let (default_uv_pool_size, default_conda_pool_size, default_pixi_pool_size) =
-            default_pool_sizes_for_python_env(&default_python_env);
+        let pool_sizes = default_pool_sizes_for_python_env(&default_python_env);
 
         SyncedSettings {
             theme: self
@@ -991,13 +1002,15 @@ impl SettingsDoc {
                 // Check if this is an existing user by looking for other settings
                 self.get("theme").is_some() || self.get("default_runtime").is_some()
             }),
-            uv_pool_size: self.get_u64("uv_pool_size").unwrap_or(default_uv_pool_size),
+            uv_pool_size: self
+                .get_u64("uv_pool_size")
+                .unwrap_or(pool_sizes.uv_pool_size),
             conda_pool_size: self
                 .get_u64("conda_pool_size")
-                .unwrap_or(default_conda_pool_size),
+                .unwrap_or(pool_sizes.conda_pool_size),
             pixi_pool_size: self
                 .get_u64("pixi_pool_size")
-                .unwrap_or(default_pixi_pool_size),
+                .unwrap_or(pool_sizes.pixi_pool_size),
             bootstrap_dx: self
                 .get_bool("bootstrap_dx")
                 .unwrap_or(defaults.bootstrap_dx),
