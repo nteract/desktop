@@ -213,6 +213,14 @@ async fn serve_plugin_with_dev_assets(
         return text_response(StatusCode::NOT_FOUND, "Not Found");
     }
 
+    // The dev path reads from `apps/notebook/src/renderer-plugins/`, which
+    // also holds notebook-only files like `isolated-renderer.*`. Gate the
+    // filesystem lookup on the embedded manifest so `/plugins/{name}`
+    // exposes the same surface in dev and release.
+    if !embedded_plugins::is_embedded(name) {
+        return text_response(StatusCode::NOT_FOUND, "Not Found");
+    }
+
     if let Some(dir) = dev_assets_dir {
         if let Some(response) = serve_dev_plugin_file(name, dir).await {
             return response;
@@ -624,6 +632,23 @@ mod tests {
         let wrapped = wrap_for_mcp_app(raw.as_bytes());
         let expected = "(function(){\nvar exports={},module={exports:exports};\nvar require=window.__nteract.require;\nmodule.exports = { install: (n) => n.register('x', {}) };\n;var _i=module.exports&&module.exports.install;\nif(typeof _i==='function')_i(window.__nteract)\n})();";
         assert_eq!(std::str::from_utf8(&wrapped).unwrap(), expected);
+    }
+
+    #[tokio::test]
+    async fn test_dev_filesystem_rejects_names_not_in_embedded_manifest() {
+        // `apps/notebook/src/renderer-plugins/` also holds `isolated-renderer.*`,
+        // which the Vite app loads directly — it must not be reachable via
+        // `/plugins/` in dev, matching the release contract.
+        let dir = TempDir::new().unwrap();
+        let plugin_dir = dir.path().join("plugins");
+        tokio::fs::create_dir_all(&plugin_dir).await.unwrap();
+        tokio::fs::write(plugin_dir.join("isolated-renderer.js"), b"// notebook-only")
+            .await
+            .unwrap();
+
+        let response =
+            serve_plugin_with_dev_assets("isolated-renderer.js", Some(&plugin_dir)).await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]

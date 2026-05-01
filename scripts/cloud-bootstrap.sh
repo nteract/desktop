@@ -48,15 +48,15 @@ else
   log "  pnpm install: skipped (no pnpm-lock.yaml or pnpm missing)"
 fi
 
-# Detect missing wasm + renderer-plugin artifacts. They're gitignored, so a
-# fresh clone has none of them; on warm sessions they're already cached.
-# Touch one canonical output from each of the four directories `cargo xtask
-# wasm` produces.
+# Detect missing wasm + renderer-plugin artifacts. runtimed-wasm and sift-wasm
+# are gitignored wasm-pack outputs; sift.js is the one renderer-plugin bundle
+# that's rebuilt in lockstep with sift-wasm rather than LFS-tracked. The stable
+# renderer-plugin bundles come from LFS (see `.gitattributes`) and are present
+# after `git lfs pull`.
 ARTIFACT_PROBES=(
   crates/sift-wasm/pkg/sift_wasm_bg.wasm
   apps/notebook/src/wasm/runtimed-wasm/runtimed_wasm_bg.wasm
   apps/notebook/src/renderer-plugins/sift.js
-  crates/runt-mcp/assets/plugins/sift_wasm.wasm
 )
 NEEDS_BUILD=0
 for probe in "${ARTIFACT_PROBES[@]}"; do

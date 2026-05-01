@@ -81,6 +81,15 @@ pub fn get(name: &str) -> Option<(&'static [u8], &'static str)> {
     Some((plugin.bytes, content_type_for(name)?))
 }
 
+/// Whether this plugin name is in the embedded manifest. Used to gate the
+/// dev-mode filesystem path so `/plugins/{name}` exposes the same surface in
+/// dev and release — otherwise a dev daemon could serve unrelated files that
+/// happen to live under `apps/notebook/src/renderer-plugins/` (e.g.
+/// `isolated-renderer.js`, which the Vite app loads directly).
+pub fn is_embedded(name: &str) -> bool {
+    EMBEDDED_PLUGINS.iter().any(|p| p.name == name)
+}
+
 pub(crate) fn content_type_for(name: &str) -> Option<&'static str> {
     let (_, ext) = name.rsplit_once('.')?;
     match ext {
