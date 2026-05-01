@@ -9,6 +9,7 @@ Claude-specific skills live in `.claude/skills/`. Use when the task matches:
 - `mcp-session-lifecycle` for MCP proxy supervision, daemon watch loop, session state, rejoin/reconnect races, and room eviction
 - `sync-protocol-patterns` for higher-level protocol design: comparing automerge-repo/samod/nteract architectures, adding new sync streams, heads tracking patterns, and connection lifecycle decisions
 - `automerge-document-model` for Automerge internals: OpSet, ChangeGraph, actor tables, save/load lifecycle, fork/merge semantics, #1187 panic root cause, and document size reasoning
+- `execution-pipeline` for end-to-end cell execution: required_heads → ExecuteCell → CellQueued → RuntimeStateDoc polling → output-sync grace → output resolution. Use when debugging missing outputs, execution timeouts, or stale results
 
 Codex-specific repo skills live in `.codex/skills/`. Prefer them when the task matches:
 - `nteract-daemon-dev` for per-worktree daemon lifecycle, socket setup, and daemon-backed verification
