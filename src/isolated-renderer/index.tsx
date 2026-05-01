@@ -204,8 +204,8 @@ let layoutPulseTimers: number[] = [];
 function pulseRendererLayout(): void {
   window.dispatchEvent(new Event("resize"));
   window.dispatchEvent(new Event("scroll"));
-  document.dispatchEvent(new Event("scroll", { bubbles: true }));
-  document.body?.dispatchEvent(new Event("scroll", { bubbles: true }));
+  document.dispatchEvent(new Event("scroll"));
+  document.body?.dispatchEvent(new Event("scroll"));
   window.parent.postMessage(
     {
       type: "resize",
