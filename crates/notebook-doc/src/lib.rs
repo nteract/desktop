@@ -70,9 +70,16 @@ use std::collections::HashMap;
 /// v3 documents are migrated in-place (version bump only).
 pub const SCHEMA_VERSION: u64 = 4;
 
+/// Reserved actor for the canonical schema seed change.
+///
+/// This actor authors only the shared root skeleton. Peers load that same
+/// history and then switch to their real actor before writing notebook-specific
+/// content. Do not reuse this actor for live peer edits.
+const SCHEMA_SEED_ACTOR: &str = "nteract:notebook-schema:v4";
+
 use automerge::sync;
 use automerge::sync::SyncDoc;
-use automerge::transaction::Transactable;
+use automerge::transaction::{CommitOptions, Transactable};
 use automerge::{ActorId, AutoCommit, AutomergeError, LoadOptions, ObjId, ObjType, ReadDoc};
 
 /// Re-export so downstream crates (runtimed-wasm) can set text encoding
@@ -793,48 +800,52 @@ impl NotebookDoc {
 
     /// Create a new notebook document with a specific actor identity.
     ///
-    /// Sets the actor ID **before** the initial structural operations so every
-    /// operation in the document — including the schema, cells map, and metadata
-    /// scaffolding — is attributed to `actor_label`.
+    /// The canonical schema seed remains attributed to `SCHEMA_SEED_ACTOR`;
+    /// notebook-specific initialization such as `notebook_id` is attributed to
+    /// `actor_label`, as are all later writes.
     pub fn new_with_actor(notebook_id: &str, actor_label: &str) -> Self {
         Self::new_inner(notebook_id, Some(actor_label), None)
     }
 
-    /// Shared constructor: optionally sets the actor before any mutations so
-    /// that even the structural bootstrap operations are properly attributed.
-    ///
-    /// `AutoCommit::set_actor()` commits any pending transaction before
-    /// changing the actor, so the actor must be set before the first `put`
-    /// call — otherwise the initial change would be attributed to a random
-    /// UUID instead of the intended label.
+    /// Shared constructor: starts from the canonical schema seed, optionally
+    /// switches to the caller's actor, then applies notebook-specific fields.
     fn new_inner(
         notebook_id: &str,
         actor_label: Option<&str>,
         encoding: Option<TextEncoding>,
     ) -> Self {
-        let mut doc = match encoding {
-            Some(enc) => AutoCommit::new_with_encoding(enc),
-            None => AutoCommit::new(),
-        };
+        let mut doc = Self::schema_seed_doc(encoding.unwrap_or(TextEncoding::UnicodeCodePoint));
 
-        // Set actor *before* any puts so the initial structural change is
-        // attributed to the caller, not a throwaway random UUID.
-        if let Some(label) = actor_label {
-            doc.set_actor(ActorId::from(label.as_bytes()));
+        // Set actor before notebook-specific puts so the seed stays attributed
+        // to SCHEMA_SEED_ACTOR while local fields are attributed to the caller.
+        match actor_label {
+            Some(label) => {
+                doc.set_actor(ActorId::from(label.as_bytes()));
+            }
+            None => {
+                doc.set_actor(ActorId::random());
+            }
         }
 
-        let _ = doc.put(automerge::ROOT, "schema_version", SCHEMA_VERSION);
         let _ = doc.put(automerge::ROOT, "notebook_id", notebook_id);
 
-        // cells: empty Map (keyed by cell ID, with fractional indexing for order)
-        let _ = doc.put_object(automerge::ROOT, "cells", ObjType::Map);
-
-        // metadata: Map with default runtime
-        if let Ok(meta_id) = doc.put_object(automerge::ROOT, "metadata", ObjType::Map) {
-            let _ = doc.put(&meta_id, "runtime", "python");
-        }
-
         Self { doc }
+    }
+
+    fn schema_seed_doc(encoding: TextEncoding) -> AutoCommit {
+        let mut seed = AutoCommit::new_with_encoding(encoding);
+        seed.set_actor(ActorId::from(SCHEMA_SEED_ACTOR.as_bytes()));
+
+        let _ = seed.put(automerge::ROOT, "schema_version", SCHEMA_VERSION);
+        let _ = seed.put_object(automerge::ROOT, "cells", ObjType::Map);
+        let _ = seed.put_object(automerge::ROOT, "metadata", ObjType::Map);
+
+        let _ = seed.commit_with(
+            CommitOptions::default()
+                .with_message("Seed nteract notebook schema")
+                .with_time(0),
+        );
+        seed
     }
 
     /// Read the schema version from the document, if present.
@@ -855,12 +866,14 @@ impl NotebookDoc {
     /// Create a client-side bootstrap document for sync.
     ///
     /// Every client — WASM frontend, Python bindings, future Swift, etc. —
-    /// must start from the same document skeleton before syncing with the
-    /// daemon.  The skeleton mirrors what [`NotebookDoc::new()`] creates:
+    /// starts from the same canonical schema seed before syncing with the
+    /// daemon. The seed history creates the shared root skeleton:
     ///
     /// ```text
     /// ROOT/
-    ///   schema_version: <SCHEMA_VERSION>  (scalar only — no cells/metadata maps)
+    ///   schema_version: <SCHEMA_VERSION>
+    ///   cells/                        (empty Map)
+    ///   metadata/                     (empty Map)
     /// ```
     ///
     /// Both parameters are required:
@@ -870,8 +883,8 @@ impl NotebookDoc {
     ///   local interpretation — peers with different encodings sync correctly.
     ///
     /// - `actor_label` — identity string for edit attribution (e.g.,
-    ///   `"human:kyle:session42"`, `"agent:claude:abc123"`). Set **before**
-    ///   the bootstrap puts so all ops are attributed to the caller.
+    ///   `"human:<session-id>"`, `"agent:<tool>:<session-id>"`). Set after
+    ///   loading the seed and before local writes.
     ///
     /// **Why this matters**: Automerge's `load_incremental` has a fast-path
     /// for empty documents (`is_empty() == true`) that replaces `*self` with
@@ -879,22 +892,13 @@ impl NotebookDoc {
     /// encoding or actor we set.  A non-empty doc takes the normal
     /// incremental-apply path which preserves all settings.
     ///
-    /// The daemon creates these maps in `new_inner()`. We must NOT create
-    /// `cells` or `metadata` maps here — if we do, Automerge sees two
-    /// concurrent `put_object` operations at the same key from different
-    /// actors, creating a conflict. If our empty map wins, the daemon's
-    /// populated map (with cells or dependencies) becomes invisible.
+    /// The maps are safe to have locally because every peer loads the exact
+    /// same seed history. What remains unsafe is independently authoring
+    /// "identical" `put_object(ROOT, key, Map)` operations from different
+    /// actors; those would still create conflicts.
     pub fn bootstrap(encoding: TextEncoding, actor_label: &str) -> Self {
-        let mut doc = AutoCommit::new_with_encoding(encoding);
+        let mut doc = Self::schema_seed_doc(encoding);
         doc.set_actor(ActorId::from(actor_label.as_bytes()));
-
-        // Seed with a single scalar so Automerge's is_empty() returns false.
-        // This prevents load_incremental's empty-doc fast-path from replacing
-        // *self with a default-options doc, which would discard our encoding
-        // and actor settings. The daemon's cells and metadata maps arrive
-        // via normal Automerge sync — no need to create them here.
-        let _ = doc.put(automerge::ROOT, "schema_version", SCHEMA_VERSION);
-
         Self { doc }
     }
 
@@ -934,9 +938,9 @@ impl NotebookDoc {
     ///
     /// For loaded documents, `set_actor` is safe — there is no pending
     /// transaction, so the actor simply applies to future operations.
-    /// For fresh documents (file missing or corrupt), `new_with_actor` sets
-    /// the actor before any structural puts so the initial change is properly
-    /// attributed — even on the corrupt-file recovery path.
+    /// For fresh documents (file missing or corrupt), `new_with_actor` keeps
+    /// the schema seed canonical and attributes notebook-specific fields to
+    /// `actor_label` — even on the corrupt-file recovery path.
     #[cfg(feature = "persistence")]
     pub fn load_or_create_with_actor(path: &Path, notebook_id: &str, actor_label: &str) -> Self {
         Self::load_or_create_inner(path, notebook_id, Some(actor_label))
@@ -945,8 +949,8 @@ impl NotebookDoc {
     /// Shared implementation for `load_or_create` and `load_or_create_with_actor`.
     ///
     /// When `actor_label` is `Some`, every code path that creates a fresh
-    /// document uses `new_with_actor` so the structural bootstrap operations
-    /// are properly attributed (not just the post-load `set_actor` call).
+    /// document uses `new_with_actor` so notebook-specific initialization is
+    /// properly attributed (not just the post-load `set_actor` call).
     #[cfg(feature = "persistence")]
     fn load_or_create_inner(path: &Path, notebook_id: &str, actor_label: Option<&str>) -> Self {
         if path.exists() {
@@ -1105,7 +1109,11 @@ impl NotebookDoc {
         }
     }
 
-    /// Return true once the daemon-authored cells map has synced into this doc.
+    /// Return true once the cells map is present.
+    ///
+    /// New docs and bootstrap docs start with the canonical seed cells map.
+    /// Loaded legacy docs may still depend on sync or migration before the map
+    /// appears.
     pub fn has_cells_map(&self) -> bool {
         self.cells_map_id().is_some()
     }
@@ -1983,6 +1991,16 @@ impl NotebookDoc {
         seen.into_iter().collect()
     }
 
+    #[cfg(test)]
+    fn change_hashes_for_actor(&mut self, actor_label: &str) -> Vec<automerge::ChangeHash> {
+        self.doc
+            .get_changes(&[])
+            .into_iter()
+            .filter(|change| actor_label_from_id(change.actor_id()) == actor_label)
+            .map(|change| change.hash())
+            .collect()
+    }
+
     // ── Internal helpers ────────────────────────────────────────────
 
     /// Get the cells Map object ID.
@@ -2125,6 +2143,14 @@ impl NotebookDoc {
                 automerge::Value::Object(ObjType::Text) => Some(id),
                 _ => None,
             })
+    }
+
+    #[cfg(test)]
+    fn root_map_conflict_count(&self, key: &str) -> usize {
+        self.doc
+            .get_all(automerge::ROOT, key)
+            .unwrap_or_default()
+            .len()
     }
 
     fn map_id(&self, parent: &ObjId, key: &str) -> Option<ObjId> {
@@ -2676,15 +2702,14 @@ mod tests {
 
     #[test]
     fn test_empty_doc_has_bootstrap_skeleton() {
-        // bootstrap() seeds only schema_version — no cells or metadata maps.
-        // Those are created by the daemon and arrive via Automerge sync.
+        // bootstrap() loads the same canonical schema history as the daemon:
+        // no notebook_id yet, but shared cells/metadata maps already exist.
         let doc = NotebookDoc::bootstrap(TextEncoding::UnicodeCodePoint, "test");
         assert_eq!(doc.notebook_id(), None);
         assert_eq!(doc.cell_count(), 0);
-        assert!(!doc.has_cells_map());
+        assert!(doc.has_cells_map());
         assert_eq!(doc.get_cells(), vec![]);
         assert_eq!(doc.schema_version(), Some(SCHEMA_VERSION));
-        // No metadata map exists before sync — reads return None gracefully.
         assert_eq!(doc.get_metadata("runtime"), None);
         assert!(doc.get_metadata_snapshot().is_none());
     }
@@ -2692,10 +2717,102 @@ mod tests {
     #[test]
     fn test_empty_doc_set_metadata() {
         let mut doc = NotebookDoc::bootstrap(TextEncoding::UnicodeCodePoint, "test");
-        // set_metadata should create the metadata map on demand
+        // set_metadata writes into the canonical metadata map.
         let result = doc.set_metadata("runtime", "python");
         assert!(result.is_ok());
         assert_eq!(doc.get_metadata("runtime"), Some("python".to_string()));
+    }
+
+    #[test]
+    fn test_bootstrap_and_new_share_canonical_schema_history() {
+        let mut daemon = NotebookDoc::new_with_actor("test-notebook", "runtimed");
+        let mut frontend = NotebookDoc::bootstrap(TextEncoding::UnicodeCodePoint, "human:tab-1");
+
+        assert_eq!(daemon.root_map_conflict_count("cells"), 1);
+        assert_eq!(daemon.root_map_conflict_count("metadata"), 1);
+        assert_eq!(frontend.root_map_conflict_count("cells"), 1);
+        assert_eq!(frontend.root_map_conflict_count("metadata"), 1);
+
+        let daemon_seed_heads = daemon.change_hashes_for_actor(SCHEMA_SEED_ACTOR);
+        let frontend_seed_heads = frontend.change_hashes_for_actor(SCHEMA_SEED_ACTOR);
+        assert_eq!(daemon_seed_heads, frontend_seed_heads);
+        assert_eq!(daemon_seed_heads.len(), 1);
+        assert_eq!(
+            daemon_seed_heads,
+            NotebookDoc {
+                doc: NotebookDoc::schema_seed_doc(TextEncoding::Utf16CodeUnit)
+            }
+            .change_hashes_for_actor(SCHEMA_SEED_ACTOR)
+        );
+
+        let daemon_actors = daemon.contributing_actors();
+        let frontend_actors = frontend.contributing_actors();
+        assert!(daemon_actors.contains(&"runtimed".to_string()));
+        assert!(daemon_actors.contains(&SCHEMA_SEED_ACTOR.to_string()));
+        assert!(frontend_actors.contains(&SCHEMA_SEED_ACTOR.to_string()));
+        assert!(
+            !frontend_actors.contains(&"human:tab-1".to_string()),
+            "setting the actor should not create a change"
+        );
+    }
+
+    #[test]
+    fn test_new_bootstrap_preserves_visible_state_from_legacy_v4_docs() {
+        use automerge::sync;
+
+        // Simulate a v4 document saved before the canonical seed existed: the
+        // daemon actor created the structural root maps directly.
+        let mut legacy = AutoCommit::new_with_encoding(TextEncoding::UnicodeCodePoint);
+        legacy.set_actor(ActorId::from("runtimed".as_bytes()));
+        let _ = legacy.put(automerge::ROOT, "schema_version", SCHEMA_VERSION);
+        let _ = legacy.put(automerge::ROOT, "notebook_id", "legacy-notebook");
+        let _ = legacy.put_object(automerge::ROOT, "cells", ObjType::Map);
+        if let Ok(meta_id) = legacy.put_object(automerge::ROOT, "metadata", ObjType::Map) {
+            let _ = legacy.put(&meta_id, "runtime", "python");
+        }
+        let mut daemon = NotebookDoc { doc: legacy };
+        daemon.add_cell(0, "cell-1", "code").unwrap();
+        daemon.update_source("cell-1", "print('legacy')").unwrap();
+        daemon.set_metadata("legacy_key", "legacy_value").unwrap();
+        assert!(daemon.change_hashes_for_actor(SCHEMA_SEED_ACTOR).is_empty());
+
+        let mut frontend = NotebookDoc::bootstrap(TextEncoding::UnicodeCodePoint, "human:tab-1");
+        let mut daemon_state = sync::State::new();
+        let mut frontend_state = sync::State::new();
+
+        for _ in 0..10 {
+            let msg_from_daemon = daemon.generate_sync_message(&mut daemon_state);
+            let msg_from_frontend = frontend.generate_sync_message(&mut frontend_state);
+            if msg_from_daemon.is_none() && msg_from_frontend.is_none() {
+                break;
+            }
+            if let Some(message) = msg_from_daemon {
+                frontend
+                    .receive_sync_message(&mut frontend_state, message)
+                    .unwrap();
+            }
+            if let Some(message) = msg_from_frontend {
+                daemon
+                    .receive_sync_message(&mut daemon_state, message)
+                    .unwrap();
+            }
+        }
+
+        // The old daemon-authored maps stay visible for our expected daemon
+        // actor, but the seeded bootstrap cannot retroactively share object IDs
+        // with old-history documents. Keep this explicit until we choose a
+        // history-rewrite migration.
+        assert_eq!(frontend.root_map_conflict_count("cells"), 2);
+        assert_eq!(frontend.root_map_conflict_count("metadata"), 2);
+        assert_eq!(frontend.cell_count(), 1);
+        assert_eq!(
+            frontend.get_cell("cell-1").unwrap().source,
+            "print('legacy')"
+        );
+        assert_eq!(
+            frontend.get_metadata("legacy_key"),
+            Some("legacy_value".to_string())
+        );
     }
 
     #[test]
@@ -2736,12 +2853,12 @@ mod tests {
     /// peer (the app frontend) joins.
     ///
     /// Reproduces the exact production scenario:
-    /// 1. Daemon creates notebook (new_with_actor → creates metadata map)
+    /// 1. Daemon creates notebook (new_with_actor → loads canonical metadata map)
     /// 2. MCP agent bootstraps, syncs, then adds 10 deps
     /// 3. MCP syncs deps back to daemon
     /// 4. App frontend bootstraps and syncs — deps must survive
     ///
-    /// Before the fix, bootstrap() created `metadata: {}` which competed
+    /// Before the original fix, bootstrap() created `metadata: {}` which competed
     /// with the daemon's metadata map via Automerge conflict resolution.
     /// If the bootstrap's empty map won, deps became invisible.
     #[test]
@@ -2804,8 +2921,7 @@ mod tests {
         );
 
         // Step 4: App frontend bootstraps and syncs — the critical test
-        let mut frontend =
-            NotebookDoc::bootstrap(TextEncoding::UnicodeCodePoint, "human:kyle:tab-1");
+        let mut frontend = NotebookDoc::bootstrap(TextEncoding::UnicodeCodePoint, "human:tab-1");
         let mut daemon_fe_state = sync::State::new();
         let mut fe_state = sync::State::new();
         sync_peers(
@@ -2920,7 +3036,7 @@ mod tests {
         assert_eq!(doc.notebook_id(), Some("test-notebook".to_string()));
         assert_eq!(doc.cell_count(), 0);
         assert_eq!(doc.get_cells(), vec![]);
-        assert_eq!(doc.get_metadata("runtime"), Some("python".to_string()));
+        assert_eq!(doc.get_metadata("runtime"), None);
     }
 
     #[test]
@@ -3013,7 +3129,7 @@ mod tests {
     #[test]
     fn test_metadata() {
         let mut doc = NotebookDoc::new("nb1");
-        assert_eq!(doc.get_metadata("runtime"), Some("python".to_string()));
+        assert_eq!(doc.get_metadata("runtime"), None);
 
         doc.set_metadata("runtime", "deno").unwrap();
         assert_eq!(doc.get_metadata("runtime"), Some("deno".to_string()));
@@ -4334,7 +4450,7 @@ mod tests {
         let mut doc = NotebookDoc::new_with_actor("test", "runtimed");
         doc.add_cell(0, "cell-1", "code").unwrap();
         let actors = doc.contributing_actors();
-        assert_eq!(actors, vec!["runtimed"]);
+        assert_eq!(actors, vec![SCHEMA_SEED_ACTOR, "runtimed"]);
     }
 
     #[test]
@@ -4373,10 +4489,10 @@ mod tests {
 
         // Both docs see both contributors
         let actors = runtimed.contributing_actors();
-        assert_eq!(actors, vec!["human:tab-1", "runtimed"]);
+        assert_eq!(actors, vec!["human:tab-1", SCHEMA_SEED_ACTOR, "runtimed"]);
 
         let actors = human.contributing_actors();
-        assert_eq!(actors, vec!["human:tab-1", "runtimed"]);
+        assert_eq!(actors, vec!["human:tab-1", SCHEMA_SEED_ACTOR, "runtimed"]);
     }
 
     /// Validates the local-first empty notebook flow: daemon creates a doc
