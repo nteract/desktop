@@ -1,7 +1,10 @@
 use super::*;
+use automerge::{transaction::Transactable, ActorId, AutoCommit, ObjType};
 use runtime_doc::{KernelActivity, RuntimeLifecycle};
 use serial_test::serial;
 use uuid::Uuid;
+
+const SCHEMA_SEED_ACTOR_LABEL: &str = "nteract:notebook-schema:v4";
 
 #[test]
 fn fallback_output_stamps_id_when_missing() {
@@ -158,6 +161,42 @@ fn test_blob_store(tmp: &tempfile::TempDir) -> Arc<BlobStore> {
 
 fn test_trusted_packages() -> crate::trusted_packages::TrustedPackageStore {
     crate::trusted_packages::TrustedPackageStore::unavailable("test")
+}
+
+fn legacy_pre_seed_v4_doc_bytes(notebook_id: &str, actor: &str, cell_id: &str) -> Vec<u8> {
+    let mut doc =
+        AutoCommit::new_with_encoding(crate::notebook_doc::TextEncoding::UnicodeCodePoint);
+    doc.set_actor(ActorId::from(actor.as_bytes()));
+    doc.put(
+        automerge::ROOT,
+        "schema_version",
+        crate::notebook_doc::SCHEMA_VERSION,
+    )
+    .unwrap();
+    doc.put(automerge::ROOT, "notebook_id", notebook_id)
+        .unwrap();
+
+    let cells = doc
+        .put_object(automerge::ROOT, "cells", ObjType::Map)
+        .unwrap();
+    let metadata = doc
+        .put_object(automerge::ROOT, "metadata", ObjType::Map)
+        .unwrap();
+    doc.put(&metadata, "legacy_marker", "preserved").unwrap();
+
+    let cell = doc.put_object(&cells, cell_id, ObjType::Map).unwrap();
+    doc.put(&cell, "id", cell_id).unwrap();
+    doc.put(&cell, "cell_type", "code").unwrap();
+    doc.put(&cell, "position", "80").unwrap();
+    let source = doc.put_object(&cell, "source", ObjType::Text).unwrap();
+    doc.splice_text(&source, 0, 0, "print('legacy')").unwrap();
+    doc.put(&cell, "execution_count", "null").unwrap();
+    doc.put_object(&cell, "metadata", ObjType::Map).unwrap();
+    doc.put_object(&cell, "resolved_assets", ObjType::Map)
+        .unwrap();
+    doc.put_object(&cell, "attachments", ObjType::Map).unwrap();
+
+    doc.save()
 }
 
 #[tokio::test]
@@ -397,6 +436,76 @@ async fn test_new_fresh_deletes_stale_persisted_doc_for_file_path() {
 }
 
 #[tokio::test]
+async fn test_file_backed_room_discards_legacy_persisted_history_before_ipynb_import() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let blob_store = test_blob_store(&tmp);
+    let uuid = Uuid::parse_str("bbbbbbbb-cccc-dddd-eeee-222222222222").unwrap();
+    let actor = "legacy-runtimed";
+
+    let filename = notebook_doc_filename(&uuid.to_string());
+    let persist_path = tmp.path().join(&filename);
+    let legacy_bytes = legacy_pre_seed_v4_doc_bytes(&uuid.to_string(), actor, "legacy-cell");
+    persist_notebook_bytes(&legacy_bytes, &persist_path);
+    assert!(persist_path.exists(), "legacy persisted doc should exist");
+
+    let notebook_path = tmp.path().join("source-of-truth.ipynb");
+    std::fs::write(
+        &notebook_path,
+        r#"{
+            "nbformat": 4,
+            "nbformat_minor": 5,
+            "metadata": {},
+            "cells": [
+                {
+                    "id": "ipynb-cell",
+                    "cell_type": "code",
+                    "source": "print('ipynb')",
+                    "execution_count": null,
+                    "metadata": {},
+                    "outputs": []
+                }
+            ]
+        }"#,
+    )
+    .unwrap();
+
+    let room = NotebookRoom::new_fresh(
+        uuid,
+        Some(notebook_path.clone()),
+        tmp.path(),
+        blob_store,
+        false,
+    );
+
+    assert!(
+        !persist_path.exists(),
+        "file-backed rooms must discard stale UUID-keyed Automerge history"
+    );
+
+    let actors = room.doc.try_write().unwrap().contributing_actors();
+    assert!(
+        actors.contains(&SCHEMA_SEED_ACTOR_LABEL.to_string()),
+        "file-backed rooms should start from canonical seed history"
+    );
+    assert!(
+        !actors.contains(&actor.to_string()),
+        "stale legacy persisted actor must not contribute to file-backed rooms"
+    );
+
+    {
+        let mut doc = room.doc.write().await;
+        load_notebook_from_disk(&mut doc, &notebook_path, &room.blob_store)
+            .await
+            .unwrap();
+        assert_eq!(doc.cell_count(), 1);
+        let cells = doc.get_cells();
+        assert_eq!(cells[0].id, "ipynb-cell");
+        assert_eq!(cells[0].source, "print('ipynb')");
+        assert!(doc.get_cell("legacy-cell").is_none());
+    }
+}
+
+#[tokio::test]
 async fn test_new_fresh_loads_persisted_doc_for_untitled_notebook() {
     let tmp = tempfile::TempDir::new().unwrap();
     let blob_store = test_blob_store(&tmp);
@@ -437,6 +546,47 @@ async fn test_new_fresh_loads_persisted_doc_for_untitled_notebook() {
     );
     let cells = doc.get_cells();
     assert_eq!(cells[0].source, "restored content");
+}
+
+#[tokio::test]
+async fn test_untitled_room_preserves_legacy_persisted_automerge_history() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let blob_store = test_blob_store(&tmp);
+    let uuid = Uuid::parse_str("cccccccc-dddd-eeee-ffff-333333333333").unwrap();
+    let actor = "legacy-runtimed";
+
+    let filename = notebook_doc_filename(&uuid.to_string());
+    let persist_path = tmp.path().join(&filename);
+    let legacy_bytes = legacy_pre_seed_v4_doc_bytes(&uuid.to_string(), actor, "legacy-cell");
+    persist_notebook_bytes(&legacy_bytes, &persist_path);
+
+    let room = NotebookRoom::new_fresh(uuid, None, tmp.path(), blob_store, false);
+
+    assert!(
+        persist_path.exists(),
+        "untitled rooms keep their persisted Automerge document as source of truth"
+    );
+
+    let mut doc = room.doc.try_write().unwrap();
+    assert_eq!(doc.cell_count(), 1);
+    assert_eq!(
+        doc.get_cell("legacy-cell").unwrap().source,
+        "print('legacy')"
+    );
+    assert_eq!(
+        doc.get_metadata("legacy_marker"),
+        Some("preserved".to_string())
+    );
+
+    let actors = doc.contributing_actors();
+    assert!(
+        actors.contains(&actor.to_string()),
+        "untitled restore should preserve the legacy document actor/history"
+    );
+    assert!(
+        !actors.contains(&SCHEMA_SEED_ACTOR_LABEL.to_string()),
+        "loading existing untitled Automerge bytes must not rewrite history into the canonical seed"
+    );
 }
 
 /// Regression test for #1646: untitled notebooks must read trust from
