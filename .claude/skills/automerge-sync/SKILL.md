@@ -283,9 +283,13 @@ Don't reset sync state just because local mutations happened. Reset it
 when the *transport* breaks (reconnect, panic recovery). Resetting
 after every mutation would make every sync round a full exchange.
 
-## Confirm Sync Design
+## Causal Ordering: confirm_sync and required_heads
 
-`confirm_sync` verifies the daemon has merged specific local changes:
+Two mechanisms ensure the daemon sees client edits before acting on them:
+
+### confirm_sync (client-side wait)
+
+`confirm_sync` blocks the client until the daemon has merged specific heads:
 
 1. Caller captures current heads via `DocHandle::confirm_sync()`
 2. A `ConfirmSync` command goes to the sync task with target heads
@@ -296,6 +300,39 @@ after every mutation would make every sync round a full exchange.
 
 This is non-blocking -- the frame loop keeps draining while the waiter
 resolves in the background.
+
+### required_heads (daemon-side wait, preferred)
+
+`required_heads` moves the wait to the daemon, eliminating the client-side
+round-trip:
+
+1. Client captures current heads via `DocHandle::current_heads_hex()`
+2. Client sends the request with `required_heads` in the envelope
+3. Daemon's `wait_for_required_heads()` checks if the notebook doc contains
+   all listed change hashes (containment check, not equality)
+4. If not yet present, subscribes to `changed_tx` and polls until all
+   heads arrive or 10s timeout
+5. Only then does the daemon evaluate the request
+
+**Why required_heads is better:**
+- No client-side blocking -- the request is sent immediately
+- The daemon can process other requests while waiting
+- Works correctly even if the sync stream is slow (the request just
+  queues behind the sync convergence)
+- Replaces the old `confirm_sync` → `execute_cell` two-step with a
+  single `execute_cell` request that carries its causal precondition
+
+**Used by:** `execute_cell`, `run_all_cells` (both MCP and frontend).
+Frontend flushes pending sync before capturing heads to minimize the
+daemon-side wait.
+
+### Which to use
+
+| Scenario | Use |
+|----------|-----|
+| Execute / run-all (need source synced) | `required_heads` via `send_request_after_heads` |
+| General "is my edit synced?" check | `confirm_sync` (still available) |
+| Save (daemon reads doc directly) | Neither -- daemon reads its own doc copy |
 
 ## Key Source Files
 
@@ -308,6 +345,9 @@ resolves in the background.
 | `samod/subduction-sans-io/src/engine.rs` | `handle_connection_lost` -- simplest correct reconnection |
 | `crates/notebook-sync/src/sync_task.rs` | Biased select, catch_unwind, rebuild |
 | `crates/notebook-sync/src/shared.rs` | `SharedDocState`, dual sync states |
+| `crates/notebook-sync/src/handle.rs` | `send_request_after_heads`, `current_heads_hex`, `confirm_sync` |
+| `crates/runtimed/src/notebook_sync_server/peer_writer.rs` | `wait_for_required_heads`, daemon-side causal gate |
+| `crates/runt-mcp/src/execution.rs` | MCP execute path using required_heads |
 
 ## Decision Framework
 
@@ -321,3 +361,4 @@ When you need to decide how to handle sync state:
 | Adding a new sync stream | New frame type, new sync::State field, catch_unwind guard |
 | Peer lost all data (empty heads) | Already handled -- receive_sync_message resets sent_hashes |
 | Switching read-only to read-write | set_read_only() handles reset + SyncReset flag |
+| Need daemon to see edits before executing | Use `required_heads` (not confirm_sync) |
