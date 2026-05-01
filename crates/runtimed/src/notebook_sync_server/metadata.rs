@@ -2241,14 +2241,11 @@ pub(crate) async fn reset_starting_state(
 /// Returns `Ok((PooledEnv, actual_packages))` on success, `Err(())` on failure.
 pub(crate) async fn try_uv_pool_for_inline_deps(
     deps: &[String],
-    bootstrap_dx: bool,
     daemon: &std::sync::Arc<crate::daemon::Daemon>,
     room: &NotebookRoom,
     progress_handler: std::sync::Arc<dyn kernel_env::ProgressHandler>,
 ) -> Result<(crate::PooledEnv, Vec<String>), ()> {
-    // `inline_deps_with_bootstrap` adds the bootstrap-only parquet encoder
-    // while keeping the launcher package itself vendored by the daemon.
-    let effective_deps = crate::inline_env::inline_deps_with_bootstrap(deps, bootstrap_dx);
+    let effective_deps = crate::inline_env::inline_deps_with_required_packages(deps);
 
     // Quick pre-check: if any dep has version specifiers, skip pool entirely
     // (avoids consuming a pool env we'd have to discard)
@@ -2290,13 +2287,7 @@ pub(crate) async fn try_uv_pool_for_inline_deps(
             // before releasing the lease — otherwise the sweep races
             // with the launch handler's later `runtime_agent_env_path`
             // write and can delete the env mid-launch.
-            crate::inline_env::claim_pool_env_for_uv_inline_cache(
-                &mut env,
-                deps,
-                None,
-                bootstrap_dx,
-            )
-            .await;
+            crate::inline_env::claim_pool_env_for_uv_inline_cache(&mut env, deps, None).await;
             {
                 let mut ep = room.runtime_agent_env_path.write().await;
                 *ep = Some(env.venv_path.clone());
@@ -2327,13 +2318,8 @@ pub(crate) async fn try_uv_pool_for_inline_deps(
                     // the next restart cache-hits. See #2089 / #2083.
                     // Same claim-best-effort caveat as the Subset arm —
                     // install runtime ownership before releasing.
-                    crate::inline_env::claim_pool_env_for_uv_inline_cache(
-                        &mut env,
-                        deps,
-                        None,
-                        bootstrap_dx,
-                    )
-                    .await;
+                    crate::inline_env::claim_pool_env_for_uv_inline_cache(&mut env, deps, None)
+                        .await;
                     {
                         let mut ep = room.runtime_agent_env_path.write().await;
                         *ep = Some(env.venv_path.clone());
@@ -2377,12 +2363,11 @@ pub(crate) async fn try_uv_pool_for_inline_deps(
 pub(crate) async fn try_conda_pool_for_inline_deps(
     deps: &[String],
     channels: &[String],
-    bootstrap_dx: bool,
     daemon: &std::sync::Arc<crate::daemon::Daemon>,
     room: &NotebookRoom,
     progress_handler: std::sync::Arc<dyn kernel_env::ProgressHandler>,
 ) -> Result<(crate::PooledEnv, Vec<String>), ()> {
-    let effective_deps = crate::inline_env::inline_deps_with_bootstrap(deps, bootstrap_dx);
+    let effective_deps = crate::inline_env::inline_deps_with_required_packages(deps);
 
     // Only use pool for default conda-forge channel
     let is_default_channels =
@@ -2427,13 +2412,8 @@ pub(crate) async fn try_conda_pool_for_inline_deps(
             // restart cache-hits. See #2089 / #2083. The claim is
             // best-effort, so install runtime ownership before releasing
             // the lease (see try_uv_pool_for_inline_deps for rationale).
-            crate::inline_env::claim_pool_env_for_conda_inline_cache(
-                &mut env,
-                deps,
-                channels,
-                bootstrap_dx,
-            )
-            .await;
+            crate::inline_env::claim_pool_env_for_conda_inline_cache(&mut env, deps, channels)
+                .await;
             {
                 let mut ep = room.runtime_agent_env_path.write().await;
                 *ep = Some(env.venv_path.clone());
@@ -2476,10 +2456,7 @@ pub(crate) async fn try_conda_pool_for_inline_deps(
                     // caveat as the Subset arm — install runtime
                     // ownership before releasing.
                     crate::inline_env::claim_pool_env_for_conda_inline_cache(
-                        &mut env,
-                        deps,
-                        channels,
-                        bootstrap_dx,
+                        &mut env, deps, channels,
                     )
                     .await;
                     {
@@ -2935,8 +2912,8 @@ pub(crate) async fn auto_launch_kernel(
             room.state.clone(),
         ));
 
-    // Fetch feature flags now so inline env prep hashes match what the
-    // kernel will actually receive (bootstrap_dx changes the install set).
+    // Fetch feature flags now so inline cache hits can refresh vendored
+    // launcher files when bootstrap_dx is active.
     let feature_flags_for_inline = daemon.feature_flags().await;
     let bootstrap_dx = feature_flags_for_inline.bootstrap_dx;
 
@@ -2947,13 +2924,8 @@ pub(crate) async fn auto_launch_kernel(
                 "[notebook-sync] Preparing cached UV env for PEP 723 deps: {:?}",
                 deps
             );
-            match crate::inline_env::prepare_uv_inline_env(
-                deps,
-                None,
-                progress_handler.clone(),
-                bootstrap_dx,
-            )
-            .await
+            match crate::inline_env::prepare_uv_inline_env(deps, None, progress_handler.clone())
+                .await
             {
                 Ok(prepared) => {
                     info!(
@@ -3004,14 +2976,8 @@ pub(crate) async fn auto_launch_kernel(
                 (env, Some(deps))
             } else if prerelease.is_none() {
                 // Try pool reuse for bare deps without prerelease
-                match try_uv_pool_for_inline_deps(
-                    &deps,
-                    bootstrap_dx,
-                    &daemon,
-                    room,
-                    progress_handler.clone(),
-                )
-                .await
+                match try_uv_pool_for_inline_deps(&deps, &daemon, room, progress_handler.clone())
+                    .await
                 {
                     Ok((env, pool_pkgs)) => {
                         let mut pooled = env;
@@ -3028,7 +2994,6 @@ pub(crate) async fn auto_launch_kernel(
                             &deps,
                             prerelease.as_deref(),
                             progress_handler.clone(),
-                            bootstrap_dx,
                         )
                         .await
                         {
@@ -3063,7 +3028,6 @@ pub(crate) async fn auto_launch_kernel(
                     &deps,
                     prerelease.as_deref(),
                     progress_handler.clone(),
-                    bootstrap_dx,
                 )
                 .await
                 {
@@ -3098,9 +3062,7 @@ pub(crate) async fn auto_launch_kernel(
                 .unwrap_or_else(|| vec!["conda-forge".to_string()]);
 
             // Fast path: check inline env cache first (instant on hit)
-            if let Some(cached) =
-                crate::inline_env::check_conda_inline_cache(&deps, &channels, bootstrap_dx)
-            {
+            if let Some(cached) = crate::inline_env::check_conda_inline_cache(&deps, &channels) {
                 info!(
                     "[notebook-sync] Conda inline cache hit at {:?}",
                     cached.python_path
@@ -3117,7 +3079,6 @@ pub(crate) async fn auto_launch_kernel(
                 match try_conda_pool_for_inline_deps(
                     &deps,
                     &channels,
-                    bootstrap_dx,
                     &daemon,
                     room,
                     progress_handler.clone(),
@@ -3139,7 +3100,6 @@ pub(crate) async fn auto_launch_kernel(
                             &deps,
                             &channels,
                             progress_handler.clone(),
-                            bootstrap_dx,
                         )
                         .await
                         {
@@ -3375,7 +3335,7 @@ pub(crate) async fn auto_launch_kernel(
             .and_then(|s| s.runt.pixi.as_ref())
             .map(|p| p.dependencies.clone())
             .unwrap_or_default();
-        let deps = crate::inline_env::inline_deps_with_bootstrap(&deps, bootstrap_dx);
+        let deps = crate::inline_env::inline_deps_with_required_packages(&deps);
         if !deps.is_empty() {
             info!("[notebook-sync] pixi:inline deps for pixi exec: {:?}", deps);
             (None, Some(deps))
@@ -3385,7 +3345,7 @@ pub(crate) async fn auto_launch_kernel(
     } else if matches!(env_source, EnvSource::Pep723(PackageManager::Pixi)) {
         // PEP 723 deps via pixi exec -w (same mechanism as pixi:inline)
         if let Some(ref deps) = pep723_deps {
-            let deps = crate::inline_env::inline_deps_with_bootstrap(deps, bootstrap_dx);
+            let deps = crate::inline_env::inline_deps_with_required_packages(deps);
             info!("[notebook-sync] pixi:pep723 deps for pixi exec: {:?}", deps);
             (None, Some(deps))
         } else {

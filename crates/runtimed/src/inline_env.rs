@@ -156,17 +156,14 @@ fn has_dep_named(deps: &[String], name: &str) -> bool {
         .any(|bare| bare == name)
 }
 
-/// Return inline deps plus the parquet encoder needed by the dx bootstrap.
-///
-/// Historically this appended `dx` when `bootstrap_dx` was set, so the
-/// PyPI package would land in the inline env and the dep-hash would
-/// distinguish bootstrap and non-bootstrap caches. The launcher package now
-/// ships inside the daemon binary, but pandas DataFrames still need pyarrow
-/// available in the kernel env so the bootstrap formatter can emit parquet
-/// for the Sift renderer instead of falling back to classic pandas HTML.
-pub(crate) fn inline_deps_with_bootstrap(deps: &[String], bootstrap_dx: bool) -> Vec<String> {
+/// Return inline deps plus the managed runtime packages expected by notebook
+/// display helpers. User-provided versions win by package name.
+pub(crate) fn inline_deps_with_required_packages(deps: &[String]) -> Vec<String> {
     let mut effective = deps.to_vec();
-    if bootstrap_dx && !has_dep_named(&effective, "pyarrow") {
+    if !has_dep_named(&effective, "nbformat") {
+        effective.push("nbformat".to_string());
+    }
+    if !has_dep_named(&effective, "pyarrow") {
         effective.push("pyarrow>=14".to_string());
     }
     effective
@@ -181,10 +178,9 @@ pub async fn prepare_uv_inline_env(
     deps: &[String],
     prerelease: Option<&str>,
     handler: Arc<dyn ProgressHandler>,
-    bootstrap_dx: bool,
 ) -> Result<PreparedEnv> {
     let uv_deps = kernel_env::UvDependencies {
-        dependencies: inline_deps_with_bootstrap(deps, bootstrap_dx),
+        dependencies: inline_deps_with_required_packages(deps),
         requires_python: Some(">=3.13".to_string()),
         prerelease: prerelease.map(|s| s.to_string()),
     };
@@ -206,10 +202,9 @@ pub async fn prepare_conda_inline_env(
     deps: &[String],
     channels: &[String],
     handler: Arc<dyn ProgressHandler>,
-    bootstrap_dx: bool,
 ) -> Result<PreparedEnv> {
     let conda_deps = kernel_env::CondaDependencies {
-        dependencies: inline_deps_with_bootstrap(deps, bootstrap_dx),
+        dependencies: inline_deps_with_required_packages(deps),
         channels: if channels.is_empty() {
             vec!["conda-forge".to_string()]
         } else {
@@ -244,10 +239,9 @@ pub async fn claim_pool_env_for_uv_inline_cache(
     env: &mut crate::PooledEnv,
     deps: &[String],
     prerelease: Option<&str>,
-    bootstrap_dx: bool,
 ) {
     let uv_deps = kernel_env::UvDependencies {
-        dependencies: inline_deps_with_bootstrap(deps, bootstrap_dx),
+        dependencies: inline_deps_with_required_packages(deps),
         requires_python: Some(">=3.13".to_string()),
         prerelease: prerelease.map(|s| s.to_string()),
     };
@@ -263,9 +257,8 @@ pub async fn claim_pool_env_for_conda_inline_cache(
     env: &mut crate::PooledEnv,
     deps: &[String],
     channels: &[String],
-    bootstrap_dx: bool,
 ) {
-    let dependencies = inline_deps_with_bootstrap(deps, bootstrap_dx);
+    let dependencies = inline_deps_with_required_packages(deps);
     let conda_deps = kernel_env::CondaDependencies {
         dependencies,
         channels: if channels.is_empty() {
@@ -565,8 +558,8 @@ pub fn compare_deps_to_pool(inline_deps: &[String], pool_packages: &[String]) ->
 ///
 /// On hit, when `bootstrap_dx` is on, re-vendor the launcher into the
 /// cached venv before returning. This keeps cache entries with the correct
-/// bootstrap dependency set launchable even if they predate the current
-/// vendored launcher layout. `vendor_into_venv` is idempotent + cleans up the
+/// vendored launcher layout launchable even if they predate the current
+/// package layout. `vendor_into_venv` is idempotent + cleans up the
 /// legacy single-file module, so calling it on hit brings the cached env up to
 /// today's layout before the kernel boots.
 pub async fn check_uv_inline_cache(
@@ -575,7 +568,7 @@ pub async fn check_uv_inline_cache(
     bootstrap_dx: bool,
 ) -> Option<PreparedEnv> {
     let uv_deps = kernel_env::UvDependencies {
-        dependencies: inline_deps_with_bootstrap(deps, bootstrap_dx),
+        dependencies: inline_deps_with_required_packages(deps),
         requires_python: Some(">=3.13".to_string()),
         prerelease: prerelease.map(|s| s.to_string()),
     };
@@ -617,12 +610,8 @@ pub async fn check_uv_inline_cache(
 /// every requested package has a corresponding `conda-meta/` record.  A
 /// stale cache entry (e.g. created by a buggy build that dropped packages)
 /// is treated as a miss and removed so the next code path can rebuild it.
-pub fn check_conda_inline_cache(
-    deps: &[String],
-    channels: &[String],
-    bootstrap_dx: bool,
-) -> Option<PreparedEnv> {
-    let dependencies = inline_deps_with_bootstrap(deps, bootstrap_dx);
+pub fn check_conda_inline_cache(deps: &[String], channels: &[String]) -> Option<PreparedEnv> {
+    let dependencies = inline_deps_with_required_packages(deps);
     let conda_deps = kernel_env::CondaDependencies {
         dependencies: dependencies.clone(),
         channels: if channels.is_empty() {
@@ -1014,34 +1003,37 @@ mod tests {
     }
 
     #[test]
-    fn test_inline_deps_with_bootstrap_adds_pyarrow() {
+    fn test_inline_deps_with_required_packages_adds_display_deps() {
         let deps = vec!["pandas".to_string(), "numpy".to_string()];
         assert_eq!(
-            inline_deps_with_bootstrap(&deps, true),
+            inline_deps_with_required_packages(&deps),
             vec![
                 "pandas".to_string(),
                 "numpy".to_string(),
+                "nbformat".to_string(),
                 "pyarrow>=14".to_string()
             ]
         );
     }
 
     #[test]
-    fn test_inline_deps_with_bootstrap_does_not_duplicate_pyarrow() {
-        let deps = vec!["pandas".to_string(), "PyArrow>=15".to_string()];
-        assert_eq!(inline_deps_with_bootstrap(&deps, true), deps);
+    fn test_inline_deps_with_required_packages_does_not_duplicate_overrides() {
+        let deps = vec![
+            "pandas".to_string(),
+            "nbformat==5.10.4".to_string(),
+            "PyArrow>=15".to_string(),
+        ];
+        assert_eq!(inline_deps_with_required_packages(&deps), deps);
     }
 
     #[test]
-    fn test_inline_deps_with_bootstrap_does_not_duplicate_channel_qualified_pyarrow() {
-        let deps = vec!["pandas".to_string(), "conda-forge::pyarrow>=15".to_string()];
-        assert_eq!(inline_deps_with_bootstrap(&deps, true), deps);
-    }
-
-    #[test]
-    fn test_inline_deps_without_bootstrap_unchanged() {
-        let deps = vec!["pandas".to_string()];
-        assert_eq!(inline_deps_with_bootstrap(&deps, false), deps);
+    fn test_inline_deps_with_required_packages_does_not_duplicate_channel_qualified_pyarrow() {
+        let deps = vec![
+            "pandas".to_string(),
+            "nbformat".to_string(),
+            "conda-forge::pyarrow>=15".to_string(),
+        ];
+        assert_eq!(inline_deps_with_required_packages(&deps), deps);
     }
 
     #[test]

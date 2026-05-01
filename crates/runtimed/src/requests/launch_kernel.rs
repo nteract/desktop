@@ -634,8 +634,8 @@ pub(crate) async fn handle(
             room.state.clone(),
         ));
 
-    // Fetch feature flags up front so inline env hashing matches
-    // the kernel's install set (bootstrap_dx adds `dx`).
+    // Fetch feature flags up front so inline cache hits can refresh vendored
+    // launcher files when bootstrap_dx is active.
     let feature_flags_for_inline = daemon.feature_flags().await;
     let bootstrap_dx = feature_flags_for_inline.bootstrap_dx;
 
@@ -669,7 +669,6 @@ pub(crate) async fn handle(
                 &deps,
                 None,
                 launch_progress_handler.clone(),
-                bootstrap_dx,
             )
             .await
             {
@@ -730,7 +729,6 @@ pub(crate) async fn handle(
                 // Try pool reuse for bare deps without prerelease
                 match try_uv_pool_for_inline_deps(
                     &deps,
-                    bootstrap_dx,
                     daemon,
                     room,
                     launch_progress_handler.clone(),
@@ -752,7 +750,6 @@ pub(crate) async fn handle(
                             &deps,
                             prerelease.as_deref(),
                             launch_progress_handler.clone(),
-                            bootstrap_dx,
                         )
                         .await
                         {
@@ -784,7 +781,6 @@ pub(crate) async fn handle(
                     &deps,
                     prerelease.as_deref(),
                     launch_progress_handler.clone(),
-                    bootstrap_dx,
                 )
                 .await
                 {
@@ -816,9 +812,7 @@ pub(crate) async fn handle(
                 .unwrap_or_else(|| vec!["conda-forge".to_string()]);
 
             // Fast path: check inline env cache first (instant on hit)
-            if let Some(cached) =
-                crate::inline_env::check_conda_inline_cache(&deps, &channels, bootstrap_dx)
-            {
+            if let Some(cached) = crate::inline_env::check_conda_inline_cache(&deps, &channels) {
                 info!(
                     "[notebook-sync] LaunchKernel: Conda inline cache hit at {:?}",
                     cached.python_path
@@ -835,7 +829,6 @@ pub(crate) async fn handle(
                 match try_conda_pool_for_inline_deps(
                     &deps,
                     &channels,
-                    bootstrap_dx,
                     daemon,
                     room,
                     launch_progress_handler.clone(),
@@ -857,7 +850,6 @@ pub(crate) async fn handle(
                             &deps,
                             &channels,
                             launch_progress_handler.clone(),
-                            bootstrap_dx,
                         )
                         .await
                         {
@@ -1112,7 +1104,7 @@ pub(crate) async fn handle(
             .and_then(|s| s.runt.pixi.as_ref())
             .map(|p| p.dependencies.clone())
             .unwrap_or_default();
-        let deps = crate::inline_env::inline_deps_with_bootstrap(&deps, bootstrap_dx);
+        let deps = crate::inline_env::inline_deps_with_required_packages(&deps);
         if !deps.is_empty() {
             info!(
                 "[notebook-sync] LaunchKernel: pixi:inline deps for pixi exec: {:?}",
@@ -1128,7 +1120,7 @@ pub(crate) async fn handle(
         match notebook_doc::pep723::find_pep723_in_cells(&cells) {
             Ok(Some(meta)) if !meta.dependencies.is_empty() => {
                 let deps =
-                    crate::inline_env::inline_deps_with_bootstrap(&meta.dependencies, bootstrap_dx);
+                    crate::inline_env::inline_deps_with_required_packages(&meta.dependencies);
                 info!("[notebook-sync] LaunchKernel: pixi:pep723 deps: {:?}", deps);
                 (None, Some(deps))
             }

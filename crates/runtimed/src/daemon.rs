@@ -385,71 +385,59 @@ struct Pool {
 
 const MIN_WARM_BASES: usize = 2;
 
-fn add_dx_bootstrap_packages(
-    packages: &mut Vec<String>,
-    feature_flags: notebook_protocol::protocol::FeatureFlags,
-) {
-    if !feature_flags.bootstrap_dx {
-        return;
-    }
-
-    let has_pyarrow = packages
+fn has_package_named(packages: &[String], name: &str) -> bool {
+    packages
         .iter()
         .filter_map(|pkg| {
             crate::inline_env::extract_conda_package_name(pkg)
                 .map(crate::inline_env::normalize_package_name)
         })
-        .any(|pkg| pkg == "pyarrow");
-    if !has_pyarrow {
+        .any(|pkg| pkg == name)
+}
+
+fn extend_default_packages(packages: &mut Vec<String>, extra: &[String]) {
+    for pkg in extra {
+        packages.push(pkg.clone());
+    }
+    if !has_package_named(packages, "nbformat") {
+        packages.push("nbformat".to_string());
+    }
+    if !has_package_named(packages, "pyarrow") {
         packages.push("pyarrow>=14".to_string());
     }
 }
 
-fn uv_prewarmed_packages(
-    extra: &[String],
-    feature_flags: notebook_protocol::protocol::FeatureFlags,
-) -> Vec<String> {
-    // The launcher package is vendored post-creation. When bootstrap_dx is on,
-    // pandas still needs pyarrow so the formatter can emit parquet for Sift.
+fn uv_prewarmed_packages(extra: &[String]) -> Vec<String> {
+    // The launcher package is vendored post-creation. pyarrow and nbformat are
+    // part of the managed notebook runtime so rich display formatters work by
+    // default; user defaults can still override either package by name.
     let mut packages = vec![
         "ipykernel".to_string(),
         "ipywidgets".to_string(),
         "anywidget".to_string(),
-        "nbformat".to_string(),
         "uv".to_string(),
     ];
-    packages.extend(extra.iter().cloned());
-    add_dx_bootstrap_packages(&mut packages, feature_flags);
+    extend_default_packages(&mut packages, extra);
     packages
 }
 
-fn conda_prewarmed_packages(
-    extra: &[String],
-    feature_flags: notebook_protocol::protocol::FeatureFlags,
-) -> Vec<String> {
+fn conda_prewarmed_packages(extra: &[String]) -> Vec<String> {
     let mut packages = vec![
         "ipykernel".to_string(),
         "ipywidgets".to_string(),
         "anywidget".to_string(),
-        "nbformat".to_string(),
     ];
-    packages.extend(extra.iter().cloned());
-    add_dx_bootstrap_packages(&mut packages, feature_flags);
+    extend_default_packages(&mut packages, extra);
     packages
 }
 
-fn pixi_prewarmed_packages(
-    extra: &[String],
-    feature_flags: notebook_protocol::protocol::FeatureFlags,
-) -> Vec<String> {
+fn pixi_prewarmed_packages(extra: &[String]) -> Vec<String> {
     let mut packages = vec![
         "ipykernel".to_string(),
         "ipywidgets".to_string(),
         "anywidget".to_string(),
-        "nbformat".to_string(),
     ];
-    packages.extend(extra.iter().cloned());
-    add_dx_bootstrap_packages(&mut packages, feature_flags);
+    extend_default_packages(&mut packages, extra);
     packages
 }
 
@@ -527,8 +515,8 @@ impl Pool {
     ///
     /// Compares `PooledEnv::prewarmed_packages` as a sorted list against the
     /// caller-provided expected list. This catches changes to `uv.default_packages`,
-    /// `conda.default_packages`, `pixi.default_packages`, and feature flags that
-    /// affect the install set (e.g. `bootstrap_dx` adding `dx` to UV envs).
+    /// `conda.default_packages`, `pixi.default_packages`, and managed runtime
+    /// package defaults.
     ///
     /// Returned paths are normalised via [`pool_env_root`] so callers delete the
     /// top-level pool directory (Pixi envs are nested under `.pixi/envs/default`
@@ -994,7 +982,7 @@ impl Daemon {
     pub async fn uv_pool_packages(&self) -> Vec<String> {
         let settings = self.settings.read().await;
         let synced = settings.get_all();
-        uv_prewarmed_packages(&synced.uv.default_packages, synced.feature_flags())
+        uv_prewarmed_packages(&synced.uv.default_packages)
     }
 
     /// Snapshot the user's feature-flag settings.
@@ -1085,7 +1073,7 @@ impl Daemon {
     pub async fn conda_pool_packages(&self) -> Vec<String> {
         let settings = self.settings.read().await;
         let synced = settings.get_all();
-        conda_prewarmed_packages(&synced.conda.default_packages, synced.feature_flags())
+        conda_prewarmed_packages(&synced.conda.default_packages)
     }
 
     /// Create a new daemon with the given configuration.
@@ -1791,11 +1779,9 @@ impl Daemon {
             let settings = self.settings.read().await;
             let synced = settings.get_all();
 
-            let feature_flags = synced.feature_flags();
-            let uv_pkgs = uv_prewarmed_packages(&synced.uv.default_packages, feature_flags);
-            let conda_pkgs =
-                conda_prewarmed_packages(&synced.conda.default_packages, feature_flags);
-            let pixi_pkgs = pixi_prewarmed_packages(&synced.pixi.default_packages, feature_flags);
+            let uv_pkgs = uv_prewarmed_packages(&synced.uv.default_packages);
+            let conda_pkgs = conda_prewarmed_packages(&synced.conda.default_packages);
+            let pixi_pkgs = pixi_prewarmed_packages(&synced.pixi.default_packages);
 
             (uv_pkgs, conda_pkgs, pixi_pkgs)
         };
@@ -3919,8 +3905,7 @@ impl Daemon {
                         as usize
                 };
                 let synced = settings.get_all();
-                let pkgs =
-                    uv_prewarmed_packages(&synced.uv.default_packages, synced.feature_flags());
+                let pkgs = uv_prewarmed_packages(&synced.uv.default_packages);
                 (target, pkgs)
             };
 
@@ -4035,10 +4020,7 @@ impl Daemon {
                         as usize
                 };
                 let synced = settings.get_all();
-                let pkgs = conda_prewarmed_packages(
-                    &synced.conda.default_packages,
-                    synced.feature_flags(),
-                );
+                let pkgs = conda_prewarmed_packages(&synced.conda.default_packages);
                 (target, pkgs)
             };
 
@@ -4160,8 +4142,7 @@ impl Daemon {
                         as usize
                 };
                 let synced = settings.get_all();
-                let pkgs =
-                    pixi_prewarmed_packages(&synced.pixi.default_packages, synced.feature_flags());
+                let pkgs = pixi_prewarmed_packages(&synced.pixi.default_packages);
                 (target, pkgs)
             };
 
@@ -4320,14 +4301,10 @@ impl Daemon {
         };
 
         // Read default conda packages from synced settings
-        let (extra_conda_packages, feature_flags): (
-            Vec<String>,
-            notebook_protocol::protocol::FeatureFlags,
-        ) = {
+        let extra_conda_packages = {
             let settings = self.settings.read().await;
             let synced = settings.get_all();
-            let feature_flags = synced.feature_flags();
-            (synced.conda.default_packages, feature_flags)
+            synced.conda.default_packages
         };
 
         if !extra_conda_packages.is_empty() {
@@ -4338,7 +4315,7 @@ impl Daemon {
         }
 
         // Build specs: python + notebook essentials + user-configured defaults
-        let conda_install_packages = conda_prewarmed_packages(&extra_conda_packages, feature_flags);
+        let conda_install_packages = conda_prewarmed_packages(&extra_conda_packages);
 
         let match_spec_options = ParseMatchSpecOptions::strict();
         let specs: Vec<MatchSpec> = match (|| -> anyhow::Result<Vec<MatchSpec>> {
@@ -4705,7 +4682,6 @@ impl Daemon {
         let packages = {
             let settings = self.settings.read().await;
             let synced = settings.get_all();
-            let feature_flags = synced.feature_flags();
             let pixi_defaults = synced.pixi.default_packages;
             if !pixi_defaults.is_empty() {
                 info!(
@@ -4713,7 +4689,7 @@ impl Daemon {
                     pixi_defaults
                 );
             }
-            pixi_prewarmed_packages(&pixi_defaults, feature_flags)
+            pixi_prewarmed_packages(&pixi_defaults)
         };
         let prewarmed_packages = packages.clone();
 
@@ -4938,17 +4914,16 @@ impl Daemon {
         }
 
         // Read default uv packages from synced settings
-        let (user_default_packages, feature_flags) = {
+        let user_default_packages = {
             let settings = self.settings.read().await;
             let synced = settings.get_all();
-            let flags = synced.feature_flags();
             let configured = synced.uv.default_packages;
             if !configured.is_empty() {
                 info!("[runtimed] Including default uv packages: {:?}", configured);
             }
-            (configured, flags)
+            configured
         };
-        let install_packages = uv_prewarmed_packages(&user_default_packages, feature_flags);
+        let install_packages = uv_prewarmed_packages(&user_default_packages);
 
         // Install packages (180 second timeout)
         // Use hardlink mode to share files from uv's global cache,
@@ -5163,49 +5138,45 @@ impl Daemon {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use notebook_protocol::protocol::FeatureFlags;
     use std::path::PathBuf;
     use tempfile::TempDir;
 
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
 
-    fn bootstrap_dx_flags() -> FeatureFlags {
-        FeatureFlags { bootstrap_dx: true }
-    }
-
     #[test]
-    fn test_uv_prewarmed_packages_adds_pyarrow_for_bootstrap_dx() {
-        assert!(uv_prewarmed_packages(&[], FeatureFlags::default())
-            .iter()
-            .filter_map(|pkg| crate::inline_env::extract_conda_package_name(pkg))
-            .all(|pkg| crate::inline_env::normalize_package_name(pkg) != "pyarrow"));
-
-        let packages = uv_prewarmed_packages(&[], bootstrap_dx_flags());
+    fn test_uv_prewarmed_packages_include_required_display_deps() {
+        let packages = uv_prewarmed_packages(&[]);
+        assert!(packages.iter().any(|pkg| pkg == "nbformat"));
         assert!(packages.iter().any(|pkg| pkg == "pyarrow>=14"));
     }
 
     #[test]
-    fn test_conda_prewarmed_packages_does_not_duplicate_channel_qualified_pyarrow() {
-        let packages = conda_prewarmed_packages(
-            &["conda-forge::pyarrow>=15".to_string()],
-            bootstrap_dx_flags(),
-        );
+    fn test_prewarmed_packages_do_not_duplicate_overrides() {
+        let packages = conda_prewarmed_packages(&[
+            "nbformat==5.10.4".to_string(),
+            "conda-forge::pyarrow>=15".to_string(),
+        ]);
         let pyarrow_count = packages
             .iter()
             .filter_map(|pkg| crate::inline_env::extract_conda_package_name(pkg))
             .filter(|pkg| crate::inline_env::normalize_package_name(pkg) == "pyarrow")
             .count();
+        let nbformat_count = packages
+            .iter()
+            .filter_map(|pkg| crate::inline_env::extract_conda_package_name(pkg))
+            .filter(|pkg| crate::inline_env::normalize_package_name(pkg) == "nbformat")
+            .count();
         assert_eq!(pyarrow_count, 1);
+        assert_eq!(nbformat_count, 1);
         assert!(!packages.iter().any(|pkg| pkg == "pyarrow>=14"));
+        assert!(!packages.iter().any(|pkg| pkg == "nbformat"));
     }
 
     #[test]
     fn test_conda_prewarmed_packages_does_not_duplicate_direct_ref_pyarrow() {
-        let packages = conda_prewarmed_packages(
-            &["pyarrow@https://example.invalid/pyarrow.whl".to_string()],
-            bootstrap_dx_flags(),
-        );
+        let packages =
+            conda_prewarmed_packages(&["pyarrow@https://example.invalid/pyarrow.whl".to_string()]);
         let pyarrow_count = packages
             .iter()
             .filter_map(|pkg| crate::inline_env::extract_conda_package_name(pkg))
