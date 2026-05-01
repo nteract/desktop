@@ -1,2 +1,21 @@
 packages/runtimed/src/request-types.ts text eol=lf
 packages/runtimed/src/protocol-contract.ts text eol=lf
+
+# Stable renderer-plugin bundles. Built occasionally from upstream libraries
+# (plotly, vega, leaflet) + our markdown/isolated-renderer sources. LFS-tracked
+# so fresh checkouts don't pay the ~30s Vite rebuild just to boot the daemon.
+# Volatile sift bundles (sift.js, sift.css) stay gitignored because they
+# re-embed sift-wasm's wasm-bindgen glue and must be rebuilt in lockstep.
+apps/notebook/src/renderer-plugins/plotly.js filter=lfs diff=lfs merge=lfs -text
+apps/notebook/src/renderer-plugins/vega.js filter=lfs diff=lfs merge=lfs -text
+apps/notebook/src/renderer-plugins/leaflet.js filter=lfs diff=lfs merge=lfs -text
+apps/notebook/src/renderer-plugins/leaflet.css filter=lfs diff=lfs merge=lfs -text
+apps/notebook/src/renderer-plugins/markdown.js filter=lfs diff=lfs merge=lfs -text
+apps/notebook/src/renderer-plugins/markdown.css filter=lfs diff=lfs merge=lfs -text
+apps/notebook/src/renderer-plugins/isolated-renderer.js filter=lfs diff=lfs merge=lfs -text
+apps/notebook/src/renderer-plugins/isolated-renderer.css filter=lfs diff=lfs merge=lfs -text
+
+# Notebook/runtime-state fixture snapshots. Small today (~60KB total), but
+# they're opaque Automerge binaries — regular git storage would bloat history
+# each time we regenerate them for a schema change.
+packages/runtimed/tests/fixtures/**/*.bin filter=lfs diff=lfs merge=lfs -text
