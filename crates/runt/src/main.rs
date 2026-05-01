@@ -2141,6 +2141,11 @@ async fn daemon_command(command: DaemonCommands) -> Result<()> {
             } else {
                 None
             };
+            let runtime_metrics = if running {
+                client.runtime_metrics().await.ok()
+            } else {
+                None
+            };
             let is_dev = runt_workspace::is_dev_mode();
 
             // Get socket path from daemon info or default
@@ -2182,6 +2187,7 @@ async fn daemon_command(command: DaemonCommands) -> Result<()> {
                         .and_then(|i| i.blob_port.map(|p| format!("http://127.0.0.1:{}", p))),
                     "worktree_hash": runt_workspace::get_workspace_path()
                         .map(|p| runt_workspace::worktree_hash(&p)),
+                    "runtime_metrics": runtime_metrics,
                 });
                 println!("{}", serde_json::to_string_pretty(&output)?);
             } else {

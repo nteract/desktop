@@ -239,6 +239,54 @@ impl PoolClient {
         }
     }
 
+    /// Query tokio runtime metrics (worker utilization, task counts).
+    ///
+    /// Returns the raw metrics snapshot as a JSON value. Daemons that
+    /// predate this request return `Err(DaemonError("Unknown request"))`.
+    pub async fn runtime_metrics(&self) -> Result<serde_json::Value, ClientError> {
+        let response = self.send_request(Request::GetRuntimeMetrics).await?;
+        match response {
+            Response::RuntimeMetrics {
+                num_workers,
+                num_alive_tasks,
+                global_queue_depth,
+                worker_busy_us,
+                worker_park_count,
+                uptime_us,
+            } => {
+                let uptime_us_f = uptime_us as f64;
+                let workers: Vec<serde_json::Value> = (0..num_workers)
+                    .map(|i| {
+                        let busy = worker_busy_us.get(i).copied().unwrap_or(0);
+                        let parks = worker_park_count.get(i).copied().unwrap_or(0);
+                        let utilization = if uptime_us_f > 0.0 {
+                            (busy as f64 / uptime_us_f * 100.0).min(100.0)
+                        } else {
+                            0.0
+                        };
+                        serde_json::json!({
+                            "busy_us": busy,
+                            "park_count": parks,
+                            "utilization_pct": (utilization * 100.0).round() / 100.0,
+                        })
+                    })
+                    .collect();
+
+                Ok(serde_json::json!({
+                    "num_workers": num_workers,
+                    "num_alive_tasks": num_alive_tasks,
+                    "global_queue_depth": global_queue_depth,
+                    "uptime_us": uptime_us,
+                    "workers": workers,
+                }))
+            }
+            Response::Error { message } => Err(ClientError::DaemonError(message)),
+            _ => Err(ClientError::ProtocolError(
+                "Unexpected response".to_string(),
+            )),
+        }
+    }
+
     /// Request an environment from the pool.
     ///
     /// Returns `Ok(Some(env))` if an environment was available,
