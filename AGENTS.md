@@ -4,6 +4,13 @@
 
 This is a map. Subsystem details live in `contributing/`, auto-loaded rules live in `.claude/rules/`, and operational recipes live in `.claude/skills/` and `.codex/skills/`. Run `cargo xtask help` for build commands.
 
+Claude-specific skills live in `.claude/skills/`. Use when the task matches:
+- `automerge-sync` for sync protocol internals, reconnection, peer state lifecycle, in-flight suppression, catch_unwind recovery, and convergence debugging
+- `mcp-session-lifecycle` for MCP proxy supervision, daemon watch loop, session state, rejoin/reconnect races, and room eviction
+- `sync-protocol-patterns` for higher-level protocol design: comparing automerge-repo/samod/nteract architectures, adding new sync streams, heads tracking patterns, and connection lifecycle decisions
+- `automerge-document-model` for Automerge internals: OpSet, ChangeGraph, actor tables, save/load lifecycle, fork/merge semantics, #1187 panic root cause, and document size reasoning
+- `execution-pipeline` for end-to-end cell execution: required_heads → ExecuteCell → CellQueued → RuntimeStateDoc polling → output-sync grace → output resolution. Use when debugging missing outputs, execution timeouts, or stale results
+
 Codex-specific repo skills live in `.codex/skills/`. Prefer them when the task matches:
 - `nteract-daemon-dev` for per-worktree daemon lifecycle, socket setup, and daemon-backed verification
 - `nteract-python-bindings` for `maturin develop`, venv selection, and MCP server work
