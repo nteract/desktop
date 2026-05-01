@@ -177,6 +177,7 @@ function AppContent() {
   const {
     cellIds,
     isLoading,
+    canAcceptCellMutations,
     loadError,
     focusedCellId,
     setFocusedCellId,
@@ -1807,6 +1808,7 @@ function AppContent() {
           <NotebookView
             cellIds={cellIds}
             isLoading={isLoading}
+            canAcceptCellMutations={canAcceptCellMutations}
             loadError={loadError}
             runtime={runtime}
             sessionRuntimeState={sessionStatus?.runtime_state ?? null}

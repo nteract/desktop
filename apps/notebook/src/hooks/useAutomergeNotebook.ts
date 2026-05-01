@@ -70,6 +70,7 @@ export function useAutomergeNotebook() {
   const [focusedCellId, setFocusedCellId] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [canAcceptCellMutations, setCanAcceptCellMutations] = useState(false);
 
   const handleRef = useRef<NotebookHandle | null>(null);
   const sessionIdRef = useRef(crypto.randomUUID().slice(0, 8));
@@ -155,6 +156,12 @@ export function useAutomergeNotebook() {
     replaceNotebookCells(newCells);
   }, []);
 
+  const refreshCanAcceptCellMutations = useCallback((handle = handleRef.current) => {
+    const canAccept = handle?.has_cells_map() ?? false;
+    setCanAcceptCellMutations(canAccept);
+    return canAccept;
+  }, []);
+
   /**
    * Guard + commit helper for WASM mutations.
    * After the mutation callback runs, re-materializes and syncs.
@@ -201,6 +208,7 @@ export function useAutomergeNotebook() {
 
     interactiveReadyRef.current = false;
     latestSessionStatusRef.current = null;
+    setCanAcceptCellMutations(false);
     setLoadError(null);
     setIsLoading(true);
 
@@ -255,6 +263,7 @@ export function useAutomergeNotebook() {
       }
 
       setLoadError(null);
+      refreshCanAcceptCellMutations();
       if (interactiveReadyRef.current) {
         setIsLoading(isInitialLoadStreaming(status.initial_load));
       }
@@ -280,6 +289,7 @@ export function useAutomergeNotebook() {
             // existing eager output visibility until the authoritative
             // runtime-state projection lands.
             seedOutputStoresFromHandle(handle, cellIdList);
+            refreshCanAcceptCellMutations(handle);
             // Project whatever RuntimeState snapshot has landed so far
             // on top. If the runtime-state frame arrived first this is
             // the authoritative pass; otherwise it's a no-op that the
@@ -319,6 +329,7 @@ export function useAutomergeNotebook() {
                 // RuntimeStateDoc entry happened to land last.
                 const handle = handleRef.current;
                 if (!handle) return;
+                refreshCanAcceptCellMutations(handle);
                 const pointerRefresh = planCellPointerRefresh(changeset);
                 if (pointerRefresh.kind === "touched") {
                   updateCellExecutionPointersFromHandle(handle, pointerRefresh.cell_ids);
@@ -386,6 +397,7 @@ export function useAutomergeNotebook() {
           resetRuntimeState();
           resetRuntimeStoresProjection();
           resetPoolState();
+          setCanAcceptCellMutations(false);
           outputCacheRef.current.clear();
           setIsLoading(true);
           setLoadError(null);
@@ -428,11 +440,12 @@ export function useAutomergeNotebook() {
       resetRuntimeState();
       resetRuntimeStoresProjection();
       resetPoolState();
+      setCanAcceptCellMutations(false);
       setNotebookHandle(null);
       handleRef.current?.free();
       handleRef.current = null;
     };
-  }, [bootstrap, host, materializeCells]);
+  }, [bootstrap, host, materializeCells, refreshCanAcceptCellMutations]);
 
   // ── Cell mutations ─────────────────────────────────────────────────
 
@@ -452,10 +465,9 @@ export function useAutomergeNotebook() {
     (cellType: "code" | "markdown" | "raw", afterCellId?: string | null) => {
       const handle = handleRef.current;
       const engine = engineRef.current;
-
-      if (!handle || !engine) {
-        const placeholderId = crypto.randomUUID();
-        return cellType === "code"
+      const placeholderId = crypto.randomUUID();
+      const placeholder =
+        cellType === "code"
           ? {
               cell_type: "code" as const,
               id: placeholderId,
@@ -470,10 +482,26 @@ export function useAutomergeNotebook() {
               source: "",
               metadata: {},
             };
+
+      if (!handle || !engine) {
+        logger.debug("[automerge-notebook] addCell skipped: no handle/engine");
+        return placeholder;
+      }
+
+      if (!handle.has_cells_map()) {
+        logger.debug("[automerge-notebook] addCell skipped: cells map not synced yet");
+        setCanAcceptCellMutations(false);
+        return placeholder;
       }
 
       const cellId = crypto.randomUUID();
-      handle.add_cell_after(cellId, cellType, afterCellId ?? null);
+      try {
+        handle.add_cell_after(cellId, cellType, afterCellId ?? null);
+      } catch (error) {
+        logger.warn("[automerge-notebook] addCell failed:", error);
+        refreshCanAcceptCellMutations(handle);
+        return placeholder;
+      }
       rematerializeCellsSync(handle);
       engine.flush();
       setFocusedCellId(cellId);
@@ -489,7 +517,7 @@ export function useAutomergeNotebook() {
         }
       );
     },
-    [rematerializeCellsSync],
+    [refreshCanAcceptCellMutations, rematerializeCellsSync],
   );
 
   const moveCell = useCallback(
@@ -662,6 +690,7 @@ export function useAutomergeNotebook() {
   return {
     cellIds,
     isLoading,
+    canAcceptCellMutations,
     focusedCellId,
     setFocusedCellId,
     updateCellSource,

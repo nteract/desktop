@@ -86,10 +86,27 @@ function syncUntilConvergedReportingChange(
 
 Deno.test("NotebookHandle: create new empty doc", () => {
   const handle = new NotebookHandle("test-notebook");
+  assertEquals(handle.has_cells_map(), true);
   assertEquals(handle.cell_count(), 0);
   assertEquals(handle.get_cells().length, 0);
   assertEquals(handle.get_cells_json(), "[]");
   handle.free();
+});
+
+Deno.test("NotebookHandle: bootstrap reports cells map readiness after sync", () => {
+  const daemon = new NotebookHandle("readiness-test");
+  const frontend = NotebookHandle.create_bootstrap("human:test");
+
+  assertEquals(frontend.has_cells_map(), false);
+
+  syncHandles(daemon, frontend);
+
+  assertEquals(frontend.has_cells_map(), true);
+  frontend.add_cell_after("cell-1", "code", null);
+  assertEquals(frontend.cell_count(), 1);
+
+  daemon.free();
+  frontend.free();
 });
 
 // Regression guard: the committed WASM bundle must emit a RuntimeState

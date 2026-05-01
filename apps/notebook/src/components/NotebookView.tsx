@@ -37,6 +37,7 @@ import { RawCell } from "./RawCell";
 interface NotebookViewProps {
   cellIds: string[];
   isLoading?: boolean;
+  canAcceptCellMutations?: boolean;
   loadError?: string | null;
   runtime?: Runtime | null;
   sessionRuntimeState?: string | null;
@@ -344,6 +345,7 @@ function SortableCell({
 function NotebookViewContent({
   cellIds,
   isLoading = false,
+  canAcceptCellMutations = false,
   loadError = null,
   runtime = "python",
   sessionRuntimeState = null,
@@ -528,7 +530,7 @@ function NotebookViewContent({
   // processes the focusedCellId update from onAddCell.
   const didAutoSeed = useRef(false);
   useEffect(() => {
-    if (isLoading || focusedCellId !== null) return;
+    if (isLoading || focusedCellId !== null || !canAcceptCellMutations) return;
     if (cellIds.length === 0) {
       if (!didAutoSeed.current) {
         didAutoSeed.current = true;
@@ -537,7 +539,7 @@ function NotebookViewContent({
     } else {
       onFocusCell(cellIds[0]);
     }
-  }, [isLoading, cellIds, focusedCellId, onFocusCell, onAddCell]);
+  }, [isLoading, canAcceptCellMutations, cellIds, focusedCellId, onFocusCell, onAddCell]);
 
   const renderCell = useCallback(
     (
