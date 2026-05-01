@@ -93,11 +93,11 @@ Deno.test("NotebookHandle: create new empty doc", () => {
   handle.free();
 });
 
-Deno.test("NotebookHandle: bootstrap reports cells map readiness after sync", () => {
+Deno.test("NotebookHandle: bootstrap starts with canonical cells map", () => {
   const daemon = new NotebookHandle("readiness-test");
   const frontend = NotebookHandle.create_bootstrap("human:test");
 
-  assertEquals(frontend.has_cells_map(), false);
+  assertEquals(frontend.has_cells_map(), true);
 
   syncHandles(daemon, frontend);
 
@@ -275,8 +275,7 @@ Deno.test("NotebookHandle: multiple cells ordering", () => {
 
 Deno.test("NotebookHandle: metadata get/set", () => {
   const handle = new NotebookHandle("test-nb");
-  // Default runtime is "python"
-  assertEquals(handle.get_metadata("runtime"), "python");
+  assertEquals(handle.get_metadata("runtime"), undefined);
 
   handle.set_metadata("runtime", "deno");
   assertEquals(handle.get_metadata("runtime"), "deno");
@@ -1499,15 +1498,13 @@ Deno.test("Sync: bidirectional mutations converge", () => {
 
 Deno.test("create_empty: creates doc with bootstrap skeleton", () => {
   const handle = NotebookHandle.create_empty();
-  // Bootstrap seeds the doc with schema_version, empty cells map, and
-  // empty metadata map.  This prevents automerge's load_incremental
-  // empty-doc fast-path from discarding encoding/actor settings on
-  // the first sync.
+  // Bootstrap seeds the doc with the canonical schema history. This prevents
+  // automerge's load_incremental empty-doc fast-path from discarding
+  // encoding/actor settings on the first sync, and gives all new peers the
+  // same cells/metadata object IDs.
   assertEquals(handle.cell_count(), 0);
   assertEquals(handle.get_cells().length, 0);
   assertEquals(handle.get_cells_json(), "[]");
-  // Bootstrap does NOT set a default runtime — that's determined by
-  // the notebook file or user choice.
   assertEquals(handle.get_metadata("runtime"), undefined);
   handle.free();
 });
