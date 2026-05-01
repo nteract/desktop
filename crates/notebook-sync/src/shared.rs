@@ -93,4 +93,14 @@ impl SharedDocState {
             .sync()
             .receive_sync_message(&mut self.state_peer_state, message)
     }
+
+    /// Rebuild the RuntimeStateDoc via save→load and reset its sync state.
+    ///
+    /// Used after catching an automerge panic during `RuntimeStateSync`
+    /// processing — the same recovery pattern as `rebuild_shared_doc_state`
+    /// for the notebook doc, but targeting the state doc.
+    pub fn rebuild_state_doc(&mut self) {
+        self.state_doc.rebuild_from_save();
+        self.state_peer_state = sync::State::new();
+    }
 }

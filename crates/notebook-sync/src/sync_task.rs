@@ -688,17 +688,61 @@ impl SyncReactor {
                     }
                 };
 
-                // Apply and generate reply — same pattern as AutomergeSync
+                // Apply and generate reply — same pattern as AutomergeSync.
+                //
+                // Wrapped in catch_unwind because automerge 0.7 can panic in
+                // receive_sync_message / generate_sync_message on the state
+                // doc under the same concurrent-sync conditions that trigger
+                // the notebook doc panic (automerge/automerge#1187). Without
+                // catch_unwind, the panic kills the sync task, which closes
+                // the socket and causes the MCP connection to drop — any
+                // locally-pending notebook mutations (e.g. a cell creation)
+                // that hadn't been synced yet are lost on reconnect.
                 let reply_bytes = {
                     let mut state = self.io.doc.lock().unwrap_or_else(|e| e.into_inner());
-                    if let Err(e) = state.receive_state_sync_message(msg) {
-                        warn!(
-                            "[notebook-sync] Failed to apply RuntimeStateSync for {}: {}",
-                            self.io.notebook_id, e
-                        );
-                        return;
+                    let recv_result = std::panic::catch_unwind(AssertUnwindSafe(|| {
+                        state.receive_state_sync_message(msg)
+                    }));
+                    match recv_result {
+                        Ok(Ok(())) => {}
+                        Ok(Err(e)) => {
+                            warn!(
+                                "[notebook-sync] Failed to apply RuntimeStateSync for {}: {}",
+                                self.io.notebook_id, e
+                            );
+                            return;
+                        }
+                        Err(panic_payload) => {
+                            let msg = if let Some(s) = panic_payload.downcast_ref::<String>() {
+                                s.as_str()
+                            } else if let Some(s) = panic_payload.downcast_ref::<&str>() {
+                                s
+                            } else {
+                                "unknown panic"
+                            };
+                            warn!(
+                                "[notebook-sync] Automerge panicked during RuntimeStateSync for {} \
+                                 (upstream bug automerge/automerge#1187): {}",
+                                self.io.notebook_id, msg
+                            );
+                            state.rebuild_state_doc();
+                            return;
+                        }
                     }
-                    state.generate_state_sync_message().map(|msg| msg.encode())
+                    match std::panic::catch_unwind(AssertUnwindSafe(|| {
+                        state.generate_state_sync_message().map(|msg| msg.encode())
+                    })) {
+                        Ok(bytes) => bytes,
+                        Err(_) => {
+                            warn!(
+                                "[notebook-sync] Automerge panicked in generate_state_sync_message \
+                                 for {} (upstream MissingOps bug)",
+                                self.io.notebook_id
+                            );
+                            state.rebuild_state_doc();
+                            None
+                        }
+                    }
                 };
 
                 if let Some(bytes) = reply_bytes {
