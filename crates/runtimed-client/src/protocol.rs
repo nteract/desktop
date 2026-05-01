@@ -69,6 +69,12 @@ pub enum Request {
     /// or is forcibly killed. Clients should prefer this request and
     /// fall back to `Ping` if they only need the version.
     GetDaemonInfo,
+
+    /// Get tokio runtime metrics (worker utilization, task counts, queue
+    /// depths). Used by `runt daemon status --json` and diagnostic tools
+    /// to measure whether the daemon's async runtime is spreading work
+    /// across cores under load.
+    GetRuntimeMetrics,
 }
 
 /// Responses from the daemon to clients.
@@ -177,6 +183,29 @@ pub enum Response {
 
     /// Environment paths currently in use by running kernels.
     ActiveEnvPaths { paths: Vec<PathBuf> },
+
+    /// Tokio runtime metrics snapshot.
+    ///
+    /// Returned from `Request::GetRuntimeMetrics`. Carries per-worker
+    /// busy durations, task counts, and queue depths so tooling can
+    /// compute utilization without `tokio_unstable`.
+    RuntimeMetrics {
+        /// Number of tokio worker threads.
+        num_workers: usize,
+        /// Number of currently alive (spawned but not yet completed) tasks.
+        num_alive_tasks: usize,
+        /// Tasks waiting in the global (injection) queue.
+        global_queue_depth: usize,
+        /// Per-worker cumulative busy duration in microseconds.
+        /// Index corresponds to worker index 0..num_workers.
+        worker_busy_us: Vec<u64>,
+        /// Per-worker park (idle) count. High park counts relative to
+        /// poll counts indicate an underloaded worker.
+        worker_park_count: Vec<u64>,
+        /// Wall-clock microseconds since daemon start — divide
+        /// `worker_busy_us[i]` by this to get per-worker utilization.
+        uptime_us: u64,
+    },
 }
 
 /// Kernel info for a notebook room.
@@ -317,6 +346,44 @@ mod tests {
             roundtrip_request(&Request::FlushPool),
             Request::FlushPool
         ));
+    }
+
+    #[test]
+    fn test_request_get_runtime_metrics() {
+        assert!(matches!(
+            roundtrip_request(&Request::GetRuntimeMetrics),
+            Request::GetRuntimeMetrics
+        ));
+    }
+
+    #[test]
+    fn test_response_runtime_metrics() {
+        let resp = Response::RuntimeMetrics {
+            num_workers: 4,
+            num_alive_tasks: 42,
+            global_queue_depth: 3,
+            worker_busy_us: vec![100_000, 200_000, 150_000, 50_000],
+            worker_park_count: vec![10, 20, 15, 5],
+            uptime_us: 1_000_000,
+        };
+        match roundtrip_response(&resp) {
+            Response::RuntimeMetrics {
+                num_workers,
+                num_alive_tasks,
+                global_queue_depth,
+                worker_busy_us,
+                worker_park_count,
+                uptime_us,
+            } => {
+                assert_eq!(num_workers, 4);
+                assert_eq!(num_alive_tasks, 42);
+                assert_eq!(global_queue_depth, 3);
+                assert_eq!(worker_busy_us, vec![100_000, 200_000, 150_000, 50_000]);
+                assert_eq!(worker_park_count, vec![10, 20, 15, 5]);
+                assert_eq!(uptime_us, 1_000_000);
+            }
+            _ => panic!("unexpected response type"),
+        }
     }
 
     #[test]

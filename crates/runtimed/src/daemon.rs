@@ -1356,6 +1356,38 @@ impl Daemon {
         }
     }
 
+    /// Snapshot tokio runtime metrics for diagnostics.
+    ///
+    /// Uses only stable APIs (`worker_total_busy_duration`,
+    /// `worker_park_count`, `num_alive_tasks`, `global_queue_depth`).
+    /// Per-worker steal/poll counts require `tokio_unstable` and are
+    /// omitted to avoid a build-time cfg flag.
+    fn build_runtime_metrics(&self) -> Response {
+        let metrics = tokio::runtime::Handle::current().metrics();
+        let n = metrics.num_workers();
+
+        let uptime = chrono::Utc::now()
+            .signed_duration_since(self.started_at)
+            .to_std()
+            .unwrap_or_default();
+
+        let mut worker_busy_us = Vec::with_capacity(n);
+        let mut worker_park_count = Vec::with_capacity(n);
+        for i in 0..n {
+            worker_busy_us.push(metrics.worker_total_busy_duration(i).as_micros() as u64);
+            worker_park_count.push(metrics.worker_park_count(i));
+        }
+
+        Response::RuntimeMetrics {
+            num_workers: n,
+            num_alive_tasks: metrics.num_alive_tasks(),
+            global_queue_depth: metrics.global_queue_depth(),
+            worker_busy_us,
+            worker_park_count,
+            uptime_us: uptime.as_micros() as u64,
+        }
+    }
+
     /// Get the room eviction delay.
     ///
     /// Returns the eviction delay duration.
@@ -3202,6 +3234,8 @@ impl Daemon {
             },
 
             Request::GetDaemonInfo => self.build_daemon_info().await,
+
+            Request::GetRuntimeMetrics => self.build_runtime_metrics(),
 
             Request::Shutdown => {
                 self.trigger_shutdown().await;
