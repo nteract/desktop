@@ -114,11 +114,11 @@ describe("OutputArea iframe theme sync", () => {
     });
   });
 
-  it("does not forward iframe wheel boundary scroll from notebook outputs", () => {
+  it("forwards iframe wheel boundary scroll from notebook outputs", () => {
     const { getByTestId } = render(<OutputArea outputs={makeMarkdownOutput()} isolated />);
 
     expect(getByTestId("isolated-frame").getAttribute("data-allow-wheel-boundary-scroll")).toBe(
-      "false",
+      "true",
     );
   });
 });
