@@ -764,6 +764,9 @@ function NotebookViewContent({
     <div
       ref={containerRef}
       className="flex-1 overflow-y-auto overflow-x-clip overscroll-x-contain py-4 pl-8 pr-2"
+      // Native scroll anchoring helps Chromium/Firefox today. WebKit ignores
+      // this property, so focused-cell keyboard navigation also uses a
+      // short-lived ResizeObserver pin in useEditorRegistry.
       style={{ contain: "paint", overflowAnchor: "auto" }}
       data-notebook-synced={!isLoading && cellIds.length > 0}
       data-session-runtime-state={sessionRuntimeState ?? "unknown"}

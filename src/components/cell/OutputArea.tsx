@@ -523,6 +523,8 @@ export function OutputArea({
     <div
       data-slot="output-area"
       className={cn("output-area pl-6 pr-3", isPreloadOnly && "hidden", className)}
+      // Keep browsers that support scroll anchoring from choosing growing
+      // outputs as the anchor. WebKit currently ignores overflow-anchor.
       style={{ overflowAnchor: "none" }}
     >
       {/* Collapse toggle */}

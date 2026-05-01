@@ -1,5 +1,5 @@
 import { EditorView } from "@codemirror/view";
-import { createContext, type ReactNode, useCallback, useContext } from "react";
+import { createContext, type ReactNode, useCallback, useContext, useEffect } from "react";
 import { logger } from "../lib/logger";
 
 interface EditorRegistryContextType {
@@ -11,6 +11,7 @@ const SCROLL_PIN_DURATION_MS = 2500;
 const SCROLL_PIN_MARGIN_PX = 12;
 
 let cancelActiveScrollPin: (() => void) | null = null;
+const SCROLL_KEYS = new Set(["PageUp", "PageDown", "Home", "End", " "]);
 
 function getNearestScrollContainer(element: Element): HTMLElement | null {
   let current = element.parentElement;
@@ -38,6 +39,18 @@ function isAnchorVisible(container: HTMLElement, anchor: Element): boolean {
   return (
     anchorRect.top >= containerRect.top + SCROLL_PIN_MARGIN_PX &&
     anchorRect.bottom <= containerRect.bottom - SCROLL_PIN_MARGIN_PX
+  );
+}
+
+function shouldCancelScrollPinForKey(event: KeyboardEvent): boolean {
+  if (!SCROLL_KEYS.has(event.key)) return false;
+  const target = event.target;
+  if (!(target instanceof HTMLElement)) return true;
+  return (
+    target === event.currentTarget ||
+    !target.isContentEditable ||
+    event.key === "PageUp" ||
+    event.key === "PageDown"
   );
 }
 
@@ -74,6 +87,11 @@ function startScrollPin(cellElement: Element, anchorElement: Element) {
   };
 
   const observer = new ResizeObserver(scheduleKeepVisible);
+  const cleanupOnKeydown = (event: KeyboardEvent) => {
+    if (shouldCancelScrollPinForKey(event)) {
+      cleanup();
+    }
+  };
 
   function cleanup() {
     if (isCancelled) return;
@@ -81,6 +99,7 @@ function startScrollPin(cellElement: Element, anchorElement: Element) {
     observer.disconnect();
     scrollContainer.removeEventListener("wheel", cleanup);
     scrollContainer.removeEventListener("touchstart", cleanup);
+    scrollContainer.removeEventListener("keydown", cleanupOnKeydown);
     if (frameId !== null) {
       window.cancelAnimationFrame(frameId);
       frameId = null;
@@ -97,12 +116,19 @@ function startScrollPin(cellElement: Element, anchorElement: Element) {
   observer.observe(contentElement);
   scrollContainer.addEventListener("wheel", cleanup, { passive: true });
   scrollContainer.addEventListener("touchstart", cleanup, { passive: true });
+  scrollContainer.addEventListener("keydown", cleanupOnKeydown);
   timeoutId = window.setTimeout(cleanup, SCROLL_PIN_DURATION_MS);
   scheduleKeepVisible();
   cancelActiveScrollPin = cleanup;
 }
 
 export function EditorRegistryProvider({ children }: { children: ReactNode }) {
+  useEffect(() => {
+    return () => {
+      cancelActiveScrollPin?.();
+    };
+  }, []);
+
   // Focus a cell's editor using DOM lookup - bypasses registration timing issues
   const focusCell = useCallback((cellId: string, cursorPosition: "start" | "end") => {
     // Find the cell element by data attribute

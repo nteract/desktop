@@ -156,4 +156,70 @@ describe("EditorRegistryProvider", () => {
     expect(MockResizeObserver.instances[0].disconnect).toHaveBeenCalled();
     expect(editor.scrollIntoView).not.toHaveBeenCalledWith({ block: "nearest", behavior: "auto" });
   });
+
+  it("stops pinning when the user scrolls with the keyboard", () => {
+    const { editor, scrollContainer } = appendNotebookDom();
+    vi.mocked(EditorView.findFromDOM).mockReturnValue({
+      dom: editor,
+      focus: () => editor.focus(),
+      state: { doc: { length: 12 } },
+      dispatch: vi.fn(),
+    } as unknown as EditorView);
+
+    renderRegistry();
+    fireEvent.click(screen.getByRole("button", { name: "focus" }));
+    vi.mocked(editor.scrollIntoView).mockClear();
+    fireEvent.keyDown(scrollContainer, { key: "PageDown" });
+
+    act(() => {
+      MockResizeObserver.instances[0].trigger();
+    });
+
+    expect(MockResizeObserver.instances[0].disconnect).toHaveBeenCalled();
+    expect(editor.scrollIntoView).not.toHaveBeenCalledWith({ block: "nearest", behavior: "auto" });
+  });
+
+  it("stops pinning after the time window elapses", () => {
+    const { editor } = appendNotebookDom();
+    vi.mocked(EditorView.findFromDOM).mockReturnValue({
+      dom: editor,
+      focus: () => editor.focus(),
+      state: { doc: { length: 12 } },
+      dispatch: vi.fn(),
+    } as unknown as EditorView);
+
+    renderRegistry();
+    fireEvent.click(screen.getByRole("button", { name: "focus" }));
+    vi.mocked(editor.scrollIntoView).mockClear();
+
+    act(() => {
+      vi.advanceTimersByTime(2500);
+      MockResizeObserver.instances[0].trigger();
+    });
+
+    expect(MockResizeObserver.instances[0].disconnect).toHaveBeenCalled();
+    expect(editor.scrollIntoView).not.toHaveBeenCalledWith({ block: "nearest", behavior: "auto" });
+  });
+
+  it("cleans up active pinning when the provider unmounts", () => {
+    const { editor } = appendNotebookDom();
+    vi.mocked(EditorView.findFromDOM).mockReturnValue({
+      dom: editor,
+      focus: () => editor.focus(),
+      state: { doc: { length: 12 } },
+      dispatch: vi.fn(),
+    } as unknown as EditorView);
+
+    const { unmount } = renderRegistry();
+    fireEvent.click(screen.getByRole("button", { name: "focus" }));
+    vi.mocked(editor.scrollIntoView).mockClear();
+    unmount();
+
+    act(() => {
+      MockResizeObserver.instances[0].trigger();
+    });
+
+    expect(MockResizeObserver.instances[0].disconnect).toHaveBeenCalled();
+    expect(editor.scrollIntoView).not.toHaveBeenCalledWith({ block: "nearest", behavior: "auto" });
+  });
 });
