@@ -1004,20 +1004,27 @@ pub(crate) async fn handle(
                             env_path: conda_prefix.clone(),
                             python_path: python_path.clone(),
                         };
-                        launch_progress_handler.on_progress(
-                            "conda",
-                            kernel_env::EnvProgressPhase::Installing {
-                                total: conda_deps.dependencies.len(),
-                            },
-                        );
-                        if let Err(e) =
-                            kernel_env::conda::sync_dependencies(&conda_env, &conda_deps).await
+                        if let Err(e) = kernel_env::conda::sync_dependencies(
+                            &conda_env,
+                            &conda_deps,
+                            launch_progress_handler.clone(),
+                        )
+                        .await
                         {
                             warn!(
                                 "[notebook-sync] conda:env_yml sync into existing env failed: {}, continuing with existing env",
                                 e
                             );
                         }
+                        // Terminal phase so the banner clears. Matches the env_yml path in
+                        // notebook_sync_server::metadata::auto_launch_kernel.
+                        launch_progress_handler.on_progress(
+                            "conda",
+                            kernel_env::EnvProgressPhase::Ready {
+                                env_path: conda_prefix.to_string_lossy().into_owned(),
+                                python_path: python_path.to_string_lossy().into_owned(),
+                            },
+                        );
                         let env = Some(crate::PooledEnv {
                             env_type: crate::EnvType::Conda,
                             venv_path: conda_prefix,

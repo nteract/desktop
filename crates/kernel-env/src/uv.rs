@@ -638,12 +638,22 @@ pub async fn prepare_environment_unified(
 }
 
 /// Install additional dependencies into an existing environment.
-pub async fn sync_dependencies(env: &UvEnvironment, deps: &[String]) -> Result<()> {
+///
+/// Progress events (installing/offline_hit/install_complete) flow through
+/// `handler` so the frontend banner tracks the real work. `uv pip install`
+/// doesn't expose per-package progress the way rattler does, so we emit
+/// start/end markers plus the dep count.
+pub async fn sync_dependencies(
+    env: &UvEnvironment,
+    deps: &[String],
+    handler: Arc<dyn ProgressHandler>,
+) -> Result<()> {
     if deps.is_empty() {
         return Ok(());
     }
 
     info!("Syncing {} dependencies to {:?}", deps.len(), env.venv_path);
+    handler.on_progress("uv", EnvProgressPhase::Installing { total: deps.len() });
 
     let uv_path = kernel_launch::tools::get_uv_path().await?;
 
@@ -669,6 +679,7 @@ pub async fn sync_dependencies(env: &UvEnvironment, deps: &[String]) -> Result<(
     // daemon's inherited cwd has been deleted.
     let cwd = env.venv_path.parent().unwrap_or_else(|| Path::new("/tmp"));
 
+    let install_start = std::time::Instant::now();
     let offline_output = tokio::process::Command::new(&uv_path)
         .args(&offline_args)
         .current_dir(cwd)
@@ -677,6 +688,13 @@ pub async fn sync_dependencies(env: &UvEnvironment, deps: &[String]) -> Result<(
 
     if offline_output.status.success() {
         info!("Synced dependencies from local cache (offline mode)");
+        handler.on_progress("uv", EnvProgressPhase::OfflineHit);
+        handler.on_progress(
+            "uv",
+            EnvProgressPhase::InstallComplete {
+                elapsed_ms: install_start.elapsed().as_millis() as u64,
+            },
+        );
         return Ok(());
     }
 
@@ -698,6 +716,12 @@ pub async fn sync_dependencies(env: &UvEnvironment, deps: &[String]) -> Result<(
     }
 
     info!("Dependencies synced successfully");
+    handler.on_progress(
+        "uv",
+        EnvProgressPhase::InstallComplete {
+            elapsed_ms: install_start.elapsed().as_millis() as u64,
+        },
+    );
     Ok(())
 }
 

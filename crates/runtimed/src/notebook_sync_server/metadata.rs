@@ -2313,11 +2313,8 @@ pub(crate) async fn try_uv_pool_for_inline_deps(
                 venv_path: env.venv_path.clone(),
                 python_path: env.python_path.clone(),
             };
-            progress_handler.on_progress(
-                "uv",
-                kernel_env::EnvProgressPhase::Installing { total: delta.len() },
-            );
-            match kernel_env::uv::sync_dependencies(&uv_env, &delta).await {
+            match kernel_env::uv::sync_dependencies(&uv_env, &delta, progress_handler.clone()).await
+            {
                 Ok(()) => {
                     info!(
                         "[notebook-sync] Installed {} delta packages into pool env",
@@ -2458,11 +2455,13 @@ pub(crate) async fn try_conda_pool_for_inline_deps(
                 python: None,
                 env_id: None,
             };
-            progress_handler.on_progress(
-                "conda",
-                kernel_env::EnvProgressPhase::Installing { total: delta.len() },
-            );
-            match kernel_env::conda::sync_dependencies(&conda_env, &conda_deps).await {
+            match kernel_env::conda::sync_dependencies(
+                &conda_env,
+                &conda_deps,
+                progress_handler.clone(),
+            )
+            .await
+            {
                 Ok(()) => {
                     info!(
                         "[notebook-sync] Installed {} delta packages into Conda pool env",
@@ -3272,13 +3271,13 @@ pub(crate) async fn auto_launch_kernel(
                 env_path: conda_prefix.clone(),
                 python_path: python_path.clone(),
             };
-            progress_handler.on_progress(
-                "conda",
-                kernel_env::EnvProgressPhase::Installing {
-                    total: conda_deps.dependencies.len(),
-                },
-            );
-            if let Err(e) = kernel_env::conda::sync_dependencies(&conda_env, &conda_deps).await {
+            if let Err(e) = kernel_env::conda::sync_dependencies(
+                &conda_env,
+                &conda_deps,
+                progress_handler.clone(),
+            )
+            .await
+            {
                 warn!(
                     "[notebook-sync] conda:env_yml sync into existing env failed: {}, continuing with existing env",
                     e
