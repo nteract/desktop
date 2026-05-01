@@ -78,6 +78,7 @@ fn classify(
     initial_target: &Option<String>,
     has_session: bool,
     was_disconnected: bool,
+    disconnect_target: &Option<String>,
 ) -> WatchDecision {
     match event {
         DaemonEvent::Upgraded { previous, current } => {
@@ -91,6 +92,11 @@ fn classify(
                 WatchDecision::RejoinInitial(t.clone())
             } else if has_session {
                 WatchDecision::RejoinContinuation
+            } else if let Some(t) = disconnect_target.as_ref() {
+                // Session was cleared on disconnect to prevent tool
+                // calls from hanging on a dead DocHandle. Rejoin
+                // using the saved target.
+                WatchDecision::RejoinInitial(t.clone())
             } else {
                 WatchDecision::NoOp
             }
@@ -107,6 +113,15 @@ fn classify(
             // 2-peer spike that resets the eviction timer (#2088).
             if has_session && was_disconnected {
                 WatchDecision::RejoinContinuation
+            } else if !has_session && was_disconnected {
+                // Session was cleared on disconnect to prevent tool
+                // calls from hanging on a dead DocHandle. Rejoin
+                // using the saved target.
+                if let Some(t) = disconnect_target.as_ref() {
+                    WatchDecision::RejoinInitial(t.clone())
+                } else {
+                    WatchDecision::NoOp
+                }
             } else {
                 WatchDecision::NoOp
             }
@@ -136,6 +151,12 @@ pub async fn watch(
     // triggers the initial rejoin without requiring a prior disconnect.
     let mut was_disconnected = initial_target.is_some();
 
+    // When a disconnect clears the session (to prevent tool calls from
+    // hanging on a dead DocHandle), we stash the notebook target here so
+    // the next Connected/Upgraded event can rejoin without requiring an
+    // initial_target from the proxy.
+    let mut disconnect_target: Option<String> = None;
+
     loop {
         let event = match rx.recv().await {
             Ok(ev) => ev,
@@ -161,7 +182,22 @@ pub async fn watch(
             initial_target = None;
         }
 
-        match classify(&event, &initial_target, has_session, was_disconnected) {
+        // If a tool call re-established the session after a disconnect
+        // (e.g. the agent called connect_notebook), clear the stale
+        // disconnect_target so it doesn't override the new session on
+        // the next event.
+        if has_session && disconnect_target.is_some() {
+            info!("Clearing stale disconnect target (session re-established by tool call)");
+            disconnect_target = None;
+        }
+
+        match classify(
+            &event,
+            &initial_target,
+            has_session,
+            was_disconnected,
+            &disconnect_target,
+        ) {
             WatchDecision::Exit(code) => {
                 if let DaemonEvent::Upgraded { previous, current } = &event {
                     info!(
@@ -189,6 +225,7 @@ pub async fn watch(
                 if ok {
                     was_disconnected = false;
                     initial_target = None;
+                    disconnect_target = None;
                 }
             }
             WatchDecision::RejoinContinuation => {
@@ -203,10 +240,37 @@ pub async fn watch(
                 .await;
                 if ok {
                     was_disconnected = false;
+                    disconnect_target = None;
                 }
             }
             WatchDecision::MarkDisconnected => {
                 was_disconnected = true;
+                // Immediately clear the session to prevent tool calls from
+                // hanging on a dead DocHandle while we wait for the daemon
+                // to come back. Save the notebook target so we can rejoin
+                // when the daemon reconnects.
+                let old_session = {
+                    let guard = session.read().await;
+                    guard
+                        .as_ref()
+                        .map(|s| (s.notebook_id.clone(), s.notebook_path.clone()))
+                };
+                if let Some((notebook_id, notebook_path)) = old_session {
+                    info!(
+                        "Clearing session for disconnected daemon (notebook: {notebook_id}); \
+                         will rejoin on reconnect"
+                    );
+                    // Stash the target for rejoin. File-backed notebooks
+                    // use the file path; ephemeral notebooks use the UUID.
+                    disconnect_target =
+                        Some(notebook_path.clone().unwrap_or_else(|| notebook_id.clone()));
+                    *last_session_drop.write().await = Some(SessionDropInfo {
+                        reason: SessionDropReason::Disconnected,
+                        notebook_id,
+                        notebook_path,
+                    });
+                    *session.write().await = None;
+                }
             }
             WatchDecision::NoOp => {}
         }
@@ -419,9 +483,10 @@ mod tests {
             current: info_with("1.1.0", 200),
         };
         let initial = None;
+        let disconnect = None;
         // Version change exits regardless of was_disconnected.
         assert_eq!(
-            classify(&event, &initial, false, false),
+            classify(&event, &initial, false, false, &disconnect),
             WatchDecision::Exit(EXIT_DAEMON_UPGRADED)
         );
     }
@@ -436,8 +501,9 @@ mod tests {
             current: info_with("1.0.0", 200),
         };
         let initial = None;
+        let disconnect = None;
         assert_eq!(
-            classify(&event, &initial, true, false),
+            classify(&event, &initial, true, false, &disconnect),
             WatchDecision::RejoinContinuation
         );
     }
@@ -449,8 +515,9 @@ mod tests {
             current: info_with("1.0.0", 200),
         };
         let initial = None;
+        let disconnect = None;
         assert_eq!(
-            classify(&event, &initial, false, false),
+            classify(&event, &initial, false, false, &disconnect),
             WatchDecision::NoOp
         );
     }
@@ -461,10 +528,11 @@ mod tests {
             info: info_with("1.0.0", 100),
         };
         let initial = Some("abc-uuid".to_string());
+        let disconnect = None;
         // Initial target triggers RejoinInitial but classify() does NOT
         // consume it — the watch loop consumes after successful rejoin.
         assert_eq!(
-            classify(&event, &initial, false, false),
+            classify(&event, &initial, false, false, &disconnect),
             WatchDecision::RejoinInitial("abc-uuid".to_string())
         );
         assert!(
@@ -476,7 +544,7 @@ mod tests {
         // RejoinInitial (retry semantics — will keep trying until the
         // watch loop clears it after a successful rejoin).
         assert_eq!(
-            classify(&event, &initial, false, false),
+            classify(&event, &initial, false, false, &disconnect),
             WatchDecision::RejoinInitial("abc-uuid".to_string())
         );
     }
@@ -489,8 +557,9 @@ mod tests {
         // After the watch loop clears initial_target (on successful rejoin),
         // subsequent Connected events without session/disconnect are NoOp.
         let initial: Option<String> = None;
+        let disconnect = None;
         assert_eq!(
-            classify(&event, &initial, false, false),
+            classify(&event, &initial, false, false, &disconnect),
             WatchDecision::NoOp
         );
     }
@@ -498,8 +567,15 @@ mod tests {
     #[test]
     fn disconnected_marks_disconnected() {
         let initial = Some("abc".to_string());
+        let disconnect = None;
         assert_eq!(
-            classify(&DaemonEvent::Disconnected, &initial, true, false),
+            classify(
+                &DaemonEvent::Disconnected,
+                &initial,
+                true,
+                false,
+                &disconnect
+            ),
             WatchDecision::MarkDisconnected
         );
         assert!(
@@ -527,11 +603,12 @@ mod tests {
             info: info_with("1.0.0", 100),
         };
         let initial = None;
+        let disconnect = None;
 
         // has_session=true but was_disconnected=false (steady-state
         // heartbeat) → must be NoOp, not RejoinContinuation.
         assert_eq!(
-            classify(&event, &initial, true, false),
+            classify(&event, &initial, true, false, &disconnect),
             WatchDecision::NoOp,
             "heartbeat Connected must not trigger rejoin"
         );
@@ -545,36 +622,45 @@ mod tests {
             info: info_with("1.0.0", 100),
         };
         let initial = None;
+        let disconnect = None;
 
-        // After disconnect, Connected should trigger rejoin.
+        // After disconnect, Connected should trigger rejoin — session
+        // still live (legacy path before immediate-clear).
         assert_eq!(
-            classify(&connected, &initial, true, true),
+            classify(&connected, &initial, true, true, &disconnect),
             WatchDecision::RejoinContinuation
         );
     }
 
-    /// After an ephemeral notebook is evicted and the session is cleared,
-    /// subsequent Connected/Upgraded events should produce NoOp (not
-    /// RejoinContinuation). This regression test verifies the fix for #2088
-    /// — without clearing the session, the watch loop would reconnect every
-    /// 10s, briefly creating peers and preventing proper room eviction.
+    /// After an ephemeral notebook is evicted and the session is cleared
+    /// WITHOUT a disconnect_target, subsequent Connected/Upgraded events
+    /// should produce NoOp (not RejoinContinuation). This regression test
+    /// verifies the fix for #2088 — without clearing the session, the
+    /// watch loop would reconnect every 10s, briefly creating peers and
+    /// preventing proper room eviction.
     #[test]
     fn cleared_session_stops_continuation_rejoins() {
         let event = DaemonEvent::Connected {
             info: info_with("1.0.0", 100),
         };
         let initial = None;
+        let disconnect = None;
 
         // With has_session=true AND was_disconnected=true, we get
         // RejoinContinuation.
         assert_eq!(
-            classify(&event, &initial, true, true),
+            classify(&event, &initial, true, true, &disconnect),
             WatchDecision::RejoinContinuation
         );
 
-        // After the session is cleared (has_session=false), same event
-        // is NoOp even with was_disconnected=true.
-        assert_eq!(classify(&event, &initial, false, true), WatchDecision::NoOp);
+        // After the session is cleared (has_session=false) and no
+        // disconnect_target, same event is NoOp even with
+        // was_disconnected=true. This is the eviction case: the room
+        // is gone, so there's nothing to rejoin.
+        assert_eq!(
+            classify(&event, &initial, false, true, &disconnect),
+            WatchDecision::NoOp
+        );
 
         // Same for Upgraded (same-version restart).
         let upgraded = DaemonEvent::Upgraded {
@@ -582,7 +668,7 @@ mod tests {
             current: info_with("1.0.0", 200),
         };
         assert_eq!(
-            classify(&upgraded, &initial, false, false),
+            classify(&upgraded, &initial, false, false, &disconnect),
             WatchDecision::NoOp
         );
     }
@@ -598,6 +684,7 @@ mod tests {
         let connected = DaemonEvent::Connected {
             info: info_with("1.0.0", 100),
         };
+        let disconnect = None;
 
         // Simulate: proxy set initial_target, but before the first
         // Connected event, a connect_notebook tool call established a
@@ -608,7 +695,7 @@ mod tests {
         // With session active and was_disconnected=false (steady state),
         // heartbeat is NoOp — does NOT rejoin to the stale target.
         assert_eq!(
-            classify(&connected, &initial_after_clear, true, false),
+            classify(&connected, &initial_after_clear, true, false, &disconnect),
             WatchDecision::NoOp,
             "stale handoff must not override active session"
         );
@@ -616,7 +703,7 @@ mod tests {
         // With session active and was_disconnected=true (daemon bounced),
         // RejoinContinuation uses the current session — not the stale target.
         assert_eq!(
-            classify(&connected, &initial_after_clear, true, true),
+            classify(&connected, &initial_after_clear, true, true, &disconnect),
             WatchDecision::RejoinContinuation,
             "should rejoin current session, not stale target"
         );
@@ -632,13 +719,14 @@ mod tests {
         let connected = DaemonEvent::Connected {
             info: info_with("1.0.0", 100),
         };
+        let disconnect = None;
 
         // Simulate the watch loop's initial_target across multiple events.
         let mut initial_target = Some("target-uuid".to_string());
 
         // First Connected → RejoinInitial.
         assert_eq!(
-            classify(&connected, &initial_target, false, true),
+            classify(&connected, &initial_target, false, true, &disconnect),
             WatchDecision::RejoinInitial("target-uuid".to_string())
         );
 
@@ -647,7 +735,7 @@ mod tests {
 
         // Second Connected → still RejoinInitial (retry).
         assert_eq!(
-            classify(&connected, &initial_target, false, true),
+            classify(&connected, &initial_target, false, true, &disconnect),
             WatchDecision::RejoinInitial("target-uuid".to_string())
         );
 
@@ -656,8 +744,79 @@ mod tests {
 
         // Third Connected without session → NoOp.
         assert_eq!(
-            classify(&connected, &initial_target, false, false),
+            classify(&connected, &initial_target, false, false, &disconnect),
             WatchDecision::NoOp
+        );
+    }
+
+    /// When the session is cleared on disconnect (to prevent tool calls
+    /// from hanging on a dead DocHandle), the saved disconnect_target
+    /// enables automatic rejoin when the daemon reconnects.
+    #[test]
+    fn disconnect_target_triggers_rejoin_on_reconnect() {
+        let connected = DaemonEvent::Connected {
+            info: info_with("1.0.0", 100),
+        };
+        let initial = None;
+        let disconnect_target = Some("/tmp/notebook.ipynb".to_string());
+
+        // Session cleared (has_session=false), was_disconnected=true,
+        // disconnect_target present → RejoinInitial with the saved path.
+        assert_eq!(
+            classify(&connected, &initial, false, true, &disconnect_target),
+            WatchDecision::RejoinInitial("/tmp/notebook.ipynb".to_string())
+        );
+    }
+
+    /// Same-version daemon restart with a disconnect_target (session was
+    /// cleared on disconnect) triggers RejoinInitial with the saved target.
+    #[test]
+    fn disconnect_target_triggers_rejoin_on_upgraded() {
+        let upgraded = DaemonEvent::Upgraded {
+            previous: info_with("1.0.0", 100),
+            current: info_with("1.0.0", 200),
+        };
+        let initial = None;
+        let disconnect_target = Some("some-uuid".to_string());
+
+        // Session cleared, disconnect_target present → RejoinInitial.
+        assert_eq!(
+            classify(&upgraded, &initial, false, false, &disconnect_target),
+            WatchDecision::RejoinInitial("some-uuid".to_string())
+        );
+    }
+
+    /// When both initial_target and disconnect_target are present,
+    /// initial_target takes priority (it's the proxy's handoff).
+    #[test]
+    fn initial_target_takes_priority_over_disconnect_target() {
+        let connected = DaemonEvent::Connected {
+            info: info_with("1.0.0", 100),
+        };
+        let initial = Some("proxy-target".to_string());
+        let disconnect_target = Some("disconnect-target".to_string());
+
+        assert_eq!(
+            classify(&connected, &initial, false, true, &disconnect_target),
+            WatchDecision::RejoinInitial("proxy-target".to_string())
+        );
+    }
+
+    /// After a successful rejoin clears disconnect_target, heartbeats
+    /// should not trigger rejoins (prevents the #2088 regression).
+    #[test]
+    fn cleared_disconnect_target_prevents_spurious_rejoins() {
+        let connected = DaemonEvent::Connected {
+            info: info_with("1.0.0", 100),
+        };
+        let initial = None;
+        let disconnect = None; // cleared after successful rejoin
+
+        // Session re-established (has_session=true), steady-state heartbeat.
+        assert_eq!(
+            classify(&connected, &initial, true, false, &disconnect),
+            WatchDecision::NoOp,
+            "cleared disconnect target must not trigger rejoin"
         );
     }
 }
