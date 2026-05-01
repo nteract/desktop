@@ -421,6 +421,26 @@ async fn rejoin(
             Ok((handle, broadcast_rx, new_cell_count, new_notebook_id)) => {
                 crate::presence::announce(&handle, &label).await;
 
+                // Guard: only install the rejoined session if no tool call
+                // (connect_notebook / create_notebook) established a
+                // different session while we were awaiting the connection
+                // + initial load. If the session is now Some with a
+                // different notebook_id, the user's explicit choice wins
+                // and we drop the rejoined peer connection.
+                {
+                    let guard = session.read().await;
+                    if let Some(existing) = guard.as_ref() {
+                        if existing.notebook_id != new_notebook_id {
+                            info!(
+                                "Rejoin target {new_notebook_id} superseded by active session {}; \
+                                 dropping rejoined connection",
+                                existing.notebook_id
+                            );
+                            return true;
+                        }
+                    }
+                }
+
                 let new_session = NotebookSession {
                     handle,
                     broadcast_rx,
