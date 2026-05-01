@@ -4,6 +4,10 @@
 
 This is a map. Subsystem details live in `contributing/`, auto-loaded rules live in `.claude/rules/`, and operational recipes live in `.claude/skills/` and `.codex/skills/`. Run `cargo xtask help` for build commands.
 
+Claude-specific skills live in `.claude/skills/`. Use when the task matches:
+- `automerge-sync` for sync protocol internals, reconnection, peer state lifecycle, in-flight suppression, catch_unwind recovery, and convergence debugging
+- `mcp-session-lifecycle` for MCP proxy supervision, daemon watch loop, session state, rejoin/reconnect races, and room eviction
+
 Codex-specific repo skills live in `.codex/skills/`. Prefer them when the task matches:
 - `nteract-daemon-dev` for per-worktree daemon lifecycle, socket setup, and daemon-backed verification
 - `nteract-python-bindings` for `maturin develop`, venv selection, and MCP server work
