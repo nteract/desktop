@@ -61,7 +61,8 @@ function startScrollPin(cellElement: Element, anchorElement: Element) {
   const scrollContainer = getNearestScrollContainer(cellElement);
   if (!scrollContainer || typeof ResizeObserver === "undefined") return;
 
-  const contentElement = getScrollContentElement(scrollContainer, cellElement);
+  const container = scrollContainer;
+  const contentElement = getScrollContentElement(container, cellElement);
   let frameId: number | null = null;
   let timeoutId: number | null = null;
   let isCancelled = false;
@@ -75,7 +76,7 @@ function startScrollPin(cellElement: Element, anchorElement: Element) {
     }
     if (
       cellElement.contains(document.activeElement) &&
-      !isAnchorVisible(scrollContainer, anchorElement)
+      !isAnchorVisible(container, anchorElement)
     ) {
       anchorElement.scrollIntoView({ block: "nearest", behavior: "auto" });
     }
@@ -97,9 +98,9 @@ function startScrollPin(cellElement: Element, anchorElement: Element) {
     if (isCancelled) return;
     isCancelled = true;
     observer.disconnect();
-    scrollContainer.removeEventListener("wheel", cleanup);
-    scrollContainer.removeEventListener("touchstart", cleanup);
-    scrollContainer.removeEventListener("keydown", cleanupOnKeydown);
+    container.removeEventListener("wheel", cleanup);
+    container.removeEventListener("touchstart", cleanup);
+    container.removeEventListener("keydown", cleanupOnKeydown);
     if (frameId !== null) {
       window.cancelAnimationFrame(frameId);
       frameId = null;
@@ -114,9 +115,9 @@ function startScrollPin(cellElement: Element, anchorElement: Element) {
   }
 
   observer.observe(contentElement);
-  scrollContainer.addEventListener("wheel", cleanup, { passive: true });
-  scrollContainer.addEventListener("touchstart", cleanup, { passive: true });
-  scrollContainer.addEventListener("keydown", cleanupOnKeydown);
+  container.addEventListener("wheel", cleanup, { passive: true });
+  container.addEventListener("touchstart", cleanup, { passive: true });
+  container.addEventListener("keydown", cleanupOnKeydown);
   timeoutId = window.setTimeout(cleanup, SCROLL_PIN_DURATION_MS);
   cancelActiveScrollPin = cleanup;
 }
