@@ -385,12 +385,36 @@ struct Pool {
 
 const MIN_WARM_BASES: usize = 2;
 
+fn package_name(dep: &str) -> &str {
+    dep.trim()
+        .split(['<', '>', '=', '!', '~', '[', ';', ' '])
+        .next()
+        .unwrap_or("")
+        .trim()
+}
+
+fn add_dx_bootstrap_packages(
+    packages: &mut Vec<String>,
+    feature_flags: notebook_protocol::protocol::FeatureFlags,
+) {
+    if !feature_flags.bootstrap_dx {
+        return;
+    }
+
+    let has_pyarrow = packages
+        .iter()
+        .any(|pkg| package_name(pkg).eq_ignore_ascii_case("pyarrow"));
+    if !has_pyarrow {
+        packages.push("pyarrow>=14".to_string());
+    }
+}
+
 fn uv_prewarmed_packages(
     extra: &[String],
-    _feature_flags: notebook_protocol::protocol::FeatureFlags,
+    feature_flags: notebook_protocol::protocol::FeatureFlags,
 ) -> Vec<String> {
-    // The launcher package is vendored post-creation; `bootstrap_dx` no
-    // longer adds a PyPI dep to the prewarm set.
+    // The launcher package is vendored post-creation. When bootstrap_dx is on,
+    // pandas still needs pyarrow so the formatter can emit parquet for Sift.
     let mut packages = vec![
         "ipykernel".to_string(),
         "ipywidgets".to_string(),
@@ -399,10 +423,14 @@ fn uv_prewarmed_packages(
         "uv".to_string(),
     ];
     packages.extend(extra.iter().cloned());
+    add_dx_bootstrap_packages(&mut packages, feature_flags);
     packages
 }
 
-fn conda_prewarmed_packages(extra: &[String]) -> Vec<String> {
+fn conda_prewarmed_packages(
+    extra: &[String],
+    feature_flags: notebook_protocol::protocol::FeatureFlags,
+) -> Vec<String> {
     let mut packages = vec![
         "ipykernel".to_string(),
         "ipywidgets".to_string(),
@@ -410,10 +438,14 @@ fn conda_prewarmed_packages(extra: &[String]) -> Vec<String> {
         "nbformat".to_string(),
     ];
     packages.extend(extra.iter().cloned());
+    add_dx_bootstrap_packages(&mut packages, feature_flags);
     packages
 }
 
-fn pixi_prewarmed_packages(extra: &[String]) -> Vec<String> {
+fn pixi_prewarmed_packages(
+    extra: &[String],
+    feature_flags: notebook_protocol::protocol::FeatureFlags,
+) -> Vec<String> {
     let mut packages = vec![
         "ipykernel".to_string(),
         "ipywidgets".to_string(),
@@ -421,6 +453,7 @@ fn pixi_prewarmed_packages(extra: &[String]) -> Vec<String> {
         "nbformat".to_string(),
     ];
     packages.extend(extra.iter().cloned());
+    add_dx_bootstrap_packages(&mut packages, feature_flags);
     packages
 }
 
@@ -1056,7 +1089,7 @@ impl Daemon {
     pub async fn conda_pool_packages(&self) -> Vec<String> {
         let settings = self.settings.read().await;
         let synced = settings.get_all();
-        conda_prewarmed_packages(&synced.conda.default_packages)
+        conda_prewarmed_packages(&synced.conda.default_packages, synced.feature_flags())
     }
 
     /// Create a new daemon with the given configuration.
@@ -1764,8 +1797,10 @@ impl Daemon {
 
             let uv_pkgs =
                 uv_prewarmed_packages(&synced.uv.default_packages, synced.feature_flags());
-            let conda_pkgs = conda_prewarmed_packages(&synced.conda.default_packages);
-            let pixi_pkgs = pixi_prewarmed_packages(&synced.pixi.default_packages);
+            let feature_flags = synced.feature_flags();
+            let conda_pkgs =
+                conda_prewarmed_packages(&synced.conda.default_packages, feature_flags);
+            let pixi_pkgs = pixi_prewarmed_packages(&synced.pixi.default_packages, feature_flags);
 
             (uv_pkgs, conda_pkgs, pixi_pkgs)
         };
@@ -4005,7 +4040,10 @@ impl Daemon {
                         as usize
                 };
                 let synced = settings.get_all();
-                let pkgs = conda_prewarmed_packages(&synced.conda.default_packages);
+                let pkgs = conda_prewarmed_packages(
+                    &synced.conda.default_packages,
+                    synced.feature_flags(),
+                );
                 (target, pkgs)
             };
 
@@ -4127,7 +4165,8 @@ impl Daemon {
                         as usize
                 };
                 let synced = settings.get_all();
-                let pkgs = pixi_prewarmed_packages(&synced.pixi.default_packages);
+                let pkgs =
+                    pixi_prewarmed_packages(&synced.pixi.default_packages, synced.feature_flags());
                 (target, pkgs)
             };
 
@@ -4286,10 +4325,14 @@ impl Daemon {
         };
 
         // Read default conda packages from synced settings
-        let extra_conda_packages: Vec<String> = {
+        let (extra_conda_packages, feature_flags): (
+            Vec<String>,
+            notebook_protocol::protocol::FeatureFlags,
+        ) = {
             let settings = self.settings.read().await;
             let synced = settings.get_all();
-            synced.conda.default_packages
+            let feature_flags = synced.feature_flags();
+            (synced.conda.default_packages, feature_flags)
         };
 
         if !extra_conda_packages.is_empty() {
@@ -4300,7 +4343,7 @@ impl Daemon {
         }
 
         // Build specs: python + notebook essentials + user-configured defaults
-        let conda_install_packages = conda_prewarmed_packages(&extra_conda_packages);
+        let conda_install_packages = conda_prewarmed_packages(&extra_conda_packages, feature_flags);
 
         let match_spec_options = ParseMatchSpecOptions::strict();
         let specs: Vec<MatchSpec> = match (|| -> anyhow::Result<Vec<MatchSpec>> {
@@ -4664,17 +4707,19 @@ impl Daemon {
         info!("[runtimed] Creating Pixi environment at {:?}", project_dir);
 
         // Build package list
-        let mut packages = pixi_prewarmed_packages(&[]);
-        {
-            let pixi_defaults = self.default_pixi_packages().await;
+        let packages = {
+            let settings = self.settings.read().await;
+            let synced = settings.get_all();
+            let feature_flags = synced.feature_flags();
+            let pixi_defaults = synced.pixi.default_packages;
             if !pixi_defaults.is_empty() {
                 info!(
                     "[runtimed] Including default pixi packages: {:?}",
                     pixi_defaults
                 );
-                packages.extend(pixi_defaults);
             }
-        }
+            pixi_prewarmed_packages(&pixi_defaults, feature_flags)
+        };
         let prewarmed_packages = packages.clone();
 
         // Create environment using rattler (pixi-compatible layout)

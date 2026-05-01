@@ -816,7 +816,9 @@ pub(crate) async fn handle(
                 .unwrap_or_else(|| vec!["conda-forge".to_string()]);
 
             // Fast path: check inline env cache first (instant on hit)
-            if let Some(cached) = crate::inline_env::check_conda_inline_cache(&deps, &channels) {
+            if let Some(cached) =
+                crate::inline_env::check_conda_inline_cache(&deps, &channels, bootstrap_dx)
+            {
                 info!(
                     "[notebook-sync] LaunchKernel: Conda inline cache hit at {:?}",
                     cached.python_path
@@ -833,6 +835,7 @@ pub(crate) async fn handle(
                 match try_conda_pool_for_inline_deps(
                     &deps,
                     &channels,
+                    bootstrap_dx,
                     daemon,
                     room,
                     launch_progress_handler.clone(),
@@ -854,6 +857,7 @@ pub(crate) async fn handle(
                             &deps,
                             &channels,
                             launch_progress_handler.clone(),
+                            bootstrap_dx,
                         )
                         .await
                         {

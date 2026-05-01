@@ -150,21 +150,28 @@ pub(crate) fn inline_cache_dir() -> std::path::PathBuf {
     runt_workspace::daemon_base_dir().join("inline-envs")
 }
 
-/// Return inline deps unchanged.
+fn has_dep_named(deps: &[String], name: &str) -> bool {
+    deps.iter()
+        .filter_map(|dep| {
+            split_bare_and_constraint(dep).map(|(bare, _)| normalize_package_name(bare))
+        })
+        .any(|bare| bare == name)
+}
+
+/// Return inline deps plus the parquet encoder needed by the dx bootstrap.
 ///
 /// Historically this appended `dx` when `bootstrap_dx` was set, so the
 /// PyPI package would land in the inline env and the dep-hash would
-/// distinguish bootstrap and non-bootstrap caches. Since 0.2.0 the
-/// launcher package (which carries everything dx used to provide)
-/// ships inside the daemon binary and is vendored via PYTHONPATH —
-/// the inline env contents are identical either way, and bootstrap
-/// vs non-bootstrap envs can share the cache.
-///
-/// Kept as a shim so callers don't all have to change on the same PR.
-/// `bootstrap_dx` is accepted and ignored — plan to drop the parameter
-/// once the field ripens into a pure launcher-module selector.
-pub(crate) fn inline_deps_with_bootstrap(deps: &[String], _bootstrap_dx: bool) -> Vec<String> {
-    deps.to_vec()
+/// distinguish bootstrap and non-bootstrap caches. The launcher package now
+/// ships inside the daemon binary, but pandas DataFrames still need pyarrow
+/// available in the kernel env so the bootstrap formatter can emit parquet
+/// for the Sift renderer instead of falling back to classic pandas HTML.
+pub(crate) fn inline_deps_with_bootstrap(deps: &[String], bootstrap_dx: bool) -> Vec<String> {
+    let mut effective = deps.to_vec();
+    if bootstrap_dx && !has_dep_named(&effective, "pyarrow") {
+        effective.push("pyarrow>=14".to_string());
+    }
+    effective
 }
 
 /// Prepare a cached UV environment with the given inline dependencies.
@@ -172,9 +179,6 @@ pub(crate) fn inline_deps_with_bootstrap(deps: &[String], _bootstrap_dx: bool) -
 /// If a cached environment with the same deps already exists, returns it
 /// immediately. Otherwise creates a new environment with uv venv + uv pip install.
 ///
-/// `bootstrap_dx` is accepted for call-site compatibility and currently
-/// ignored — launcher vendoring replaced the per-env `dx` PyPI install,
-/// so bootstrap and non-bootstrap envs are identical and share the cache.
 pub async fn prepare_uv_inline_env(
     deps: &[String],
     prerelease: Option<&str>,
@@ -204,9 +208,10 @@ pub async fn prepare_conda_inline_env(
     deps: &[String],
     channels: &[String],
     handler: Arc<dyn ProgressHandler>,
+    bootstrap_dx: bool,
 ) -> Result<PreparedEnv> {
     let conda_deps = kernel_env::CondaDependencies {
-        dependencies: deps.to_vec(),
+        dependencies: inline_deps_with_bootstrap(deps, bootstrap_dx),
         channels: if channels.is_empty() {
             vec!["conda-forge".to_string()]
         } else {
@@ -260,9 +265,11 @@ pub async fn claim_pool_env_for_conda_inline_cache(
     env: &mut crate::PooledEnv,
     deps: &[String],
     channels: &[String],
+    bootstrap_dx: bool,
 ) {
+    let dependencies = inline_deps_with_bootstrap(deps, bootstrap_dx);
     let conda_deps = kernel_env::CondaDependencies {
-        dependencies: deps.to_vec(),
+        dependencies,
         channels: if channels.is_empty() {
             vec!["conda-forge".to_string()]
         } else {
@@ -614,9 +621,14 @@ pub async fn check_uv_inline_cache(
 /// every requested package has a corresponding `conda-meta/` record.  A
 /// stale cache entry (e.g. created by a buggy build that dropped packages)
 /// is treated as a miss and removed so the next code path can rebuild it.
-pub fn check_conda_inline_cache(deps: &[String], channels: &[String]) -> Option<PreparedEnv> {
+pub fn check_conda_inline_cache(
+    deps: &[String],
+    channels: &[String],
+    bootstrap_dx: bool,
+) -> Option<PreparedEnv> {
+    let dependencies = inline_deps_with_bootstrap(deps, bootstrap_dx);
     let conda_deps = kernel_env::CondaDependencies {
-        dependencies: deps.to_vec(),
+        dependencies: dependencies.clone(),
         channels: if channels.is_empty() {
             vec!["conda-forge".to_string()]
         } else {
@@ -642,9 +654,9 @@ pub fn check_conda_inline_cache(deps: &[String], channels: &[String]) -> Option<
     // Verify that every requested package is actually installed.  The
     // python binary existing is necessary but not sufficient — a prior
     // buggy build may have cached an env missing some packages (#2137).
-    if !deps.is_empty() {
+    if !dependencies.is_empty() {
         let installed = conda_meta_package_names(&env_path);
-        for dep in deps {
+        for dep in &dependencies {
             let Some(name) = extract_conda_package_name(dep) else {
                 continue;
             };
@@ -1003,6 +1015,31 @@ mod tests {
         assert_eq!(normalize_package_name("Pandas"), "pandas");
         assert_eq!(normalize_package_name("scikit_learn"), "scikit-learn");
         assert_eq!(normalize_package_name("PyArrow"), "pyarrow");
+    }
+
+    #[test]
+    fn test_inline_deps_with_bootstrap_adds_pyarrow() {
+        let deps = vec!["pandas".to_string(), "numpy".to_string()];
+        assert_eq!(
+            inline_deps_with_bootstrap(&deps, true),
+            vec![
+                "pandas".to_string(),
+                "numpy".to_string(),
+                "pyarrow>=14".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn test_inline_deps_with_bootstrap_does_not_duplicate_pyarrow() {
+        let deps = vec!["pandas".to_string(), "PyArrow>=15".to_string()];
+        assert_eq!(inline_deps_with_bootstrap(&deps, true), deps);
+    }
+
+    #[test]
+    fn test_inline_deps_without_bootstrap_unchanged() {
+        let deps = vec!["pandas".to_string()];
+        assert_eq!(inline_deps_with_bootstrap(&deps, false), deps);
     }
 
     #[test]

@@ -2378,10 +2378,13 @@ pub(crate) async fn try_uv_pool_for_inline_deps(
 pub(crate) async fn try_conda_pool_for_inline_deps(
     deps: &[String],
     channels: &[String],
+    bootstrap_dx: bool,
     daemon: &std::sync::Arc<crate::daemon::Daemon>,
     room: &NotebookRoom,
     progress_handler: std::sync::Arc<dyn kernel_env::ProgressHandler>,
 ) -> Result<(crate::PooledEnv, Vec<String>), ()> {
+    let effective_deps = crate::inline_env::inline_deps_with_bootstrap(deps, bootstrap_dx);
+
     // Only use pool for default conda-forge channel
     let is_default_channels =
         channels.is_empty() || (channels.len() == 1 && channels[0] == "conda-forge");
@@ -2396,7 +2399,7 @@ pub(crate) async fn try_conda_pool_for_inline_deps(
     // Quick pre-check: if any dep has version specifiers, skip pool entirely
     let settings_packages = daemon.conda_pool_packages().await;
     if matches!(
-        crate::inline_env::compare_deps_to_pool(deps, &settings_packages),
+        crate::inline_env::compare_deps_to_pool(&effective_deps, &settings_packages),
         crate::inline_env::PoolDepRelation::Independent
     ) {
         debug!("[notebook-sync] Conda inline deps have version constraints, skipping pool reuse");
@@ -2416,7 +2419,7 @@ pub(crate) async fn try_conda_pool_for_inline_deps(
     };
 
     let actual_packages = env.prewarmed_packages.clone();
-    let relation = crate::inline_env::compare_deps_to_pool(deps, &actual_packages);
+    let relation = crate::inline_env::compare_deps_to_pool(&effective_deps, &actual_packages);
 
     match relation {
         crate::inline_env::PoolDepRelation::Subset => {
@@ -2425,8 +2428,13 @@ pub(crate) async fn try_conda_pool_for_inline_deps(
             // restart cache-hits. See #2089 / #2083. The claim is
             // best-effort, so install runtime ownership before releasing
             // the lease (see try_uv_pool_for_inline_deps for rationale).
-            crate::inline_env::claim_pool_env_for_conda_inline_cache(&mut env, deps, channels)
-                .await;
+            crate::inline_env::claim_pool_env_for_conda_inline_cache(
+                &mut env,
+                deps,
+                channels,
+                bootstrap_dx,
+            )
+            .await;
             {
                 let mut ep = room.runtime_agent_env_path.write().await;
                 *ep = Some(env.venv_path.clone());
@@ -2449,7 +2457,7 @@ pub(crate) async fn try_conda_pool_for_inline_deps(
             // Passing only the delta would drop the original user packages
             // that are already installed in the pool env. See #2134.
             let conda_deps = kernel_env::CondaDependencies {
-                dependencies: deps.to_vec(),
+                dependencies: effective_deps.clone(),
                 channels: vec!["conda-forge".to_string()],
                 python: None,
                 env_id: None,
@@ -2469,7 +2477,10 @@ pub(crate) async fn try_conda_pool_for_inline_deps(
                     // caveat as the Subset arm — install runtime
                     // ownership before releasing.
                     crate::inline_env::claim_pool_env_for_conda_inline_cache(
-                        &mut env, deps, channels,
+                        &mut env,
+                        deps,
+                        channels,
+                        bootstrap_dx,
                     )
                     .await;
                     {
@@ -3088,7 +3099,9 @@ pub(crate) async fn auto_launch_kernel(
                 .unwrap_or_else(|| vec!["conda-forge".to_string()]);
 
             // Fast path: check inline env cache first (instant on hit)
-            if let Some(cached) = crate::inline_env::check_conda_inline_cache(&deps, &channels) {
+            if let Some(cached) =
+                crate::inline_env::check_conda_inline_cache(&deps, &channels, bootstrap_dx)
+            {
                 info!(
                     "[notebook-sync] Conda inline cache hit at {:?}",
                     cached.python_path
@@ -3105,6 +3118,7 @@ pub(crate) async fn auto_launch_kernel(
                 match try_conda_pool_for_inline_deps(
                     &deps,
                     &channels,
+                    bootstrap_dx,
                     &daemon,
                     room,
                     progress_handler.clone(),
@@ -3126,6 +3140,7 @@ pub(crate) async fn auto_launch_kernel(
                             &deps,
                             &channels,
                             progress_handler.clone(),
+                            bootstrap_dx,
                         )
                         .await
                         {
