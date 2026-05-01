@@ -4289,6 +4289,7 @@ impl Daemon {
         let match_spec_options = ParseMatchSpecOptions::strict();
         let specs: Vec<MatchSpec> = match (|| -> anyhow::Result<Vec<MatchSpec>> {
             let mut specs = vec![MatchSpec::from_str("python>=3.13", match_spec_options)?];
+            specs.push(MatchSpec::from_str("python-gil", match_spec_options)?);
             for pkg in &conda_install_packages {
                 specs.push(MatchSpec::from_str(pkg, match_spec_options)?);
             }
