@@ -169,10 +169,16 @@ How each system answers "has the remote peer seen my changes?"
 | nteract `required_heads` | Daemon-side waiter on `get_change_by_hash` | Daemon defers, client free | Per-request |
 
 **Key insight:** All systems converge on the same principle: **track heads
-per peer, notify asynchronously, never block the sync loop.** nteract's
-`required_heads` is a request-scoped specialization of this pattern —
-the daemon defers one specific request until causal preconditions are met,
-while the sync stream continues unblocked.
+per peer, notify asynchronously, never block the sync loop.** But only
+nteract gates *actions* on causal preconditions. automerge-repo's
+`RemoteHeadsSubscriptions` is peer-awareness ("I know where you are"),
+and samod's `RemoteHeads` on every data message is informational with
+staleness filtering (counter <= last_seen → drop) — neither system
+defers request processing until specific heads arrive. nteract's
+`required_heads` is genuinely novel: request-scoped causal gating where
+the daemon defers one specific request until its preconditions are met,
+while the sync stream continues unblocked. This eliminates the
+client-side round-trip that `confirm_sync` required.
 
 ## Connection Lifecycle Patterns
 
