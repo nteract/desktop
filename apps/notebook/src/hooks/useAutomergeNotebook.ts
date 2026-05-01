@@ -45,7 +45,7 @@ import {
   setRuntimeState,
   useRuntimeState,
 } from "../lib/runtime-state";
-import type { JupyterOutput } from "../types";
+import type { JupyterOutput, NotebookCell } from "../types";
 import init, { NotebookHandle } from "../wasm/runtimed-wasm/runtimed_wasm.js";
 
 // Module-level WASM init — runs before React renders.
@@ -70,6 +70,7 @@ export function useAutomergeNotebook() {
   const [focusedCellId, setFocusedCellId] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [canAcceptCellMutations, setCanAcceptCellMutations] = useState(false);
 
   const handleRef = useRef<NotebookHandle | null>(null);
   const sessionIdRef = useRef(crypto.randomUUID().slice(0, 8));
@@ -155,6 +156,12 @@ export function useAutomergeNotebook() {
     replaceNotebookCells(newCells);
   }, []);
 
+  const refreshCanAcceptCellMutations = useCallback((handle = handleRef.current) => {
+    const canAccept = handle?.has_cells_map() ?? false;
+    setCanAcceptCellMutations(canAccept);
+    return canAccept;
+  }, []);
+
   /**
    * Guard + commit helper for WASM mutations.
    * After the mutation callback runs, re-materializes and syncs.
@@ -201,6 +208,7 @@ export function useAutomergeNotebook() {
 
     interactiveReadyRef.current = false;
     latestSessionStatusRef.current = null;
+    setCanAcceptCellMutations(false);
     setLoadError(null);
     setIsLoading(true);
 
@@ -255,6 +263,7 @@ export function useAutomergeNotebook() {
       }
 
       setLoadError(null);
+      refreshCanAcceptCellMutations();
       if (interactiveReadyRef.current) {
         setIsLoading(isInitialLoadStreaming(status.initial_load));
       }
@@ -280,6 +289,7 @@ export function useAutomergeNotebook() {
             // existing eager output visibility until the authoritative
             // runtime-state projection lands.
             seedOutputStoresFromHandle(handle, cellIdList);
+            refreshCanAcceptCellMutations(handle);
             // Project whatever RuntimeState snapshot has landed so far
             // on top. If the runtime-state frame arrived first this is
             // the authoritative pass; otherwise it's a no-op that the
@@ -319,6 +329,7 @@ export function useAutomergeNotebook() {
                 // RuntimeStateDoc entry happened to land last.
                 const handle = handleRef.current;
                 if (!handle) return;
+                refreshCanAcceptCellMutations(handle);
                 const pointerRefresh = planCellPointerRefresh(changeset);
                 if (pointerRefresh.kind === "touched") {
                   updateCellExecutionPointersFromHandle(handle, pointerRefresh.cell_ids);
@@ -386,6 +397,7 @@ export function useAutomergeNotebook() {
           resetRuntimeState();
           resetRuntimeStoresProjection();
           resetPoolState();
+          setCanAcceptCellMutations(false);
           outputCacheRef.current.clear();
           setIsLoading(true);
           setLoadError(null);
@@ -428,11 +440,12 @@ export function useAutomergeNotebook() {
       resetRuntimeState();
       resetRuntimeStoresProjection();
       resetPoolState();
+      setCanAcceptCellMutations(false);
       setNotebookHandle(null);
       handleRef.current?.free();
       handleRef.current = null;
     };
-  }, [bootstrap, host, materializeCells]);
+  }, [bootstrap, host, materializeCells, refreshCanAcceptCellMutations]);
 
   // ── Cell mutations ─────────────────────────────────────────────────
 
@@ -449,47 +462,53 @@ export function useAutomergeNotebook() {
   }, []);
 
   const addCell = useCallback(
-    (cellType: "code" | "markdown" | "raw", afterCellId?: string | null) => {
+    (cellType: "code" | "markdown" | "raw", afterCellId?: string | null): NotebookCell | null => {
       const handle = handleRef.current;
       const engine = engineRef.current;
 
       if (!handle || !engine) {
-        const placeholderId = crypto.randomUUID();
-        return cellType === "code"
-          ? {
-              cell_type: "code" as const,
-              id: placeholderId,
-              source: "",
-              outputs: [],
-              execution_count: null,
-              metadata: {},
-            }
-          : {
-              cell_type: cellType,
-              id: placeholderId,
-              source: "",
-              metadata: {},
-            };
+        logger.debug("[automerge-notebook] addCell skipped: no handle/engine");
+        return null;
+      }
+
+      if (!handle.has_cells_map()) {
+        logger.debug("[automerge-notebook] addCell skipped: cells map not synced yet");
+        setCanAcceptCellMutations(false);
+        return null;
       }
 
       const cellId = crypto.randomUUID();
-      handle.add_cell_after(cellId, cellType, afterCellId ?? null);
+      try {
+        handle.add_cell_after(cellId, cellType, afterCellId ?? null);
+      } catch (error) {
+        logger.warn("[automerge-notebook] addCell failed:", error);
+        refreshCanAcceptCellMutations(handle);
+        return null;
+      }
       rematerializeCellsSync(handle);
       engine.flush();
       setFocusedCellId(cellId);
 
       const cell = getNotebookCellsSnapshot().find((c) => c.id === cellId);
-      return (
-        cell ?? {
-          cell_type: cellType,
+      if (cell) return cell;
+      if (cellType === "code") {
+        return {
+          cell_type: "code",
           id: cellId,
           source: "",
-          ...(cellType === "code" ? { outputs: [], execution_count: null } : {}),
+          outputs: [],
+          execution_count: null,
           metadata: {},
-        }
-      );
+        };
+      }
+      return {
+        cell_type: cellType,
+        id: cellId,
+        source: "",
+        metadata: {},
+      };
     },
-    [rematerializeCellsSync],
+    [refreshCanAcceptCellMutations, rematerializeCellsSync],
   );
 
   const moveCell = useCallback(
@@ -662,6 +681,7 @@ export function useAutomergeNotebook() {
   return {
     cellIds,
     isLoading,
+    canAcceptCellMutations,
     focusedCellId,
     setFocusedCellId,
     updateCellSource,

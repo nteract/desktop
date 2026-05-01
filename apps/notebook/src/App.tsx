@@ -171,6 +171,7 @@ function AppContent() {
   const {
     cellIds,
     isLoading,
+    canAcceptCellMutations,
     loadError,
     focusedCellId,
     setFocusedCellId,
@@ -1137,7 +1138,7 @@ function AppContent() {
 
   const handleAddCell = useCallback(
     (type: "code" | "markdown" | "raw", afterCellId?: string | null) => {
-      addCell(type, afterCellId);
+      return addCell(type, afterCellId);
     },
     [addCell],
   );
@@ -1762,6 +1763,7 @@ function AppContent() {
           <NotebookView
             cellIds={cellIds}
             isLoading={isLoading}
+            canAcceptCellMutations={canAcceptCellMutations}
             loadError={loadError}
             runtime={runtime}
             sessionRuntimeState={sessionStatus?.runtime_state ?? null}

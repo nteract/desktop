@@ -540,6 +540,11 @@ impl NotebookHandle {
         self.doc.cell_count()
     }
 
+    /// Return true once the daemon-authored cells map is present.
+    pub fn has_cells_map(&self) -> bool {
+        self.doc.has_cells_map()
+    }
+
     /// Get all cells as an array of JsCell objects.
     ///
     /// Outputs are fetched from `RuntimeStateDoc` keyed by each cell's

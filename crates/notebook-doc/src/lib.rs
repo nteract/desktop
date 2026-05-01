@@ -1105,6 +1105,11 @@ impl NotebookDoc {
         }
     }
 
+    /// Return true once the daemon-authored cells map has synced into this doc.
+    pub fn has_cells_map(&self) -> bool {
+        self.cells_map_id().is_some()
+    }
+
     /// Get all cells as snapshots, sorted by position.
     pub fn get_cells(&self) -> Vec<CellSnapshot> {
         let cells_id = match self.cells_map_id() {
@@ -2676,6 +2681,7 @@ mod tests {
         let doc = NotebookDoc::bootstrap(TextEncoding::UnicodeCodePoint, "test");
         assert_eq!(doc.notebook_id(), None);
         assert_eq!(doc.cell_count(), 0);
+        assert!(!doc.has_cells_map());
         assert_eq!(doc.get_cells(), vec![]);
         assert_eq!(doc.schema_version(), Some(SCHEMA_VERSION));
         // No metadata map exists before sync — reads return None gracefully.
@@ -2720,6 +2726,7 @@ mod tests {
         }
 
         assert_eq!(empty.cell_count(), 1);
+        assert!(empty.has_cells_map());
         let cell = empty.get_cell("cell-1").unwrap();
         assert_eq!(cell.source, "print('hello')");
         assert_eq!(empty.notebook_id(), Some("test-notebook".to_string()));

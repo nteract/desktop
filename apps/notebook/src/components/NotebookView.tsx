@@ -34,9 +34,13 @@ import { CodeCell } from "./CodeCell";
 import { MarkdownCell } from "./MarkdownCell";
 import { RawCell } from "./RawCell";
 
+type AddCellResult = NotebookCell | null;
+type AddCellHandler = (type: "code" | "markdown", afterCellId?: string | null) => AddCellResult;
+
 interface NotebookViewProps {
   cellIds: string[];
   isLoading?: boolean;
+  canAcceptCellMutations?: boolean;
   loadError?: string | null;
   runtime?: Runtime | null;
   sessionRuntimeState?: string | null;
@@ -44,7 +48,7 @@ interface NotebookViewProps {
   onExecuteCell: (cellId: string) => void;
   onInterruptKernel: () => void;
   onDeleteCell: (cellId: string) => void;
-  onAddCell: (type: "code" | "markdown", afterCellId?: string | null) => void;
+  onAddCell: AddCellHandler;
   onMoveCell: (cellId: string, afterCellId?: string | null) => void;
   onReportOutputMatchCount?: (cellId: string, count: number) => void;
   onSetCellSourceHidden?: (cellId: string, hidden: boolean) => void;
@@ -74,7 +78,7 @@ function CellAdder({
   cellType = "code",
 }: {
   afterCellId?: string | null;
-  onAdd: (type: "code" | "markdown", afterCellId?: string | null) => void;
+  onAdd: AddCellHandler;
   cellType?: string;
 }) {
   const ribbonClass = adderRibbonClasses[cellType] ?? defaultAdderRibbonClass;
@@ -285,7 +289,7 @@ function SortableCell({
     dragHandleProps?: Record<string, unknown>,
     isDragging?: boolean,
   ) => React.ReactNode;
-  onAddCell: (type: "code" | "markdown", afterCellId?: string | null) => void;
+  onAddCell: AddCellHandler;
   onDeleteCell: (cellId: string) => void;
   isHiddenInGroup?: boolean;
 }) {
@@ -344,6 +348,7 @@ function SortableCell({
 function NotebookViewContent({
   cellIds,
   isLoading = false,
+  canAcceptCellMutations = false,
   loadError = null,
   runtime = "python",
   sessionRuntimeState = null,
@@ -528,16 +533,18 @@ function NotebookViewContent({
   // processes the focusedCellId update from onAddCell.
   const didAutoSeed = useRef(false);
   useEffect(() => {
-    if (isLoading || focusedCellId !== null) return;
+    if (isLoading || focusedCellId !== null || !canAcceptCellMutations) return;
     if (cellIds.length === 0) {
       if (!didAutoSeed.current) {
-        didAutoSeed.current = true;
-        onAddCell("code");
+        const seeded = onAddCell("code");
+        if (seeded !== null) {
+          didAutoSeed.current = true;
+        }
       }
     } else {
       onFocusCell(cellIds[0]);
     }
-  }, [isLoading, cellIds, focusedCellId, onFocusCell, onAddCell]);
+  }, [isLoading, canAcceptCellMutations, cellIds, focusedCellId, onFocusCell, onAddCell]);
 
   const renderCell = useCallback(
     (

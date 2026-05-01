@@ -2,8 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open as openExternal } from "@tauri-apps/plugin-shell";
 import { AlertTriangle, ArrowLeft, Check, Loader2 } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
-import { TelemetryDisclosureCard } from "@/components/TelemetryDisclosureCard";
+import { type MouseEvent, useCallback, useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { cn } from "@/lib/utils";
@@ -152,17 +151,24 @@ const BRAND_COLORS = {
 
 const IDLE_POOL_POLL_ATTEMPTS = 10;
 const WARMING_POOL_POLL_ATTEMPTS = 180;
+const LEARN_MORE_URL = "https://nteract.io/telemetry";
+const PYTHON_ENV_LABELS: Record<PythonEnv, string> = {
+  uv: "UV",
+  conda: "Conda",
+  pixi: "Pixi",
+};
 
 /**
  * First-launch onboarding screen with paged wizard.
  *
  * Page 1: Runtime selection (Python vs Deno)
- * Page 2: Python environment manager (UV vs Conda)
+ * Page 2: Python environment manager (UV vs Conda vs Pixi)
+ * Page 3: Telemetry decision and launch
  *
  * Daemon installation runs in background throughout.
  */
 export default function App() {
-  const [page, setPage] = useState<1 | 2>(1);
+  const [page, setPage] = useState<1 | 2 | 3>(1);
   const [runtime, setRuntime] = useState<Runtime | null>(null);
   const [pythonEnv, setPythonEnv] = useState<PythonEnv | null>(null);
   const [steps, setSteps] = useState<SetupStep[]>([
@@ -189,7 +195,7 @@ export default function App() {
               return { ...s, status: "completed" };
             }
             if (s.id === "tools" && s.status !== "completed") {
-              return { ...s, label: "Checking environments", status: "in_progress" };
+              return { ...s, label: "Choose environment", status: "pending" };
             }
             return s;
           }),
@@ -231,14 +237,21 @@ export default function App() {
     };
   }, []);
 
-  // Poll for pool readiness once daemon is ready. The pool is useful progress
-  // detail, but first-run onboarding should not block on prewarming: a ready
-  // daemon can create notebooks and launch kernels while environments continue
-  // warming in the background.
+  // Poll for readiness of the environment the user selected. The pool is useful
+  // progress detail, but first-run onboarding should not block on prewarming:
+  // a ready daemon can create notebooks and launch kernels while environments
+  // continue warming in the background.
   useEffect(() => {
-    if (!daemonReady) return;
+    if (!daemonReady || !pythonEnv) return;
 
-    setSteps((prev) => prev.map((s) => (s.id === "tools" ? { ...s, status: "in_progress" } : s)));
+    const envLabel = PYTHON_ENV_LABELS[pythonEnv];
+    setSteps((prev) =>
+      prev.map((s) =>
+        s.id === "tools"
+          ? { ...s, label: `Checking ${envLabel} runtime`, status: "in_progress" }
+          : s,
+      ),
+    );
 
     let cancelled = false;
     let attempts = 0;
@@ -246,19 +259,28 @@ export default function App() {
       while (!cancelled) {
         attempts += 1;
         try {
-          const state = await invoke<{
-            uv: { available: number; warming: number };
-            conda: { available: number; warming: number };
-            pixi: { available: number; warming: number };
-          }>("get_pool_status");
+          const state = await invoke<
+            Partial<
+              Record<
+                PythonEnv,
+                {
+                  available: number;
+                  warming: number;
+                }
+              >
+            >
+          >("get_pool_status");
 
-          const available = state.uv.available + state.conda.available + state.pixi.available;
-          const warming = state.uv.warming + state.conda.warming + state.pixi.warming;
+          const selected = state[pythonEnv] ?? { available: 0, warming: 0 };
+          const available = selected.available;
+          const warming = selected.warming;
 
           if (available > 0) {
             setSteps((prev) =>
               prev.map((s) =>
-                s.id === "tools" ? { ...s, label: "Environments ready", status: "completed" } : s,
+                s.id === "tools"
+                  ? { ...s, label: `${envLabel} runtime ready`, status: "completed" }
+                  : s,
               ),
             );
             return;
@@ -268,7 +290,7 @@ export default function App() {
             setSteps((prev) =>
               prev.map((s) =>
                 s.id === "tools"
-                  ? { ...s, label: "Warming environments", status: "in_progress" }
+                  ? { ...s, label: `Warming ${envLabel} runtime`, status: "in_progress" }
                   : s,
               ),
             );
@@ -306,7 +328,7 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [daemonReady]);
+  }, [daemonReady, pythonEnv]);
 
   // Handle runtime selection
   const handleRuntimeSelect = useCallback((selected: Runtime) => {
@@ -323,18 +345,40 @@ export default function App() {
   // Handle Python env selection with auto-advance to ready state
   const handlePythonEnvSelect = useCallback((selected: PythonEnv) => {
     setPythonEnv(selected);
+    setSteps((prev) =>
+      prev.map((s) =>
+        s.id === "tools"
+          ? {
+              ...s,
+              label: `Checking ${PYTHON_ENV_LABELS[selected]} runtime`,
+              status: "in_progress",
+            }
+          : s,
+      ),
+    );
   }, []);
 
-  // Go back to page 1
+  const handleEnvironmentContinue = useCallback(() => {
+    if (pythonEnv) {
+      setPage(3);
+    }
+  }, [pythonEnv]);
+
+  // Go back one page
   const handleBack = useCallback(() => {
-    setPage(1);
+    setPage((current) => (current === 3 ? 2 : 1));
+  }, []);
+
+  const openTelemetryDetails = useCallback((e: MouseEvent<HTMLAnchorElement>) => {
+    e.preventDefault();
+    openExternal(LEARN_MORE_URL).catch(() => {
+      window.open(LEARN_MORE_URL, "_blank", "noopener,noreferrer");
+    });
   }, []);
 
   // Record the user's telemetry decision and complete onboarding. Called from
-  // either CTA on page 2 — the `telemetryEnabled` argument captures which
-  // button was pressed ("You can count on me!" → true, "Opt out of metrics" →
-  // false). Both paths flip `telemetry_consent_recorded` to true so
-  // heartbeats can fire (when enabled).
+  // either CTA on page 3. Both paths flip `telemetry_consent_recorded` to true
+  // so heartbeats can fire when enabled.
   const handleChoice = useCallback(
     async (telemetryEnabled: boolean) => {
       if (!runtime || !pythonEnv) return;
@@ -414,8 +458,9 @@ export default function App() {
   const totalSteps = steps.length;
   const progressPercent = (completedSteps / totalSteps) * 100;
 
+  const canContinueToTelemetry = page === 2 && pythonEnv !== null;
   const canProceed =
-    page === 2 && runtime !== null && pythonEnv !== null && daemonReady && !setupComplete;
+    page === 3 && runtime !== null && pythonEnv !== null && daemonReady && !setupComplete;
 
   // Page titles based on selections
   const page2Title = runtime === "deno" ? "Ok but if you did use Python..." : "Python Environment";
@@ -453,7 +498,7 @@ export default function App() {
             </div>
 
             <div className="flex justify-center">
-              <PageDots current={1} total={2} />
+              <PageDots current={1} total={3} />
             </div>
 
             {/* Next button */}
@@ -503,47 +548,83 @@ export default function App() {
                 <ArrowLeft className="h-4 w-4" />
                 Back
               </Button>
-              <PageDots current={2} total={2} />
+              <PageDots current={2} total={3} />
               <div className="w-[60px]" /> {/* Spacer for centering */}
             </div>
 
-            {/* Telemetry decision: replaces the pre-checked toggle with an
-                explicit two-button CTA. The primary is a warm "you're in"
-                framing; the secondary is always visible so opting out stays
-                a one-click action. Both record consent. */}
-            <div className="space-y-3">
-              <TelemetryDisclosureCard
-                onOpenLearnMore={(url) => {
-                  openExternal(url).catch(() => {
-                    // Tauri shell unavailable — the href on the <a> is still
-                    // set, so the browser falls through to that.
-                  });
-                }}
-              />
+            <Button
+              onClick={handleEnvironmentContinue}
+              disabled={!canContinueToTelemetry}
+              className="w-full"
+              size="lg"
+            >
+              {pythonEnv === null ? "Select a package manager" : "Continue"}
+            </Button>
 
+            {/* Continue anyway button when daemon fails */}
+            {daemonFailed && !setupComplete && (
+              <Button onClick={handleSkip} variant="ghost" className="w-full" size="sm">
+                Continue anyway
+              </Button>
+            )}
+          </>
+        )}
+
+        {/* Page 3: Telemetry */}
+        {page === 3 && (
+          <>
+            <div className="text-center space-y-2">
+              <h1 className="text-3xl font-semibold tracking-tight">Help improve nteract</h1>
+              <p className="text-muted-foreground">
+                Share one anonymous daily health ping so we know which installs are working.
+              </p>
+            </div>
+
+            <div className="rounded-2xl border border-border/70 bg-card p-5 space-y-3">
+              <p className="text-sm leading-6 text-foreground">
+                It includes app version, OS, architecture, and release channel. It never includes
+                notebook contents, code, paths, package names, or personal information.
+              </p>
+              <a
+                href={LEARN_MORE_URL}
+                onClick={openTelemetryDetails}
+                rel="noreferrer"
+                target="_blank"
+                className="inline-block text-xs text-primary underline hover:text-foreground"
+              >
+                See exactly what is sent
+              </a>
+            </div>
+
+            <div className="flex items-center justify-between">
+              <Button variant="ghost" size="sm" onClick={handleBack} className="gap-1">
+                <ArrowLeft className="h-4 w-4" />
+                Back
+              </Button>
+              <PageDots current={3} total={3} />
+              <div className="w-[60px]" />
+            </div>
+
+            <div className="space-y-3">
               <Button
                 onClick={() => handleChoice(true)}
                 disabled={!canProceed || isSubmitting}
                 className="w-full"
                 size="lg"
               >
-                {setupComplete
-                  ? "All set!"
-                  : canProceed
-                    ? "You can count on me!"
-                    : pythonEnv === null
-                      ? "Select a package manager"
-                      : "Setting up..."}
+                {setupComplete ? "All set!" : canProceed ? "Share ping and start" : "Setting up..."}
               </Button>
 
-              <button
+              <Button
                 type="button"
+                variant="ghost"
                 onClick={() => handleChoice(false)}
                 disabled={!canProceed || isSubmitting}
-                className="w-full text-xs text-muted-foreground underline hover:text-foreground disabled:opacity-50 py-1"
+                className="w-full"
+                size="sm"
               >
-                Opt out of metrics, continue
-              </button>
+                Don&apos;t share, start
+              </Button>
             </div>
 
             {/* Continue anyway button when daemon fails */}
