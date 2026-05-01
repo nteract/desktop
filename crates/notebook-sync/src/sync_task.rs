@@ -728,7 +728,7 @@ impl SyncReactor {
                             state.rebuild_state_doc();
                             return;
                         }
-                    }
+                    };
                     match std::panic::catch_unwind(AssertUnwindSafe(|| {
                         state.generate_state_sync_message().map(|msg| msg.encode())
                     })) {
@@ -1161,7 +1161,7 @@ mod tests {
     };
     use serde_json::json;
     use tokio::io::{BufReader, BufWriter};
-    use tokio::sync::{broadcast, mpsc, watch};
+    use tokio::sync::{broadcast, mpsc, oneshot, watch};
     use tokio::time::timeout;
 
     fn test_handle_and_config() -> (crate::DocHandle, SyncTaskConfig) {
@@ -1405,6 +1405,97 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore]
+    async fn runtime_state_sync_panic_is_caught_and_later_updates_still_apply() {
+        // Probe for a known recovery gap: catching an inbound RuntimeStateSync
+        // panic keeps the task alive, but the daemon peer state can still
+        // believe the client received the dropped change. A fuller fix likely
+        // needs a runtime-state peer reset/rejoin path, not just catch_unwind.
+        let mut reactor = test_reactor();
+        {
+            let mut state = reactor.io.doc.lock().unwrap();
+            state.panic_on_next_state_sync_for_test();
+        }
+
+        let mut daemon_state = SharedDocState::new(
+            notebook_doc::NotebookDoc::new("test-notebook").into_inner(),
+            "test-notebook".into(),
+        );
+        daemon_state.state_doc =
+            runtime_doc::RuntimeStateDoc::new_with_actor("runtimed-sync-panic-test");
+        daemon_state
+            .state_doc
+            .create_execution_with_source("exec-1", "cell-1", "x = 1", 1)
+            .expect("daemon creates queued execution");
+        let (client_reply_writer, daemon_reply_reader) = tokio::io::duplex(4096);
+        let mut writer = client_reply_writer;
+        let mut reply_reader =
+            connection::FramedReader::spawn(BufReader::new(daemon_reply_reader), 16);
+        let mut later_update_sent = false;
+
+        for _ in 0..8 {
+            let client_msg = {
+                let mut state = reactor.io.doc.lock().unwrap();
+                state.generate_state_sync_message()
+            };
+            if let Some(client_msg) = client_msg {
+                daemon_state
+                    .receive_state_sync_message(client_msg)
+                    .expect("daemon receives client runtime-state handshake");
+            }
+
+            if let Some(daemon_msg) = daemon_state.generate_state_sync_message() {
+                let frame = connection::TypedNotebookFrame {
+                    frame_type: NotebookFrameType::RuntimeStateSync,
+                    payload: daemon_msg.encode(),
+                };
+                reactor.handle_incoming_frame(&frame, &mut writer).await;
+
+                if !later_update_sent {
+                    daemon_state
+                        .state_doc
+                        .create_execution_with_source("exec-2", "cell-2", "y = 2", 2)
+                        .expect("daemon creates later queued execution");
+                    later_update_sent = true;
+                }
+            }
+
+            while let Ok(Some(Ok(reply))) =
+                timeout(Duration::from_millis(10), reply_reader.recv()).await
+            {
+                if reply.frame_type != NotebookFrameType::RuntimeStateSync {
+                    continue;
+                }
+                let msg = sync::Message::decode(&reply.payload)
+                    .expect("client runtime-state reply decodes");
+                daemon_state
+                    .receive_state_sync_message(msg)
+                    .expect("daemon receives client runtime-state reset reply");
+            }
+
+            let state = reactor.io.doc.lock().unwrap();
+            if state
+                .state_doc
+                .read_state()
+                .executions
+                .contains_key("exec-2")
+            {
+                return;
+            }
+        }
+
+        let state = reactor.io.doc.lock().unwrap();
+        assert!(
+            state
+                .state_doc
+                .read_state()
+                .executions
+                .contains_key("exec-2"),
+            "runtime-state replica should remain usable for later updates after caught panic"
+        );
+    }
+
+    #[tokio::test]
     async fn run_marks_status_disconnected_on_exit() {
         let shared = Arc::new(Mutex::new(SharedDocState::new(
             notebook_doc::NotebookDoc::new("test-notebook").into_inner(),
@@ -1528,6 +1619,157 @@ mod tests {
         assert_eq!(daemon.await.expect("daemon task"), 10);
         drop(handle);
         sync_task.await.expect("sync task exits");
+    }
+
+    #[tokio::test]
+    async fn local_mutations_and_runtime_state_sync_pressure_converge() {
+        const CELL_COUNT: usize = 24;
+
+        let (handle, config) = test_handle_and_config();
+        let (client, server) = tokio::io::duplex(4096);
+        let (client_read, client_write) = tokio::io::split(client);
+        let (server_read, server_write) = tokio::io::split(server);
+        let (daemon_converged_tx, daemon_converged_rx) = oneshot::channel();
+
+        let sync_task = tokio::spawn(run(config, client_read, client_write));
+        let daemon = tokio::spawn(async move {
+            let mut reader = connection::FramedReader::spawn(BufReader::new(server_read), 128);
+            let mut writer = BufWriter::new(server_write);
+            let mut daemon_state = SharedDocState::new(
+                notebook_doc::NotebookDoc::new("test-notebook").into_inner(),
+                "test-notebook".into(),
+            );
+            daemon_state.state_doc =
+                runtime_doc::RuntimeStateDoc::new_with_actor("runtimed-sync-pressure");
+            let mut runtime_updates_sent = 0;
+            let mut daemon_converged_tx = Some(daemon_converged_tx);
+
+            loop {
+                let Some(frame) = timeout(Duration::from_secs(15), reader.recv())
+                    .await
+                    .expect("daemon received frame under pressure")
+                else {
+                    return notebook_doc::get_cells_from_doc(&daemon_state.doc).len();
+                };
+                let frame = frame.expect("client stayed connected under pressure");
+
+                match frame.frame_type {
+                    NotebookFrameType::AutomergeSync => {
+                        let msg = sync::Message::decode(&frame.payload)
+                            .expect("valid notebook sync message");
+                        daemon_state
+                            .receive_sync_message(msg)
+                            .expect("daemon receives notebook sync");
+
+                        if let Some(reply) = daemon_state.generate_sync_message() {
+                            connection::send_typed_frame(
+                                &mut writer,
+                                NotebookFrameType::AutomergeSync,
+                                &reply.encode(),
+                            )
+                            .await
+                            .expect("daemon sends notebook sync reply");
+                        }
+                    }
+                    NotebookFrameType::RuntimeStateSync => {
+                        let msg = sync::Message::decode(&frame.payload)
+                            .expect("valid runtime-state sync message");
+                        daemon_state
+                            .receive_state_sync_message(msg)
+                            .expect("daemon receives runtime-state sync");
+                    }
+                    _ => {}
+                }
+
+                if runtime_updates_sent < CELL_COUNT {
+                    let index = runtime_updates_sent;
+                    daemon_state
+                        .state_doc
+                        .create_execution_with_source(
+                            &format!("exec-{index}"),
+                            &format!("cell-{index}"),
+                            &format!("print({index})"),
+                            index as u64,
+                        )
+                        .expect("queued execution created");
+                    runtime_updates_sent += 1;
+                }
+
+                if let Some(reply) = daemon_state.generate_state_sync_message() {
+                    connection::send_typed_frame(
+                        &mut writer,
+                        NotebookFrameType::RuntimeStateSync,
+                        &reply.encode(),
+                    )
+                    .await
+                    .expect("daemon sends runtime-state sync");
+                }
+
+                let cell_count = notebook_doc::get_cells_from_doc(&daemon_state.doc).len();
+                if cell_count >= CELL_COUNT && runtime_updates_sent >= CELL_COUNT {
+                    if let Some(tx) = daemon_converged_tx.take() {
+                        let _ = tx.send(cell_count);
+                    }
+                }
+            }
+        });
+
+        let mut cell_tasks = Vec::new();
+        for index in 0..CELL_COUNT {
+            let handle = handle.clone();
+            cell_tasks.push(tokio::spawn(async move {
+                let previous = index.checked_sub(1).map(|i| format!("cell-{i}"));
+                handle
+                    .add_cell_with_source(
+                        &format!("cell-{index}"),
+                        "code",
+                        previous.as_deref(),
+                        &format!("print({index})"),
+                    )
+                    .expect("cell added under pressure");
+                handle.confirm_sync().await
+            }));
+        }
+
+        let mut state_flush_tasks = Vec::new();
+        for _ in 0..CELL_COUNT {
+            let handle = handle.clone();
+            state_flush_tasks.push(tokio::spawn(
+                async move { handle.confirm_state_sync().await },
+            ));
+        }
+
+        timeout(Duration::from_secs(20), async {
+            for task in cell_tasks {
+                task.await.expect("cell task joined").expect("cell synced");
+            }
+            for task in state_flush_tasks {
+                task.await
+                    .expect("state flush task joined")
+                    .expect("state synced");
+            }
+
+            loop {
+                handle.confirm_state_sync().await.expect("final state sync");
+                let state = handle.get_runtime_state().expect("runtime state");
+                if state.queue.queued.len() >= CELL_COUNT {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        })
+        .await
+        .expect("pressure run converged");
+
+        assert_eq!(
+            daemon_converged_rx
+                .await
+                .expect("daemon reported convergence"),
+            CELL_COUNT
+        );
+        drop(handle);
+        sync_task.await.expect("sync task exits");
+        assert_eq!(daemon.await.expect("daemon task"), CELL_COUNT);
     }
 
     #[tokio::test]
