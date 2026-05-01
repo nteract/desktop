@@ -950,6 +950,64 @@ async fn test_sync_environment_guard_rejects_stale_observed_dependencies() {
 }
 
 #[tokio::test]
+async fn test_approve_trust_guard_rejects_stale_observed_dependencies() {
+    let temp_dir = TempDir::new().unwrap();
+    let config = test_config(&temp_dir);
+    let socket_path = config.socket_path.clone();
+
+    let daemon = Daemon::new(config).unwrap();
+    let daemon_handle = tokio::spawn(async move {
+        daemon.run().await.ok();
+    });
+
+    let pool_client = PoolClient::new(socket_path.clone());
+    assert!(wait_for_daemon(&pool_client).await);
+
+    let result = connect::connect_create(
+        socket_path.clone(),
+        "python",
+        None,
+        "test",
+        false,
+        Some(notebook_protocol::connection::PackageManager::Uv),
+        vec!["pandas".to_string()],
+    )
+    .await
+    .unwrap();
+    let handle = result.handle;
+
+    assert!(
+        wait_for_session_ready(&handle, SESSION_READY_TIMEOUT).await,
+        "client should reach session-ready state"
+    );
+
+    let observed_heads: Vec<String> = handle
+        .with_doc(|doc| {
+            doc.get_heads()
+                .iter()
+                .map(|head| head.to_string())
+                .collect()
+        })
+        .unwrap();
+    handle.add_uv_dependency("requests").unwrap();
+    handle.confirm_sync().await.unwrap();
+
+    let response = handle
+        .send_request(NotebookRequest::ApproveTrust {
+            observed_heads: Some(observed_heads),
+        })
+        .await
+        .unwrap();
+    assert!(
+        matches!(response, NotebookResponse::GuardRejected { .. }),
+        "stale approve-trust guard should reject, got {response:?}"
+    );
+
+    pool_client.shutdown().await.ok();
+    let _ = tokio::time::timeout(Duration::from_secs(2), daemon_handle).await;
+}
+
+#[tokio::test]
 async fn test_sync_environment_no_deps_reaches_existing_no_kernel_path() {
     let temp_dir = TempDir::new().unwrap();
     let config = test_config(&temp_dir);
