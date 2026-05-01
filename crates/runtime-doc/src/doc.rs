@@ -385,7 +385,7 @@ impl RuntimeStateDoc {
     fn schema_seed_doc() -> AutoCommit {
         let mut doc = AutoCommit::new();
         doc.set_actor(ActorId::from(RUNTIME_STATE_SCHEMA_SEED_ACTOR.as_bytes()));
-        scaffold_runtime_state_schema(&mut doc);
+        scaffold_runtime_state_schema(&mut doc).expect("seed runtime state schema");
         let _ = doc.commit_with(
             CommitOptions::default()
                 .with_message("Seed nteract runtime state schema")
@@ -2296,7 +2296,12 @@ impl RuntimeStateDoc {
             })
             .unwrap_or_default();
 
-        synthesize_queued_entries_from_executions(&mut queue_state, &executions);
+        queue_state
+            .queued
+            .extend(synthesize_queued_entries_from_executions(
+                &queue_state,
+                &executions,
+            ));
 
         let env_state = env
             .as_ref()
@@ -2563,126 +2568,73 @@ impl RuntimeStateDoc {
 /// All scalar fields start empty; `state` starts at `"pending"`. The
 /// daemon is the sole writer in production; clients rely on sync to
 /// populate the real values.
-#[allow(clippy::expect_used)]
-fn scaffold_project_context(doc: &mut AutoCommit) {
-    let pc = doc
-        .put_object(&ROOT, "project_context", ObjType::Map)
-        .expect("scaffold project_context");
-    doc.put(&pc, "state", "pending")
-        .expect("scaffold project_context.state");
-    doc.put(&pc, "observed_at", "")
-        .expect("scaffold project_context.observed_at");
-    doc.put(&pc, "kind", "")
-        .expect("scaffold project_context.kind");
-    doc.put(&pc, "absolute_path", "")
-        .expect("scaffold project_context.absolute_path");
-    doc.put(&pc, "relative_to_notebook", "")
-        .expect("scaffold project_context.relative_to_notebook");
-    doc.put(&pc, "unreadable_path", "")
-        .expect("scaffold project_context.unreadable_path");
-    doc.put(&pc, "unreadable_reason", "")
-        .expect("scaffold project_context.unreadable_reason");
-    let parsed = doc
-        .put_object(&pc, "parsed", ObjType::Map)
-        .expect("scaffold project_context.parsed");
-    doc.put_object(&parsed, "dependencies", ObjType::List)
-        .expect("scaffold project_context.parsed.dependencies");
-    doc.put_object(&parsed, "dev_dependencies", ObjType::List)
-        .expect("scaffold project_context.parsed.dev_dependencies");
-    doc.put(&parsed, "requires_python", ScalarValue::Null)
-        .expect("scaffold project_context.parsed.requires_python");
-    doc.put(&parsed, "prerelease", ScalarValue::Null)
-        .expect("scaffold project_context.parsed.prerelease");
-    doc.put(&parsed, "extras", "")
-        .expect("scaffold project_context.parsed.extras");
+fn scaffold_project_context(doc: &mut AutoCommit) -> Result<(), RuntimeStateError> {
+    let pc = doc.put_object(&ROOT, "project_context", ObjType::Map)?;
+    doc.put(&pc, "state", "pending")?;
+    doc.put(&pc, "observed_at", "")?;
+    doc.put(&pc, "kind", "")?;
+    doc.put(&pc, "absolute_path", "")?;
+    doc.put(&pc, "relative_to_notebook", "")?;
+    doc.put(&pc, "unreadable_path", "")?;
+    doc.put(&pc, "unreadable_reason", "")?;
+    let parsed = doc.put_object(&pc, "parsed", ObjType::Map)?;
+    doc.put_object(&parsed, "dependencies", ObjType::List)?;
+    doc.put_object(&parsed, "dev_dependencies", ObjType::List)?;
+    doc.put(&parsed, "requires_python", ScalarValue::Null)?;
+    doc.put(&parsed, "prerelease", ScalarValue::Null)?;
+    doc.put(&parsed, "extras", "")?;
+    Ok(())
 }
 
-#[allow(clippy::expect_used)]
-fn scaffold_runtime_state_schema(doc: &mut AutoCommit) {
-    let kernel = doc
-        .put_object(&ROOT, "kernel", ObjType::Map)
-        .expect("scaffold kernel");
-    doc.put(&kernel, "name", "").expect("scaffold kernel.name");
-    doc.put(&kernel, "language", "")
-        .expect("scaffold kernel.language");
-    doc.put(&kernel, "env_source", "")
-        .expect("scaffold kernel.env_source");
-    doc.put(&kernel, "runtime_agent_id", "")
-        .expect("scaffold kernel.runtime_agent_id");
-    doc.put(&kernel, "lifecycle", "NotStarted")
-        .expect("scaffold kernel.lifecycle");
-    doc.put(&kernel, "activity", "")
-        .expect("scaffold kernel.activity");
-    doc.put(&kernel, "error_reason", "")
-        .expect("scaffold kernel.error_reason");
-    doc.put(&kernel, "error_details", "")
-        .expect("scaffold kernel.error_details");
+fn scaffold_runtime_state_schema(doc: &mut AutoCommit) -> Result<(), RuntimeStateError> {
+    let kernel = doc.put_object(&ROOT, "kernel", ObjType::Map)?;
+    doc.put(&kernel, "name", "")?;
+    doc.put(&kernel, "language", "")?;
+    doc.put(&kernel, "env_source", "")?;
+    doc.put(&kernel, "runtime_agent_id", "")?;
+    doc.put(&kernel, "lifecycle", "NotStarted")?;
+    doc.put(&kernel, "activity", "")?;
+    doc.put(&kernel, "error_reason", "")?;
+    doc.put(&kernel, "error_details", "")?;
 
-    let queue = doc
-        .put_object(&ROOT, "queue", ObjType::Map)
-        .expect("scaffold queue");
-    doc.put(&queue, "executing", ScalarValue::Null)
-        .expect("scaffold queue.executing");
-    doc.put(&queue, "executing_execution_id", ScalarValue::Null)
-        .expect("scaffold queue.executing_execution_id");
-    doc.put_object(&queue, "queued", ObjType::List)
-        .expect("scaffold queue.queued");
-    doc.put_object(&queue, "queued_execution_ids", ObjType::List)
-        .expect("scaffold queue.queued_execution_ids");
+    let queue = doc.put_object(&ROOT, "queue", ObjType::Map)?;
+    doc.put(&queue, "executing", ScalarValue::Null)?;
+    doc.put(&queue, "executing_execution_id", ScalarValue::Null)?;
+    doc.put_object(&queue, "queued", ObjType::List)?;
+    doc.put_object(&queue, "queued_execution_ids", ObjType::List)?;
 
-    doc.put_object(&ROOT, "executions", ObjType::Map)
-        .expect("scaffold executions");
+    doc.put_object(&ROOT, "executions", ObjType::Map)?;
 
-    let env = doc
-        .put_object(&ROOT, "env", ObjType::Map)
-        .expect("scaffold env");
-    doc.put(&env, "in_sync", true)
-        .expect("scaffold env.in_sync");
-    doc.put_object(&env, "added", ObjType::List)
-        .expect("scaffold env.added");
-    doc.put_object(&env, "removed", ObjType::List)
-        .expect("scaffold env.removed");
-    doc.put(&env, "channels_changed", false)
-        .expect("scaffold env.channels_changed");
-    doc.put(&env, "deno_changed", false)
-        .expect("scaffold env.deno_changed");
-    doc.put_object(&env, "prewarmed_packages", ObjType::List)
-        .expect("scaffold env.prewarmed_packages");
-    doc.put(&env, "progress", ScalarValue::Null)
-        .expect("scaffold env.progress");
+    let env = doc.put_object(&ROOT, "env", ObjType::Map)?;
+    doc.put(&env, "in_sync", true)?;
+    doc.put_object(&env, "added", ObjType::List)?;
+    doc.put_object(&env, "removed", ObjType::List)?;
+    doc.put(&env, "channels_changed", false)?;
+    doc.put(&env, "deno_changed", false)?;
+    doc.put_object(&env, "prewarmed_packages", ObjType::List)?;
+    doc.put(&env, "progress", ScalarValue::Null)?;
 
-    let trust = doc
-        .put_object(&ROOT, "trust", ObjType::Map)
-        .expect("scaffold trust");
-    doc.put(&trust, "status", "no_dependencies")
-        .expect("scaffold trust.status");
-    doc.put(&trust, "needs_approval", false)
-        .expect("scaffold trust.needs_approval");
-    doc.put_object(&trust, "approved_uv_dependencies", ObjType::List)
-        .expect("scaffold trust.approved_uv_dependencies");
-    doc.put_object(&trust, "approved_conda_dependencies", ObjType::List)
-        .expect("scaffold trust.approved_conda_dependencies");
-    doc.put_object(&trust, "approved_pixi_dependencies", ObjType::List)
-        .expect("scaffold trust.approved_pixi_dependencies");
-    doc.put_object(&trust, "approved_pixi_pypi_dependencies", ObjType::List)
-        .expect("scaffold trust.approved_pixi_pypi_dependencies");
+    let trust = doc.put_object(&ROOT, "trust", ObjType::Map)?;
+    doc.put(&trust, "status", "no_dependencies")?;
+    doc.put(&trust, "needs_approval", false)?;
+    doc.put_object(&trust, "approved_uv_dependencies", ObjType::List)?;
+    doc.put_object(&trust, "approved_conda_dependencies", ObjType::List)?;
+    doc.put_object(&trust, "approved_pixi_dependencies", ObjType::List)?;
+    doc.put_object(&trust, "approved_pixi_pypi_dependencies", ObjType::List)?;
 
-    scaffold_project_context(doc);
+    scaffold_project_context(doc)?;
 
-    doc.put_object(&ROOT, "comms", ObjType::Map)
-        .expect("scaffold comms");
-    doc.put_object(&ROOT, "display_index", ObjType::Map)
-        .expect("scaffold display_index");
-    doc.put(&ROOT, "last_saved", ScalarValue::Null)
-        .expect("scaffold last_saved");
-    doc.put(&ROOT, "path", ScalarValue::Null)
-        .expect("scaffold path");
+    doc.put_object(&ROOT, "comms", ObjType::Map)?;
+    doc.put_object(&ROOT, "display_index", ObjType::Map)?;
+    doc.put(&ROOT, "last_saved", ScalarValue::Null)?;
+    doc.put(&ROOT, "path", ScalarValue::Null)?;
+    Ok(())
 }
 
 fn synthesize_queued_entries_from_executions(
-    queue_state: &mut QueueState,
+    queue_state: &QueueState,
     executions: &HashMap<String, ExecutionState>,
-) {
+) -> Vec<QueueEntry> {
     let executing_execution_id = queue_state
         .executing
         .as_ref()
@@ -2713,14 +2665,13 @@ fn synthesize_queued_entries_from_executions(
         .then_with(|| a.cell_id.cmp(&b.cell_id))
     });
 
-    queue_state.queued.extend(
-        queued_from_executions
-            .into_iter()
-            .map(|(execution_id, exec)| QueueEntry {
-                cell_id: exec.cell_id.clone(),
-                execution_id: execution_id.clone(),
-            }),
-    );
+    queued_from_executions
+        .into_iter()
+        .map(|(execution_id, exec)| QueueEntry {
+            cell_id: exec.cell_id.clone(),
+            execution_id: execution_id.clone(),
+        })
+        .collect()
 }
 
 /// Result of [`RuntimeStateDoc::receive_sync_and_foreign_comms`].

@@ -365,29 +365,9 @@ export function derivePixiInfo(ctx: ProjectContext): PixiInfo | null {
 
 /** Derive queue state from RuntimeState. */
 export function deriveQueueState(state: RuntimeState): DaemonQueueState {
-  const knownExecutionIds = new Set<string>();
-  if (state.queue.executing) knownExecutionIds.add(state.queue.executing.execution_id);
-  for (const entry of state.queue.queued) knownExecutionIds.add(entry.execution_id);
-
-  const queuedFromExecutions = Object.entries(state.executions)
-    .filter(
-      ([executionId, execution]) =>
-        execution.status === "queued" && !knownExecutionIds.has(executionId),
-    )
-    .sort(([aId, a], [bId, b]) => {
-      if (a.seq != null && b.seq != null && a.seq !== b.seq) return a.seq - b.seq;
-      if (a.seq != null && b.seq == null) return -1;
-      if (a.seq == null && b.seq != null) return 1;
-      return aId.localeCompare(bId) || a.cell_id.localeCompare(b.cell_id);
-    })
-    .map(([executionId, execution]) => ({
-      cell_id: execution.cell_id,
-      execution_id: executionId,
-    }));
-
   return {
     executing: state.queue.executing,
-    queued: [...state.queue.queued, ...queuedFromExecutions],
+    queued: state.queue.queued,
   };
 }
 
