@@ -10,7 +10,7 @@ interface EditorRegistryContextType {
 
 const EditorRegistryContext = createContext<EditorRegistryContextType | null>(null);
 
-export const FOCUSED_CELL_RESNAP_DURATION_MS = 2500;
+export const FOCUSED_CELL_RESNAP_DURATION_MS = 4000;
 
 type FocusedCellResnapOptions = {
   durationMs?: number;
