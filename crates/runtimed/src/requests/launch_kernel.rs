@@ -1112,6 +1112,7 @@ pub(crate) async fn handle(
             .and_then(|s| s.runt.pixi.as_ref())
             .map(|p| p.dependencies.clone())
             .unwrap_or_default();
+        let deps = crate::inline_env::inline_deps_with_bootstrap(&deps, bootstrap_dx);
         if !deps.is_empty() {
             info!(
                 "[notebook-sync] LaunchKernel: pixi:inline deps for pixi exec: {:?}",
@@ -1126,11 +1127,10 @@ pub(crate) async fn handle(
         let cells = room.doc.read().await.get_cells();
         match notebook_doc::pep723::find_pep723_in_cells(&cells) {
             Ok(Some(meta)) if !meta.dependencies.is_empty() => {
-                info!(
-                    "[notebook-sync] LaunchKernel: pixi:pep723 deps: {:?}",
-                    meta.dependencies
-                );
-                (None, Some(meta.dependencies))
+                let deps =
+                    crate::inline_env::inline_deps_with_bootstrap(&meta.dependencies, bootstrap_dx);
+                info!("[notebook-sync] LaunchKernel: pixi:pep723 deps: {:?}", deps);
+                (None, Some(deps))
             }
             _ => (pooled_env, None),
         }

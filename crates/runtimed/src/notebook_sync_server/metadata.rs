@@ -3375,6 +3375,7 @@ pub(crate) async fn auto_launch_kernel(
             .and_then(|s| s.runt.pixi.as_ref())
             .map(|p| p.dependencies.clone())
             .unwrap_or_default();
+        let deps = crate::inline_env::inline_deps_with_bootstrap(&deps, bootstrap_dx);
         if !deps.is_empty() {
             info!("[notebook-sync] pixi:inline deps for pixi exec: {:?}", deps);
             (None, Some(deps))
@@ -3384,8 +3385,9 @@ pub(crate) async fn auto_launch_kernel(
     } else if matches!(env_source, EnvSource::Pep723(PackageManager::Pixi)) {
         // PEP 723 deps via pixi exec -w (same mechanism as pixi:inline)
         if let Some(ref deps) = pep723_deps {
+            let deps = crate::inline_env::inline_deps_with_bootstrap(deps, bootstrap_dx);
             info!("[notebook-sync] pixi:pep723 deps for pixi exec: {:?}", deps);
-            (None, Some(deps.clone()))
+            (None, Some(deps))
         } else {
             (pooled_env, None)
         }

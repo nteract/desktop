@@ -385,16 +385,6 @@ struct Pool {
 
 const MIN_WARM_BASES: usize = 2;
 
-fn package_name(dep: &str) -> &str {
-    let trimmed = dep.trim();
-    let after_channel = trimmed.rsplit("::").next().unwrap_or(trimmed);
-    after_channel
-        .split(['<', '>', '=', '!', '~', '[', ';', ' '])
-        .next()
-        .unwrap_or("")
-        .trim()
-}
-
 fn add_dx_bootstrap_packages(
     packages: &mut Vec<String>,
     feature_flags: notebook_protocol::protocol::FeatureFlags,
@@ -405,7 +395,11 @@ fn add_dx_bootstrap_packages(
 
     let has_pyarrow = packages
         .iter()
-        .any(|pkg| package_name(pkg).eq_ignore_ascii_case("pyarrow"));
+        .filter_map(|pkg| {
+            crate::inline_env::extract_conda_package_name(pkg)
+                .map(crate::inline_env::normalize_package_name)
+        })
+        .any(|pkg| pkg == "pyarrow");
     if !has_pyarrow {
         packages.push("pyarrow>=14".to_string());
     }
@@ -1797,9 +1791,8 @@ impl Daemon {
             let settings = self.settings.read().await;
             let synced = settings.get_all();
 
-            let uv_pkgs =
-                uv_prewarmed_packages(&synced.uv.default_packages, synced.feature_flags());
             let feature_flags = synced.feature_flags();
+            let uv_pkgs = uv_prewarmed_packages(&synced.uv.default_packages, feature_flags);
             let conda_pkgs =
                 conda_prewarmed_packages(&synced.conda.default_packages, feature_flags);
             let pixi_pkgs = pixi_prewarmed_packages(&synced.pixi.default_packages, feature_flags);
@@ -5182,17 +5175,11 @@ mod tests {
     }
 
     #[test]
-    fn test_package_name_strips_conda_channel_qualifier() {
-        assert_eq!(package_name("conda-forge::pyarrow>=14"), "pyarrow");
-        assert_eq!(package_name("defaults::PyArrow"), "PyArrow");
-        assert_eq!(package_name("pyarrow >= 15"), "pyarrow");
-    }
-
-    #[test]
     fn test_uv_prewarmed_packages_adds_pyarrow_for_bootstrap_dx() {
         assert!(uv_prewarmed_packages(&[], FeatureFlags::default())
             .iter()
-            .all(|pkg| !package_name(pkg).eq_ignore_ascii_case("pyarrow")));
+            .filter_map(|pkg| crate::inline_env::extract_conda_package_name(pkg))
+            .all(|pkg| crate::inline_env::normalize_package_name(pkg) != "pyarrow"));
 
         let packages = uv_prewarmed_packages(&[], bootstrap_dx_flags());
         assert!(packages.iter().any(|pkg| pkg == "pyarrow>=14"));
@@ -5206,7 +5193,23 @@ mod tests {
         );
         let pyarrow_count = packages
             .iter()
-            .filter(|pkg| package_name(pkg).eq_ignore_ascii_case("pyarrow"))
+            .filter_map(|pkg| crate::inline_env::extract_conda_package_name(pkg))
+            .filter(|pkg| crate::inline_env::normalize_package_name(pkg) == "pyarrow")
+            .count();
+        assert_eq!(pyarrow_count, 1);
+        assert!(!packages.iter().any(|pkg| pkg == "pyarrow>=14"));
+    }
+
+    #[test]
+    fn test_conda_prewarmed_packages_does_not_duplicate_direct_ref_pyarrow() {
+        let packages = conda_prewarmed_packages(
+            &["pyarrow@https://example.invalid/pyarrow.whl".to_string()],
+            bootstrap_dx_flags(),
+        );
+        let pyarrow_count = packages
+            .iter()
+            .filter_map(|pkg| crate::inline_env::extract_conda_package_name(pkg))
+            .filter(|pkg| crate::inline_env::normalize_package_name(pkg) == "pyarrow")
             .count();
         assert_eq!(pyarrow_count, 1);
         assert!(!packages.iter().any(|pkg| pkg == "pyarrow>=14"));

@@ -437,7 +437,7 @@ fn inline_dep_forbids_pool_reuse(dep: &str) -> bool {
 /// - `"conda-forge::numpy>=1.24"` → `Some("numpy")`
 /// - `"conda-forge::numpy"` → `Some("numpy")`
 /// - `""` → `None`
-fn extract_conda_package_name(dep: &str) -> Option<&str> {
+pub(crate) fn extract_conda_package_name(dep: &str) -> Option<&str> {
     let trimmed = dep.trim();
     if trimmed.is_empty() {
         return None;
@@ -463,7 +463,7 @@ fn extract_conda_package_name(dep: &str) -> Option<&str> {
 }
 
 /// Normalize a package name for comparison: lowercase, replace `_` with `-`.
-fn normalize_package_name(name: &str) -> String {
+pub(crate) fn normalize_package_name(name: &str) -> String {
     name.to_lowercase().replace('_', "-")
 }
 
@@ -564,13 +564,11 @@ pub fn compare_deps_to_pool(inline_deps: &[String], pool_packages: &[String]) ->
 /// Returns `Some(PreparedEnv)` on cache hit, `None` on miss.
 ///
 /// On hit, when `bootstrap_dx` is on, re-vendor the launcher into the
-/// cached venv before returning. Reason: since 0.2.0,
-/// `inline_deps_with_bootstrap` is a no-op and the env hash no longer
-/// differs by feature flag, so a pre-upgrade non-bootstrap cache entry
-/// (or a pre-0.2.0 single-file-launcher bootstrap entry) can answer a
-/// bootstrap launch. `vendor_into_venv` is idempotent + cleans up the
-/// legacy single-file module, so calling it unconditionally on hit
-/// brings the cached env up to today's layout before the kernel boots.
+/// cached venv before returning. This keeps cache entries with the correct
+/// bootstrap dependency set launchable even if they predate the current
+/// vendored launcher layout. `vendor_into_venv` is idempotent + cleans up the
+/// legacy single-file module, so calling it on hit brings the cached env up to
+/// today's layout before the kernel boots.
 pub async fn check_uv_inline_cache(
     deps: &[String],
     prerelease: Option<&str>,
