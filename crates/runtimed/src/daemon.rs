@@ -2725,7 +2725,7 @@ impl Daemon {
             spawn_env_deletions(stale_paths);
 
             if let Some(e) = env {
-                info!(
+                debug!(
                     "[runtimed] Took UV env for kernel launch: {:?}",
                     e.venv_path
                 );
@@ -2816,7 +2816,7 @@ impl Daemon {
             spawn_env_deletions(stale_paths);
 
             if let Some(e) = env {
-                info!(
+                debug!(
                     "[runtimed] Took Conda env for kernel launch: {:?}",
                     e.venv_path
                 );
@@ -2896,7 +2896,7 @@ impl Daemon {
         let (env, stale_paths) = self.pixi_pool.lock().await.take();
         spawn_env_deletions(stale_paths);
         let e = env?;
-        info!(
+        debug!(
             "[runtimed] Took Pixi env for kernel launch: {:?}",
             e.venv_path
         );
@@ -3960,16 +3960,6 @@ impl Daemon {
                 }
             }
 
-            let (available, warming, target) = {
-                let pool = self.uv_pool.lock().await;
-                let (a, w) = pool.stats();
-                (a, w, pool.target())
-            };
-            debug!(
-                "[runtimed] UV pool: {}/{} available, {} warming",
-                available, target, warming
-            );
-
             tokio::select! {
                 _ = tokio::time::sleep(std::time::Duration::from_secs(30)) => {}
                 _ = settings_rx.recv() => {
@@ -4082,16 +4072,6 @@ impl Daemon {
                 }
             }
 
-            let (available, warming, target) = {
-                let pool = self.conda_pool.lock().await;
-                let (a, w) = pool.stats();
-                (a, w, pool.target())
-            };
-            debug!(
-                "[runtimed] Conda pool: {}/{} available, {} warming",
-                available, target, warming
-            );
-
             tokio::select! {
                 _ = tokio::time::sleep(std::time::Duration::from_secs(30)) => {}
                 _ = settings_rx.recv() => {
@@ -4200,16 +4180,6 @@ impl Daemon {
                     }
                 }
             }
-
-            let (available, warming, target) = {
-                let pool = self.pixi_pool.lock().await;
-                let (a, w) = pool.stats();
-                (a, w, pool.target())
-            };
-            debug!(
-                "[runtimed] Pixi pool: {}/{} available, {} warming",
-                available, target, warming
-            );
 
             tokio::select! {
                 _ = tokio::time::sleep(std::time::Duration::from_secs(30)) => {}
