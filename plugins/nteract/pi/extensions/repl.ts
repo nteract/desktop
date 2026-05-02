@@ -476,18 +476,18 @@ export default function nteractReplExtension(pi: ExtensionAPI) {
 
   pi.registerTool({
     name: "python",
-    label: "Python (nteract)",
+    label: "Python",
     description:
-      "Execute Python in a persistent nteract notebook session backed by the local runtimed daemon. State (variables, imports) persists across calls within this pi session. Stdout, the final expression value, and exceptions are returned as text. Images (matplotlib.show(), IPython.display.Image, etc.) are returned inline so you can see them.",
+      "Execute Python code in a persistent session. Variables and imports stick around between calls. The last expression is returned as the result; use print() for side effects. Images (matplotlib, PIL, etc.) are returned inline.",
     promptSnippet:
-      "python: run Python code against a persistent nteract kernel (state persists across calls; stdout + last-expr value + any images are returned).",
+      "python: run Python code in a persistent session (variables and imports persist; returns stdout + last expression + images).",
     promptGuidelines: [
-      "Prefer `python` over `bash python -c ...` for anything stateful, multi-step, or data-heavy.",
-      "State (imports, variables) persists across `python` calls in this session.",
-      "Use print() for side-effect output; the last expression is echoed back as the result.",
-      "Matplotlib / PIL images are returned inline — you can iterate on plots by looking at them.",
-      "If code needs imports that may be missing, pass `dependencies` on the same `python` call so first-use packages are recorded before kernel start when possible.",
-      "Install additional packages with the `python_add_dependencies` tool (it uses the notebook environment and hot-reloads without restarting the kernel).",
+      "Use `python` for data analysis, plotting, and multi-step workflows. State persists between calls.",
+      "Variables and imports stick around — no need to re-import or redefine on every turn.",
+      "The last expression is the result; use print() for intermediate output.",
+      "Images (matplotlib, PIL) come back inline so you can see them and iterate.",
+      "Pass `dependencies` on the first call to pre-install packages before the kernel starts.",
+      "Use `python_add_dependencies` to install packages mid-session without restarting.",
     ],
     parameters: PYTHON_PARAMS,
     renderCall(args, theme, _context) {
@@ -633,11 +633,11 @@ export default function nteractReplExtension(pi: ExtensionAPI) {
 
   pi.registerTool({
     name: "python_add_dependencies",
-    label: "Add Dependencies (nteract)",
+    label: "Add Dependencies",
     description:
-      "Add packages to the current nteract notebook environment and hot-sync them so the running kernel can import them immediately. Accepts pip-style specs, e.g. 'matplotlib', 'numpy>=2', 'requests'.",
+      "Install packages into the running Python environment without restarting. Accepts pip-style specs like 'matplotlib', 'numpy>=2', 'requests'. The kernel stays hot.",
     promptSnippet:
-      "python_add_dependencies: add packages to the persistent Python notebook environment (hot-installs without restarting the kernel).",
+      "python_add_dependencies: install packages into the running Python session (no restart needed).",
     parameters: Type.Object({
       packages: Type.Array(Type.String(), {
         description: "Package specs (e.g. ['matplotlib', 'pandas>=2']).",
@@ -664,10 +664,10 @@ export default function nteractReplExtension(pi: ExtensionAPI) {
 
   pi.registerTool({
     name: "python_save_notebook",
-    label: "Save Notebook (nteract)",
+    label: "Save Notebook",
     description:
-      "Save the current nteract notebook to an .ipynb file on disk. If no path is given, saves to the original location (if it was opened from a file). Provide a path to save to a new location.",
-    promptSnippet: "python_save_notebook: save the current notebook session to an .ipynb file.",
+      "Save the current Python session as an .ipynb file. If no path is given, saves to the original location (if it was opened from a file). Provide a path to save elsewhere.",
+    promptSnippet: "python_save_notebook: save the current session as an .ipynb file.",
     parameters: Type.Object({
       path: Type.Optional(
         Type.String({
@@ -690,7 +690,7 @@ export default function nteractReplExtension(pi: ExtensionAPI) {
 
   pi.registerCommand("python-reset", {
     description:
-      "Start a fresh nteract Python notebook session (next /python call opens a new kernel)",
+      "Start fresh: next /python call opens a new kernel (clean slate, no prior variables or imports)",
     handler: async (_args, ctx) => {
       const old = session;
       session = null;
@@ -705,7 +705,7 @@ export default function nteractReplExtension(pi: ExtensionAPI) {
         } catch {}
       }
       ctx.ui.notify(
-        "nteract REPL: session closed; next python call will start a fresh kernel.",
+        "Python session closed. Next /python call will start a fresh kernel.",
         "info",
       );
     },
