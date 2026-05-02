@@ -122,6 +122,13 @@ pub async fn run_runtime_agent(
     let mut seen_execution_ids = HashSet::new();
     let mut cmd_rx: Option<mpsc::Receiver<QueueCommand>> = None;
 
+    // Async responses from spawned tasks (currently: SyncEnvironment).
+    // Keeping these off the request handler's await frees the main loop to
+    // forward state_changed_rx frames while `sync_dependencies` runs, so the
+    // progress banner updates live instead of collapsing to one final write.
+    let (async_response_tx, mut async_response_rx) =
+        mpsc::channel::<notebook_protocol::protocol::RuntimeAgentResponseEnvelope>(4);
+
     info!("[runtime-agent] Infrastructure ready, entering main loop");
 
     // -- 4. Main event loop -------------------------------------------------
@@ -164,6 +171,39 @@ pub async fn run_runtime_agent(
                                         } else {
                                             warn!("[runtime-agent] Interrupt requested but no kernel running");
                                         }
+                                        continue;
+                                    }
+
+                                    // SyncEnvironment runs `uv`/`conda` install, which can take
+                                    // seconds. Handling it inline would starve the
+                                    // state_changed_rx arm, so the coordinator wouldn't see
+                                    // Installing/Solving/Download events until the install
+                                    // finished. Snapshot the launched config and spawn.
+                                    if let RuntimeAgentRequest::SyncEnvironment(env_kind) =
+                                        &envelope.request
+                                    {
+                                        let snapshot = kernel
+                                            .as_ref()
+                                            .map(|k| (k.env_source().to_string(), k.launched_config().clone()));
+                                        let env_kind = env_kind.clone();
+                                        let id = envelope.id.clone();
+                                        let state_for_task = ctx.state.clone();
+                                        let tx = async_response_tx.clone();
+                                        tokio::spawn(async move {
+                                            let response = run_sync_environment(
+                                                env_kind,
+                                                snapshot,
+                                                state_for_task,
+                                            )
+                                            .await;
+                                            let envelope = notebook_protocol::protocol::RuntimeAgentResponseEnvelope {
+                                                id,
+                                                response,
+                                            };
+                                            if tx.send(envelope).await.is_err() {
+                                                warn!("[runtime-agent] SyncEnvironment response channel closed before send");
+                                            }
+                                        });
                                         continue;
                                     }
 
@@ -403,6 +443,25 @@ pub async fn run_runtime_agent(
                     ).await {
                         warn!("[runtime-agent] Failed to send RuntimeStateSync: {}", e);
                         break;
+                    }
+                }
+            }
+
+            // Responses from long-running spawned tasks (SyncEnvironment).
+            Some(envelope) = async_response_rx.recv() => {
+                match serde_json::to_vec(&envelope) {
+                    Ok(json) => {
+                        if let Err(e) = send_typed_frame(
+                            &mut writer,
+                            NotebookFrameType::Response,
+                            &json,
+                        ).await {
+                            warn!("[runtime-agent] Failed to send async response: {}", e);
+                            break;
+                        }
+                    }
+                    Err(e) => {
+                        warn!("[runtime-agent] Failed to serialize async response: {}", e);
                     }
                 }
             }
@@ -823,138 +882,148 @@ async fn handle_runtime_agent_request(
             }
         }
 
-        RuntimeAgentRequest::SyncEnvironment(env_kind) => {
-            info!(
-                "[runtime-agent] SyncEnvironment: installing {:?}",
-                env_kind.packages()
-            );
+        RuntimeAgentRequest::SyncEnvironment(_) => {
+            // The main select loop intercepts SyncEnvironment and spawns
+            // `run_sync_environment` so it doesn't block state sync. This
+            // arm is unreachable in practice, but keeps the match exhaustive.
+            (
+                RuntimeAgentResponse::Error {
+                    error: "SyncEnvironment must be dispatched through run_sync_environment"
+                        .to_string(),
+                },
+                None,
+            )
+        }
+    }
+}
 
-            if let Some(ref kernel_ref) = kernel {
-                let es = kernel_ref.env_source().to_string();
+/// Run a hot-sync install outside the main select loop.
+///
+/// The caller snapshots the kernel's `(env_source, launched_config)` before
+/// spawning so we don't borrow the kernel across the install. Progress phases
+/// flow through [`RuntimeDocProgressHandler`] into the runtime-agent's
+/// RuntimeStateDoc, which the main loop forwards to the coordinator live.
+async fn run_sync_environment(
+    env_kind: notebook_protocol::protocol::EnvKind,
+    kernel_snapshot: Option<(String, notebook_protocol::protocol::LaunchedEnvConfig)>,
+    state: RuntimeStateHandle,
+) -> RuntimeAgentResponse {
+    info!(
+        "[runtime-agent] SyncEnvironment: installing {:?}",
+        env_kind.packages()
+    );
 
-                // Deno doesn't support hot-sync — requires kernel restart
-                if es == "deno" {
-                    return (
-                        RuntimeAgentResponse::Error {
-                            error: "Hot-sync not supported for Deno environments. Kernel restart required.".to_string(),
+    let Some((es, launched)) = kernel_snapshot else {
+        return RuntimeAgentResponse::Error {
+            error: "No kernel running".to_string(),
+        };
+    };
+
+    // Deno doesn't support hot-sync — requires kernel restart.
+    if es == "deno" {
+        return RuntimeAgentResponse::Error {
+            error: "Hot-sync not supported for Deno environments. Kernel restart required."
+                .to_string(),
+        };
+    }
+
+    let Some(venv_path) = launched.venv_path.clone() else {
+        return RuntimeAgentResponse::Error {
+            error: "No venv path available".to_string(),
+        };
+    };
+    let Some(python_path) = launched.python_path.clone() else {
+        return RuntimeAgentResponse::Error {
+            error: "No python path available".to_string(),
+        };
+    };
+
+    let handler: std::sync::Arc<dyn kernel_env::ProgressHandler> = std::sync::Arc::new(
+        crate::inline_env::RuntimeDocProgressHandler::new(state.clone()),
+    );
+
+    match env_kind {
+        notebook_protocol::protocol::EnvKind::Uv { packages } => {
+            let uv_env = kernel_env::uv::UvEnvironment {
+                venv_path: venv_path.clone(),
+                python_path: python_path.clone(),
+            };
+            match kernel_env::uv::sync_dependencies(&uv_env, &packages, handler.clone()).await {
+                Ok(()) => {
+                    // Terminal Ready phase so the frontend banner clears.
+                    // `sync_dependencies` emits InstallComplete, which is not a
+                    // terminal state for `projectEnvProgress`; Ready is.
+                    handler.on_progress(
+                        "uv",
+                        kernel_env::EnvProgressPhase::Ready {
+                            env_path: venv_path.to_string_lossy().into_owned(),
+                            python_path: python_path.to_string_lossy().into_owned(),
                         },
-                        None,
                     );
-                }
-
-                // Get venv and python paths from the kernel's launched config
-                let launched = kernel_ref.launched_config();
-                let venv_path = match &launched.venv_path {
-                    Some(p) => p.clone(),
-                    None => {
-                        return (
-                            RuntimeAgentResponse::Error {
-                                error: "No venv path available".to_string(),
-                            },
-                            None,
-                        );
-                    }
-                };
-                let python_path = match &launched.python_path {
-                    Some(p) => p.clone(),
-                    None => {
-                        return (
-                            RuntimeAgentResponse::Error {
-                                error: "No python path available".to_string(),
-                            },
-                            None,
-                        );
-                    }
-                };
-
-                match env_kind {
-                    notebook_protocol::protocol::EnvKind::Uv { packages } => {
-                        let uv_env = kernel_env::uv::UvEnvironment {
-                            venv_path,
-                            python_path,
-                        };
-
-                        // Write progress phases into the runtime-agent's local
-                        // RuntimeStateDoc. The coordinator sync loop forwards them to the
-                        // room's authoritative doc, so the frontend banner tracks hot-sync
-                        // the same way it tracks auto-launch.
-                        let handler: std::sync::Arc<dyn kernel_env::ProgressHandler> =
-                            std::sync::Arc::new(crate::inline_env::RuntimeDocProgressHandler::new(
-                                ctx.state.clone(),
-                            ));
-                        match kernel_env::uv::sync_dependencies(&uv_env, &packages, handler).await {
-                            Ok(()) => (
-                                RuntimeAgentResponse::EnvironmentSynced {
-                                    synced_packages: packages,
-                                },
-                                None,
-                            ),
-                            Err(e) => {
-                                error!(
-                                    "[runtime-agent] Failed to sync UV packages {:?}: {}",
-                                    packages, e
-                                );
-                                (
-                                    RuntimeAgentResponse::Error {
-                                        error: format!("Failed to install packages: {}", e),
-                                    },
-                                    None,
-                                )
-                            }
-                        }
-                    }
-                    notebook_protocol::protocol::EnvKind::Conda { packages, channels } => {
-                        let conda_env = kernel_env::conda::CondaEnvironment {
-                            env_path: venv_path,
-                            python_path,
-                        };
-
-                        let conda_deps = kernel_env::conda::CondaDependencies {
-                            dependencies: packages.clone(),
-                            channels: if channels.is_empty() {
-                                vec!["conda-forge".to_string()]
-                            } else {
-                                channels
-                            },
-                            python: None,
-                            env_id: None,
-                        };
-
-                        let handler: std::sync::Arc<dyn kernel_env::ProgressHandler> =
-                            std::sync::Arc::new(crate::inline_env::RuntimeDocProgressHandler::new(
-                                ctx.state.clone(),
-                            ));
-                        match kernel_env::conda::sync_dependencies(&conda_env, &conda_deps, handler)
-                            .await
-                        {
-                            Ok(()) => (
-                                RuntimeAgentResponse::EnvironmentSynced {
-                                    synced_packages: packages,
-                                },
-                                None,
-                            ),
-                            Err(e) => {
-                                error!(
-                                    "[runtime-agent] Failed to sync Conda packages {:?} with channels {:?}: {}",
-                                    packages, conda_deps.channels, e
-                                );
-                                (
-                                    RuntimeAgentResponse::Error {
-                                        error: format!("Failed to install packages: {}", e),
-                                    },
-                                    None,
-                                )
-                            }
-                        }
+                    RuntimeAgentResponse::EnvironmentSynced {
+                        synced_packages: packages,
                     }
                 }
-            } else {
-                (
-                    RuntimeAgentResponse::Error {
-                        error: "No kernel running".to_string(),
-                    },
-                    None,
-                )
+                Err(e) => {
+                    error!(
+                        "[runtime-agent] Failed to sync UV packages {:?}: {}",
+                        packages, e
+                    );
+                    let msg = format!("Failed to install packages: {}", e);
+                    handler.on_progress(
+                        "uv",
+                        kernel_env::EnvProgressPhase::Error {
+                            message: msg.clone(),
+                        },
+                    );
+                    RuntimeAgentResponse::Error { error: msg }
+                }
+            }
+        }
+        notebook_protocol::protocol::EnvKind::Conda { packages, channels } => {
+            let conda_env = kernel_env::conda::CondaEnvironment {
+                env_path: venv_path.clone(),
+                python_path: python_path.clone(),
+            };
+            let conda_deps = kernel_env::conda::CondaDependencies {
+                dependencies: packages.clone(),
+                channels: if channels.is_empty() {
+                    vec!["conda-forge".to_string()]
+                } else {
+                    channels
+                },
+                python: None,
+                env_id: None,
+            };
+            match kernel_env::conda::sync_dependencies(&conda_env, &conda_deps, handler.clone())
+                .await
+            {
+                Ok(()) => {
+                    handler.on_progress(
+                        "conda",
+                        kernel_env::EnvProgressPhase::Ready {
+                            env_path: venv_path.to_string_lossy().into_owned(),
+                            python_path: python_path.to_string_lossy().into_owned(),
+                        },
+                    );
+                    RuntimeAgentResponse::EnvironmentSynced {
+                        synced_packages: packages,
+                    }
+                }
+                Err(e) => {
+                    error!(
+                        "[runtime-agent] Failed to sync Conda packages {:?} with channels {:?}: {}",
+                        packages, conda_deps.channels, e
+                    );
+                    let msg = format!("Failed to install packages: {}", e);
+                    handler.on_progress(
+                        "conda",
+                        kernel_env::EnvProgressPhase::Error {
+                            message: msg.clone(),
+                        },
+                    );
+                    RuntimeAgentResponse::Error { error: msg }
+                }
             }
         }
     }
