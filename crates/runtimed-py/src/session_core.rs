@@ -248,26 +248,7 @@ pub(crate) async fn announce_presence(state: &SessionState) {
         Some(h) => h,
         None => return,
     };
-    let peer_label = state.peer_label.as_deref();
-    let actor_label = state.actor_label.as_deref();
-    let first_cell_id = handle.first_cell_id();
-
-    let encoded = if let Some(cell_id) = first_cell_id {
-        notebook_doc::presence::encode_focus_update_labeled(
-            "local",
-            peer_label,
-            actor_label,
-            &cell_id,
-        )
-    } else {
-        notebook_doc::presence::encode_custom_update_labeled("local", peer_label, actor_label, &[])
-    };
-    match encoded {
-        Ok(data) => {
-            let _ = handle.send_presence(data).await;
-        }
-        Err(e) => log::debug!("announce_presence: failed to encode: {}", e),
-    }
+    notebook_sync::presence::announce(handle, state.peer_label.as_deref()).await;
 }
 
 /// Populate `kernel_started`, `kernel_type`, and `env_source` from the
@@ -1646,25 +1627,13 @@ async fn emit_cursor_presence_internal(
     line: u32,
     column: u32,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    // Clone what we need and drop the lock before await to avoid contention
-    let (data, handle) = {
+    let (handle, peer_label) = {
         let st = state.lock().await;
-        let peer_label = st.peer_label.clone();
-        let actor_label = st.actor_label.clone();
-        let data = notebook_doc::presence::encode_cursor_update_labeled(
-            "local",
-            peer_label.as_deref(),
-            actor_label.as_deref(),
-            &notebook_doc::presence::CursorPosition {
-                cell_id: cell_id.to_string(),
-                line,
-                column,
-            },
-        )?;
         let handle = st.handle.clone().ok_or("Not connected")?;
-        (data, handle)
+        (handle, st.peer_label.clone())
     };
-    handle.send_presence(data).await?;
+    notebook_sync::presence::emit_cursor(&handle, cell_id, line, column, peer_label.as_deref())
+        .await;
     Ok(())
 }
 
@@ -1677,20 +1646,12 @@ async fn emit_focus_presence_internal(
     state: &Arc<Mutex<SessionState>>,
     cell_id: &str,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let (data, handle) = {
+    let (handle, peer_label) = {
         let st = state.lock().await;
-        let peer_label = st.peer_label.clone();
-        let actor_label = st.actor_label.clone();
-        let data = notebook_doc::presence::encode_focus_update_labeled(
-            "local",
-            peer_label.as_deref(),
-            actor_label.as_deref(),
-            cell_id,
-        )?;
         let handle = st.handle.clone().ok_or("Not connected")?;
-        (data, handle)
+        (handle, st.peer_label.clone())
     };
-    handle.send_presence(data).await?;
+    notebook_sync::presence::emit_focus(&handle, cell_id, peer_label.as_deref()).await;
     Ok(())
 }
 

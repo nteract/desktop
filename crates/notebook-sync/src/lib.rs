@@ -55,6 +55,7 @@ pub mod connect;
 pub mod error;
 pub mod execution_wait;
 pub mod handle;
+pub mod presence;
 pub mod relay;
 pub mod relay_task;
 mod shared;

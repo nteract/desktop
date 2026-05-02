@@ -595,7 +595,8 @@ impl Session {
         handle
             .add_cell_with_source(&cell_id, &cell_type, opts.after_cell_id.as_deref(), &source)
             .map_err(to_napi_err)?;
-        emit_cursor_presence(&handle, &cell_id, &source, &peer_label).await;
+        notebook_sync::presence::emit_cursor_at_end(&handle, &cell_id, &source, Some(&peer_label))
+            .await;
         Ok(cell_id)
     }
 
@@ -613,7 +614,13 @@ impl Session {
                 .update_source(&cell_id, &source)
                 .map_err(to_napi_err)?;
             if found {
-                emit_cursor_presence(&handle, &cell_id, &source, &peer_label).await;
+                notebook_sync::presence::emit_cursor_at_end(
+                    &handle,
+                    &cell_id,
+                    &source,
+                    Some(&peer_label),
+                )
+                .await;
             }
         }
         if let Some(cell_type) = cell_type {
@@ -630,7 +637,7 @@ impl Session {
         let (handle, peer_label) = session_handle_and_label(&self.state).await?;
         let deleted = handle.delete_cell(&cell_id).map_err(to_napi_err)?;
         if deleted {
-            announce_presence(&handle, &peer_label).await;
+            notebook_sync::presence::announce(&handle, Some(&peer_label)).await;
         }
         Ok(deleted)
     }
@@ -649,7 +656,7 @@ impl Session {
             .move_cell(&cell_id, after_cell_id.as_deref())
             .map_err(to_napi_err)?;
         let peer_label = session_peer_label(&self.state).await;
-        emit_focus_presence(&handle, &cell_id, &peer_label).await;
+        notebook_sync::presence::emit_focus(&handle, &cell_id, Some(&peer_label)).await;
         Ok(position)
     }
 
@@ -665,7 +672,7 @@ impl Session {
         ensure_kernel_started(&self.state).await?;
         let execution_id = queue_existing_cell(&self.state, &cell_id).await?;
         if let Ok((handle, peer_label)) = session_handle_and_label(&self.state).await {
-            emit_focus_presence(&handle, &cell_id, &peer_label).await;
+            notebook_sync::presence::emit_focus(&handle, &cell_id, Some(&peer_label)).await;
         }
 
         let result = tokio::time::timeout(timeout, async {
@@ -916,7 +923,11 @@ pub async fn create_notebook(options: Option<CreateNotebookOptions>) -> Result<S
         peer_label: actor_label.clone(),
     };
 
-    announce_presence(state.handle.as_ref().expect("handle set"), &actor_label).await;
+    notebook_sync::presence::announce(
+        state.handle.as_ref().expect("handle set"),
+        Some(&actor_label),
+    )
+    .await;
 
     Ok(Session {
         notebook_id,
@@ -1000,7 +1011,11 @@ pub async fn open_notebook_path(
         peer_label: actor_label.clone(),
     };
 
-    announce_presence(state.handle.as_ref().expect("handle set"), &actor_label).await;
+    notebook_sync::presence::announce(
+        state.handle.as_ref().expect("handle set"),
+        Some(&actor_label),
+    )
+    .await;
 
     Ok(Session {
         notebook_id,
@@ -1046,7 +1061,11 @@ pub async fn open_notebook(
         peer_label: actor_label.clone(),
     };
 
-    announce_presence(state.handle.as_ref().expect("handle set"), &actor_label).await;
+    notebook_sync::presence::announce(
+        state.handle.as_ref().expect("handle set"),
+        Some(&actor_label),
+    )
+    .await;
 
     Ok(Session {
         notebook_id,
@@ -1142,73 +1161,6 @@ async fn session_handle_and_label(state: &Arc<Mutex<SessionState>>) -> Result<(D
 async fn session_peer_label(state: &Arc<Mutex<SessionState>>) -> String {
     let st = state.lock().await;
     st.peer_label.clone()
-}
-
-fn actor_label(handle: &DocHandle) -> Option<String> {
-    handle.get_actor_id().ok().filter(|s| !s.is_empty())
-}
-
-async fn announce_presence(handle: &DocHandle, peer_label: &str) {
-    let actor = actor_label(handle);
-    let encoded = if let Some(cell_id) = handle.first_cell_id() {
-        notebook_doc::presence::encode_focus_update_labeled(
-            "local",
-            Some(peer_label),
-            actor.as_deref(),
-            &cell_id,
-        )
-    } else {
-        notebook_doc::presence::encode_custom_update_labeled(
-            "local",
-            Some(peer_label),
-            actor.as_deref(),
-            &[],
-        )
-    };
-    if let Ok(data) = encoded {
-        let _ = handle.send_presence(data).await;
-    }
-}
-
-async fn emit_focus_presence(handle: &DocHandle, cell_id: &str, peer_label: &str) {
-    let actor = actor_label(handle);
-    if let Ok(data) = notebook_doc::presence::encode_focus_update_labeled(
-        "local",
-        Some(peer_label),
-        actor.as_deref(),
-        cell_id,
-    ) {
-        let _ = handle.send_presence(data).await;
-    }
-}
-
-async fn emit_cursor_presence(handle: &DocHandle, cell_id: &str, source: &str, peer_label: &str) {
-    let actor = actor_label(handle);
-    let (line, column) = offset_to_line_col(source, source.len());
-    let position = notebook_doc::presence::CursorPosition {
-        cell_id: cell_id.to_string(),
-        line,
-        column,
-    };
-    if let Ok(data) = notebook_doc::presence::encode_cursor_update_labeled(
-        "local",
-        Some(peer_label),
-        actor.as_deref(),
-        &position,
-    ) {
-        let _ = handle.send_presence(data).await;
-    }
-}
-
-fn offset_to_line_col(source: &str, offset: usize) -> (u32, u32) {
-    let before = &source[..offset.min(source.len())];
-    let line = before.chars().filter(|&c| c == '\n').count() as u32;
-    let after_last_newline = match before.rfind('\n') {
-        Some(pos) => &before[pos + 1..],
-        None => before,
-    };
-    let column = after_last_newline.chars().count() as u32;
-    (line, column)
 }
 
 fn peer_label_or_description(peer_label: Option<String>, description: Option<String>) -> String {
@@ -1408,7 +1360,7 @@ async fn add_source_cell(
     handle
         .add_cell_with_source(&cell_id, cell_type, None, source)
         .map_err(to_napi_err)?;
-    emit_cursor_presence(&handle, &cell_id, source, &peer_label).await;
+    notebook_sync::presence::emit_cursor_at_end(&handle, &cell_id, source, Some(&peer_label)).await;
     Ok(cell_id)
 }
 
