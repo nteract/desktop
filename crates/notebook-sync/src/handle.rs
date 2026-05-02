@@ -352,6 +352,30 @@ impl DocHandle {
         self.with_notebook_doc(|nd| nd.set_metadata_snapshot(snapshot))
     }
 
+    /// Read the metadata snapshot, apply mutations via a closure, and write
+    /// it back in a single lock/snapshot/sync cycle.
+    ///
+    /// Prefer this over calling individual convenience methods (e.g.
+    /// `add_uv_dependency` + `remove_uv_dependency`) in a loop — each of
+    /// those acquires the lock, reads the full snapshot, writes it back,
+    /// publishes a snapshot, and notifies the sync task. `with_metadata`
+    /// does all of that exactly once regardless of how many mutations the
+    /// closure applies.
+    ///
+    /// ```ignore
+    /// let removed = handle.with_metadata(|snap| {
+    ///     snap.add_uv_dependency("numpy>=1.24");
+    ///     snap.add_uv_dependency("pandas>=2.0");
+    ///     snap.remove_uv_dependency("scipy")
+    /// })?;
+    /// ```
+    pub fn with_metadata<F, T>(&self, f: F) -> Result<T, SyncError>
+    where
+        F: FnOnce(&mut notebook_doc::metadata::NotebookMetadataSnapshot) -> T,
+    {
+        self.with_notebook_doc(|nd| nd.with_metadata(f))
+    }
+
     /// Set cell metadata from a JSON value. Returns true if cell found.
     pub fn set_cell_metadata(
         &self,

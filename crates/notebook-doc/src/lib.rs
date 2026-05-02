@@ -637,6 +637,42 @@ impl NotebookDoc {
         )
     }
 
+    // ── Batch metadata mutation ───────────────────────────────────
+
+    /// Read the metadata snapshot, apply mutations via a closure, and write
+    /// it back in a single Automerge transaction.
+    ///
+    /// This is the preferred way to apply multiple metadata changes (especially
+    /// dependency adds/removes) — one `get_metadata_snapshot` read, N in-memory
+    /// mutations, one `set_metadata_snapshot` write. Each individual convenience
+    /// method (e.g. `add_uv_dependency`) does a full read-mutate-write cycle,
+    /// so batching N changes through `with_metadata` produces O(1) Automerge
+    /// ops instead of O(N).
+    ///
+    /// ```ignore
+    /// doc.with_metadata(|snap| {
+    ///     snap.add_uv_dependency("numpy>=1.24");
+    ///     snap.add_uv_dependency("pandas>=2.0");
+    ///     snap.remove_uv_dependency("scipy");
+    /// })?;
+    /// ```
+    pub fn with_metadata<F, T>(&mut self, f: F) -> Result<T, AutomergeError>
+    where
+        F: FnOnce(&mut metadata::NotebookMetadataSnapshot) -> T,
+    {
+        let mut snapshot = self.get_metadata_snapshot().unwrap_or_default();
+        let before = snapshot.clone();
+        let result = f(&mut snapshot);
+        // Skip the write when the closure didn't actually mutate anything.
+        // This avoids unnecessary Automerge ops, sync notifications, and
+        // dirty/autosave work for no-op paths (e.g. removing a package
+        // that isn't present, or manage_dependencies with empty edits).
+        if snapshot != before {
+            self.set_metadata_snapshot(&snapshot)?;
+        }
+        Ok(result)
+    }
+
     // ── UV dependency convenience methods ─────────────────────────
 
     /// Add a UV dependency, deduplicating by package name (case-insensitive).
@@ -5081,5 +5117,108 @@ mod tests {
         let round_tripped = crate::get_metadata_snapshot_from_doc(doc.doc())
             .expect("free function should surface extras");
         assert!(round_tripped.extras.contains_key("jupytext"));
+    }
+
+    #[test]
+    fn test_with_metadata_batch_adds() {
+        let mut doc = NotebookDoc::new("nb-with-meta-batch");
+
+        doc.with_metadata(|snap| {
+            snap.add_uv_dependency("numpy>=1.24");
+            snap.add_uv_dependency("pandas>=2.0");
+            snap.add_uv_dependency("scipy");
+        })
+        .unwrap();
+
+        let deps = doc
+            .get_metadata_snapshot()
+            .unwrap()
+            .uv_dependencies()
+            .to_vec();
+        assert_eq!(deps, vec!["numpy>=1.24", "pandas>=2.0", "scipy"]);
+    }
+
+    #[test]
+    fn test_with_metadata_batch_add_and_remove() {
+        let mut doc = NotebookDoc::new("nb-with-meta-mixed");
+
+        // Start with some deps
+        doc.with_metadata(|snap| {
+            snap.add_uv_dependency("numpy");
+            snap.add_uv_dependency("pandas");
+            snap.add_uv_dependency("scipy");
+        })
+        .unwrap();
+
+        // Batch: add one, remove two, upgrade one
+        let removed = doc
+            .with_metadata(|snap| {
+                snap.add_uv_dependency("polars>=0.20");
+                snap.add_uv_dependency("numpy>=2.0"); // upgrade
+                let r1 = snap.remove_uv_dependency("scipy");
+                let r2 = snap.remove_uv_dependency("nonexistent");
+                (r1, r2)
+            })
+            .unwrap();
+
+        assert_eq!(removed, (true, false));
+        let deps = doc
+            .get_metadata_snapshot()
+            .unwrap()
+            .uv_dependencies()
+            .to_vec();
+        assert_eq!(deps, vec!["pandas", "polars>=0.20", "numpy>=2.0"]);
+    }
+
+    #[test]
+    fn test_with_metadata_returns_closure_value() {
+        let mut doc = NotebookDoc::new("nb-with-meta-ret");
+        doc.add_uv_dependency("numpy").unwrap();
+
+        let count = doc
+            .with_metadata(|snap| snap.uv_dependencies().len())
+            .unwrap();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn test_with_metadata_noop_skips_write() {
+        let mut doc = NotebookDoc::new("nb-noop");
+        doc.add_uv_dependency("numpy").unwrap();
+
+        // Capture heads after the initial write
+        let heads_before = doc.doc.get_heads();
+
+        // No-op closure: read deps but don't mutate
+        let deps = doc
+            .with_metadata(|snap| snap.uv_dependencies().to_vec())
+            .unwrap();
+        assert_eq!(deps, vec!["numpy"]);
+
+        // Heads should be unchanged — no write happened
+        let heads_after = doc.doc.get_heads();
+        assert_eq!(
+            heads_before, heads_after,
+            "with_metadata should skip set_metadata_snapshot when the closure doesn't mutate"
+        );
+    }
+
+    #[test]
+    fn test_with_metadata_noop_remove_absent_skips_write() {
+        let mut doc = NotebookDoc::new("nb-noop-remove");
+        doc.add_uv_dependency("numpy").unwrap();
+        let heads_before = doc.doc.get_heads();
+
+        // Removing a package that isn't present — should be a no-op
+        doc.with_metadata(|snap| {
+            snap.remove_uv_dependency("nonexistent-pkg");
+        })
+        .unwrap();
+
+        let heads_after = doc.doc.get_heads();
+        assert_eq!(
+            heads_before, heads_after,
+            "removing an absent package should not produce Automerge ops"
+        );
     }
 }
