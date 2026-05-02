@@ -16,19 +16,25 @@ name: Publish npm packages
 on:
   workflow_dispatch:
     inputs:
-      tag:
-        description: npm dist-tag to publish under
-        default: next
+      release_type:
+        description: Release type
+        default: nightly
         required: true
-        type: string
+        type: choice
+        options:
+          - stable
+          - nightly
 
 permissions:
   contents: read
   id-token: write
 
 concurrency:
-  group: npm-publish-${{ inputs.tag }}
+  group: npm-publish-${{ inputs.release_type }}
   cancel-in-progress: false
+
+env:
+  NPM_TAG: ${{ inputs.release_type == 'stable' && 'latest' || 'next' }}
 
 jobs:
   native:
@@ -75,7 +81,7 @@ jobs:
         run: pnpm --dir packages/runtimed-node/npm/${{ matrix.target }} pack:dry-run
 
       - name: Publish platform package
-        run: npm publish packages/runtimed-node/npm/${{ matrix.target }} --tag "${{ inputs.tag }}" --access public --provenance
+        run: npm publish packages/runtimed-node/npm/${{ matrix.target }} --tag "${{ env.NPM_TAG }}" --access public --provenance
 
   wrapper:
     name: Wrapper package
@@ -112,7 +118,7 @@ jobs:
         run: pnpm --dir packages/runtimed-node pack --pack-destination "$RUNNER_TEMP"
 
       - name: Publish wrapper package
-        run: npm publish "$RUNNER_TEMP"/runtimed-node-*.tgz --tag "${{ inputs.tag }}" --access public --provenance
+        run: npm publish "$RUNNER_TEMP"/runtimed-node-*.tgz --tag "${{ env.NPM_TAG }}" --access public --provenance
 
   pi:
     name: Pi package
@@ -144,4 +150,4 @@ jobs:
         run: pnpm --dir plugins/nteract/pi pack --pack-destination "$RUNNER_TEMP"
 
       - name: Publish Pi package
-        run: npm publish "$RUNNER_TEMP"/nteract-pi-*.tgz --tag "${{ inputs.tag }}" --access public --provenance
+        run: npm publish "$RUNNER_TEMP"/nteract-pi-*.tgz --tag "${{ env.NPM_TAG }}" --access public --provenance
