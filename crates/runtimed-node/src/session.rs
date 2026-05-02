@@ -91,25 +91,49 @@ pub struct DependencyEditOptions {
     pub package_manager: Option<PackageManager>,
 }
 
-/// Notebook dependency metadata and trust/runtime status.
+/// UV dependency metadata.
 #[napi(object)]
-pub struct DependencyStatus {
-    pub uv_dependencies: Vec<String>,
-    pub conda_dependencies: Vec<String>,
-    pub pixi_dependencies: Vec<String>,
-    pub pixi_pypi_dependencies: Vec<String>,
-    pub conda_channels: Vec<String>,
-    pub pixi_channels: Vec<String>,
-    pub uv_requires_python: Option<String>,
-    pub conda_python: Option<String>,
-    pub pixi_python: Option<String>,
-    pub fingerprint: Option<String>,
-    pub trust_status: Option<String>,
-    pub trust_needs_approval: Option<bool>,
+pub struct UvDependencyStatus {
+    pub dependencies: Vec<String>,
+    pub requires_python: Option<String>,
+}
+
+/// Conda dependency metadata.
+#[napi(object)]
+pub struct CondaDependencyStatus {
+    pub dependencies: Vec<String>,
+    pub channels: Vec<String>,
+    pub python: Option<String>,
+}
+
+/// Pixi dependency metadata.
+#[napi(object)]
+pub struct PixiDependencyStatus {
+    pub dependencies: Vec<String>,
+    pub pypi_dependencies: Vec<String>,
+    pub channels: Vec<String>,
+    pub python: Option<String>,
+}
+
+/// Notebook trust state for dependency metadata.
+#[napi(object)]
+pub struct DependencyTrustStatus {
+    pub status: Option<String>,
+    pub needs_approval: Option<bool>,
     pub approved_uv_dependencies: Vec<String>,
     pub approved_conda_dependencies: Vec<String>,
     pub approved_pixi_dependencies: Vec<String>,
     pub approved_pixi_pypi_dependencies: Vec<String>,
+}
+
+/// Notebook dependency metadata and trust/runtime status.
+#[napi(object)]
+pub struct DependencyStatus {
+    pub uv: Option<UvDependencyStatus>,
+    pub conda: Option<CondaDependencyStatus>,
+    pub pixi: Option<PixiDependencyStatus>,
+    pub fingerprint: Option<String>,
+    pub trust: DependencyTrustStatus,
 }
 
 /// Options for `Session.runCell()`.
@@ -300,6 +324,7 @@ struct SessionState {
     #[allow(dead_code)]
     socket_path: PathBuf,
     working_dir: Option<String>,
+    peer_label: String,
 }
 
 struct OutputResolutionContext<'a> {
@@ -509,11 +534,12 @@ impl Session {
     ) -> Result<String> {
         let opts = options.unwrap_or_default();
         let cell_type = normalize_cell_type(opts.cell_type)?;
-        let handle = session_handle(&self.state).await?;
+        let (handle, peer_label) = session_handle_and_label(&self.state).await?;
         let cell_id = format!("cell-{}", uuid::Uuid::new_v4());
         handle
             .add_cell_with_source(&cell_id, &cell_type, opts.after_cell_id.as_deref(), &source)
             .map_err(to_napi_err)?;
+        emit_cursor_presence(&handle, &cell_id, &source, &peer_label).await;
         Ok(cell_id)
     }
 
@@ -524,12 +550,15 @@ impl Session {
             .cell_type
             .map(|cell_type| normalize_cell_type(Some(cell_type)))
             .transpose()?;
-        let handle = session_handle(&self.state).await?;
+        let (handle, peer_label) = session_handle_and_label(&self.state).await?;
         let mut found = false;
         if let Some(source) = options.source {
             found |= handle
                 .update_source(&cell_id, &source)
                 .map_err(to_napi_err)?;
+            if found {
+                emit_cursor_presence(&handle, &cell_id, &source, &peer_label).await;
+            }
         }
         if let Some(cell_type) = cell_type {
             found |= handle
@@ -542,8 +571,12 @@ impl Session {
     /// Delete a cell. Returns true if the cell existed.
     #[napi]
     pub async fn delete_cell(&self, cell_id: String) -> Result<bool> {
-        let handle = session_handle(&self.state).await?;
-        handle.delete_cell(&cell_id).map_err(to_napi_err)
+        let (handle, peer_label) = session_handle_and_label(&self.state).await?;
+        let deleted = handle.delete_cell(&cell_id).map_err(to_napi_err)?;
+        if deleted {
+            announce_presence(&handle, &peer_label).await;
+        }
+        Ok(deleted)
     }
 
     /// Move a cell after another cell, or to the beginning when omitted/null.
@@ -556,9 +589,12 @@ impl Session {
     ) -> Result<String> {
         let handle = session_handle(&self.state).await?;
         let after_cell_id = options.and_then(|opts| opts.after_cell_id);
-        handle
+        let position = handle
             .move_cell(&cell_id, after_cell_id.as_deref())
-            .map_err(to_napi_err)
+            .map_err(to_napi_err)?;
+        let peer_label = session_peer_label(&self.state).await;
+        emit_focus_presence(&handle, &cell_id, &peer_label).await;
+        Ok(position)
     }
 
     /// Execute an existing code cell and wait for terminal outputs.
@@ -572,6 +608,9 @@ impl Session {
         let timeout = Duration::from_millis(opts.timeout_ms.unwrap_or(120_000) as u64);
         ensure_kernel_started(&self.state).await?;
         let execution_id = queue_existing_cell(&self.state, &cell_id).await?;
+        if let Ok((handle, peer_label)) = session_handle_and_label(&self.state).await {
+            emit_focus_presence(&handle, &cell_id, &peer_label).await;
+        }
 
         let result = tokio::time::timeout(timeout, async {
             collect_outputs(&self.state, &cell_id, &execution_id).await
@@ -811,7 +850,10 @@ pub async fn create_notebook(options: Option<CreateNotebookOptions>) -> Result<S
         blob_store_path,
         socket_path,
         working_dir: working_dir.map(|p| p.to_string_lossy().to_string()),
+        peer_label: actor_label.clone(),
     };
+
+    announce_presence(state.handle.as_ref().expect("handle set"), &actor_label).await;
 
     Ok(Session {
         notebook_id,
@@ -892,7 +934,10 @@ pub async fn open_notebook_path(
         blob_store_path,
         socket_path,
         working_dir: None,
+        peer_label: actor_label.clone(),
     };
+
+    announce_presence(state.handle.as_ref().expect("handle set"), &actor_label).await;
 
     Ok(Session {
         notebook_id,
@@ -935,7 +980,10 @@ pub async fn open_notebook(
         blob_store_path,
         socket_path,
         working_dir: None,
+        peer_label: actor_label.clone(),
     };
+
+    announce_presence(state.handle.as_ref().expect("handle set"), &actor_label).await;
 
     Ok(Session {
         notebook_id,
@@ -1016,6 +1064,88 @@ async fn session_handle(state: &Arc<Mutex<SessionState>>) -> Result<DocHandle> {
         .as_ref()
         .ok_or_else(|| Error::from_reason("Not connected"))
         .cloned()
+}
+
+async fn session_handle_and_label(state: &Arc<Mutex<SessionState>>) -> Result<(DocHandle, String)> {
+    let st = state.lock().await;
+    let handle = st
+        .handle
+        .as_ref()
+        .ok_or_else(|| Error::from_reason("Not connected"))?
+        .clone();
+    Ok((handle, st.peer_label.clone()))
+}
+
+async fn session_peer_label(state: &Arc<Mutex<SessionState>>) -> String {
+    let st = state.lock().await;
+    st.peer_label.clone()
+}
+
+fn actor_label(handle: &DocHandle) -> Option<String> {
+    handle.get_actor_id().ok().filter(|s| !s.is_empty())
+}
+
+async fn announce_presence(handle: &DocHandle, peer_label: &str) {
+    let actor = actor_label(handle);
+    let encoded = if let Some(cell_id) = handle.first_cell_id() {
+        notebook_doc::presence::encode_focus_update_labeled(
+            "local",
+            Some(peer_label),
+            actor.as_deref(),
+            &cell_id,
+        )
+    } else {
+        notebook_doc::presence::encode_custom_update_labeled(
+            "local",
+            Some(peer_label),
+            actor.as_deref(),
+            &[],
+        )
+    };
+    if let Ok(data) = encoded {
+        let _ = handle.send_presence(data).await;
+    }
+}
+
+async fn emit_focus_presence(handle: &DocHandle, cell_id: &str, peer_label: &str) {
+    let actor = actor_label(handle);
+    if let Ok(data) = notebook_doc::presence::encode_focus_update_labeled(
+        "local",
+        Some(peer_label),
+        actor.as_deref(),
+        cell_id,
+    ) {
+        let _ = handle.send_presence(data).await;
+    }
+}
+
+async fn emit_cursor_presence(handle: &DocHandle, cell_id: &str, source: &str, peer_label: &str) {
+    let actor = actor_label(handle);
+    let (line, column) = offset_to_line_col(source, source.len());
+    let position = notebook_doc::presence::CursorPosition {
+        cell_id: cell_id.to_string(),
+        line,
+        column,
+    };
+    if let Ok(data) = notebook_doc::presence::encode_cursor_update_labeled(
+        "local",
+        Some(peer_label),
+        actor.as_deref(),
+        &position,
+    ) {
+        let _ = handle.send_presence(data).await;
+    }
+}
+
+fn offset_to_line_col(source: &str, offset: usize) -> (u32, u32) {
+    let before = &source[..offset.min(source.len())];
+    let line = before.chars().filter(|&c| c == '\n').count() as u32;
+    let after_last_newline = match before.rfind('\n') {
+        Some(pos) => &before[pos + 1..],
+        None => before,
+    };
+    let column = after_last_newline.chars().count() as u32;
+    (line, column)
 }
 
 fn peer_label_or_description(peer_label: Option<String>, description: Option<String>) -> String {
@@ -1181,16 +1311,11 @@ async fn add_source_cell(
     cell_type: &str,
 ) -> Result<String> {
     let cell_id = format!("cell-{}", uuid::Uuid::new_v4());
-    {
-        let st = state.lock().await;
-        let handle = st
-            .handle
-            .as_ref()
-            .ok_or_else(|| Error::from_reason("Not connected"))?;
-        handle
-            .add_cell_with_source(&cell_id, cell_type, None, source)
-            .map_err(to_napi_err)?;
-    }
+    let (handle, peer_label) = session_handle_and_label(state).await?;
+    handle
+        .add_cell_with_source(&cell_id, cell_type, None, source)
+        .map_err(to_napi_err)?;
+    emit_cursor_presence(&handle, &cell_id, source, &peer_label).await;
     Ok(cell_id)
 }
 
@@ -1208,41 +1333,41 @@ fn dependency_status_for_handle(handle: &DocHandle) -> DependencyStatus {
     let trust = handle.get_runtime_state().ok().map(|state| state.trust);
 
     DependencyStatus {
-        uv_dependencies: uv.map(|uv| uv.dependencies.clone()).unwrap_or_default(),
-        conda_dependencies: conda
-            .map(|conda| conda.dependencies.clone())
-            .unwrap_or_default(),
-        pixi_dependencies: pixi
-            .map(|pixi| pixi.dependencies.clone())
-            .unwrap_or_default(),
-        pixi_pypi_dependencies: pixi
-            .map(|pixi| pixi.pypi_dependencies.clone())
-            .unwrap_or_default(),
-        conda_channels: conda
-            .map(|conda| conda.channels.clone())
-            .unwrap_or_default(),
-        pixi_channels: pixi.map(|pixi| pixi.channels.clone()).unwrap_or_default(),
-        uv_requires_python: uv.and_then(|uv| uv.requires_python.clone()),
-        conda_python: conda.and_then(|conda| conda.python.clone()),
-        pixi_python: pixi.and_then(|pixi| pixi.python.clone()),
+        uv: uv.map(|uv| UvDependencyStatus {
+            dependencies: uv.dependencies.clone(),
+            requires_python: uv.requires_python.clone(),
+        }),
+        conda: conda.map(|conda| CondaDependencyStatus {
+            dependencies: conda.dependencies.clone(),
+            channels: conda.channels.clone(),
+            python: conda.python.clone(),
+        }),
+        pixi: pixi.map(|pixi| PixiDependencyStatus {
+            dependencies: pixi.dependencies.clone(),
+            pypi_dependencies: pixi.pypi_dependencies.clone(),
+            channels: pixi.channels.clone(),
+            python: pixi.python.clone(),
+        }),
         fingerprint: Some(metadata.dependency_fingerprint()),
-        trust_status: trust.as_ref().map(|trust| trust.status.clone()),
-        trust_needs_approval: trust.as_ref().map(|trust| trust.needs_approval),
-        approved_uv_dependencies: trust
-            .as_ref()
-            .map(|trust| trust.approved_uv_dependencies.clone())
-            .unwrap_or_default(),
-        approved_conda_dependencies: trust
-            .as_ref()
-            .map(|trust| trust.approved_conda_dependencies.clone())
-            .unwrap_or_default(),
-        approved_pixi_dependencies: trust
-            .as_ref()
-            .map(|trust| trust.approved_pixi_dependencies.clone())
-            .unwrap_or_default(),
-        approved_pixi_pypi_dependencies: trust
-            .map(|trust| trust.approved_pixi_pypi_dependencies)
-            .unwrap_or_default(),
+        trust: DependencyTrustStatus {
+            status: trust.as_ref().map(|trust| trust.status.clone()),
+            needs_approval: trust.as_ref().map(|trust| trust.needs_approval),
+            approved_uv_dependencies: trust
+                .as_ref()
+                .map(|trust| trust.approved_uv_dependencies.clone())
+                .unwrap_or_default(),
+            approved_conda_dependencies: trust
+                .as_ref()
+                .map(|trust| trust.approved_conda_dependencies.clone())
+                .unwrap_or_default(),
+            approved_pixi_dependencies: trust
+                .as_ref()
+                .map(|trust| trust.approved_pixi_dependencies.clone())
+                .unwrap_or_default(),
+            approved_pixi_pypi_dependencies: trust
+                .map(|trust| trust.approved_pixi_pypi_dependencies)
+                .unwrap_or_default(),
+        },
     }
 }
 

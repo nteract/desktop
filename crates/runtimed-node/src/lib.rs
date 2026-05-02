@@ -31,11 +31,12 @@ pub use parquet::{read_parquet_file, summarize_parquet_file};
 pub use session::{
     create_notebook, get_execution_result, list_active_notebooks, open_notebook,
     open_notebook_path, show_notebook, shutdown_notebook, ActiveNotebook, CellResult,
-    CreateCellOptions, CreateNotebookOptions, DependencyEditOptions, DependencyStatus,
-    ExecuteCellOptions, GetExecutionResultOptions, JsCellSnapshot, JsOutput,
-    ListActiveNotebooksOptions, MoveCellOptions, OpenNotebookOptions, PackageManager,
-    QueueCellOptions, QueuedExecution, RunCellOptions, Session, SetCellOptions,
-    ShowNotebookOptions, ShowNotebookResult, ShutdownNotebookOptions, WaitExecutionOptions,
+    CondaDependencyStatus, CreateCellOptions, CreateNotebookOptions, DependencyEditOptions,
+    DependencyStatus, DependencyTrustStatus, ExecuteCellOptions, GetExecutionResultOptions,
+    JsCellSnapshot, JsOutput, ListActiveNotebooksOptions, MoveCellOptions, OpenNotebookOptions,
+    PackageManager, PixiDependencyStatus, QueueCellOptions, QueuedExecution, RunCellOptions,
+    Session, SetCellOptions, ShowNotebookOptions, ShowNotebookResult, ShutdownNotebookOptions,
+    UvDependencyStatus, WaitExecutionOptions,
 };
 
 /// Return the default daemon socket path.

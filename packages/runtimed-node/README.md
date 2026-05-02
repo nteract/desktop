@@ -58,6 +58,15 @@ main().catch((error) => {
 });
 ```
 
+## Notebook Dependencies
+
+`createNotebook()` accepts `dependencies` so agent code can declare packages
+up-front instead of failing the first import and retrying after `addUvDependency()`.
+The `packageManager` option is typed from the native binding's `PackageManager`
+string enum (`"uv"`, `"conda"`, or `"pixi"`) and is converted to the shared
+notebook protocol enum before the daemon handshake. `description` can be used
+as a human-readable peer label for agent-created sessions.
+
 ## API Surface
 
 - `defaultSocketPath()` returns the socket path for the current nteract channel
@@ -96,13 +105,6 @@ main().catch((error) => {
 - `Session.close()` releases the daemon connection.
 
 ## Daemon Requirements
-
-`createNotebook()` accepts `dependencies` so agent code can declare packages
-up-front instead of failing the first import and retrying after `addUvDependency()`.
-The `packageManager` option is typed from the native binding's `PackageManager`
-string enum (`"uv"`, `"conda"`, or `"pixi"`) and is converted to the shared
-notebook protocol enum before the daemon handshake. `description` can be used
-as a human-readable peer label for agent-created sessions.
 
 The package talks to a local `runtimed` daemon over its Unix socket. In a
 development checkout, run the per-worktree daemon before using the bindings:
