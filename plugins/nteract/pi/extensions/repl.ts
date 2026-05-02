@@ -407,7 +407,7 @@ const PYTHON_PARAMS = Type.Object({
   dependencies: Type.Optional(
     Type.Array(Type.String(), {
       description:
-        "Packages to add before executing this code. On the first call they are recorded before the kernel starts; on later calls they are hot-synced into the running UV environment.",
+        "Packages to add before executing this code. On the first call they are recorded before the kernel starts; on later calls they are hot-synced into the running environment.",
     }),
   ),
   timeout_secs: Type.Optional(
@@ -487,7 +487,7 @@ export default function nteractReplExtension(pi: ExtensionAPI) {
       "Use print() for side-effect output; the last expression is echoed back as the result.",
       "Matplotlib / PIL images are returned inline — you can iterate on plots by looking at them.",
       "If code needs imports that may be missing, pass `dependencies` on the same `python` call so first-use packages are recorded before kernel start when possible.",
-      "Install additional packages with the `python_add_dependencies` tool (it uses the notebook's UV env and hot-reloads without restarting the kernel).",
+      "Install additional packages with the `python_add_dependencies` tool (it uses the notebook environment and hot-reloads without restarting the kernel).",
     ],
     parameters: PYTHON_PARAMS,
     renderCall(args, theme, _context) {
@@ -635,9 +635,9 @@ export default function nteractReplExtension(pi: ExtensionAPI) {
     name: "python_add_dependencies",
     label: "Add Dependencies (nteract)",
     description:
-      "Add packages to the current nteract notebook's UV environment and hot-sync them so the running kernel can import them immediately. Accepts pip-style specs, e.g. 'matplotlib', 'numpy>=2', 'requests'.",
+      "Add packages to the current nteract notebook environment and hot-sync them so the running kernel can import them immediately. Accepts pip-style specs, e.g. 'matplotlib', 'numpy>=2', 'requests'.",
     promptSnippet:
-      "python_add_dependencies: add packages to the persistent Python notebook env (hot-installs without restarting the kernel).",
+      "python_add_dependencies: add packages to the persistent Python notebook environment (hot-installs without restarting the kernel).",
     parameters: Type.Object({
       packages: Type.Array(Type.String(), {
         description: "Package specs (e.g. ['matplotlib', 'pandas>=2']).",
