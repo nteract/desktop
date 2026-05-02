@@ -262,12 +262,20 @@ fn apply_dep_edits(
 ) -> Result<(Vec<String>, Vec<String>), String> {
     use notebook_protocol::connection::PackageManager;
 
+    // Short-circuit: nothing to do → skip the CRDT lock entirely.
+    if add.is_empty() && remove.is_empty() {
+        return Ok((vec![], vec![]));
+    }
+
     // Phase 1: validate all specifiers before touching the CRDT
     for package in add {
         validate_specifier_for_manager(package, manager)?;
     }
 
     // Phase 2: single lock + single snapshot read/write
+    // with_metadata compares before/after and skips the write when the
+    // closure didn't actually mutate anything (e.g. removing a package
+    // that isn't present, or adding one that's already there).
     handle
         .with_metadata(|snap| {
             // Adds

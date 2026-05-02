@@ -661,8 +661,15 @@ impl NotebookDoc {
         F: FnOnce(&mut metadata::NotebookMetadataSnapshot) -> T,
     {
         let mut snapshot = self.get_metadata_snapshot().unwrap_or_default();
+        let before = snapshot.clone();
         let result = f(&mut snapshot);
-        self.set_metadata_snapshot(&snapshot)?;
+        // Skip the write when the closure didn't actually mutate anything.
+        // This avoids unnecessary Automerge ops, sync notifications, and
+        // dirty/autosave work for no-op paths (e.g. removing a package
+        // that isn't present, or manage_dependencies with empty edits).
+        if snapshot != before {
+            self.set_metadata_snapshot(&snapshot)?;
+        }
         Ok(result)
     }
 
@@ -5172,5 +5179,50 @@ mod tests {
             .with_metadata(|snap| snap.uv_dependencies().len())
             .unwrap();
         assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn test_with_metadata_noop_skips_write() {
+        use automerge::ReadDoc;
+
+        let mut doc = NotebookDoc::new("nb-noop");
+        doc.add_uv_dependency("numpy").unwrap();
+
+        // Capture heads after the initial write
+        let heads_before = doc.doc.get_heads();
+
+        // No-op closure: read deps but don't mutate
+        let deps = doc
+            .with_metadata(|snap| snap.uv_dependencies().to_vec())
+            .unwrap();
+        assert_eq!(deps, vec!["numpy"]);
+
+        // Heads should be unchanged — no write happened
+        let heads_after = doc.doc.get_heads();
+        assert_eq!(
+            heads_before, heads_after,
+            "with_metadata should skip set_metadata_snapshot when the closure doesn't mutate"
+        );
+    }
+
+    #[test]
+    fn test_with_metadata_noop_remove_absent_skips_write() {
+        use automerge::ReadDoc;
+
+        let mut doc = NotebookDoc::new("nb-noop-remove");
+        doc.add_uv_dependency("numpy").unwrap();
+        let heads_before = doc.doc.get_heads();
+
+        // Removing a package that isn't present — should be a no-op
+        doc.with_metadata(|snap| {
+            snap.remove_uv_dependency("nonexistent-pkg");
+        })
+        .unwrap();
+
+        let heads_after = doc.doc.get_heads();
+        assert_eq!(
+            heads_before, heads_after,
+            "removing an absent package should not produce Automerge ops"
+        );
     }
 }
