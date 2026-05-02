@@ -116,6 +116,22 @@ cargo xtask dev-daemon
 Published nteract desktop builds manage their own daemon. Set
 `RUNTIMED_SOCKET_PATH` when you need to connect to a specific daemon instance.
 
+## Development Smoke Test
+
+After building the native binding, run the daemon-backed API smoke test with:
+
+```bash
+RUNTIMED_SOCKET_PATH=/path/to/runtimed.sock pnpm --dir packages/runtimed-node smoke:api
+```
+
+When testing an out-of-tree N-API build, point the smoke script at it:
+
+```bash
+RUNTIMED_NODE_SMOKE_MODULE=/tmp/runtimed-node-napi-check/index.cjs \
+RUNTIMED_SOCKET_PATH=/path/to/runtimed.sock \
+pnpm --dir packages/runtimed-node smoke:api
+```
+
 ## Platform Packages
 
 The platform packages are implementation details and should normally be
