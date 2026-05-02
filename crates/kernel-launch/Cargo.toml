@@ -1,6 +1,6 @@
 [package]
 name = "kernel-launch"
-version = "0.3.1"
+version = "0.3.2"
 edition.workspace = true
 description = "Shared kernel launching and tool bootstrapping for nteract"
 repository.workspace = true

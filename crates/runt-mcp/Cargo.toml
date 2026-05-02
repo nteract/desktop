@@ -1,6 +1,6 @@
 [package]
 name = "runt-mcp"
-version = "0.3.1"
+version = "0.3.2"
 edition.workspace = true
 description = "Rust-native MCP server for nteract notebook interaction"
 repository.workspace = true

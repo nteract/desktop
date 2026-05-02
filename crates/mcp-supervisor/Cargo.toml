@@ -1,6 +1,6 @@
 [package]
 name = "mcp-supervisor"
-version = "0.3.1"
+version = "0.3.2"
 edition.workspace = true
 description = "nteract-dev — MCP supervisor that proxies to the nteract MCP server with auto-restart, file watching, and daemon management"
 repository.workspace = true

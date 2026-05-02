@@ -1,6 +1,6 @@
 {
   "name": "@nteract/pi",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Pi extensions that run Python through the local nteract runtimed daemon.",
   "type": "module",
   "license": "BSD-3-Clause",
