@@ -3,8 +3,13 @@ export interface WidgetModel {
   id: string;
   /** Widget state (value, min, max, description, etc.) */
   state: Record<string, unknown>;
-  /** Binary buffers for data-heavy widgets */
-  buffers: ArrayBuffer[];
+  /**
+   * JSON paths in `state` whose values are binary blobs. The parent-window
+   * state carries blob URL strings at these paths; the isolated iframe
+   * fetches each URL and swaps in a `DataView` before the anywidget model
+   * observes it. Empty / absent means no binary data.
+   */
+  bufferPaths?: string[][];
   /** Model class name, e.g., "IntSliderModel", "AnyModel" */
   modelName: string;
   /** Model module, e.g., "@jupyter-widgets/controls", "anywidget" */
@@ -25,12 +30,16 @@ export interface WidgetStore {
   /** Get a single model by ID */
   getModel: (modelId: string) => WidgetModel | undefined;
   /** Create a new model (on comm_open) */
-  createModel: (commId: string, state: Record<string, unknown>, buffers?: ArrayBuffer[]) => void;
+  createModel: (
+    commId: string,
+    state: Record<string, unknown>,
+    bufferPaths?: string[][],
+  ) => void;
   /** Update a model's state (on comm_msg with method: "update") */
   updateModel: (
     commId: string,
     statePatch: Record<string, unknown>,
-    buffers?: ArrayBuffer[],
+    bufferPaths?: string[][],
   ) => void;
   /** Delete a model (on comm_close) */
   deleteModel: (commId: string) => void;
@@ -152,7 +161,11 @@ export function createWidgetStore(): WidgetStore {
       return models.get(modelId);
     },
 
-    createModel(commId: string, state: Record<string, unknown>, buffers: ArrayBuffer[] = []): void {
+    createModel(
+      commId: string,
+      state: Record<string, unknown>,
+      bufferPaths?: string[][],
+    ): void {
       // Handle re-open: remove from closed set if re-opening
       closedModels.delete(commId);
 
@@ -163,7 +176,7 @@ export function createWidgetStore(): WidgetStore {
       const model: WidgetModel = {
         id: commId,
         state,
-        buffers,
+        bufferPaths,
         modelName,
         modelModule,
       };
@@ -176,7 +189,7 @@ export function createWidgetStore(): WidgetStore {
     updateModel(
       commId: string,
       statePatch: Record<string, unknown>,
-      buffers?: ArrayBuffer[],
+      bufferPaths?: string[][],
     ): void {
       const existing = models.get(commId);
       if (!existing) {
@@ -190,7 +203,7 @@ export function createWidgetStore(): WidgetStore {
       const newModel: WidgetModel = {
         ...existing,
         state: newState,
-        buffers: buffers ?? existing.buffers,
+        bufferPaths: bufferPaths ?? existing.bufferPaths,
       };
 
       // Create new Map to trigger useSyncExternalStore update
