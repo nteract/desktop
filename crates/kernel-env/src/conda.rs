@@ -929,10 +929,17 @@ pub async fn sync_dependencies(
             &format!("python={}", py_ver),
             match_spec_options,
         )?);
-        // Prevent the solver from switching to free-threaded Python.
-        // install_conda_env enforces this via should_enforce_gil_python
-        // but sync_dependencies was missing it.
-        if !py_ver.ends_with('t') {
+        // Preserve the installed GIL/free-threaded selector. conda-meta
+        // stores "3.14.4" not "3.14t", so we can't infer from the version
+        // string. Instead, check if `python-freethreading` is installed:
+        // if so, keep `python-freethreading`; otherwise pin `python-gil`.
+        if has_freethreading_package(&env.env_path) {
+            info!("Free-threaded Python detected, keeping python-freethreading selector");
+            specs.push(MatchSpec::from_str(
+                "python-freethreading",
+                match_spec_options,
+            )?);
+        } else {
             specs.push(MatchSpec::from_str(CONDA_GIL_SELECTOR, match_spec_options)?);
         }
     } else {
@@ -1156,6 +1163,32 @@ fn detect_installed_python_version(env_path: &std::path::Path) -> Option<String>
         }
     }
     None
+}
+
+/// Check whether the `python-freethreading` package is installed in a conda
+/// environment by looking for `python-freethreading-*.json` in `conda-meta`.
+///
+/// `conda-meta` stores the plain version number (e.g. `3.14.4`), not the
+/// `3.14t` constraint syntax, so we cannot infer free-threading from the
+/// Python version string. Instead, check for the selector package that conda
+/// uses to distinguish GIL vs free-threaded builds. If `python-freethreading`
+/// is present, the env was created as free-threaded; otherwise it uses the
+/// default GIL build.
+fn has_freethreading_package(env_path: &std::path::Path) -> bool {
+    let meta_dir = env_path.join("conda-meta");
+    let entries = match std::fs::read_dir(&meta_dir) {
+        Ok(e) => e,
+        Err(_) => return false,
+    };
+    for entry in entries.flatten() {
+        let fname = entry.file_name();
+        let fname = fname.to_string_lossy();
+        // e.g. python-freethreading-3.14.4-h0abcdef_0.json
+        if fname.starts_with("python-freethreading-") && fname.ends_with(".json") {
+            return true;
+        }
+    }
+    false
 }
 
 /// Find the site-packages directory inside a venv/env.
@@ -1427,5 +1460,36 @@ mod tests {
 
         let version = detect_installed_python_version(dir.path());
         assert_eq!(version.as_deref(), Some("3.14.4"));
+    }
+
+    #[test]
+    fn has_freethreading_package_detects_selector() {
+        let dir = tempfile::tempdir().unwrap();
+        let meta = dir.path().join("conda-meta");
+        std::fs::create_dir_all(&meta).unwrap();
+        std::fs::write(meta.join("python-3.14.4-h2b28147_0_cpython.json"), "{}").unwrap();
+        std::fs::write(
+            meta.join("python-freethreading-3.14.4-h2b28147_0.json"),
+            "{}",
+        )
+        .unwrap();
+
+        assert!(has_freethreading_package(dir.path()));
+    }
+
+    #[test]
+    fn has_freethreading_package_false_for_gil_env() {
+        let dir = tempfile::tempdir().unwrap();
+        let meta = dir.path().join("conda-meta");
+        std::fs::create_dir_all(&meta).unwrap();
+        std::fs::write(meta.join("python-3.14.4-h2b28147_0.json"), "{}").unwrap();
+
+        assert!(!has_freethreading_package(dir.path()));
+    }
+
+    #[test]
+    fn has_freethreading_package_false_when_no_conda_meta() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(!has_freethreading_package(dir.path()));
     }
 }
