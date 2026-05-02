@@ -1,6 +1,6 @@
 [project]
 name = "runtimed"
-version = "2.3.5"
+version = "2.4.0"
 description = "Python toolkit for Jupyter runtimes, powered by runtimed Rust binaries"
 readme = "README.md"
 license = "BSD-3-Clause"
