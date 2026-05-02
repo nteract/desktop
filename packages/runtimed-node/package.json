@@ -41,6 +41,7 @@
   "napi": {
     "binaryName": "runtimed-node",
     "targets": [
+      "aarch64-apple-darwin",
       "x86_64-unknown-linux-gnu"
     ]
   },
