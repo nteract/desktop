@@ -129,6 +129,17 @@ pub async fn run_runtime_agent(
     let (async_response_tx, mut async_response_rx) =
         mpsc::channel::<notebook_protocol::protocol::RuntimeAgentResponseEnvelope>(4);
 
+    // In-flight env-sync task. A new SyncEnvironment aborts any prior task,
+    // and each kernel lifecycle transition (LaunchKernel, ShutdownKernel,
+    // RestartKernel) bumps `sync_generation` so stale tasks don't write
+    // terminal env-progress or EnvironmentSynced against a newer kernel.
+    //
+    // The atomic is shared between the main loop (which bumps it) and each
+    // spawned task (which compares its captured generation before emitting
+    // terminal events). u64 wraparound is a non-issue in practice.
+    let sync_generation = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let mut inflight_sync: Option<tokio::task::JoinHandle<()>> = None;
+
     info!("[runtime-agent] Infrastructure ready, entering main loop");
 
     // -- 4. Main event loop -------------------------------------------------
@@ -179,32 +190,74 @@ pub async fn run_runtime_agent(
                                     // state_changed_rx arm, so the coordinator wouldn't see
                                     // Installing/Solving/Download events until the install
                                     // finished. Snapshot the launched config and spawn.
+                                    //
+                                    // Cancel any in-flight sync: the coordinator only expects
+                                    // one active install at a time, and overlapping tasks
+                                    // would race on the same env prefix. Bump the generation
+                                    // so the aborted task's pending writes (and any stale
+                                    // state events already in flight) are ignored.
                                     if let RuntimeAgentRequest::SyncEnvironment(env_kind) =
                                         &envelope.request
                                     {
-                                        let snapshot = kernel
-                                            .as_ref()
-                                            .map(|k| (k.env_source().to_string(), k.launched_config().clone()));
+                                        if let Some(prev) = inflight_sync.take() {
+                                            prev.abort();
+                                        }
+                                        let generation = sync_generation
+                                            .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+                                            .wrapping_add(1);
+
+                                        let snapshot = kernel.as_ref().map(|k| {
+                                            (k.env_source().to_string(), k.launched_config().clone())
+                                        });
                                         let env_kind = env_kind.clone();
                                         let id = envelope.id.clone();
                                         let state_for_task = ctx.state.clone();
                                         let tx = async_response_tx.clone();
-                                        tokio::spawn(async move {
+                                        let gen_ref = sync_generation.clone();
+
+                                        let handle = tokio::spawn(async move {
                                             let response = run_sync_environment(
                                                 env_kind,
                                                 snapshot,
                                                 state_for_task,
+                                                generation,
+                                                gen_ref,
                                             )
                                             .await;
-                                            let envelope = notebook_protocol::protocol::RuntimeAgentResponseEnvelope {
-                                                id,
-                                                response,
-                                            };
-                                            if tx.send(envelope).await.is_err() {
-                                                warn!("[runtime-agent] SyncEnvironment response channel closed before send");
+                                            // If the task was superseded, the envelope is
+                                            // dropped so we don't correlate a stale response
+                                            // to the coordinator's newest request id.
+                                            if let Some(response) = response {
+                                                let envelope = notebook_protocol::protocol::RuntimeAgentResponseEnvelope {
+                                                    id,
+                                                    response,
+                                                };
+                                                if tx.send(envelope).await.is_err() {
+                                                    warn!(
+                                                        "[runtime-agent] SyncEnvironment response channel closed before send",
+                                                    );
+                                                }
                                             }
                                         });
+                                        inflight_sync = Some(handle);
                                         continue;
+                                    }
+
+                                    // Kernel lifecycle transitions invalidate any in-flight
+                                    // env sync: a stale task that finishes after the kernel
+                                    // is gone or swapped would otherwise write Ready/Error
+                                    // into RuntimeStateDoc for the wrong generation.
+                                    if matches!(
+                                        envelope.request,
+                                        RuntimeAgentRequest::LaunchKernel { .. }
+                                            | RuntimeAgentRequest::RestartKernel { .. }
+                                            | RuntimeAgentRequest::ShutdownKernel
+                                    ) {
+                                        if let Some(prev) = inflight_sync.take() {
+                                            prev.abort();
+                                        }
+                                        sync_generation
+                                            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                                     }
 
                                     let is_command = envelope.request.is_command();
@@ -903,39 +956,51 @@ async fn handle_runtime_agent_request(
 /// spawning so we don't borrow the kernel across the install. Progress phases
 /// flow through [`RuntimeDocProgressHandler`] into the runtime-agent's
 /// RuntimeStateDoc, which the main loop forwards to the coordinator live.
+///
+/// `generation` is the sync generation this task owns; `current_generation`
+/// is a shared atomic bumped by the main loop on kernel lifecycle transitions
+/// and on any newer SyncEnvironment request. Returning `None` signals the task
+/// was superseded: the caller drops the response so a stale id doesn't
+/// correlate to the coordinator's latest request, and the final Ready/Error
+/// is skipped so we don't clobber a fresher `env.progress` write.
 async fn run_sync_environment(
     env_kind: notebook_protocol::protocol::EnvKind,
     kernel_snapshot: Option<(String, notebook_protocol::protocol::LaunchedEnvConfig)>,
     state: RuntimeStateHandle,
-) -> RuntimeAgentResponse {
+    generation: u64,
+    current_generation: std::sync::Arc<std::sync::atomic::AtomicU64>,
+) -> Option<RuntimeAgentResponse> {
     info!(
-        "[runtime-agent] SyncEnvironment: installing {:?}",
+        "[runtime-agent] SyncEnvironment[gen={}]: installing {:?}",
+        generation,
         env_kind.packages()
     );
 
+    let is_current = || current_generation.load(std::sync::atomic::Ordering::SeqCst) == generation;
+
     let Some((es, launched)) = kernel_snapshot else {
-        return RuntimeAgentResponse::Error {
+        return Some(RuntimeAgentResponse::Error {
             error: "No kernel running".to_string(),
-        };
+        });
     };
 
     // Deno doesn't support hot-sync — requires kernel restart.
     if es == "deno" {
-        return RuntimeAgentResponse::Error {
+        return Some(RuntimeAgentResponse::Error {
             error: "Hot-sync not supported for Deno environments. Kernel restart required."
                 .to_string(),
-        };
+        });
     }
 
     let Some(venv_path) = launched.venv_path.clone() else {
-        return RuntimeAgentResponse::Error {
+        return Some(RuntimeAgentResponse::Error {
             error: "No venv path available".to_string(),
-        };
+        });
     };
     let Some(python_path) = launched.python_path.clone() else {
-        return RuntimeAgentResponse::Error {
+        return Some(RuntimeAgentResponse::Error {
             error: "No python path available".to_string(),
-        };
+        });
     };
 
     let handler: std::sync::Arc<dyn kernel_env::ProgressHandler> = std::sync::Arc::new(
@@ -950,6 +1015,13 @@ async fn run_sync_environment(
             };
             match kernel_env::uv::sync_dependencies(&uv_env, &packages, handler.clone()).await {
                 Ok(()) => {
+                    if !is_current() {
+                        debug!(
+                            "[runtime-agent] SyncEnvironment[gen={}] superseded before Ready",
+                            generation
+                        );
+                        return None;
+                    }
                     // Terminal Ready phase so the frontend banner clears.
                     // `sync_dependencies` emits InstallComplete, which is not a
                     // terminal state for `projectEnvProgress`; Ready is.
@@ -960,15 +1032,18 @@ async fn run_sync_environment(
                             python_path: python_path.to_string_lossy().into_owned(),
                         },
                     );
-                    RuntimeAgentResponse::EnvironmentSynced {
+                    Some(RuntimeAgentResponse::EnvironmentSynced {
                         synced_packages: packages,
-                    }
+                    })
                 }
                 Err(e) => {
                     error!(
                         "[runtime-agent] Failed to sync UV packages {:?}: {}",
                         packages, e
                     );
+                    if !is_current() {
+                        return None;
+                    }
                     let msg = format!("Failed to install packages: {}", e);
                     handler.on_progress(
                         "uv",
@@ -976,7 +1051,7 @@ async fn run_sync_environment(
                             message: msg.clone(),
                         },
                     );
-                    RuntimeAgentResponse::Error { error: msg }
+                    Some(RuntimeAgentResponse::Error { error: msg })
                 }
             }
         }
@@ -999,6 +1074,13 @@ async fn run_sync_environment(
                 .await
             {
                 Ok(()) => {
+                    if !is_current() {
+                        debug!(
+                            "[runtime-agent] SyncEnvironment[gen={}] superseded before Ready",
+                            generation
+                        );
+                        return None;
+                    }
                     handler.on_progress(
                         "conda",
                         kernel_env::EnvProgressPhase::Ready {
@@ -1006,15 +1088,18 @@ async fn run_sync_environment(
                             python_path: python_path.to_string_lossy().into_owned(),
                         },
                     );
-                    RuntimeAgentResponse::EnvironmentSynced {
+                    Some(RuntimeAgentResponse::EnvironmentSynced {
                         synced_packages: packages,
-                    }
+                    })
                 }
                 Err(e) => {
                     error!(
                         "[runtime-agent] Failed to sync Conda packages {:?} with channels {:?}: {}",
                         packages, conda_deps.channels, e
                     );
+                    if !is_current() {
+                        return None;
+                    }
                     let msg = format!("Failed to install packages: {}", e);
                     handler.on_progress(
                         "conda",
@@ -1022,7 +1107,7 @@ async fn run_sync_environment(
                             message: msg.clone(),
                         },
                     );
-                    RuntimeAgentResponse::Error { error: msg }
+                    Some(RuntimeAgentResponse::Error { error: msg })
                 }
             }
         }
