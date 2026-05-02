@@ -73,7 +73,9 @@ case "$(uname -m)" in
 esac
 
 REPO="nteract/desktop"
-CHANNEL="stable"
+DEFAULT_CHANNEL="stable"
+DEFAULT_TAG=""
+CHANNEL="$DEFAULT_CHANNEL"
 TAG=""
 FROM_DIR=""
 NO_START=0
@@ -128,6 +130,10 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+if [[ -z "$TAG" && -z "$FROM_DIR" && "$CHANNEL" == "$DEFAULT_CHANNEL" && -n "$DEFAULT_TAG" ]]; then
+  TAG="$DEFAULT_TAG"
+fi
 
 if [[ -n "$TAG" && -n "$FROM_DIR" ]]; then
   echo "Use either --tag or --from-dir, not both." >&2

@@ -1374,7 +1374,10 @@ jobs:
           cp executables/nteract-mcp-linux-x64 "release-assets/${MCP_NAME}-linux-x64"
           cp executables/runt-darwin-arm64 "release-assets/${CLI_NAME}-darwin-arm64"
           cp executables/runt-darwin-x64 "release-assets/${CLI_NAME}-darwin-x64"
-          cp scripts/install-linux-release release-assets/install-linux-release
+          sed \
+            -e "s/^DEFAULT_CHANNEL=\"stable\"$/DEFAULT_CHANNEL=\"${CHANNEL}\"/" \
+            -e "s/^DEFAULT_TAG=\"\"$/DEFAULT_TAG=\"v${{ needs.compute-version.outputs.version }}\"/" \
+            scripts/install-linux-release > release-assets/install-linux-release
           chmod 0755 release-assets/install-linux-release
           # Notebook installers
           cp "notebook-macos-arm64/nteract-${CHANNEL}-darwin-arm64.dmg" release-assets/
