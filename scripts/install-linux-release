@@ -49,6 +49,16 @@ For nightly, the installed AppImage and public commands are channel-suffixed:
 USAGE
 }
 
+require_option_value() {
+  local option="$1"
+  local value="${2:-}"
+  if [[ -z "$value" || "$value" == -* ]]; then
+    echo "$option requires a value." >&2
+    usage >&2
+    exit 2
+  fi
+}
+
 if [[ "$(uname -s)" != "Linux" ]]; then
   echo "nteract Linux installer can only run on Linux." >&2
   exit 1
@@ -74,26 +84,32 @@ BIN_DIR="$HOME/.local/bin"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --tag)
+      require_option_value "$1" "${2:-}"
       TAG="${2:-}"
       shift 2
       ;;
     --from-dir)
+      require_option_value "$1" "${2:-}"
       FROM_DIR="${2:-}"
       shift 2
       ;;
     --repo)
+      require_option_value "$1" "${2:-}"
       REPO="${2:-}"
       shift 2
       ;;
     --channel)
+      require_option_value "$1" "${2:-}"
       CHANNEL="${2:-}"
       shift 2
       ;;
     --prefix)
+      require_option_value "$1" "${2:-}"
       PREFIX="${2:-}"
       shift 2
       ;;
     --bin-dir)
+      require_option_value "$1" "${2:-}"
       BIN_DIR="${2:-}"
       shift 2
       ;;
