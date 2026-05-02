@@ -1,7 +1,7 @@
 {
   "name": "@nteract/pi",
   "version": "0.0.1",
-  "description": "nteract extensions for Pi",
+  "description": "Pi extensions that run Python through the local nteract runtimed daemon.",
   "type": "module",
   "license": "BSD-3-Clause",
   "repository": {
@@ -9,12 +9,19 @@
     "url": "git+https://github.com/nteract/desktop.git",
     "directory": "plugins/nteract/pi"
   },
+  "homepage": "https://github.com/nteract/desktop/tree/main/plugins/nteract/pi#readme",
+  "bugs": {
+    "url": "https://github.com/nteract/desktop/issues"
+  },
   "keywords": [
     "pi-package",
     "nteract",
+    "runtimed",
     "notebook",
     "python",
-    "repl"
+    "repl",
+    "jupyter",
+    "agent"
   ],
   "pi": {
     "extensions": [

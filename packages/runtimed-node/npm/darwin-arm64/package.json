@@ -1,7 +1,7 @@
 {
   "name": "@runtimed/node-darwin-arm64",
   "version": "0.0.1",
-  "description": "macOS arm64 native binding for @runtimed/node",
+  "description": "macOS arm64 native N-API binding for @runtimed/node.",
   "type": "commonjs",
   "main": "./runtimed-node.darwin-arm64.node",
   "license": "BSD-3-Clause",
@@ -10,6 +10,19 @@
     "url": "git+https://github.com/nteract/desktop.git",
     "directory": "packages/runtimed-node/npm/darwin-arm64"
   },
+  "homepage": "https://github.com/nteract/desktop/tree/main/packages/runtimed-node#readme",
+  "bugs": {
+    "url": "https://github.com/nteract/desktop/issues"
+  },
+  "keywords": [
+    "nteract",
+    "runtimed",
+    "notebook",
+    "native",
+    "napi-rs",
+    "darwin",
+    "arm64"
+  ],
   "os": [
     "darwin"
   ],
@@ -17,6 +30,7 @@
     "arm64"
   ],
   "files": [
+    "README.md",
     "runtimed-node.darwin-arm64.node"
   ],
   "scripts": {

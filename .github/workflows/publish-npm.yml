@@ -55,6 +55,7 @@ jobs:
         with:
           node-version: "24"
           cache: pnpm
+          registry-url: "https://registry.npmjs.org"
 
       - name: Use npm with trusted publishing support
         run: npm install -g npm@latest
@@ -91,6 +92,7 @@ jobs:
         with:
           node-version: "24"
           cache: pnpm
+          registry-url: "https://registry.npmjs.org"
 
       - name: Use npm with trusted publishing support
         run: npm install -g npm@latest
@@ -125,6 +127,7 @@ jobs:
         with:
           node-version: "24"
           cache: pnpm
+          registry-url: "https://registry.npmjs.org"
 
       - name: Use npm with trusted publishing support
         run: npm install -g npm@latest
