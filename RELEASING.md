@@ -25,12 +25,19 @@ Stable releases run when a `v*` tag is pushed (or manually), and nightly pre-rel
 | macOS ARM64 (Apple Silicon) | `nteract-{channel}-darwin-arm64.dmg` |
 | Windows x64 | `nteract-{channel}-windows-x64.exe` |
 | Linux x64 | `nteract-{channel}-linux-x64.AppImage` |
+| Linux installer script | `install-linux-release` |
 | CLI (macOS ARM64) | `runt-darwin-arm64` |
 | CLI (Linux x64) | `runt-linux-x64` |
 
 macOS builds are signed and notarized. Windows builds are not code signed. Linux
 desktop releases publish AppImage only; DEB/RPM/APT installs are not currently
 supported because `runtimed` is a per-user daemon.
+
+Linux users can also install the released AppImage with:
+
+```bash
+curl -fsSL https://sh.nteract.io | sh
+```
 
 ### Crate publishing
 
