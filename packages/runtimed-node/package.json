@@ -1,7 +1,7 @@
 {
   "name": "@runtimed/node",
   "version": "0.0.1",
-  "description": "Node.js bindings for the runtimed daemon client (napi-rs).",
+  "description": "Node.js bindings for controlling nteract runtimed notebooks and Python kernels.",
   "type": "module",
   "license": "BSD-3-Clause",
   "repository": {
@@ -9,6 +9,19 @@
     "url": "git+https://github.com/nteract/desktop.git",
     "directory": "packages/runtimed-node"
   },
+  "homepage": "https://github.com/nteract/desktop/tree/main/packages/runtimed-node#readme",
+  "bugs": {
+    "url": "https://github.com/nteract/desktop/issues"
+  },
+  "keywords": [
+    "nteract",
+    "runtimed",
+    "notebook",
+    "jupyter",
+    "python",
+    "kernel",
+    "napi-rs"
+  ],
   "main": "./src/index.cjs",
   "types": "./src/index.d.ts",
   "exports": {
@@ -19,6 +32,7 @@
     }
   },
   "files": [
+    "README.md",
     "src/index.cjs",
     "src/index.d.ts",
     "src/binding.cjs",

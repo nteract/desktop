@@ -1,7 +1,7 @@
 {
   "name": "@runtimed/node-linux-x64-gnu",
   "version": "0.0.1",
-  "description": "Linux x64 GNU native binding for @runtimed/node",
+  "description": "Linux x64 GNU native N-API binding for @runtimed/node.",
   "type": "commonjs",
   "main": "./runtimed-node.linux-x64-gnu.node",
   "license": "BSD-3-Clause",
@@ -10,6 +10,20 @@
     "url": "git+https://github.com/nteract/desktop.git",
     "directory": "packages/runtimed-node/npm/linux-x64-gnu"
   },
+  "homepage": "https://github.com/nteract/desktop/tree/main/packages/runtimed-node#readme",
+  "bugs": {
+    "url": "https://github.com/nteract/desktop/issues"
+  },
+  "keywords": [
+    "nteract",
+    "runtimed",
+    "notebook",
+    "native",
+    "napi-rs",
+    "linux",
+    "x64",
+    "glibc"
+  ],
   "os": [
     "linux"
   ],
@@ -20,6 +34,7 @@
     "glibc"
   ],
   "files": [
+    "README.md",
     "runtimed-node.linux-x64-gnu.node"
   ],
   "scripts": {
