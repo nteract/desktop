@@ -3310,7 +3310,9 @@ pub(crate) async fn auto_launch_kernel(
                         &RuntimeLifecycle::Error,
                         Some(KernelErrorReason::CondaEnvBuildFailed),
                         Some(&details),
-                    )
+                    )?;
+                    sd.clear_env_progress()?;
+                    Ok(())
                 }) {
                     warn!("[runtime-state] {}", e);
                 }
@@ -3362,7 +3364,9 @@ pub(crate) async fn auto_launch_kernel(
                             &RuntimeLifecycle::Error,
                             Some(KernelErrorReason::CondaEnvBuildFailed),
                             Some(&details),
-                        )
+                        )?;
+                        sd.clear_env_progress()?;
+                        Ok(())
                     }) {
                         warn!("[runtime-state] {}", e);
                     }
