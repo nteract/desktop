@@ -86,6 +86,8 @@ main().catch((error) => {
 - `Session.addDependency(spec, { packageManager })` and
   `Session.removeDependency(spec, { packageManager })` edit notebook dependency
   metadata for UV, Conda, or Pixi.
+- `Session.getDependencyStatus()` returns dependency metadata, fingerprint, and
+  trust state in one call.
 - `Session.addUvDependency(spec)` records a UV dependency for the notebook.
 - `Session.syncEnvironment()` installs recorded notebook dependencies.
 - `Session.saveNotebook(path?)` saves the notebook.

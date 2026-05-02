@@ -91,6 +91,27 @@ pub struct DependencyEditOptions {
     pub package_manager: Option<PackageManager>,
 }
 
+/// Notebook dependency metadata and trust/runtime status.
+#[napi(object)]
+pub struct DependencyStatus {
+    pub uv_dependencies: Vec<String>,
+    pub conda_dependencies: Vec<String>,
+    pub pixi_dependencies: Vec<String>,
+    pub pixi_pypi_dependencies: Vec<String>,
+    pub conda_channels: Vec<String>,
+    pub pixi_channels: Vec<String>,
+    pub uv_requires_python: Option<String>,
+    pub conda_python: Option<String>,
+    pub pixi_python: Option<String>,
+    pub fingerprint: Option<String>,
+    pub trust_status: Option<String>,
+    pub trust_needs_approval: Option<bool>,
+    pub approved_uv_dependencies: Vec<String>,
+    pub approved_conda_dependencies: Vec<String>,
+    pub approved_pixi_dependencies: Vec<String>,
+    pub approved_pixi_pypi_dependencies: Vec<String>,
+}
+
 /// Options for `Session.runCell()`.
 #[napi(object)]
 #[derive(Default)]
@@ -397,16 +418,17 @@ impl Session {
         .await
     }
 
+    /// Get dependency metadata, fingerprint, and current trust state.
+    #[napi]
+    pub async fn get_dependency_status(&self) -> Result<DependencyStatus> {
+        let handle = session_handle(&self.state).await?;
+        Ok(dependency_status_for_handle(&handle))
+    }
+
     /// Get the current dependency fingerprint for diagnostics.
     #[napi]
     pub async fn dependency_fingerprint(&self) -> Result<Option<String>> {
-        let handle = {
-            let st = self.state.lock().await;
-            st.handle
-                .as_ref()
-                .ok_or_else(|| Error::from_reason("Not connected"))?
-                .clone()
-        };
+        let handle = session_handle(&self.state).await?;
         Ok(dependency_fingerprint_for_handle(&handle))
     }
 
@@ -1134,6 +1156,52 @@ fn dependency_fingerprint_for_handle(handle: &DocHandle) -> Option<String> {
     handle
         .get_notebook_metadata()
         .map(|snapshot| snapshot.dependency_fingerprint())
+}
+
+fn dependency_status_for_handle(handle: &DocHandle) -> DependencyStatus {
+    let metadata = handle.get_notebook_metadata().unwrap_or_default();
+    let uv = metadata.runt.uv.as_ref();
+    let conda = metadata.runt.conda.as_ref();
+    let pixi = metadata.runt.pixi.as_ref();
+    let trust = handle.get_runtime_state().ok().map(|state| state.trust);
+
+    DependencyStatus {
+        uv_dependencies: uv.map(|uv| uv.dependencies.clone()).unwrap_or_default(),
+        conda_dependencies: conda
+            .map(|conda| conda.dependencies.clone())
+            .unwrap_or_default(),
+        pixi_dependencies: pixi
+            .map(|pixi| pixi.dependencies.clone())
+            .unwrap_or_default(),
+        pixi_pypi_dependencies: pixi
+            .map(|pixi| pixi.pypi_dependencies.clone())
+            .unwrap_or_default(),
+        conda_channels: conda
+            .map(|conda| conda.channels.clone())
+            .unwrap_or_default(),
+        pixi_channels: pixi.map(|pixi| pixi.channels.clone()).unwrap_or_default(),
+        uv_requires_python: uv.and_then(|uv| uv.requires_python.clone()),
+        conda_python: conda.and_then(|conda| conda.python.clone()),
+        pixi_python: pixi.and_then(|pixi| pixi.python.clone()),
+        fingerprint: Some(metadata.dependency_fingerprint()),
+        trust_status: trust.as_ref().map(|trust| trust.status.clone()),
+        trust_needs_approval: trust.as_ref().map(|trust| trust.needs_approval),
+        approved_uv_dependencies: trust
+            .as_ref()
+            .map(|trust| trust.approved_uv_dependencies.clone())
+            .unwrap_or_default(),
+        approved_conda_dependencies: trust
+            .as_ref()
+            .map(|trust| trust.approved_conda_dependencies.clone())
+            .unwrap_or_default(),
+        approved_pixi_dependencies: trust
+            .as_ref()
+            .map(|trust| trust.approved_pixi_dependencies.clone())
+            .unwrap_or_default(),
+        approved_pixi_pypi_dependencies: trust
+            .map(|trust| trust.approved_pixi_pypi_dependencies)
+            .unwrap_or_default(),
+    }
 }
 
 async fn approve_current_trust(
