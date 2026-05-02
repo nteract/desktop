@@ -269,7 +269,20 @@ export const css = ${JSON.stringify(css)};
       });
     },
 
-    // HMR: rebuild from source when isolated renderer files change
+    // HMR: rebuild from source when isolated renderer files change.
+    //
+    // Iframe-bundle files (`src/isolated-renderer/**`, and the iframe-shared
+    // parts of `src/components/{outputs,isolated,widgets}/**`) are bundled
+    // into the IIFE that actually runs inside the sandboxed iframe. The main
+    // bundle imports the registration index (`@/components/widgets/controls`)
+    // only for side effects; individual widget components render in the
+    // iframe, not the main window. Vite's default HMR has no Fast Refresh
+    // boundary to target here, so letting it run in parallel with our
+    // `full-reload` produces a stream of "TypeError: Importing a module
+    // script failed" errors before the reload lands.
+    //
+    // We handle the update ourselves by rebuilding the IIFE + full-reloading
+    // and return `[]` so Vite skips its own module-update flow.
     async handleHotUpdate({ file, server: devServer }) {
       const isIsolatedRendererFile =
         file.startsWith(isolatedRendererDir) ||
@@ -278,31 +291,33 @@ export const css = ${JSON.stringify(css)};
             file.includes("/isolated/") ||
             file.includes("/widgets/")));
 
-      if (isIsolatedRendererFile) {
-        console.log(
-          `[isolated-renderer] Rebuilding due to change in: ${path.relative(path.resolve(__dirname, "../.."), file)}`,
-        );
-        invalidateDevCache();
-        devBuildPromise = buildRendererFromSource();
-        await devBuildPromise;
+      if (!isIsolatedRendererFile) return;
 
-        const mod = devServer.moduleGraph.getModuleById(RESOLVED_VIRTUAL_MODULE_ID);
-        if (mod) {
-          devServer.moduleGraph.invalidateModule(mod);
-        }
+      console.log(
+        `[isolated-renderer] Rebuilding due to change in: ${path.relative(path.resolve(__dirname, "../.."), file)}`,
+      );
+      invalidateDevCache();
+      devBuildPromise = buildRendererFromSource();
+      await devBuildPromise;
 
-        for (const name of devPluginOutputs.keys()) {
-          const pluginMod = devServer.moduleGraph.getModuleById(`${RESOLVED_PLUGIN_PREFIX}${name}`);
-          if (pluginMod) {
-            devServer.moduleGraph.invalidateModule(pluginMod);
-          }
-        }
-
-        devServer.ws.send({
-          type: "full-reload",
-          path: "*",
-        });
+      const mod = devServer.moduleGraph.getModuleById(RESOLVED_VIRTUAL_MODULE_ID);
+      if (mod) {
+        devServer.moduleGraph.invalidateModule(mod);
       }
+
+      for (const name of devPluginOutputs.keys()) {
+        const pluginMod = devServer.moduleGraph.getModuleById(`${RESOLVED_PLUGIN_PREFIX}${name}`);
+        if (pluginMod) {
+          devServer.moduleGraph.invalidateModule(pluginMod);
+        }
+      }
+
+      devServer.ws.send({
+        type: "full-reload",
+        path: "*",
+      });
+
+      return [];
     },
   };
 }
