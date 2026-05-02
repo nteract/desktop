@@ -41,6 +41,12 @@ pub struct NteractMcp {
     blob_store_path: Option<PathBuf>,
     execution_store_path: PathBuf,
     session: Arc<RwLock<Option<NotebookSession>>>,
+    /// Parked sessions from previous `connect_notebook` / `create_notebook`
+    /// calls. When an agent switches notebooks, the old session is moved here
+    /// instead of being dropped, keeping the daemon peer connection alive so
+    /// the room doesn't hit the eviction timer. On switch-back, the parked
+    /// session is resumed instead of creating a new connection.
+    parked_sessions: Arc<RwLock<std::collections::HashMap<String, NotebookSession>>>,
     /// Context from the most recently dropped session — allows error messages
     /// to tell agents *why* the session was lost and *which notebook_id* to
     /// reconnect to, instead of the generic "No active notebook session".
@@ -72,6 +78,7 @@ impl NteractMcp {
             blob_store_path,
             execution_store_path: runtimed_client::default_execution_store_dir(),
             session: Arc::new(RwLock::new(None)),
+            parked_sessions: Arc::new(RwLock::new(std::collections::HashMap::new())),
             last_session_drop: Arc::new(RwLock::new(None)),
             peer_label: Arc::new(RwLock::new("Inkwell".to_string())),
             no_show: false,
@@ -115,6 +122,13 @@ impl NteractMcp {
         &self.session
     }
 
+    /// Get the shared parked sessions map.
+    pub fn parked_sessions(
+        &self,
+    ) -> &Arc<RwLock<std::collections::HashMap<String, NotebookSession>>> {
+        &self.parked_sessions
+    }
+
     /// Get the shared peer label (for the daemon watcher).
     pub fn peer_label_shared(&self) -> &Arc<RwLock<String>> {
         &self.peer_label
@@ -145,6 +159,15 @@ impl NteractMcp {
                 session.notebook_id
             );
             drop(session);
+        }
+        // Drop all parked sessions so their daemon peer connections close.
+        let parked = std::mem::take(&mut *self.parked_sessions.write().await);
+        if !parked.is_empty() {
+            tracing::info!(
+                "[mcp] Shutdown: disconnecting {} parked session(s)",
+                parked.len()
+            );
+            drop(parked);
         }
     }
 }

@@ -93,9 +93,7 @@ pub fn all_tools() -> Vec<Tool> {
         .with_meta(always_load_meta()),
         Tool::new(
             "connect_notebook",
-            "Attach to a notebook as the active session. Pass path (loads .ipynb from disk) \
-             OR notebook_id (UUID from list_active_notebooks) — not both. \
-             Does not open the app; use show_notebook for that.",
+            "Attach to a notebook. Pass path (.ipynb) or notebook_id (UUID) — not both.",
             schema_for::<session::OpenNotebookParams>(),
         )
         .annotate(
@@ -128,6 +126,12 @@ pub fn all_tools() -> Vec<Tool> {
             schema_for::<session::ShowNotebookParams>(),
         )
         .annotate(ToolAnnotations::new().read_only(true).open_world(false)),
+        Tool::new(
+            "disconnect_notebook",
+            "Release a notebook session's peer connection. Omit notebook_id to disconnect the active session.",
+            schema_for::<session::DisconnectNotebookParams>(),
+        )
+        .annotate(ToolAnnotations::new().destructive(true).open_world(false)),
         // -- Cell read --
         Tool::new(
             "get_cell",
@@ -268,6 +272,7 @@ pub async fn dispatch(
         "create_notebook" => session::create_notebook(server, request).await,
         "save_notebook" => session::save_notebook(server, request).await,
         "show_notebook" | "launch_app" => session::show_notebook(server, request).await,
+        "disconnect_notebook" => session::disconnect_notebook(server, request).await,
         // Cell read
         "get_cell" => cell_read::get_cell(server, request).await,
         "get_all_cells" => cell_read::get_all_cells(server, request).await,

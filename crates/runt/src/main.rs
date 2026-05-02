@@ -887,6 +887,7 @@ async fn run_mcp_server(no_show: bool) -> Result<()> {
     let session_for_shutdown = session.clone();
     let peer_label = server.peer_label_shared().clone();
     let last_session_drop = server.last_session_drop().clone();
+    let parked_sessions = server.parked_sessions().clone();
 
     let transport = rmcp::transport::io::stdio();
     let handle = server.serve(transport).await?;
@@ -910,6 +911,7 @@ async fn run_mcp_server(no_show: bool) -> Result<()> {
             session,
             peer_label,
             last_session_drop,
+            parked_sessions,
         )
         .await
     });

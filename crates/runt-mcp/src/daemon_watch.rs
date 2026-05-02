@@ -26,6 +26,7 @@ use tokio::sync::{broadcast, RwLock};
 use tracing::{info, warn};
 
 use crate::session::{NotebookSession, SessionDropInfo, SessionDropReason};
+use std::collections::HashMap;
 
 /// Exit code when the daemon has been upgraded and the MCP server should
 /// restart. EX_TEMPFAIL (sysexits.h) — "temporary failure; try again."
@@ -138,6 +139,7 @@ pub async fn watch(
     session: Arc<RwLock<Option<NotebookSession>>>,
     peer_label: Arc<RwLock<String>>,
     last_session_drop: Arc<RwLock<Option<SessionDropInfo>>>,
+    parked_sessions: Arc<RwLock<HashMap<String, NotebookSession>>>,
 ) -> i32 {
     let mut rx = daemon_conn.subscribe();
     let mut initial_target: Option<String> = std::env::var(REJOIN_ENV_VAR).ok();
@@ -270,6 +272,20 @@ pub async fn watch(
                         notebook_path,
                     });
                     *session.write().await = None;
+                }
+                // Also clear parked sessions — their DocHandles are dead
+                // too. Without this, tool calls that try to resume a parked
+                // session after daemon reconnect would hang on the stale
+                // handle.
+                {
+                    let parked = std::mem::take(&mut *parked_sessions.write().await);
+                    if !parked.is_empty() {
+                        info!(
+                            "Clearing {} parked session(s) on daemon disconnect",
+                            parked.len()
+                        );
+                        drop(parked);
+                    }
                 }
             }
             WatchDecision::NoOp => {}

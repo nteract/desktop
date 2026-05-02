@@ -25,7 +25,7 @@
       "idempotentHint": true,
       "openWorldHint": true
     },
-    "description": "Attach to a notebook as the active session. Pass path (loads .ipynb from disk) OR notebook_id (UUID from list_active_notebooks) — not both. Does not open the app; use show_notebook for that.",
+    "description": "Attach to a notebook. Pass path (.ipynb) or notebook_id (UUID) — not both.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "properties": {
@@ -163,6 +163,29 @@
       "type": "object"
     },
     "name": "show_notebook"
+  },
+  {
+    "annotations": {
+      "destructiveHint": true,
+      "openWorldHint": false
+    },
+    "description": "Release a notebook session's peer connection. Omit notebook_id to disconnect the active session.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "notebook_id": {
+          "default": null,
+          "description": "Notebook ID to disconnect and release. If omitted, disconnects the\nactive session. Pass a notebook_id to release a specific parked session\nwithout switching away from the current one.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "title": "DisconnectNotebookParams",
+      "type": "object"
+    },
+    "name": "disconnect_notebook"
   },
   {
     "annotations": {

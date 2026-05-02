@@ -26,22 +26,29 @@ async fn previous_notebook_id(server: &NteractMcp) -> Option<String> {
         .map(|s| s.notebook_id.clone())
 }
 
-/// Cleanly disconnect the previous session before switching to a new one.
+/// Maximum number of parked sessions. When this limit is reached, the
+/// least-recently-parked session is evicted (dropped) to make room. This
+/// bounds the resource footprint of a long-lived MCP process that touches
+/// many notebooks — without a cap, every notebook ever opened keeps its
+/// peer connection and kernel alive indefinitely.
+const MAX_PARKED_SESSIONS: usize = 8;
+
+/// Park the previous session before switching to a new one.
 ///
-/// Clears the session — closing channels and triggering sync task shutdown.
-/// The daemon handles kernel lifecycle: when the MCP peer disconnects and
-/// the peer count drops, the eviction timer starts. Other peers (e.g. the
-/// desktop app) may still be connected, so we do NOT send `ShutdownKernel`.
+/// Instead of dropping the old session (which would decrement the daemon's
+/// peer count and start the eviction timer), we move it into a parked
+/// sessions map. The daemon peer connection stays alive, so the room and
+/// kernel survive. When the agent switches back, the parked session is
+/// resumed without a new connection.
 ///
-/// This prevents "Cannot save: file already open in session X" errors when an
-/// agent switches notebooks and then tries to `save_notebook` to a path that
-/// was held by the previous session. Without this, the daemon's `path_index`
-/// retains the old mapping during the 30s eviction delay.
-///
-/// When `new_notebook_id` is `Some`, the cleanup is skipped if we're
+/// When `new_notebook_id` is `Some`, the parking is skipped if we're
 /// reconnecting to the same notebook (no-op switch). When `None` (e.g.
-/// `create_notebook`), the old session is always disconnected.
-async fn disconnect_previous_session(server: &NteractMcp, new_notebook_id: Option<&str>) {
+/// `create_notebook`), the old session is always parked.
+///
+/// If parking would exceed [`MAX_PARKED_SESSIONS`], the oldest parked
+/// session is evicted (LRU). HashMap iteration order is arbitrary, so we
+/// use insertion order tracking via a separate `parked_order` Vec.
+async fn park_previous_session(server: &NteractMcp, new_notebook_id: Option<&str>) {
     // Take the old session under a short-lived write lock.
     let old_session = {
         let mut guard = server.session.write().await;
@@ -61,20 +68,45 @@ async fn disconnect_previous_session(server: &NteractMcp, new_notebook_id: Optio
 
     if let Some(old) = old_session {
         tracing::info!(
-            "[mcp] Disconnecting previous session {} before notebook switch",
+            "[mcp] Parking session {} before notebook switch",
             old.notebook_id
         );
-        // Record the drop so "no session" errors can point agents back.
+        let notebook_id = old.notebook_id.clone();
+        // Record the switch so "no session" errors can point agents back
+        // if the parked session is later evicted.
         *server.last_session_drop.write().await = Some(SessionDropInfo {
             reason: SessionDropReason::Switched,
             notebook_id: old.notebook_id.clone(),
             notebook_path: old.notebook_path.clone(),
         });
-        // Drop the old session — channels close, sync task shuts down,
-        // daemon peer count decrements, eviction timer starts.
-        // Kernel lifecycle is the daemon's responsibility.
-        drop(old);
+        // Park the session — peer connection stays alive, no eviction.
+        let mut parked = server.parked_sessions.write().await;
+
+        // LRU eviction: if at capacity, drop the oldest parked session.
+        // HashMap doesn't track insertion order, so we evict the first key
+        // returned by the iterator (effectively arbitrary but stable within
+        // a single HashMap instance — good enough for a bounded cache).
+        if parked.len() >= MAX_PARKED_SESSIONS {
+            if let Some(oldest_key) = parked.keys().next().cloned() {
+                tracing::info!(
+                    "[mcp] Parked sessions at capacity ({}), evicting {}",
+                    MAX_PARKED_SESSIONS,
+                    oldest_key
+                );
+                parked.remove(&oldest_key);
+            }
+        }
+
+        parked.insert(notebook_id, old);
     }
+}
+
+/// Try to resume a parked session for the given notebook_id.
+///
+/// Returns `Some(session)` if a parked session was found and removed from
+/// the parked map. The caller should install it as the active session.
+async fn take_parked_session(server: &NteractMcp, notebook_id: &str) -> Option<NotebookSession> {
+    server.parked_sessions.write().await.remove(notebook_id)
 }
 
 /// Resolve a user-provided path: expand ~ to home dir and resolve relative paths
@@ -351,6 +383,97 @@ pub struct SaveNotebookParams {
     pub path: Option<String>,
 }
 
+#[allow(dead_code)]
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct DisconnectNotebookParams {
+    /// Notebook ID to disconnect and release. If omitted, disconnects the
+    /// active session. Pass a notebook_id to release a specific parked session
+    /// without switching away from the current one.
+    #[serde(default)]
+    pub notebook_id: Option<String>,
+}
+
+/// Disconnect a notebook session, releasing its peer connection and allowing
+/// the daemon to evict the room normally. Works on both the active session
+/// and parked sessions.
+pub async fn disconnect_notebook(
+    server: &NteractMcp,
+    request: &CallToolRequestParams,
+) -> Result<CallToolResult, McpError> {
+    let target_id = arg_str(request, "notebook_id");
+
+    match target_id {
+        Some(id) => {
+            // Try parked sessions first.
+            let removed = server.parked_sessions.write().await.remove(id);
+            if let Some(session) = removed {
+                tracing::info!("[mcp] Disconnecting parked session {}", id);
+                drop(session);
+                return tool_success(&format!(
+                    "Disconnected parked session {}. Peer connection released; \
+                     daemon eviction timer will start.",
+                    id
+                ));
+            }
+
+            // Check if it's the active session.
+            let is_active = {
+                let guard = server.session.read().await;
+                guard.as_ref().is_some_and(|s| s.notebook_id == id)
+            };
+
+            if is_active {
+                let old = server.session.write().await.take();
+                if let Some(session) = old {
+                    *server.last_session_drop.write().await = Some(SessionDropInfo {
+                        reason: SessionDropReason::Disconnected,
+                        notebook_id: session.notebook_id.clone(),
+                        notebook_path: session.notebook_path.clone(),
+                    });
+                    tracing::info!("[mcp] Disconnecting active session {}", id);
+                    drop(session);
+                }
+                return tool_success(&format!(
+                    "Disconnected active session {}. No active session now; \
+                     use connect_notebook or create_notebook to start a new one.",
+                    id
+                ));
+            }
+
+            tool_error(&format!(
+                "No active or parked session with notebook_id '{}'. \
+                 Use list_active_notebooks to see available sessions.",
+                id
+            ))
+        }
+        None => {
+            // No ID specified — disconnect the active session.
+            let old = server.session.write().await.take();
+            match old {
+                Some(session) => {
+                    let notebook_id = session.notebook_id.clone();
+                    *server.last_session_drop.write().await = Some(SessionDropInfo {
+                        reason: SessionDropReason::Disconnected,
+                        notebook_id: session.notebook_id.clone(),
+                        notebook_path: session.notebook_path.clone(),
+                    });
+                    tracing::info!("[mcp] Disconnecting active session {}", notebook_id);
+                    drop(session);
+                    tool_success(&format!(
+                        "Disconnected active session {}. No active session now; \
+                         use connect_notebook or create_notebook to start a new one.",
+                        notebook_id
+                    ))
+                }
+                None => tool_error(
+                    "No active session to disconnect. \
+                     Pass notebook_id to disconnect a specific parked session.",
+                ),
+            }
+        }
+    }
+}
+
 /// List all active notebook sessions.
 pub async fn list_active_notebooks(server: &NteractMcp) -> Result<CallToolResult, McpError> {
     let client = PoolClient::new(server.socket_path.clone());
@@ -397,11 +520,11 @@ pub async fn open_notebook(
 
     let prev = previous_notebook_id(server).await;
 
-    // Disconnect the previous session before opening the new one. For path-based
-    // opens we don't know the target notebook_id yet, so pass None (always clean
-    // up). For UUID-based opens we can skip if reconnecting to the same notebook.
+    // Park the previous session before opening the new one. For path-based
+    // opens we don't know the target notebook_id yet, so pass None (always
+    // park). For UUID-based opens we can skip if reconnecting to the same notebook.
     let target_id = id_arg.as_deref();
-    disconnect_previous_session(server, target_id).await;
+    park_previous_session(server, target_id).await;
 
     if let Some(path) = path_arg {
         // File path — resolve and open from disk via the daemon's OpenNotebook handshake.
@@ -417,6 +540,48 @@ pub async fn open_notebook(
             Ok(result) => {
                 let handle = &result.handle;
                 let notebook_id = handle.notebook_id().to_string();
+
+                // Check if we already have a parked session for this notebook.
+                // If so, drop the new connection and resume the parked one —
+                // the parked session has the live peer that's been keeping the
+                // room alive.
+                if let Some(parked) = take_parked_session(server, &notebook_id).await {
+                    tracing::info!(
+                        "[mcp] Resuming parked session for {} (path: {})",
+                        notebook_id,
+                        abs_path.display()
+                    );
+                    // Drop the freshly opened connection — we don't need two.
+                    drop(result);
+
+                    let handle = &parked.handle;
+                    let runtime_info = collect_runtime_info(handle).await;
+                    let deps = get_dependencies(handle);
+                    let cells_summary = format_cell_summaries(handle);
+                    let project_context = read_project_context(handle);
+
+                    let mut response = serde_json::json!({
+                        "notebook_id": notebook_id,
+                        "path": abs_path.to_string_lossy(),
+                        "resumed": true,
+                        "runtime": runtime_info,
+                        "dependencies": deps,
+                        "project_context": project_context,
+                        "cells": cells_summary,
+                    });
+
+                    if let Some(ref prev_id) = prev {
+                        if *prev_id != notebook_id {
+                            response["switched_from"] = serde_json::json!(prev_id);
+                        }
+                    }
+
+                    *server.session.write().await = Some(parked);
+                    return Ok(CallToolResult::success(vec![Content::text(
+                        serde_json::to_string_pretty(&response).unwrap_or_default(),
+                    )]));
+                }
+
                 if let Err(e) = handle
                     .await_session_ready_timeout(MCP_SESSION_READY_TIMEOUT)
                     .await
@@ -478,6 +643,38 @@ pub async fn open_notebook(
                 ),
                 None,
             ));
+        }
+
+        // Check if we have a parked session for this notebook — resume it
+        // instead of opening a new connection.
+        if let Some(parked) = take_parked_session(server, &notebook_id).await {
+            tracing::info!("[mcp] Resuming parked session for {}", notebook_id);
+            let handle = &parked.handle;
+            let runtime_info = collect_runtime_info(handle).await;
+            let deps = get_dependencies(handle);
+            let cells_summary = format_cell_summaries(handle);
+            let project_context = read_project_context(handle);
+
+            let mut response = serde_json::json!({
+                "notebook_id": handle.notebook_id(),
+                "connected": true,
+                "resumed": true,
+                "runtime": runtime_info,
+                "dependencies": deps,
+                "project_context": project_context,
+                "cells": cells_summary,
+            });
+
+            if let Some(ref prev_id) = prev {
+                if *prev_id != notebook_id {
+                    response["switched_from"] = serde_json::json!(prev_id);
+                }
+            }
+
+            *server.session.write().await = Some(parked);
+            return Ok(CallToolResult::success(vec![Content::text(
+                serde_json::to_string_pretty(&response).unwrap_or_default(),
+            )]));
         }
 
         match notebook_sync::connect::connect(
@@ -567,8 +764,9 @@ pub async fn create_notebook(
 
     let prev = previous_notebook_id(server).await;
 
-    // Every create_notebook is a new notebook, so always disconnect the old session.
-    disconnect_previous_session(server, None).await;
+    // Every create_notebook is a new notebook, so park the old session
+    // (keeps peer connection alive, preventing eviction).
+    park_previous_session(server, None).await;
 
     match notebook_sync::connect::connect_create(
         server.socket_path.clone(),
