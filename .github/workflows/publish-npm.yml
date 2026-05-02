@@ -24,6 +24,14 @@ on:
         options:
           - stable
           - nightly
+      mode:
+        description: Action to perform
+        default: publish
+        required: true
+        type: choice
+        options:
+          - publish
+          - promote
 
 permissions:
   contents: read
@@ -37,8 +45,41 @@ env:
   NPM_TAG: ${{ inputs.release_type == 'stable' && 'latest' || 'next' }}
 
 jobs:
+  promote:
+    name: Promote dist-tags
+    if: inputs.mode == 'promote'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Use npm with trusted publishing support
+        run: npm install -g npm@latest
+
+      - name: Fetch latest version from current tag
+        id: version
+        run: |
+          # Get the source tag based on release_type
+          SOURCE_TAG="${{ inputs.release_type == 'stable' && 'next' || 'latest' }}"
+          VERSION=$(npm view @nteract/pi@${SOURCE_TAG} version)
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "source_tag=$SOURCE_TAG" >> $GITHUB_OUTPUT
+
+      - name: Promote packages to ${{ env.NPM_TAG }}
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          echo "Promoting version $VERSION from ${{ steps.version.outputs.source_tag }} to ${{ env.NPM_TAG }}"
+          npm dist-tag add @nteract/pi@$VERSION ${{ env.NPM_TAG }}
+          npm dist-tag add @runtimed/node@$VERSION ${{ env.NPM_TAG }}
+          npm dist-tag add @runtimed/node-darwin-arm64@$VERSION ${{ env.NPM_TAG }}
+          npm dist-tag add @runtimed/node-linux-x64-gnu@$VERSION ${{ env.NPM_TAG }}
+          npm dist-tag add @runtimed/node-win32-x64-msvc@$VERSION ${{ env.NPM_TAG }}
+
   native:
     name: Native package (${{ matrix.target }})
+    if: inputs.mode == 'publish'
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -85,6 +126,7 @@ jobs:
 
   wrapper:
     name: Wrapper package
+    if: inputs.mode == 'publish'
     needs: [native]
     runs-on: ubuntu-latest
     steps:
@@ -122,6 +164,7 @@ jobs:
 
   pi:
     name: Pi package
+    if: inputs.mode == 'publish'
     needs: [wrapper]
     runs-on: ubuntu-latest
     steps:
