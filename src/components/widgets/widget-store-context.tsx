@@ -33,13 +33,11 @@ import {
 
 interface WidgetStoreContextValue {
   store: WidgetStore;
-  /** Raw send function (prefer sendUpdate/sendCustom for specific cases) */
-  sendMessage: SendMessage;
-  /** Send a state update to the kernel */
+  /** Send a state update to the kernel. Routed through WidgetUpdateManager. */
   sendUpdate: (commId: string, state: Record<string, unknown>, buffers?: ArrayBuffer[]) => void;
-  /** Send a custom message to the kernel */
+  /** Send a custom message (method: "custom") via the daemon shell channel. */
   sendCustom: (commId: string, content: Record<string, unknown>, buffers?: ArrayBuffer[]) => void;
-  /** Close a comm channel */
+  /** Close a comm channel via the daemon shell channel. */
   closeComm: (commId: string) => void;
 }
 
@@ -52,10 +50,10 @@ export const WidgetStoreContext = createContext<WidgetStoreContextValue | null>(
 
 interface WidgetStoreProviderProps {
   children: ReactNode;
-  /** Function to send messages back to the kernel (for widget interactions) */
+  /** Function to send messages back to the kernel (for custom messages and comm_close) */
   sendMessage?: SendMessage;
-  /** Optional update manager for debounced CRDT writes + echo suppression. */
-  updateManager?: import("./widget-update-manager").WidgetUpdateManager;
+  /** Debounced CRDT writer for outbound state updates. */
+  updateManager: import("./widget-update-manager").WidgetUpdateManager;
 }
 
 /**
@@ -93,12 +91,11 @@ export function WidgetStoreProvider({
   const value = useMemo(
     () => ({
       store,
-      sendMessage,
       sendUpdate,
       sendCustom,
       closeComm,
     }),
-    [store, sendMessage, sendUpdate, sendCustom, closeComm],
+    [store, sendUpdate, sendCustom, closeComm],
   );
 
   return <WidgetStoreContext.Provider value={value}>{children}</WidgetStoreContext.Provider>;

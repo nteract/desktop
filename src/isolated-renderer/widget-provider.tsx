@@ -106,34 +106,11 @@ export function IframeWidgetStoreProvider({ children }: IframeWidgetStoreProvide
   );
 
   // Value for main WidgetStoreContext (so existing widget components work).
-  // sendMessage parses outgoing Jupyter comm frames and dispatches to the
-  // bridge — inbound messages arrive via postMessage / the bridge client.
+  // Built-in widgets and the AFM model proxy read sendUpdate/sendCustom/
+  // closeComm directly; the bridge client relays each to the parent window.
   const mainContextValue = useMemo(
     () => ({
       store: client.store,
-      sendMessage: (msg: {
-        content: {
-          comm_id?: string;
-          data?: {
-            method?: string;
-            state?: Record<string, unknown>;
-            content?: Record<string, unknown>;
-          };
-        };
-        buffers?: ArrayBuffer[];
-      }) => {
-        const commId = msg.content?.comm_id;
-        const method = msg.content?.data?.method;
-        const buffers = msg.buffers;
-
-        if (!commId) return;
-
-        if (method === "update" && msg.content?.data?.state) {
-          client.sendUpdate(commId, msg.content.data.state, buffers);
-        } else if (method === "custom" && msg.content?.data?.content) {
-          client.sendCustom(commId, msg.content.data.content, buffers);
-        }
-      },
       sendUpdate: client.sendUpdate,
       sendCustom: client.sendCustom,
       closeComm: client.closeComm,

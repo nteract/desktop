@@ -10,15 +10,16 @@ function makeProxy(state: Record<string, unknown>) {
   const store = createWidgetStore();
   const commId = "test-comm";
   store.createModel(commId, state);
-  const sendMessage = vi.fn();
+  const sendUpdate = vi.fn();
+  const sendCustom = vi.fn();
   const model = store.getModel(commId)!;
   const proxy = createAFMModelProxy(
     model,
     store,
-    sendMessage,
+    { sendUpdate, sendCustom },
     () => store.getModel(commId)?.state ?? {},
   );
-  return { proxy, store, sendMessage };
+  return { proxy, store, sendUpdate, sendCustom };
 }
 
 describe("createAFMModelProxy", () => {
@@ -89,9 +90,43 @@ describe("createAFMModelProxy", () => {
 
   describe("set + save_changes", () => {
     it("buffers changes until save_changes is called", () => {
-      const { proxy, sendMessage } = makeProxy({ value: 0 });
+      const { proxy, sendUpdate } = makeProxy({ value: 0 });
       proxy.set("value", 42);
-      expect(sendMessage).not.toHaveBeenCalled();
+      expect(sendUpdate).not.toHaveBeenCalled();
+    });
+
+    it("routes save_changes through sendUpdate as a plain state patch", () => {
+      const { proxy, sendUpdate } = makeProxy({ value: 0, other: "a" });
+      proxy.set("value", 42);
+      proxy.set("other", "b");
+      proxy.save_changes();
+      expect(sendUpdate).toHaveBeenCalledTimes(1);
+      expect(sendUpdate).toHaveBeenCalledWith("test-comm", { value: 42, other: "b" });
+    });
+
+    it("is a no-op when there are no pending changes", () => {
+      const { proxy, sendUpdate } = makeProxy({ value: 0 });
+      proxy.save_changes();
+      expect(sendUpdate).not.toHaveBeenCalled();
+    });
+
+    it("clears pending changes after save", () => {
+      const { proxy, sendUpdate } = makeProxy({ value: 0 });
+      proxy.set("value", 1);
+      proxy.save_changes();
+      proxy.save_changes();
+      expect(sendUpdate).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe("send", () => {
+    it("routes custom messages through sendCustom with buffers", () => {
+      const { proxy, sendCustom, sendUpdate } = makeProxy({ value: 0 });
+      const buf = new ArrayBuffer(4);
+      proxy.send({ type: "ping" }, undefined, [buf]);
+      expect(sendCustom).toHaveBeenCalledTimes(1);
+      expect(sendCustom).toHaveBeenCalledWith("test-comm", { type: "ping" }, [buf]);
+      expect(sendUpdate).not.toHaveBeenCalled();
     });
   });
 });
