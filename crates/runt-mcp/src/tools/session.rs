@@ -998,20 +998,6 @@ pub async fn show_notebook(
     };
     let is_ephemeral = room.ephemeral;
 
-    if !has_display() {
-        let mut result = serde_json::json!({
-            "notebook_id": target,
-            "opened": false,
-            "reason": "No display available (headless environment). The notebook is running in the daemon and accessible via MCP tools."
-        });
-        if is_ephemeral {
-            result["note"] = serde_json::json!(
-                "This notebook is ephemeral. Use save_notebook(path) to persist."
-            );
-        }
-        return tool_success(&serde_json::to_string_pretty(&result).unwrap_or_default());
-    }
-
     // Resolve the on-disk path: prefer room path (authoritative), then session
     // path, then fall back to the target string if it looks like a file path.
     let resolved_path = room
@@ -1019,6 +1005,23 @@ pub async fn show_notebook(
         .as_deref()
         .or(session_path.as_deref())
         .filter(|p| std::path::Path::new(p).is_absolute());
+
+    if !has_display() {
+        let mut result = serde_json::json!({
+            "notebook_id": target,
+            "opened": false,
+            "reason": "No display available (headless environment). The notebook is running in the daemon and accessible via MCP tools."
+        });
+        if let Some(path) = resolved_path {
+            result["path"] = serde_json::json!(path);
+        }
+        if is_ephemeral {
+            result["note"] = serde_json::json!(
+                "This notebook is ephemeral. Use save_notebook(path) to persist."
+            );
+        }
+        return tool_success(&serde_json::to_string_pretty(&result).unwrap_or_default());
+    }
 
     if let Some(path) = resolved_path {
         runt_workspace::open_notebook_app(Some(std::path::Path::new(path)), &[])
@@ -1032,6 +1035,12 @@ pub async fn show_notebook(
     }
 
     let mut result = serde_json::json!({ "notebook_id": target, "opened": true });
+    // Include path in the response so callers can see where the notebook lives.
+    if let Some(path) = room.notebook_path.as_deref() {
+        result["path"] = serde_json::json!(path);
+    } else if let Some(path) = session_path.as_deref() {
+        result["path"] = serde_json::json!(path);
+    }
     if is_ephemeral {
         result["warning"] =
             serde_json::json!("This notebook is ephemeral. Save it from the app to keep it.");
