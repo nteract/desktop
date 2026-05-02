@@ -73,12 +73,14 @@ pub struct CreateNotebookOptions {
     pub package_manager: Option<PackageManager>,
 }
 
-/// Options for `openNotebook()`.
+/// Options for `openNotebook()` and `openNotebookPath()`.
 #[napi(object)]
 #[derive(Default)]
 pub struct OpenNotebookOptions {
     pub socket_path: Option<String>,
     pub peer_label: Option<String>,
+    /// Human-readable session description. Used as the peer label when `peerLabel` is omitted.
+    pub description: Option<String>,
 }
 
 /// Options for dependency edit methods.
@@ -621,6 +623,59 @@ impl Session {
         })
     }
 
+    /// Interrupt the currently executing cell.
+    #[napi]
+    pub async fn interrupt_kernel(&self) -> Result<bool> {
+        let handle = session_handle(&self.state).await?;
+        let response = handle
+            .send_request(NotebookRequest::InterruptExecution {})
+            .await
+            .map_err(to_napi_err)?;
+        match response {
+            NotebookResponse::InterruptSent {} => Ok(true),
+            NotebookResponse::NoKernel {} => Ok(false),
+            NotebookResponse::Error { error } => Err(Error::from_reason(error)),
+            _ => Ok(true),
+        }
+    }
+
+    /// Shutdown the running kernel. Returns false when no kernel is running.
+    #[napi]
+    pub async fn shutdown_kernel(&self) -> Result<bool> {
+        let handle = session_handle(&self.state).await?;
+        let response = handle
+            .send_request(NotebookRequest::ShutdownKernel {})
+            .await
+            .map_err(to_napi_err)?;
+        match response {
+            NotebookResponse::KernelShuttingDown {} => {
+                let mut st = self.state.lock().await;
+                st.kernel_started = false;
+                Ok(true)
+            }
+            NotebookResponse::NoKernel {} => {
+                let mut st = self.state.lock().await;
+                st.kernel_started = false;
+                Ok(false)
+            }
+            NotebookResponse::Error { error } => Err(Error::from_reason(error)),
+            _ => Ok(true),
+        }
+    }
+
+    /// Restart the kernel, clearing in-memory state while preserving notebook dependencies.
+    #[napi]
+    pub async fn restart_kernel(&self) -> Result<bool> {
+        let _ = self.shutdown_kernel().await;
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        {
+            let mut st = self.state.lock().await;
+            st.kernel_started = false;
+        }
+        ensure_kernel_started(&self.state).await?;
+        Ok(true)
+    }
+
     /// Open this notebook in nteract Desktop. In headless environments, returns
     /// `opened: false` with a reason instead of failing.
     #[napi]
@@ -672,11 +727,7 @@ pub async fn create_notebook(options: Option<CreateNotebookOptions>) -> Result<S
     let runtime = opts.runtime.unwrap_or_else(|| "python".to_string());
     let socket_path = resolve_socket_path(opts.socket_path);
     let working_dir: Option<PathBuf> = opts.working_dir.map(PathBuf::from);
-    let actor_label = opts
-        .peer_label
-        .clone()
-        .or_else(|| opts.description.map(|desc| format!("runtimed-node:{desc}")))
-        .unwrap_or_else(|| "runtimed-node".to_string());
+    let actor_label = peer_label_or_description(opts.peer_label, opts.description);
     let dependencies = opts.dependencies.unwrap_or_default();
     let package_manager = opts.package_manager.map(Into::into);
 
@@ -741,6 +792,50 @@ pub async fn show_notebook(options: Option<ShowNotebookOptions>) -> Result<ShowN
     show_notebook_inner(socket_path, opts.notebook_id, opts.path).await
 }
 
+/// Open an existing notebook file by path.
+#[napi]
+pub async fn open_notebook_path(
+    path: String,
+    options: Option<OpenNotebookOptions>,
+) -> Result<Session> {
+    let opts = options.unwrap_or_default();
+    let socket_path = resolve_socket_path(opts.socket_path);
+    let actor_label = peer_label_or_description(opts.peer_label, opts.description);
+    let result = notebook_sync::connect::connect_open(
+        socket_path.clone(),
+        PathBuf::from(path),
+        &actor_label,
+    )
+    .await
+    .map_err(to_napi_err)?;
+
+    result
+        .handle
+        .await_session_ready()
+        .await
+        .map_err(to_napi_err)?;
+
+    let notebook_id = result.info.notebook_id.clone();
+    let (blob_base_url, blob_store_path) = resolve_blob_paths(&socket_path).await;
+    let (kernel_started, runtime) = kernel_state_from_handle(&result.handle);
+
+    let state = SessionState {
+        handle: Some(result.handle),
+        _broadcast_rx: Some(result.broadcast_rx),
+        kernel_started,
+        runtime,
+        blob_base_url,
+        blob_store_path,
+        socket_path,
+        working_dir: None,
+    };
+
+    Ok(Session {
+        notebook_id,
+        state: Arc::new(Mutex::new(state)),
+    })
+}
+
 /// Open an existing notebook by ID.
 #[napi]
 pub async fn open_notebook(
@@ -749,10 +844,7 @@ pub async fn open_notebook(
 ) -> Result<Session> {
     let opts = options.unwrap_or_default();
     let socket_path = resolve_socket_path(opts.socket_path);
-    let actor_label = opts
-        .peer_label
-        .clone()
-        .unwrap_or_else(|| "runtimed-node".to_string());
+    let actor_label = peer_label_or_description(opts.peer_label, opts.description);
 
     let result =
         notebook_sync::connect::connect(socket_path.clone(), notebook_id.clone(), &actor_label)
@@ -768,24 +860,7 @@ pub async fn open_notebook(
     let (blob_base_url, blob_store_path) = resolve_blob_paths(&socket_path).await;
 
     // Try to hydrate kernel state from the RuntimeStateDoc.
-    let (kernel_started, runtime) = {
-        let rs = result.handle.get_runtime_state().ok();
-        let started = rs
-            .as_ref()
-            .map(|r| {
-                matches!(
-                    r.kernel.lifecycle,
-                    runtime_doc::RuntimeLifecycle::Running(_)
-                )
-            })
-            .unwrap_or(false);
-        let runtime = rs
-            .as_ref()
-            .map(|r| r.kernel.name.clone())
-            .filter(|s| !s.is_empty())
-            .unwrap_or_else(|| "python".to_string());
-        (started, runtime)
-    };
+    let (kernel_started, runtime) = kernel_state_from_handle(&result.handle);
 
     let state = SessionState {
         handle: Some(result.handle),
@@ -877,6 +952,31 @@ async fn session_handle(state: &Arc<Mutex<SessionState>>) -> Result<DocHandle> {
         .as_ref()
         .ok_or_else(|| Error::from_reason("Not connected"))
         .cloned()
+}
+
+fn peer_label_or_description(peer_label: Option<String>, description: Option<String>) -> String {
+    peer_label
+        .or_else(|| description.map(|desc| format!("runtimed-node:{desc}")))
+        .unwrap_or_else(|| "runtimed-node".to_string())
+}
+
+fn kernel_state_from_handle(handle: &DocHandle) -> (bool, String) {
+    let rs = handle.get_runtime_state().ok();
+    let started = rs
+        .as_ref()
+        .map(|r| {
+            matches!(
+                r.kernel.lifecycle,
+                runtime_doc::RuntimeLifecycle::Running(_)
+            )
+        })
+        .unwrap_or(false);
+    let runtime = rs
+        .as_ref()
+        .map(|r| r.kernel.name.clone())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "python".to_string());
+    (started, runtime)
 }
 
 fn active_notebook_from_room(room: runtimed_client::protocol::RoomInfo) -> ActiveNotebook {

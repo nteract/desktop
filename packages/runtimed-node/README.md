@@ -66,7 +66,8 @@ main().catch((error) => {
   daemon socket path.
 - `listActiveNotebooks(options)` lists active daemon notebook rooms.
 - `createNotebook(options)` creates a notebook and records optional first-call dependencies.
-- `openNotebook(notebookId, options)` connects to an existing notebook.
+- `openNotebook(notebookId, options)` connects to an existing daemon notebook.
+- `openNotebookPath(path, options)` opens a notebook file through the daemon.
 - `showNotebook(options)` opens an active notebook or path in nteract Desktop,
   returning a structured `opened: false` response in headless environments.
 - `getExecutionResult(executionId, options)` reads a result by execution ID.
@@ -77,6 +78,8 @@ main().catch((error) => {
 - `Session.executeCell(cellId, options)` runs an existing code cell.
 - `Session.showNotebook()` opens the session in nteract Desktop when a display
   is available.
+- `Session.interruptKernel()`, `Session.shutdownKernel()`, and
+  `Session.restartKernel()` manage the running kernel.
 - `Session.runCell(source, options)` creates, runs, and waits for a cell.
 - `Session.queueCell(source, options)` queues a cell and returns IDs.
 - `Session.waitForExecution(executionId, options)` waits for queued work.

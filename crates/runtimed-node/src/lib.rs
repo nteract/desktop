@@ -29,11 +29,11 @@ mod session;
 pub use error::NodeError;
 pub use parquet::{read_parquet_file, summarize_parquet_file};
 pub use session::{
-    create_notebook, get_execution_result, list_active_notebooks, open_notebook, show_notebook,
-    ActiveNotebook, CellResult, CreateCellOptions, CreateNotebookOptions, DependencyEditOptions,
-    ExecuteCellOptions, GetExecutionResultOptions, JsCellSnapshot, JsOutput,
-    ListActiveNotebooksOptions, MoveCellOptions, OpenNotebookOptions, PackageManager,
-    QueueCellOptions, QueuedExecution, RunCellOptions, Session, SetCellOptions,
+    create_notebook, get_execution_result, list_active_notebooks, open_notebook,
+    open_notebook_path, show_notebook, ActiveNotebook, CellResult, CreateCellOptions,
+    CreateNotebookOptions, DependencyEditOptions, ExecuteCellOptions, GetExecutionResultOptions,
+    JsCellSnapshot, JsOutput, ListActiveNotebooksOptions, MoveCellOptions, OpenNotebookOptions,
+    PackageManager, QueueCellOptions, QueuedExecution, RunCellOptions, Session, SetCellOptions,
     ShowNotebookOptions, ShowNotebookResult, WaitExecutionOptions,
 };
 
