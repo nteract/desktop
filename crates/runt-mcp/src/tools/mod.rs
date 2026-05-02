@@ -93,9 +93,7 @@ pub fn all_tools() -> Vec<Tool> {
         .with_meta(always_load_meta()),
         Tool::new(
             "connect_notebook",
-            "Attach to a notebook as the active session. Pass path (loads .ipynb from disk) \
-             OR notebook_id (UUID from list_active_notebooks) — not both. \
-             Does not open the app; use show_notebook for that.",
+            "Attach to a notebook. Pass path (.ipynb) or notebook_id (UUID) — not both.",
             schema_for::<session::OpenNotebookParams>(),
         )
         .annotate(
@@ -130,8 +128,7 @@ pub fn all_tools() -> Vec<Tool> {
         .annotate(ToolAnnotations::new().read_only(true).open_world(false)),
         Tool::new(
             "disconnect_notebook",
-            "Disconnect a notebook session, releasing its peer connection and kernel. \
-             Pass notebook_id to release a specific parked session, or omit to disconnect the active session.",
+            "Release a notebook session's peer connection. Omit notebook_id to disconnect the active session.",
             schema_for::<session::DisconnectNotebookParams>(),
         )
         .annotate(ToolAnnotations::new().destructive(true).open_world(false)),
