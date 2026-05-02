@@ -12,7 +12,7 @@ import type { WidgetComponentProps } from "../widget-registry";
 import { useWidgetModelValue } from "../widget-store-context";
 
 export function VideoWidget({ modelId, className }: WidgetComponentProps) {
-  const value = useWidgetModelValue<string | ArrayBuffer>(modelId, "value");
+  const value = useWidgetModelValue<string | ArrayBuffer | DataView>(modelId, "value");
   const format = useWidgetModelValue<string>(modelId, "format") ?? "mp4";
   const width = useWidgetModelValue<string>(modelId, "width") ?? "";
   const height = useWidgetModelValue<string>(modelId, "height") ?? "";

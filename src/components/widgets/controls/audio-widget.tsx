@@ -12,7 +12,7 @@ import type { WidgetComponentProps } from "../widget-registry";
 import { useWidgetModelValue } from "../widget-store-context";
 
 export function AudioWidget({ modelId, className }: WidgetComponentProps) {
-  const value = useWidgetModelValue<string | ArrayBuffer>(modelId, "value");
+  const value = useWidgetModelValue<string | ArrayBuffer | DataView>(modelId, "value");
   const format = useWidgetModelValue<string>(modelId, "format") ?? "mp3";
   const autoplay = useWidgetModelValue<boolean>(modelId, "autoplay") ?? true;
   const loop = useWidgetModelValue<boolean>(modelId, "loop") ?? true;

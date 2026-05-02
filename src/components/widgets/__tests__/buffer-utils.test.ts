@@ -27,6 +27,23 @@ describe("arrayBufferToBase64", () => {
     expect(arrayBufferToBase64(view)).toBe("SGVsbG8=");
   });
 
+  it("handles DataView input directly", () => {
+    const buffer = new ArrayBuffer(5);
+    new Uint8Array(buffer).set([72, 101, 108, 108, 111]);
+    const view = new DataView(buffer);
+    expect(arrayBufferToBase64(view)).toBe("SGVsbG8=");
+  });
+
+  it("respects DataView byteOffset and byteLength", () => {
+    const buffer = new ArrayBuffer(10);
+    // Fill buffer with 0..9
+    new Uint8Array(buffer).set([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+    // Window into bytes [3..6] = [3, 4, 5] = "\x03\x04\x05"
+    const view = new DataView(buffer, 3, 3);
+    // base64 of bytes [3, 4, 5]
+    expect(arrayBufferToBase64(view)).toBe("AwQF");
+  });
+
   it("handles binary data with all byte values", () => {
     const buffer = new ArrayBuffer(3);
     const view = new Uint8Array(buffer);
@@ -78,6 +95,15 @@ describe("buildMediaSrc", () => {
 
     const result = buildMediaSrc(view, "audio", "wav");
     expect(result).toBe("data:audio/wav;base64,SGVsbG8=");
+  });
+
+  it("converts DataView to data URL (ipywidgets binary protocol)", () => {
+    const buffer = new ArrayBuffer(5);
+    new Uint8Array(buffer).set([72, 101, 108, 108, 111]);
+    const view = new DataView(buffer);
+
+    const result = buildMediaSrc(view, "image", "png");
+    expect(result).toBe("data:image/png;base64,SGVsbG8=");
   });
 
   it("passes through data URLs unchanged", () => {

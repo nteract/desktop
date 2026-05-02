@@ -11,7 +11,7 @@ import type { WidgetComponentProps } from "../widget-registry";
 import { useWidgetModelValue } from "../widget-store-context";
 
 export function ImageWidget({ modelId, className }: WidgetComponentProps) {
-  const value = useWidgetModelValue<string | ArrayBuffer>(modelId, "value");
+  const value = useWidgetModelValue<string | ArrayBuffer | DataView>(modelId, "value");
   const format = useWidgetModelValue<string>(modelId, "format") ?? "png";
   const width = useWidgetModelValue<string>(modelId, "width") ?? "";
   const height = useWidgetModelValue<string>(modelId, "height") ?? "";
