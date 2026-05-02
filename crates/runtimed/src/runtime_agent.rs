@@ -166,9 +166,9 @@ pub async fn run_runtime_agent(
                                             let cleared = kernel_state.clear_queue();
                                             // Write cleared entries AND sweep any CRDT-synced
                                             // executions that haven't reached the local queue yet.
-                                            // The coordinator does this too, but belt-and-suspenders
-                                            // catches entries that arrived via sync after the
-                                            // coordinator's sweep.
+                                            // Only the agent does this sweep — the coordinator
+                                            // intentionally does NOT, so that concurrently-queued
+                                            // entries survive to execute after the interrupt.
                                             if let Err(e) = state.with_doc(|sd| {
                                                 for entry in &cleared {
                                                     sd.set_execution_done(&entry.execution_id, false)?;
@@ -878,6 +878,7 @@ async fn handle_runtime_agent_request(
                     Ok(()) => {
                         let cleared = state.clear_queue();
                         // Write cleared entries AND sweep CRDT-synced executions
+                        // that haven't reached the local queue yet.
                         if let Err(e) = ctx.state.with_doc(|sd| {
                             for entry in &cleared {
                                 sd.set_execution_done(&entry.execution_id, false)?;
