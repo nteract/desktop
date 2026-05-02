@@ -1192,13 +1192,16 @@ fn has_freethreading_package(env_path: &std::path::Path) -> bool {
 }
 
 /// Check whether the installed Python version in a conda env matches the
-/// requested constraint from environment.yaml (e.g. `"3.12"`).
+/// requested constraint from environment.yaml (e.g. `"3.12"`, `">=3.9"`).
 ///
-/// Compares major.minor only — a constraint of `"3.12"` matches installed
-/// `"3.12.7"` but not `"3.14.4"`. Returns `true` if the constraint is
-/// satisfied or if either version can't be determined (fail-open to avoid
-/// unnecessary rebuilds). Returns `false` when the installed major.minor
-/// clearly doesn't match the constraint.
+/// Handles exact pins (`python=3.12`, `python==3.12`), range constraints
+/// (`python>=3.9`, `python>=3.9,<3.13`), major-only (`python=3`), and
+/// wildcard (`python=3.*`). Compares on major.minor, using the operator
+/// semantics from the original constraint string.
+///
+/// Returns `true` if the constraint is satisfied or if either version can't
+/// be determined (fail-open to avoid unnecessary rebuilds). Returns `false`
+/// only when the installed version clearly violates the constraint.
 ///
 /// Used by the `conda:env_yml` launch path to detect when an existing named
 /// env has a different Python version than what environment.yaml requests,
@@ -1209,36 +1212,72 @@ pub fn installed_python_matches_constraint(env_path: &std::path::Path, requested
         None => return true, // Can't detect → fail-open
     };
 
-    // Extract major.minor from installed (e.g. "3.14.4" → "3.14")
+    // Parse installed major.minor as (u32, u32).
     let installed_parts: Vec<&str> = installed.split('.').collect();
-    let installed_mm = if installed_parts.len() >= 2 {
-        format!("{}.{}", installed_parts[0], installed_parts[1])
+    let (inst_major, inst_minor) = if installed_parts.len() >= 2 {
+        match (
+            installed_parts[0].parse::<u32>(),
+            installed_parts[1].parse::<u32>(),
+        ) {
+            (Ok(a), Ok(b)) => (a, b),
+            _ => return true, // Unusual format → fail-open
+        }
     } else {
         return true; // Unusual format → fail-open
     };
 
-    // Extract major.minor from the constraint. The constraint may be
-    // "3.12", "3.12.7", ">=3.12", etc. Strip common prefixes and take
-    // the first version-like token.
-    let cleaned = requested
-        .trim_start_matches(">=")
-        .trim_start_matches("<=")
-        .trim_start_matches("==")
-        .trim_start_matches('=')
-        .trim_start_matches('>')
-        .trim_start_matches('<');
-    let first = cleaned.split(',').next().unwrap_or(cleaned);
+    // Detect the operator from the constraint prefix, then extract the
+    // version number. Conda environment.yaml uses single `=` for pins
+    // (equivalent to `==` in pip).
+    let (op, version_str) = if requested.starts_with(">=") {
+        (">=", &requested[2..])
+    } else if requested.starts_with("<=") {
+        ("<=", &requested[2..])
+    } else if requested.starts_with("==") {
+        ("==", &requested[2..])
+    } else if requested.starts_with('>') {
+        (">", &requested[1..])
+    } else if requested.starts_with('<') {
+        ("<", &requested[1..])
+    } else if requested.starts_with('=') {
+        ("==", &requested[1..])
+    } else {
+        // Bare version like "3.12" — treat as exact pin
+        ("==", requested)
+    };
+
+    // Take the first comma-separated segment (handles ">=3.9,<3.13").
+    let first = version_str.split(',').next().unwrap_or(version_str);
     let first = first.trim_end_matches(".*");
     let req_parts: Vec<&str> = first.split('.').collect();
-    let requested_mm = if req_parts.len() >= 2 {
-        format!("{}.{}", req_parts[0], req_parts[1])
+
+    let (req_major, req_minor) = if req_parts.len() >= 2 {
+        match (req_parts[0].parse::<u32>(), req_parts[1].parse::<u32>()) {
+            (Ok(a), Ok(b)) => (a, b),
+            _ => return true, // Can't parse → fail-open
+        }
     } else if !req_parts.is_empty() && !req_parts[0].is_empty() {
-        req_parts[0].to_string()
+        // Major-only constraint like "3" or "3.*" — any minor is fine
+        // as long as major matches.
+        match req_parts[0].parse::<u32>() {
+            Ok(major) => return inst_major == major,
+            Err(_) => return true, // Can't parse → fail-open
+        }
     } else {
         return true; // Can't parse → fail-open
     };
 
-    installed_mm == requested_mm
+    let inst = (inst_major, inst_minor);
+    let req = (req_major, req_minor);
+
+    match op {
+        ">=" => inst >= req,
+        "<=" => inst <= req,
+        ">" => inst > req,
+        "<" => inst < req,
+        // "==" and bare versions: exact major.minor match
+        _ => inst == req,
+    }
 }
 
 /// Find the site-packages directory inside a venv/env.
@@ -1565,6 +1604,61 @@ mod tests {
 
         assert!(!installed_python_matches_constraint(dir.path(), "3.12"));
         assert!(!installed_python_matches_constraint(dir.path(), "3.13"));
+    }
+
+    #[test]
+    fn python_constraint_range_ge_accepts_higher() {
+        let dir = tempfile::tempdir().unwrap();
+        let meta = dir.path().join("conda-meta");
+        std::fs::create_dir_all(&meta).unwrap();
+        std::fs::write(meta.join("python-3.12.4-h2b28147_0.json"), "{}").unwrap();
+
+        // 3.12 >= 3.9 → true
+        assert!(installed_python_matches_constraint(dir.path(), ">=3.9"));
+        // 3.12 >= 3.12 → true
+        assert!(installed_python_matches_constraint(dir.path(), ">=3.12"));
+        // 3.12 >= 3.13 → false
+        assert!(!installed_python_matches_constraint(dir.path(), ">=3.13"));
+    }
+
+    #[test]
+    fn python_constraint_range_lt_rejects_higher() {
+        let dir = tempfile::tempdir().unwrap();
+        let meta = dir.path().join("conda-meta");
+        std::fs::create_dir_all(&meta).unwrap();
+        std::fs::write(meta.join("python-3.12.4-h2b28147_0.json"), "{}").unwrap();
+
+        // 3.12 < 3.13 → true
+        assert!(installed_python_matches_constraint(dir.path(), "<3.13"));
+        // 3.12 < 3.12 → false
+        assert!(!installed_python_matches_constraint(dir.path(), "<3.12"));
+    }
+
+    #[test]
+    fn python_constraint_major_only_matches() {
+        let dir = tempfile::tempdir().unwrap();
+        let meta = dir.path().join("conda-meta");
+        std::fs::create_dir_all(&meta).unwrap();
+        std::fs::write(meta.join("python-3.12.4-h2b28147_0.json"), "{}").unwrap();
+
+        // Major-only: "3" or "3.*" → any 3.x is fine
+        assert!(installed_python_matches_constraint(dir.path(), "3"));
+        assert!(installed_python_matches_constraint(dir.path(), "3.*"));
+        assert!(!installed_python_matches_constraint(dir.path(), "2"));
+    }
+
+    #[test]
+    fn python_constraint_comma_range_first_segment() {
+        let dir = tempfile::tempdir().unwrap();
+        let meta = dir.path().join("conda-meta");
+        std::fs::create_dir_all(&meta).unwrap();
+        std::fs::write(meta.join("python-3.11.0-h2b28147_0.json"), "{}").unwrap();
+
+        // ">=3.9,<3.13" → only checks first segment (>=3.9), 3.11 >= 3.9 → true
+        assert!(installed_python_matches_constraint(
+            dir.path(),
+            ">=3.9,<3.13"
+        ));
     }
 
     #[test]
