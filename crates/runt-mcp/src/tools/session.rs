@@ -248,11 +248,19 @@ fn read_runtime_info(handle: &notebook_sync::handle::DocHandle) -> serde_json::V
                     serde_json::json!(state.env.prewarmed_packages),
                 );
             }
-            // Error surface (#2157): when the kernel is in an error
-            // state, MCP clients get both the typed reason (stable
-            // for programmatic handling) and the human-readable
-            // details (for surfacing to the user).
-            if matches!(state.kernel.lifecycle, runtime_doc::RuntimeLifecycle::Error) {
+            // Error surface (#2157): when the kernel is in an error or
+            // decision-pending state, MCP clients get both the typed
+            // reason (stable for programmatic handling) and the
+            // human-readable details (for surfacing to the user).
+            // AwaitingEnvBuild carries CondaEnvYmlMissing + details
+            // about which env to create — without this, MCP clients
+            // only see kernel_status "awaiting_env_build" with no
+            // explanation of what's wrong or what action to take.
+            if matches!(
+                state.kernel.lifecycle,
+                runtime_doc::RuntimeLifecycle::Error
+                    | runtime_doc::RuntimeLifecycle::AwaitingEnvBuild
+            ) {
                 if let Some(reason) = state
                     .kernel
                     .error_reason
@@ -1083,6 +1091,39 @@ mod tests {
         assert!(
             uuid::Uuid::parse_str(&notebook_id).is_ok(),
             "notebook_id in save response must be a valid UUID"
+        );
+    }
+
+    /// Lifecycle states that carry error_reason/error_details must be
+    /// surfaced to MCP clients. Verify the predicate covers both Error
+    /// and AwaitingEnvBuild (the two states that write error details).
+    #[test]
+    fn error_surface_covers_awaiting_env_build() {
+        use runtime_doc::RuntimeLifecycle;
+        let should_surface = |lc: &RuntimeLifecycle| -> bool {
+            matches!(
+                lc,
+                RuntimeLifecycle::Error | RuntimeLifecycle::AwaitingEnvBuild
+            )
+        };
+
+        assert!(
+            should_surface(&RuntimeLifecycle::Error),
+            "Error must surface error details"
+        );
+        assert!(
+            should_surface(&RuntimeLifecycle::AwaitingEnvBuild),
+            "AwaitingEnvBuild must surface error details"
+        );
+        assert!(
+            !should_surface(&RuntimeLifecycle::NotStarted),
+            "NotStarted must not surface error details"
+        );
+        assert!(
+            !should_surface(&RuntimeLifecycle::Running(
+                runtime_doc::KernelActivity::Idle
+            )),
+            "Running(Idle) must not surface error details"
         );
     }
 }
