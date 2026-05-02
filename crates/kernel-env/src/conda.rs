@@ -468,7 +468,7 @@ async fn install_conda_env(
 
     if let Some(ref py) = deps.python {
         specs.push(MatchSpec::from_str(
-            &format!("python={}", py),
+            &format_python_spec(py),
             match_spec_options,
         )?);
     } else {
@@ -1105,13 +1105,27 @@ async fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Format a Python version constraint as a conda MatchSpec string.
+///
+/// Bare versions (`"3.11"`, `"3.11.*"`) get `python=` prepended.
+/// Operator-prefixed constraints (`">=3.9"`, `">=3.9,<4"`) get `python`
+/// prepended without an extra `=`, producing e.g. `"python>=3.9,<4"`.
+fn format_python_spec(constraint: &str) -> String {
+    let first = constraint.as_bytes().first().copied().unwrap_or(b'0');
+    if first == b'>' || first == b'<' || first == b'=' || first == b'!' || first == b'~' {
+        format!("python{}", constraint)
+    } else {
+        format!("python={}", constraint)
+    }
+}
+
 /// Build the list of spec strings that `install_conda_env` would produce,
 /// for matching against a lock file.
 fn build_spec_strings(deps: &CondaDependencies) -> Vec<String> {
     let mut specs = Vec::new();
 
     if let Some(ref py) = deps.python {
-        specs.push(format!("python={}", py));
+        specs.push(format_python_spec(py));
     } else {
         specs.push("python>=3.13".to_string());
     }
@@ -1226,30 +1240,47 @@ pub fn installed_python_matches_constraint(env_path: &std::path::Path, requested
         return true; // Unusual format → fail-open
     };
 
+    // Split by comma and check every clause. A compound constraint like
+    // ">=3.9,<3.13" must satisfy ALL parts. Each clause is parsed
+    // independently for its operator and version.
+    for clause in requested.split(',') {
+        let clause = clause.trim();
+        if clause.is_empty() {
+            continue;
+        }
+        if !check_single_clause((inst_major, inst_minor), clause) {
+            return false;
+        }
+    }
+    true
+}
+
+/// Check a single version constraint clause (e.g. `">=3.9"`, `"3.12.*"`,
+/// `"<4"`) against an installed (major, minor) pair. Returns `true` when
+/// the clause is satisfied or unparseable (fail-open).
+fn check_single_clause(inst: (u32, u32), clause: &str) -> bool {
     // Detect the operator from the constraint prefix, then extract the
     // version number. Conda environment.yaml uses single `=` for pins
     // (equivalent to `==` in pip).
-    let (op, version_str) = if let Some(rest) = requested.strip_prefix(">=") {
+    let (op, version_str) = if let Some(rest) = clause.strip_prefix(">=") {
         (">=", rest)
-    } else if let Some(rest) = requested.strip_prefix("<=") {
+    } else if let Some(rest) = clause.strip_prefix("<=") {
         ("<=", rest)
-    } else if let Some(rest) = requested.strip_prefix("==") {
+    } else if let Some(rest) = clause.strip_prefix("==") {
         ("==", rest)
-    } else if let Some(rest) = requested.strip_prefix('>') {
+    } else if let Some(rest) = clause.strip_prefix('>') {
         (">", rest)
-    } else if let Some(rest) = requested.strip_prefix('<') {
+    } else if let Some(rest) = clause.strip_prefix('<') {
         ("<", rest)
-    } else if let Some(rest) = requested.strip_prefix('=') {
+    } else if let Some(rest) = clause.strip_prefix('=') {
         ("==", rest)
     } else {
         // Bare version like "3.12" — treat as exact pin
-        ("==", requested)
+        ("==", clause)
     };
 
-    // Take the first comma-separated segment (handles ">=3.9,<3.13").
-    let first = version_str.split(',').next().unwrap_or(version_str);
-    let first = first.trim_end_matches(".*");
-    let req_parts: Vec<&str> = first.split('.').collect();
+    let trimmed = version_str.trim_end_matches(".*");
+    let req_parts: Vec<&str> = trimmed.split('.').collect();
 
     let (req_major, req_minor) = if req_parts.len() >= 2 {
         match (req_parts[0].parse::<u32>(), req_parts[1].parse::<u32>()) {
@@ -1257,17 +1288,26 @@ pub fn installed_python_matches_constraint(env_path: &std::path::Path, requested
             _ => return true, // Can't parse → fail-open
         }
     } else if !req_parts.is_empty() && !req_parts[0].is_empty() {
-        // Major-only constraint like "3" or "3.*" — any minor is fine
-        // as long as major matches.
+        // Major-only constraint like "3" or "<4" — compare major only.
+        // For ordering operators we treat the version as (major, 0) so
+        // that `<4` means `< 4.0`, which accepts any Python 3.x.
         match req_parts[0].parse::<u32>() {
-            Ok(major) => return inst_major == major,
+            Ok(major) => {
+                return match op {
+                    ">=" => inst.0 >= major,
+                    ">" => inst.0 > major,
+                    "<=" => inst.0 <= major,
+                    "<" => inst.0 < major,
+                    // "==" and bare: exact major match, any minor
+                    _ => inst.0 == major,
+                };
+            }
             Err(_) => return true, // Can't parse → fail-open
         }
     } else {
         return true; // Can't parse → fail-open
     };
 
-    let inst = (inst_major, inst_minor);
     let req = (req_major, req_minor);
 
     match op {
@@ -1648,13 +1688,13 @@ mod tests {
     }
 
     #[test]
-    fn python_constraint_comma_range_first_segment() {
+    fn python_constraint_comma_range_both_clauses() {
         let dir = tempfile::tempdir().unwrap();
         let meta = dir.path().join("conda-meta");
         std::fs::create_dir_all(&meta).unwrap();
         std::fs::write(meta.join("python-3.11.0-h2b28147_0.json"), "{}").unwrap();
 
-        // ">=3.9,<3.13" → only checks first segment (>=3.9), 3.11 >= 3.9 → true
+        // ">=3.9,<3.13" → 3.11 >= 3.9 AND 3.11 < 3.13 → true
         assert!(installed_python_matches_constraint(
             dir.path(),
             ">=3.9,<3.13"
@@ -1662,9 +1702,48 @@ mod tests {
     }
 
     #[test]
+    fn python_constraint_upper_bound_enforced() {
+        let dir = tempfile::tempdir().unwrap();
+        let meta = dir.path().join("conda-meta");
+        std::fs::create_dir_all(&meta).unwrap();
+        std::fs::write(meta.join("python-3.14.0-h2b28147_0.json"), "{}").unwrap();
+
+        // ">=3.9,<3.13" → 3.14 >= 3.9 but 3.14 NOT < 3.13 → false
+        assert!(!installed_python_matches_constraint(
+            dir.path(),
+            ">=3.9,<3.13"
+        ));
+    }
+
+    #[test]
+    fn python_constraint_major_only_lt() {
+        let dir = tempfile::tempdir().unwrap();
+        let meta = dir.path().join("conda-meta");
+        std::fs::create_dir_all(&meta).unwrap();
+        std::fs::write(meta.join("python-3.11.0-h2b28147_0.json"), "{}").unwrap();
+
+        // ">=3.9,<4" → 3.11 >= 3.9 AND 3 < 4 → true
+        assert!(installed_python_matches_constraint(dir.path(), ">=3.9,<4"));
+    }
+
+    #[test]
     fn python_constraint_fails_open_when_no_env() {
         let dir = tempfile::tempdir().unwrap();
         // No conda-meta → can't detect → returns true (fail-open)
         assert!(installed_python_matches_constraint(dir.path(), "3.12"));
+    }
+
+    #[test]
+    fn format_python_spec_bare_version() {
+        assert_eq!(format_python_spec("3.11"), "python=3.11");
+        assert_eq!(format_python_spec("3.11.*"), "python=3.11.*");
+    }
+
+    #[test]
+    fn format_python_spec_operator_prefixed() {
+        assert_eq!(format_python_spec(">=3.9"), "python>=3.9");
+        assert_eq!(format_python_spec(">=3.9,<4"), "python>=3.9,<4");
+        assert_eq!(format_python_spec("==3.12"), "python==3.12");
+        assert_eq!(format_python_spec("<4"), "python<4");
     }
 }
