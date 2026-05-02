@@ -1,7 +1,7 @@
 {
   "name": "@nteract/pi",
   "version": "0.1.2",
-  "description": "Python that remembers. Persistent state, hot dependency installation, and zero cold starts for Pi coding agents.",
+  "description": "Persistent notebook-backed Python REPL for Pi coding agents. Stateful execution, hot dependency sync, zero cold starts.",
   "author": "nteract contributors",
   "icon": "icon.png",
   "type": "module",

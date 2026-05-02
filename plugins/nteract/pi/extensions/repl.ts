@@ -478,16 +478,16 @@ export default function nteractReplExtension(pi: ExtensionAPI) {
     name: "python",
     label: "Python",
     description:
-      "Execute Python code in a persistent session. Variables and imports stick around between calls. The last expression is returned as the result; use print() for side effects. Images (matplotlib, PIL, etc.) are returned inline.",
+      "Execute Python in a persistent IPython session backed by a real Jupyter kernel. Variables and imports stick around between calls. The last expression is returned as the result; use print() or display() for intermediate output. Images (matplotlib, PIL, IPython widgets) are returned inline and rendered in terminals that support graphics.",
     promptSnippet:
-      "python: run Python code in a persistent session (variables and imports persist; returns stdout + last expression + images).",
+      "python: run Python in a persistent IPython session (variables and imports persist; returns stdout + last expression + images).",
     promptGuidelines: [
-      "Use `python` for data analysis, plotting, and multi-step workflows. State persists between calls.",
-      "Variables and imports stick around — no need to re-import or redefine on every turn.",
-      "The last expression is the result; use print() for intermediate output.",
-      "Images (matplotlib, PIL) come back inline so you can see them and iterate.",
+      "Use `python` for data analysis, plotting, and multi-step workflows. State persists between calls in a real Jupyter kernel.",
+      "Variables and imports stick around. No need to re-import or redefine on every turn unless the user has reloaded the session.",
+      "The last expression is the result; use print() or display() for intermediate output.",
+      "Images (matplotlib, PIL, IPython widgets) come back inline. The user sees them if their terminal supports graphics.",
       "Pass `dependencies` on the first call to pre-install packages before the kernel starts.",
-      "Use `python_add_dependencies` to install packages mid-session without restarting.",
+      "Use `python_add_dependencies` to install packages mid-session without restarting the kernel.",
     ],
     parameters: PYTHON_PARAMS,
     renderCall(args, theme, _context) {
