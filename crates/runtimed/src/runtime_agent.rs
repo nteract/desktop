@@ -129,10 +129,11 @@ pub async fn run_runtime_agent(
     let (async_response_tx, mut async_response_rx) =
         mpsc::channel::<notebook_protocol::protocol::RuntimeAgentResponseEnvelope>(4);
 
-    // In-flight env-sync task. A new SyncEnvironment aborts any prior task,
-    // and each kernel lifecycle transition (LaunchKernel, ShutdownKernel,
-    // RestartKernel) bumps `sync_generation` so stale tasks don't write
-    // terminal env-progress or EnvironmentSynced against a newer kernel.
+    // In-flight env-sync task. Only one SyncEnvironment may run at a time;
+    // overlapping env mutations race on the same prefix. Launch/restart is
+    // rejected while a sync is active for the same reason. Shutdown is allowed,
+    // but it invalidates the sync generation so terminal progress does not
+    // claim the now-shutdown kernel is ready.
     //
     // The atomic is shared between the main loop (which bumps it) and each
     // spawned task (which compares its captured generation before emitting
@@ -191,16 +192,31 @@ pub async fn run_runtime_agent(
                                     // Installing/Solving/Download events until the install
                                     // finished. Snapshot the launched config and spawn.
                                     //
-                                    // Cancel any in-flight sync: the coordinator only expects
-                                    // one active install at a time, and overlapping tasks
-                                    // would race on the same env prefix. Bump the generation
-                                    // so the aborted task's pending writes (and any stale
-                                    // state events already in flight) are ignored.
+                                    // Reject overlapping syncs rather than aborting the task:
+                                    // tokio::process children keep running when their waiting
+                                    // future is dropped, so aborting would not stop the uv
+                                    // install that is mutating the environment prefix.
                                     if let RuntimeAgentRequest::SyncEnvironment(env_kind) =
                                         &envelope.request
                                     {
-                                        if let Some(prev) = inflight_sync.take() {
-                                            prev.abort();
+                                        if inflight_sync.is_some() {
+                                            if let Err(e) = send_runtime_agent_response(
+                                                &mut writer,
+                                                envelope.id.clone(),
+                                                RuntimeAgentResponse::Error {
+                                                    error: "Environment sync already in progress"
+                                                        .to_string(),
+                                                },
+                                            )
+                                            .await
+                                            {
+                                                warn!(
+                                                    "[runtime-agent] Failed to send busy SyncEnvironment response: {}",
+                                                    e
+                                                );
+                                                break;
+                                            }
+                                            continue;
                                         }
                                         let generation = sync_generation
                                             .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
@@ -224,38 +240,66 @@ pub async fn run_runtime_agent(
                                                 gen_ref,
                                             )
                                             .await;
-                                            // If the task was superseded, the envelope is
-                                            // dropped so we don't correlate a stale response
-                                            // to the coordinator's newest request id.
-                                            if let Some(response) = response {
-                                                let envelope = notebook_protocol::protocol::RuntimeAgentResponseEnvelope {
-                                                    id,
-                                                    response,
-                                                };
-                                                if tx.send(envelope).await.is_err() {
-                                                    warn!(
-                                                        "[runtime-agent] SyncEnvironment response channel closed before send",
-                                                    );
+                                            let response = response.unwrap_or_else(|| {
+                                                RuntimeAgentResponse::Error {
+                                                    error: "Environment sync was superseded"
+                                                        .to_string(),
                                                 }
+                                            });
+                                            let envelope = notebook_protocol::protocol::RuntimeAgentResponseEnvelope {
+                                                id,
+                                                response,
+                                            };
+                                            if tx.send(envelope).await.is_err() {
+                                                warn!(
+                                                    "[runtime-agent] SyncEnvironment response channel closed before send",
+                                                );
                                             }
                                         });
                                         inflight_sync = Some(handle);
                                         continue;
                                     }
 
-                                    // Kernel lifecycle transitions invalidate any in-flight
-                                    // env sync: a stale task that finishes after the kernel
-                                    // is gone or swapped would otherwise write Ready/Error
-                                    // into RuntimeStateDoc for the wrong generation.
+                                    // Launch/restart would race against the active prefix
+                                    // mutation, so reject it until the sync task sends its
+                                    // response. Shutdown is allowed because the daemon-side
+                                    // handler treats it as best-effort, but it still bumps
+                                    // the generation so the sync task will skip terminal
+                                    // Ready/Error writes after the kernel is gone.
                                     if matches!(
                                         envelope.request,
                                         RuntimeAgentRequest::LaunchKernel { .. }
                                             | RuntimeAgentRequest::RestartKernel { .. }
-                                            | RuntimeAgentRequest::ShutdownKernel
                                     ) {
-                                        if let Some(prev) = inflight_sync.take() {
-                                            prev.abort();
+                                        if inflight_sync.is_some() {
+                                            if let Err(e) = send_runtime_agent_response(
+                                                &mut writer,
+                                                envelope.id.clone(),
+                                                RuntimeAgentResponse::Error {
+                                                    error: "Environment sync in progress; retry after it completes"
+                                                        .to_string(),
+                                                },
+                                            )
+                                            .await
+                                            {
+                                                warn!(
+                                                    "[runtime-agent] Failed to send lifecycle busy response: {}",
+                                                    e
+                                                );
+                                                break;
+                                            }
+                                            continue;
                                         }
+                                    }
+
+                                    if matches!(envelope.request, RuntimeAgentRequest::ShutdownKernel) {
+                                        sync_generation
+                                            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                                    } else if matches!(
+                                        envelope.request,
+                                        RuntimeAgentRequest::LaunchKernel { .. }
+                                            | RuntimeAgentRequest::RestartKernel { .. }
+                                    ) {
                                         sync_generation
                                             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                                     }
@@ -279,12 +323,7 @@ pub async fn run_runtime_agent(
 
                                     // Only send response for queries (not commands)
                                     if !is_command {
-                                        let resp_envelope = notebook_protocol::protocol::RuntimeAgentResponseEnvelope {
-                                            id,
-                                            response,
-                                        };
-                                        let json = serde_json::to_vec(&resp_envelope)?;
-                                        send_typed_frame(&mut writer, NotebookFrameType::Response, &json).await?;
+                                        send_runtime_agent_response(&mut writer, id, response).await?;
                                     }
                                 }
                             }
@@ -502,20 +541,10 @@ pub async fn run_runtime_agent(
 
             // Responses from long-running spawned tasks (SyncEnvironment).
             Some(envelope) = async_response_rx.recv() => {
-                match serde_json::to_vec(&envelope) {
-                    Ok(json) => {
-                        if let Err(e) = send_typed_frame(
-                            &mut writer,
-                            NotebookFrameType::Response,
-                            &json,
-                        ).await {
-                            warn!("[runtime-agent] Failed to send async response: {}", e);
-                            break;
-                        }
-                    }
-                    Err(e) => {
-                        warn!("[runtime-agent] Failed to serialize async response: {}", e);
-                    }
+                inflight_sync = None;
+                if let Err(e) = send_runtime_agent_response_envelope(&mut writer, envelope).await {
+                    warn!("[runtime-agent] Failed to send async response: {}", e);
+                    break;
                 }
             }
         }
@@ -540,6 +569,27 @@ type AgentWriter = tokio::io::WriteHalf<tokio::net::UnixStream>;
 type AgentReader = tokio::io::ReadHalf<tokio::net::windows::named_pipe::NamedPipeClient>;
 #[cfg(windows)]
 type AgentWriter = tokio::io::WriteHalf<tokio::net::windows::named_pipe::NamedPipeClient>;
+
+async fn send_runtime_agent_response(
+    writer: &mut AgentWriter,
+    id: String,
+    response: RuntimeAgentResponse,
+) -> anyhow::Result<()> {
+    send_runtime_agent_response_envelope(
+        writer,
+        notebook_protocol::protocol::RuntimeAgentResponseEnvelope { id, response },
+    )
+    .await
+}
+
+async fn send_runtime_agent_response_envelope(
+    writer: &mut AgentWriter,
+    envelope: notebook_protocol::protocol::RuntimeAgentResponseEnvelope,
+) -> anyhow::Result<()> {
+    let json = serde_json::to_vec(&envelope)?;
+    send_typed_frame(writer, NotebookFrameType::Response, &json).await?;
+    Ok(())
+}
 
 /// Open a stream to the daemon socket and perform the RuntimeAgent
 /// handshake. Extracted from the main startup path so the reconnect
