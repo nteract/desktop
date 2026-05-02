@@ -1,6 +1,6 @@
 [package]
 name = "notebook-doc"
-version = "0.3.0"
+version = "0.3.1"
 edition.workspace = true
 description = "Shared Automerge notebook document types and operations, used by both runtimed (daemon) and runtimed-wasm (frontend)"
 repository.workspace = true

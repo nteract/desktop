@@ -1,6 +1,6 @@
 {
   "name": "@runtimed/node-darwin-arm64",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "macOS arm64 native N-API binding for @runtimed/node.",
   "type": "commonjs",
   "main": "./runtimed-node.darwin-arm64.node",

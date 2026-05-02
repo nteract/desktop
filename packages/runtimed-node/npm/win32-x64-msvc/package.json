@@ -1,6 +1,6 @@
 {
   "name": "@runtimed/node-win32-x64-msvc",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Windows x64 MSVC native N-API binding for @runtimed/node.",
   "type": "commonjs",
   "main": "./runtimed-node.win32-x64-msvc.node",
