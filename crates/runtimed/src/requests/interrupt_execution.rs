@@ -1,13 +1,34 @@
 //! `NotebookRequest::InterruptExecution` handler.
 
+use tracing::warn;
+
 use crate::notebook_sync_server::{send_runtime_agent_command, NotebookRoom};
 use crate::protocol::NotebookResponse;
 
 pub(crate) async fn handle(room: &NotebookRoom) -> NotebookResponse {
     let has_runtime_agent = room.runtime_agent_request_tx.lock().await.is_some();
     if has_runtime_agent {
-        // Fire-and-forget: the agent handles interrupt and updates
-        // RuntimeStateDoc CRDT directly (clears queue, marks executions).
+        // Mark all in-flight executions as failed on the coordinator's copy
+        // of RuntimeStateDoc BEFORE sending the interrupt to the runtime
+        // agent.  This catches execution entries created by a concurrent
+        // ExecuteCell that haven't synced to the runtime agent yet — without
+        // this, those entries stay "queued" forever because the runtime
+        // agent's local queue doesn't know about them when it clears.
+        if let Err(e) = room.state.with_doc(|sd| {
+            let marked = sd.mark_inflight_executions_failed()?;
+            if marked > 0 {
+                sd.set_queue(None, &[])?;
+            }
+            Ok(())
+        }) {
+            warn!(
+                "[interrupt] Failed to mark inflight executions on coordinator: {}",
+                e
+            );
+        }
+
+        // Fire-and-forget: the agent handles the SIGINT signal and updates
+        // its local queue / RuntimeStateDoc copy.
         match send_runtime_agent_command(
             room,
             notebook_protocol::protocol::RuntimeAgentRequest::InterruptExecution,
