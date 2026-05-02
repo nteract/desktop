@@ -448,10 +448,15 @@ fn cmd_notebook(notebook: Option<&str>, attach: bool) {
     require_pnpm();
     require_tauri();
 
-    // Vite's isolated-renderer plugin reads the gitignored renderer-plugin
-    // outputs as virtual modules; missing files become empty strings and
-    // every plugin renders blank. Build them once on fresh clones.
-    ensure_build_artifacts();
+    // In --attach mode Tauri points at an already-running Vite dev server.
+    // That Vite process owns the renderer-plugin virtual modules and the
+    // runtimed-wasm bindings; our rebuilds here would just duplicate work
+    // it's already watching for. Skip the force-rebuild cost in that case.
+    // Without --attach, Tauri boots its own Vite, and we still need fresh
+    // artifacts before the TS compile fires.
+    if !attach {
+        ensure_build_artifacts();
+    }
 
     // Always use dev mode to prevent the Tauri app from auto-installing
     // the dev binary as the system daemon sidecar — that would clobber
