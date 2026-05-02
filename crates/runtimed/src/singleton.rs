@@ -5,6 +5,8 @@
 //! lives in `runtimed_client::singleton` and is re-exported via `pub use runtimed_client::*`.
 
 use std::fs::{File, OpenOptions};
+#[cfg(unix)]
+use std::os::fd::AsRawFd;
 use std::path::PathBuf;
 
 use chrono::Utc;
@@ -192,6 +194,14 @@ impl DaemonLock {
 
 impl Drop for DaemonLock {
     fn drop(&mut self) {
+        // Release the advisory lock explicitly before returning from Drop.
+        // Relying only on File's field drop is usually enough, but macOS CI has
+        // observed an immediate re-acquire in the same process racing the close.
+        #[cfg(unix)]
+        unsafe {
+            libc::flock(self._lock_file.as_raw_fd(), libc::LOCK_UN);
+        }
+
         // Clean up info file when daemon exits
         if self.info_path.exists() {
             std::fs::remove_file(&self.info_path).ok();
