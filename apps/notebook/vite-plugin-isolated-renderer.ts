@@ -273,11 +273,12 @@ export const css = ${JSON.stringify(css)};
     //
     // Iframe-bundle files (`src/isolated-renderer/**`, and the iframe-shared
     // parts of `src/components/{outputs,isolated,widgets}/**`) are bundled
-    // into the IIFE, not loaded directly by the main window. Vite's default
-    // HMR pipeline doesn't know how to hot-apply them (the main bundle
-    // imports them only for side-effect registration via
-    // `@/components/widgets/controls`), so letting it run in parallel with
-    // our `full-reload` produces a stream of "TypeError: Importing a module
+    // into the IIFE that actually runs inside the sandboxed iframe. The main
+    // bundle imports the registration index (`@/components/widgets/controls`)
+    // only for side effects; individual widget components render in the
+    // iframe, not the main window. Vite's default HMR has no Fast Refresh
+    // boundary to target here, so letting it run in parallel with our
+    // `full-reload` produces a stream of "TypeError: Importing a module
     // script failed" errors before the reload lands.
     //
     // We handle the update ourselves by rebuilding the IIFE + full-reloading
