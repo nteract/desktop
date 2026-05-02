@@ -24,7 +24,7 @@ export function VideoWidget({ modelId, className }: WidgetComponentProps) {
 
   const src = useMemo(() => buildMediaSrc(value, "video", format), [value, format]);
 
-  if (!value) {
+  if (!src) {
     return null;
   }
 
