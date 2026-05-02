@@ -1,14 +1,14 @@
 {
-  "name": "@runtimed/node-darwin-arm64",
+  "name": "@runtimed/node-win32-x64-msvc",
   "version": "0.1.0",
-  "description": "macOS arm64 native N-API binding for @runtimed/node.",
+  "description": "Windows x64 MSVC native N-API binding for @runtimed/node.",
   "type": "commonjs",
-  "main": "./runtimed-node.darwin-arm64.node",
+  "main": "./runtimed-node.win32-x64-msvc.node",
   "license": "BSD-3-Clause",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/nteract/desktop.git",
-    "directory": "packages/runtimed-node/npm/darwin-arm64"
+    "directory": "packages/runtimed-node/npm/win32-x64-msvc"
   },
   "homepage": "https://github.com/nteract/desktop/tree/main/packages/runtimed-node#readme",
   "bugs": {
@@ -20,21 +20,22 @@
     "notebook",
     "native",
     "napi-rs",
-    "darwin",
-    "arm64"
+    "win32",
+    "x64",
+    "msvc"
   ],
   "os": [
-    "darwin"
+    "win32"
   ],
   "cpu": [
-    "arm64"
+    "x64"
   ],
   "files": [
     "README.md",
-    "runtimed-node.darwin-arm64.node"
+    "runtimed-node.win32-x64-msvc.node"
   ],
   "scripts": {
-    "prepack": "node -e \"const fs = require('node:fs'); if (!fs.existsSync('runtimed-node.darwin-arm64.node')) { console.error('Run pnpm --dir packages/runtimed-node assemble:platform before packing @runtimed/node-darwin-arm64.'); process.exit(1); }\"",
+    "prepack": "node -e \"const fs = require('node:fs'); if (!fs.existsSync('runtimed-node.win32-x64-msvc.node')) { console.error('Run pnpm --dir packages/runtimed-node assemble:platform before packing @runtimed/node-win32-x64-msvc.'); process.exit(1); }\"",
     "pack:dry-run": "pnpm pack --dry-run"
   },
   "publishConfig": {

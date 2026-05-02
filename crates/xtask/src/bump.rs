@@ -204,6 +204,26 @@ const TARGETS: &[Target] = &[
         format: Format::Json,
         matches: 1,
     },
+    Target {
+        path: "packages/runtimed-node/npm/darwin-arm64/package.json",
+        format: Format::Json,
+        matches: 1,
+    },
+    Target {
+        path: "packages/runtimed-node/npm/linux-x64-gnu/package.json",
+        format: Format::Json,
+        matches: 1,
+    },
+    Target {
+        path: "packages/runtimed-node/npm/win32-x64-msvc/package.json",
+        format: Format::Json,
+        matches: 1,
+    },
+    Target {
+        path: "plugins/nteract/pi/package.json",
+        format: Format::Json,
+        matches: 1,
+    },
     // Python packages
     Target {
         path: "python/nteract/pyproject.toml",

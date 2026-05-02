@@ -539,10 +539,15 @@ importers:
       '@runtimed/node-linux-x64-gnu':
         specifier: workspace:*
         version: link:npm/linux-x64-gnu
+      '@runtimed/node-win32-x64-msvc':
+        specifier: workspace:*
+        version: link:npm/win32-x64-msvc
 
   packages/runtimed-node/npm/darwin-arm64: {}
 
   packages/runtimed-node/npm/linux-x64-gnu: {}
+
+  packages/runtimed-node/npm/win32-x64-msvc: {}
 
   packages/sift:
     dependencies:
