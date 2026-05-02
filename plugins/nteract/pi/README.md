@@ -8,9 +8,14 @@ terminal workflows that need stateful Python execution.
 
 - `extensions/repl.ts` registers a persistent `python` tool backed by
   `@runtimed/node`.
-- `python_add_dependencies` records notebook UV dependencies.
+- `python` accepts an optional `dependencies` array. On first use, those
+  packages are recorded before the kernel starts; on later calls they are
+  hot-synced before executing the cell.
+- `python_add_dependencies` batch-records notebook UV dependencies and hot-syncs
+  them using the direct Node binding.
 - `python_save_notebook` saves the backing notebook.
-- `/python-reset` starts a fresh notebook session.
+- `/python-reset` shuts down the backing notebook room and starts fresh on the
+  next `python` call.
 
 ## Install
 
