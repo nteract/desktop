@@ -329,24 +329,13 @@ fn parse_environment_yml_content(content: &str) -> Result<EnvironmentYmlConfig, 
         };
 
         if name == "python" {
-            // Extract major.minor version from the version spec
+            // Preserve the full version spec string so downstream
+            // constraint checks can apply correct operator semantics
+            // (e.g. ">=3.9,<4" stays as ">=3.9,<4", not stripped to "3.9").
             if let Some(ref version_spec) = spec.version {
                 let v = version_spec.to_string();
-                // Parse first version bound (e.g. ">=3.9,<4" → "3.9")
-                let cleaned = v
-                    .trim_start_matches(">=")
-                    .trim_start_matches("<=")
-                    .trim_start_matches("==")
-                    .trim_start_matches('=')
-                    .trim_start_matches('>')
-                    .trim_start_matches('<');
-                let first = cleaned.split(',').next().unwrap_or(cleaned);
-                let first = first.trim_end_matches(".*");
-                let parts: Vec<&str> = first.split('.').collect();
-                if parts.len() >= 2 {
-                    python = Some(format!("{}.{}", parts[0], parts[1]));
-                } else if !parts.is_empty() && !parts[0].is_empty() {
-                    python = Some(parts[0].to_string());
+                if !v.is_empty() {
+                    python = Some(v);
                 }
             }
         } else if !name.is_empty() {
@@ -543,7 +532,8 @@ mod tests {
         assert_eq!(config.channels, vec!["conda-forge"]);
         // rattler normalizes conda `=` pin: numpy=1.24 → numpy 1.24.*
         assert_eq!(config.dependencies, vec!["numpy 1.24.*", "pandas"]);
-        assert_eq!(config.python, Some("3.11".to_string()));
+        // rattler normalizes conda `=` pin: python=3.11 → 3.11.*
+        assert_eq!(config.python, Some("3.11.*".to_string()));
     }
 
     #[test]
@@ -560,7 +550,7 @@ mod tests {
         let content = "name: test\ndependencies:\n  - numpy\n  - pip:\n    - requests\n    - flask\n  - scipy\n  - matplotlib\n  - python=3.11\n";
         let config = parse_environment_yml_content(content).unwrap();
         assert_eq!(config.dependencies, vec!["numpy", "scipy", "matplotlib"]);
-        assert_eq!(config.python, Some("3.11".to_string()));
+        assert_eq!(config.python, Some("3.11.*".to_string()));
     }
 
     #[test]
@@ -575,7 +565,8 @@ mod tests {
     fn test_parse_env_yml_python_version_extraction() {
         let content = "dependencies:\n  - python>=3.9,<4\n  - numpy\n";
         let config = parse_environment_yml_content(content).unwrap();
-        assert_eq!(config.python, Some("3.9".to_string()));
+        // Range constraints preserved: >=3.9,<4 stays as-is
+        assert_eq!(config.python, Some(">=3.9,<4".to_string()));
         assert_eq!(config.dependencies, vec!["numpy"]);
     }
 
