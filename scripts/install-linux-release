@@ -27,7 +27,6 @@ Options:
                        or ~/.local/share/nteract/<channel>).
   --bin-dir <dir>      Symlink directory (default: ~/.local/bin).
   --no-start           Install/repair the daemon service but do not start it.
-  --no-pi              Do not install npm:@nteract/pi even if `pi` is on PATH.
   -h, --help           Show this help.
 
 Installs, for stable:
@@ -68,7 +67,6 @@ CHANNEL="stable"
 TAG=""
 FROM_DIR=""
 NO_START=0
-INSTALL_PI=1
 XDG_DATA_HOME_DEFAULT="${XDG_DATA_HOME:-$HOME/.local/share}"
 PREFIX=""
 BIN_DIR="$HOME/.local/bin"
@@ -101,10 +99,6 @@ while [[ $# -gt 0 ]]; do
       ;;
     --no-start)
       NO_START=1
-      shift
-      ;;
-    --no-pi)
-      INSTALL_PI=0
       shift
       ;;
     -h|--help)
@@ -239,15 +233,6 @@ fi
 echo "Repairing daemon service with $SIDE_BIN_DIR/$CLI_NAME ${DOCTOR_ARGS[*]}"
 env -u RUNTIMED_DEV -u RUNTIMED_WORKSPACE_PATH PATH="$SIDE_BIN_DIR:$BIN_DIR:$PATH" \
   "$SIDE_BIN_DIR/$CLI_NAME" "${DOCTOR_ARGS[@]}"
-
-if command -v pi >/dev/null 2>&1 && [[ "$INSTALL_PI" == "1" ]]; then
-  echo "Installing Pi nteract extension (npm:@nteract/pi)"
-  pi install npm:@nteract/pi || {
-    echo "Warning: pi extension install failed; you can retry with: pi install npm:@nteract/pi" >&2
-  }
-else
-  echo "Skipping Pi extension install. Install later with: pi install npm:@nteract/pi"
-fi
 
 echo
 echo "nteract $CHANNEL install complete."
