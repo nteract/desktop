@@ -1835,11 +1835,9 @@ pub(crate) async fn acquire_prewarmed_env_with_capture(
             };
         }
     };
-    let progress_handler: std::sync::Arc<dyn kernel_env::ProgressHandler> =
-        std::sync::Arc::new(crate::inline_env::BroadcastProgressHandler::with_state(
-            room.broadcasts.kernel_broadcast_tx.clone(),
-            room.state.clone(),
-        ));
+    let progress_handler: std::sync::Arc<dyn kernel_env::ProgressHandler> = std::sync::Arc::new(
+        crate::inline_env::RuntimeDocProgressHandler::new(room.state.clone()),
+    );
 
     // Reopen path: if the notebook has an env_id and the unified-hash env
     // exists on disk, route through prepare_environment_unified for an
@@ -2313,11 +2311,8 @@ pub(crate) async fn try_uv_pool_for_inline_deps(
                 venv_path: env.venv_path.clone(),
                 python_path: env.python_path.clone(),
             };
-            progress_handler.on_progress(
-                "uv",
-                kernel_env::EnvProgressPhase::Installing { total: delta.len() },
-            );
-            match kernel_env::uv::sync_dependencies(&uv_env, &delta).await {
+            match kernel_env::uv::sync_dependencies(&uv_env, &delta, progress_handler.clone()).await
+            {
                 Ok(()) => {
                     info!(
                         "[notebook-sync] Installed {} delta packages into pool env",
@@ -2458,11 +2453,13 @@ pub(crate) async fn try_conda_pool_for_inline_deps(
                 python: None,
                 env_id: None,
             };
-            progress_handler.on_progress(
-                "conda",
-                kernel_env::EnvProgressPhase::Installing { total: delta.len() },
-            );
-            match kernel_env::conda::sync_dependencies(&conda_env, &conda_deps).await {
+            match kernel_env::conda::sync_dependencies(
+                &conda_env,
+                &conda_deps,
+                progress_handler.clone(),
+            )
+            .await
+            {
                 Ok(()) => {
                     info!(
                         "[notebook-sync] Installed {} delta packages into Conda pool env",
@@ -2923,11 +2920,9 @@ pub(crate) async fn auto_launch_kernel(
     }
 
     // For inline deps, prepare a cached environment with rich progress
-    let progress_handler: std::sync::Arc<dyn kernel_env::ProgressHandler> =
-        std::sync::Arc::new(crate::inline_env::BroadcastProgressHandler::with_state(
-            room.broadcasts.kernel_broadcast_tx.clone(),
-            room.state.clone(),
-        ));
+    let progress_handler: std::sync::Arc<dyn kernel_env::ProgressHandler> = std::sync::Arc::new(
+        crate::inline_env::RuntimeDocProgressHandler::new(room.state.clone()),
+    );
 
     // Fetch feature flags now so inline cache hits can refresh vendored
     // launcher files when bootstrap_dx is active.
@@ -3272,18 +3267,27 @@ pub(crate) async fn auto_launch_kernel(
                 env_path: conda_prefix.clone(),
                 python_path: python_path.clone(),
             };
-            progress_handler.on_progress(
-                "conda",
-                kernel_env::EnvProgressPhase::Installing {
-                    total: conda_deps.dependencies.len(),
-                },
-            );
-            if let Err(e) = kernel_env::conda::sync_dependencies(&conda_env, &conda_deps).await {
+            if let Err(e) = kernel_env::conda::sync_dependencies(
+                &conda_env,
+                &conda_deps,
+                progress_handler.clone(),
+            )
+            .await
+            {
                 warn!(
                     "[notebook-sync] conda:env_yml sync into existing env failed: {}, continuing with existing env",
                     e
                 );
             }
+            // The banner stays lit until a terminal phase is written. Emit Ready so
+            // it clears whether the sync completed or we fell through to the existing env.
+            progress_handler.on_progress(
+                "conda",
+                kernel_env::EnvProgressPhase::Ready {
+                    env_path: conda_prefix.to_string_lossy().into_owned(),
+                    python_path: python_path.to_string_lossy().into_owned(),
+                },
+            );
             let env = Some(crate::PooledEnv {
                 env_type: crate::EnvType::Conda,
                 venv_path: conda_prefix,

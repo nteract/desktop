@@ -4558,7 +4558,6 @@ name = "notebook-protocol"
 version = "0.3.0"
 dependencies = [
  "anyhow",
- "kernel-env",
  "log",
  "notebook-wire",
  "serde",

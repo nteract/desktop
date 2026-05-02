@@ -286,9 +286,9 @@ impl NotebookFileBinding {
 /// Per-room broadcast fan-out.
 ///
 /// Groups the four channels that distribute room-scoped events to peer sync
-/// loops: document-change notifications, kernel broadcasts (EnvProgress,
-/// Comm), and presence traffic. `presence`
-/// holds the per-peer state that `presence_tx` relays between connections.
+/// loops: document-change notifications, kernel broadcasts (Comm), and
+/// presence traffic. `presence` holds the per-peer state that `presence_tx`
+/// relays between connections.
 pub struct RoomBroadcasts {
     /// Broadcast channel to notify all peers in this room of doc changes.
     pub changed_tx: broadcast::Sender<()>,
@@ -297,7 +297,9 @@ pub struct RoomBroadcasts {
     /// counts. This deliberately excludes generic RuntimeStateDoc updates like
     /// lifecycle, project context, path, and last_saved.
     pub file_dirty_tx: broadcast::Sender<()>,
-    /// Broadcast channel for kernel events: EnvProgress and Comm (widget messages).
+    /// Broadcast channel for kernel Comm events (ipywidget messages and custom
+    /// widget traffic). Env progress moved to RuntimeStateDoc and no longer
+    /// flows here.
     pub kernel_broadcast_tx: broadcast::Sender<NotebookBroadcast>,
     /// Broadcast channel for presence frames (cursor, selection, kernel state).
     /// Carries raw presence bytes plus the peer_id to relay to other peers.

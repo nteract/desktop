@@ -11,7 +11,6 @@ workspace = true
 
 [dependencies]
 anyhow = { workspace = true }
-kernel-env = { path = "../kernel-env", default-features = false }
 log = "0.4"
 notebook-wire = { path = "../notebook-wire" }
 serde = { workspace = true }

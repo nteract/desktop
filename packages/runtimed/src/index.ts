@@ -117,13 +117,7 @@ export {
 export { type PoolState, type RuntimePoolState, DEFAULT_POOL_STATE } from "./pool-state";
 
 // Broadcast types
-export {
-  type CommBroadcast,
-  type EnvProgressBroadcast,
-  isCommBroadcast,
-  isEnvProgressBroadcast,
-  type KnownBroadcast,
-} from "./broadcast-types";
+export { type CommBroadcast, isCommBroadcast, type KnownBroadcast } from "./broadcast-types";
 
 // Env progress projection
 export {

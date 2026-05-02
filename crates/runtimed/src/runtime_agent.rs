@@ -874,7 +874,12 @@ async fn handle_runtime_agent_request(
                             python_path,
                         };
 
-                        match kernel_env::uv::sync_dependencies(&uv_env, &packages).await {
+                        // Runtime-agent hot-sync path has no progress channel back to
+                        // the coordinator yet. Route to logs only; follow-up can thread
+                        // this through the agent's sync connection.
+                        let handler: std::sync::Arc<dyn kernel_env::ProgressHandler> =
+                            std::sync::Arc::new(kernel_env::LogHandler);
+                        match kernel_env::uv::sync_dependencies(&uv_env, &packages, handler).await {
                             Ok(()) => (
                                 RuntimeAgentResponse::EnvironmentSynced {
                                     synced_packages: packages,
@@ -912,7 +917,11 @@ async fn handle_runtime_agent_request(
                             env_id: None,
                         };
 
-                        match kernel_env::conda::sync_dependencies(&conda_env, &conda_deps).await {
+                        let handler: std::sync::Arc<dyn kernel_env::ProgressHandler> =
+                            std::sync::Arc::new(kernel_env::LogHandler);
+                        match kernel_env::conda::sync_dependencies(&conda_env, &conda_deps, handler)
+                            .await
+                        {
                             Ok(()) => (
                                 RuntimeAgentResponse::EnvironmentSynced {
                                     synced_packages: packages,

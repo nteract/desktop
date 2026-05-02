@@ -867,8 +867,15 @@ pub fn is_environment_warmed(env: &CondaEnvironment) -> bool {
 /// Install additional dependencies into an existing environment.
 ///
 /// Solves and installs new packages into the existing prefix, considering
-/// already-installed packages as locked.
-pub async fn sync_dependencies(env: &CondaEnvironment, deps: &CondaDependencies) -> Result<()> {
+/// already-installed packages as locked. Progress events (solve, download,
+/// link, install-complete, ready) flow through `handler` so the frontend
+/// banner and logs stay in sync with the real transaction — including the
+/// full package count when the solver pulls in transitive deps.
+pub async fn sync_dependencies(
+    env: &CondaEnvironment,
+    deps: &CondaDependencies,
+    handler: Arc<dyn ProgressHandler>,
+) -> Result<()> {
     if deps.dependencies.is_empty() {
         return Ok(());
     }
@@ -928,16 +935,13 @@ pub async fn sync_dependencies(env: &CondaEnvironment, deps: &CondaDependencies)
     let install_platform = Platform::current();
     let platforms = vec![install_platform, Platform::NoArch];
 
-    // Use LogHandler for sync operations (no UI progress needed)
-    let handler = Arc::new(crate::progress::LogHandler);
-
     let repo_data = crate::repodata::query_repodata_offline_first(
         channels,
         platforms,
         specs.clone(),
         &rattler_cache_dir,
         download_client.clone(),
-        handler,
+        handler.clone(),
         "conda",
     )
     .await?;
@@ -984,13 +988,32 @@ pub async fn sync_dependencies(env: &CondaEnvironment, deps: &CondaDependencies)
     let required_packages = solver_result.records;
 
     info!("Installing {} packages for sync", required_packages.len());
+    // The solver pulls in transitive deps; emit the real count here so the
+    // banner doesn't stay pinned at the (usually smaller) user-dep count.
+    handler.on_progress(
+        "conda",
+        EnvProgressPhase::Installing {
+            total: required_packages.len(),
+        },
+    );
+
+    let reporter = RattlerReporter::new(handler.clone());
+    let install_start = Instant::now();
 
     Installer::new()
         .with_download_client(download_client)
         .with_target_platform(install_platform)
         .with_installed_packages(installed_packages)
+        .with_reporter(reporter)
         .install(&env.env_path, required_packages)
         .await?;
+
+    handler.on_progress(
+        "conda",
+        EnvProgressPhase::InstallComplete {
+            elapsed_ms: install_start.elapsed().as_millis() as u64,
+        },
+    );
 
     info!("Conda dependencies synced successfully");
     Ok(())

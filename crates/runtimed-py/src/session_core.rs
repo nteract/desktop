@@ -11,9 +11,7 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 
 use notebook_protocol::connection::LaunchSpec;
-use notebook_protocol::protocol::{
-    NotebookBroadcast, NotebookRequest, NotebookResponse, SaveErrorKind,
-};
+use notebook_protocol::protocol::{NotebookRequest, NotebookResponse, SaveErrorKind};
 use notebook_sync::{BroadcastReceiver, DocHandle};
 use runtime_doc::{KernelActivity, RuntimeLifecycle};
 
@@ -671,9 +669,9 @@ pub(crate) async fn restart_kernel(
         }
     }
 
-    // Clone handle and resubscribe broadcast_rx so we can release the lock
-    // before the potentially long-running LaunchKernel request.
-    let (handle, resolved_path, mut progress_rx) = {
+    // Clone handle so we can release the lock before the potentially
+    // long-running LaunchKernel request.
+    let (handle, resolved_path) = {
         let st = state.lock().await;
         let handle = st
             .handle
@@ -681,8 +679,7 @@ pub(crate) async fn restart_kernel(
             .ok_or_else(|| to_py_err("Not connected"))?
             .clone();
         let resolved_path = st.notebook_path.clone();
-        let progress_rx = st.broadcast_rx.as_ref().map(|rx| rx.resubscribe());
-        (handle, resolved_path, progress_rx)
+        (handle, resolved_path)
     };
     // Lock is now released — other operations can proceed.
 
@@ -705,21 +702,43 @@ pub(crate) async fn restart_kernel(
         notebook_path: resolved_path,
     });
 
-    let response = if let Some(ref mut prx) = progress_rx {
-        // Race between launch response and progress events
+    // Poll RuntimeStateDoc.env.progress for progress lines while the launch
+    // runs. Env progress moved off the broadcast channel (it's CRDT state
+    // now), so we read the projected phase directly and dedupe by a stable
+    // key so we don't spam the same step repeatedly.
+    //
+    // The progress field is a single-slot snapshot, so cache-hit paths that
+    // race through `CacheHit → Ready` between two ticks (or before the
+    // first tick fires) leave the last-write visible but the intermediate
+    // phases lost. Snapshot once more after the launch response resolves
+    // so at minimum the terminal phase lands in `progress_messages`.
+    let response = {
         tokio::pin!(launch_fut);
         let deadline = tokio::time::Instant::now() + launch_timeout;
+        let mut last_progress_key: Option<String> = None;
+        let mut poll_tick = tokio::time::interval(std::time::Duration::from_millis(200));
+        poll_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
         loop {
             tokio::select! {
                 resp = &mut launch_fut => {
-                    break resp.map_err(to_py_err)?;
+                    let response = resp.map_err(to_py_err)?;
+                    // Drain the latest progress phase written by the daemon right
+                    // before it returned the launch response. Without this,
+                    // instant cache-hits produce an empty progress list.
+                    snapshot_env_progress(
+                        &handle,
+                        &mut progress_messages,
+                        &mut last_progress_key,
+                    );
+                    break response;
                 }
-                msg = prx.recv() => {
-                    if let Some(NotebookBroadcast::EnvProgress { env_type, phase }) = msg {
-                        let text = env_progress_message(&phase);
-                        progress_messages.push(format!("[{}] {}", env_type, text));
-                    }
-                    // Continue waiting for launch response
+                _ = poll_tick.tick() => {
+                    snapshot_env_progress(
+                        &handle,
+                        &mut progress_messages,
+                        &mut last_progress_key,
+                    );
                 }
                 _ = tokio::time::sleep_until(deadline) => {
                     return Err(to_py_err(
@@ -728,15 +747,6 @@ pub(crate) async fn restart_kernel(
                 }
             }
         }
-    } else {
-        tokio::time::timeout(launch_timeout, launch_fut)
-            .await
-            .map_err(|_| {
-                to_py_err(
-                    "Kernel restart timed out after 120s (environment may still be installing)",
-                )
-            })?
-            .map_err(to_py_err)?
     };
 
     // Re-acquire lock to update state
@@ -2264,6 +2274,37 @@ async fn resolve_blob_paths(socket_path: &Path) -> (Option<String>, Option<PathB
 
 use kernel_env::EnvProgressPhase;
 
+/// Read the current `env.progress` snapshot from `handle` and append a
+/// formatted line to `messages` if the phase key is new. Shared by the
+/// tick path and the post-launch drain so cache-hit races don't swallow
+/// the terminal phase.
+fn snapshot_env_progress(
+    handle: &DocHandle,
+    messages: &mut Vec<String>,
+    last_key: &mut Option<String>,
+) {
+    let Ok(rs) = handle.get_runtime_state() else {
+        return;
+    };
+    let Some(value) = rs.env.progress.as_ref() else {
+        return;
+    };
+    let env_type = value
+        .get("env_type")
+        .and_then(|v| v.as_str())
+        .unwrap_or("env")
+        .to_string();
+    let Ok(phase) = serde_json::from_value::<EnvProgressPhase>(value.clone()) else {
+        return;
+    };
+    let key = env_progress_dedupe_key(&env_type, &phase);
+    if last_key.as_deref() == Some(&key) {
+        return;
+    }
+    *last_key = Some(key);
+    messages.push(format!("[{}] {}", env_type, env_progress_message(&phase)));
+}
+
 fn env_progress_message(phase: &EnvProgressPhase) -> String {
     match phase {
         EnvProgressPhase::Starting { .. } => "Preparing environment...".to_string(),
@@ -2308,6 +2349,36 @@ fn env_progress_message(phase: &EnvProgressPhase) -> String {
         }
         EnvProgressPhase::Ready { .. } => "Environment ready".to_string(),
         EnvProgressPhase::Error { message } => format!("Environment error: {}", message),
+    }
+}
+
+/// Stable key used to dedupe successive progress reads when polling the CRDT.
+/// High-frequency phases (download/link) coalesce to one line per package;
+/// everything else coalesces on phase identity.
+fn env_progress_dedupe_key(env_type: &str, phase: &EnvProgressPhase) -> String {
+    match phase {
+        EnvProgressPhase::DownloadProgress {
+            current_package, ..
+        } => format!("{}:download:{}", env_type, current_package),
+        EnvProgressPhase::LinkProgress {
+            current_package, ..
+        } => format!("{}:link:{}", env_type, current_package),
+        EnvProgressPhase::Starting { .. } => format!("{}:starting", env_type),
+        EnvProgressPhase::CacheHit { .. } => format!("{}:cache_hit", env_type),
+        EnvProgressPhase::LockFileHit => format!("{}:lock_file_hit", env_type),
+        EnvProgressPhase::OfflineHit => format!("{}:offline_hit", env_type),
+        EnvProgressPhase::FetchingRepodata { .. } => format!("{}:fetching_repodata", env_type),
+        EnvProgressPhase::RepodataComplete { .. } => format!("{}:repodata_complete", env_type),
+        EnvProgressPhase::Solving { .. } => format!("{}:solving", env_type),
+        EnvProgressPhase::SolveComplete { .. } => format!("{}:solve_complete", env_type),
+        EnvProgressPhase::Installing { total } => format!("{}:installing:{}", env_type, total),
+        EnvProgressPhase::InstallComplete { .. } => format!("{}:install_complete", env_type),
+        EnvProgressPhase::CreatingVenv => format!("{}:creating_venv", env_type),
+        EnvProgressPhase::InstallingPackages { .. } => {
+            format!("{}:installing_packages", env_type)
+        }
+        EnvProgressPhase::Ready { .. } => format!("{}:ready", env_type),
+        EnvProgressPhase::Error { message } => format!("{}:error:{}", env_type, message),
     }
 }
 
