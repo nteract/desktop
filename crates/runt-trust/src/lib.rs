@@ -101,8 +101,7 @@ pub struct TrustInfo {
 ///
 /// Checks (in order):
 /// 1. Thread-safe override via [`set_test_key_path`] — preferred for tests.
-/// 2. `RUNT_TRUST_KEY_PATH` env var — legacy fallback.
-/// 3. Platform config dir (`~/.config/runt/trust-key` on Linux).
+/// 2. Platform config dir (`~/.config/runt/trust-key` on Linux).
 fn trust_key_path() -> Option<PathBuf> {
     // 1. Thread-safe test override (no env mutation needed)
     //    Recover from poison so a panicked test doesn't silently fall
@@ -114,11 +113,7 @@ fn trust_key_path() -> Option<PathBuf> {
         return Some(path.clone());
     }
     drop(guard);
-    // 2. Legacy env var override
-    if let Ok(path) = std::env::var("RUNT_TRUST_KEY_PATH") {
-        return Some(PathBuf::from(path));
-    }
-    // 3. Platform default
+    // 2. Platform default
     dirs::config_dir().map(|d| d.join("runt").join("trust-key"))
 }
 
