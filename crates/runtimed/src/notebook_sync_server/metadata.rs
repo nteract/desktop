@@ -3303,11 +3303,19 @@ pub(crate) async fn auto_launch_kernel(
                 .parent()
                 .unwrap_or_else(|| std::path::Path::new("/tmp"));
             if let Err(e) = tokio::fs::create_dir_all(parent).await {
-                error!(
-                    "[notebook-sync] Failed to create conda envs directory {:?}: {}",
-                    parent, e
-                );
-                reset_starting_state(room, None).await;
+                let details = format!("Failed to create conda envs directory {:?}: {}", parent, e);
+                error!("[notebook-sync] {}", details);
+                if let Err(e) = room.state.with_doc(|sd| {
+                    sd.set_lifecycle_with_error_details(
+                        &RuntimeLifecycle::Error,
+                        Some(KernelErrorReason::CondaEnvBuildFailed),
+                        Some(&details),
+                    )?;
+                    sd.clear_env_progress()?;
+                    Ok(())
+                }) {
+                    warn!("[runtime-state] {}", e);
+                }
                 return;
             }
 
@@ -3346,11 +3354,22 @@ pub(crate) async fn auto_launch_kernel(
                     )
                 }
                 Err(e) => {
-                    error!(
-                        "[notebook-sync] Failed to create conda env '{}' from environment.yml: {}",
+                    let details = format!(
+                        "Failed to create conda env '{}' from environment.yml: {}",
                         env_name_display, e
                     );
-                    reset_starting_state(room, None).await;
+                    error!("[notebook-sync] {}", details);
+                    if let Err(e) = room.state.with_doc(|sd| {
+                        sd.set_lifecycle_with_error_details(
+                            &RuntimeLifecycle::Error,
+                            Some(KernelErrorReason::CondaEnvBuildFailed),
+                            Some(&details),
+                        )?;
+                        sd.clear_env_progress()?;
+                        Ok(())
+                    }) {
+                        warn!("[runtime-state] {}", e);
+                    }
                     return;
                 }
             }

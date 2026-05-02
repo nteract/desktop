@@ -1042,13 +1042,22 @@ pub(crate) async fn handle(
                             .parent()
                             .unwrap_or_else(|| std::path::Path::new("/tmp"));
                         if let Err(e) = tokio::fs::create_dir_all(parent).await {
-                            reset_starting_state(room, None).await;
-                            return NotebookResponse::Error {
-                                error: format!(
-                                    "Failed to create conda envs directory {:?}: {}",
-                                    parent, e
-                                ),
-                            };
+                            let details = format!(
+                                "Failed to create conda envs directory {:?}: {}",
+                                parent, e
+                            );
+                            reset_starting_state_with_outcome(
+                                room,
+                                None,
+                                ResetOutcome::Error {
+                                    reason: Some(
+                                        runtime_doc::KernelErrorReason::CondaEnvBuildFailed,
+                                    ),
+                                    details: &details,
+                                },
+                            )
+                            .await;
+                            return NotebookResponse::Error { error: details };
                         }
                         match kernel_env::conda::prepare_environment_in(
                             &conda_deps,
@@ -1087,13 +1096,22 @@ pub(crate) async fn handle(
                                 )
                             }
                             Err(e) => {
-                                reset_starting_state(room, None).await;
-                                return NotebookResponse::Error {
-                                    error: format!(
-                                        "Failed to create conda env '{}' from environment.yml: {}",
-                                        env_name_display, e
-                                    ),
-                                };
+                                let details = format!(
+                                    "Failed to create conda env '{}' from environment.yml: {}",
+                                    env_name_display, e
+                                );
+                                reset_starting_state_with_outcome(
+                                    room,
+                                    None,
+                                    ResetOutcome::Error {
+                                        reason: Some(
+                                            runtime_doc::KernelErrorReason::CondaEnvBuildFailed,
+                                        ),
+                                        details: &details,
+                                    },
+                                )
+                                .await;
+                                return NotebookResponse::Error { error: details };
                             }
                         }
                     }
