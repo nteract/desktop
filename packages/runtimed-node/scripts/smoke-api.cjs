@@ -32,9 +32,25 @@ async function main() {
   try {
     assert.match(session.notebookId, /^[0-9a-f-]{36}$/i, "session has UUID notebookId");
 
+    await session.addDependencies(["pandas", "matplotlib"], {
+      packageManager: rt.PackageManager.Uv,
+    });
+    assert.equal(
+      await session.removeDependencies(["matplotlib"], {
+        packageManager: rt.PackageManager.Uv,
+      }),
+      1,
+      "removeDependencies() returns removal count",
+    );
+
     const deps = await session.getDependencyStatus();
     assert(deps.uv, "uv dependency status is present");
     assert(deps.uv.dependencies.includes("numpy"), "createNotebook() records dependencies");
+    assert(deps.uv.dependencies.includes("pandas"), "addDependencies() records dependencies");
+    assert(
+      !deps.uv.dependencies.includes("matplotlib"),
+      "removeDependencies() removes dependencies",
+    );
     assert(deps.trust, "trust status is grouped");
     assert.equal(typeof deps.fingerprint, "string", "dependency fingerprint is present");
 

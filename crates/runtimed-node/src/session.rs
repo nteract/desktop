@@ -35,6 +35,7 @@ type CommMap = std::collections::HashMap<String, runtime_doc::CommDocEntry>;
 /// and that enum intentionally includes an `Unknown(String)` wire-compatibility
 /// variant that should not be exposed as a typed JavaScript option.
 #[napi(string_enum = "lowercase")]
+#[derive(Clone, Copy)]
 pub enum PackageManager {
     Uv,
     Conda,
@@ -397,6 +398,30 @@ impl Session {
         Ok(())
     }
 
+    /// Add dependencies to the selected package manager (defaults to UV) in one CRDT transaction.
+    /// Call `syncEnvironment()` or restart the kernel to install them.
+    #[napi]
+    pub async fn add_dependencies(
+        &self,
+        packages: Vec<String>,
+        options: Option<DependencyEditOptions>,
+    ) -> Result<()> {
+        let handle = session_handle(&self.state).await?;
+        let package_manager = dependency_package_manager(options);
+        handle
+            .with_metadata(|snapshot| {
+                for pkg in &packages {
+                    match package_manager {
+                        PackageManager::Uv => snapshot.add_uv_dependency(pkg),
+                        PackageManager::Conda => snapshot.add_conda_dependency(pkg),
+                        PackageManager::Pixi => snapshot.add_pixi_dependency(pkg),
+                    }
+                }
+            })
+            .map_err(to_napi_err)?;
+        approve_current_trust(&handle, None).await
+    }
+
     /// Add a dependency to the selected package manager (defaults to UV).
     /// Call `syncEnvironment()` or restart the kernel to install it.
     #[napi]
@@ -405,15 +430,35 @@ impl Session {
         pkg: String,
         options: Option<DependencyEditOptions>,
     ) -> Result<()> {
+        self.add_dependencies(vec![pkg], options).await
+    }
+
+    /// Remove dependencies from the selected package manager (defaults to UV) in one CRDT transaction.
+    /// Returns the number of dependencies removed.
+    #[napi]
+    pub async fn remove_dependencies(
+        &self,
+        packages: Vec<String>,
+        options: Option<DependencyEditOptions>,
+    ) -> Result<u32> {
         let handle = session_handle(&self.state).await?;
         let package_manager = dependency_package_manager(options);
-        match package_manager {
-            PackageManager::Uv => handle.add_uv_dependency(&pkg),
-            PackageManager::Conda => handle.add_conda_dependency(&pkg),
-            PackageManager::Pixi => handle.add_pixi_dependency(&pkg),
+        let removed = handle
+            .with_metadata(|snapshot| {
+                packages
+                    .iter()
+                    .filter(|pkg| match package_manager {
+                        PackageManager::Uv => snapshot.remove_uv_dependency(pkg),
+                        PackageManager::Conda => snapshot.remove_conda_dependency(pkg),
+                        PackageManager::Pixi => snapshot.remove_pixi_dependency(pkg),
+                    })
+                    .count()
+            })
+            .map_err(to_napi_err)?;
+        if removed > 0 {
+            approve_current_trust(&handle, None).await?;
         }
-        .map_err(to_napi_err)?;
-        approve_current_trust(&handle, None).await
+        Ok(removed.try_into().unwrap_or(u32::MAX))
     }
 
     /// Remove a dependency from the selected package manager (defaults to UV).
@@ -424,18 +469,7 @@ impl Session {
         pkg: String,
         options: Option<DependencyEditOptions>,
     ) -> Result<bool> {
-        let handle = session_handle(&self.state).await?;
-        let package_manager = dependency_package_manager(options);
-        let removed = match package_manager {
-            PackageManager::Uv => handle.remove_uv_dependency(&pkg),
-            PackageManager::Conda => handle.remove_conda_dependency(&pkg),
-            PackageManager::Pixi => handle.remove_pixi_dependency(&pkg),
-        }
-        .map_err(to_napi_err)?;
-        if removed {
-            approve_current_trust(&handle, None).await?;
-        }
-        Ok(removed)
+        Ok(self.remove_dependencies(vec![pkg], options).await? > 0)
     }
 
     /// Add a UV dependency to the notebook (e.g. `"matplotlib>=3.8"`).

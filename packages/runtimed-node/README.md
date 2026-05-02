@@ -94,9 +94,12 @@ as a human-readable peer label for agent-created sessions.
 - `Session.runCell(source, options)` creates, runs, and waits for a cell.
 - `Session.queueCell(source, options)` queues a cell and returns IDs.
 - `Session.waitForExecution(executionId, options)` waits for queued work.
-- `Session.addDependency(spec, { packageManager })` and
-  `Session.removeDependency(spec, { packageManager })` edit notebook dependency
-  metadata for UV, Conda, or Pixi.
+- `Session.addDependency(spec, { packageManager })` /
+  `Session.addDependencies(specs, { packageManager })` and
+  `Session.removeDependency(spec, { packageManager })` /
+  `Session.removeDependencies(specs, { packageManager })` edit notebook
+  dependency metadata for UV, Conda, or Pixi. Batch variants use one CRDT
+  metadata transaction.
 - `Session.getDependencyStatus()` returns dependency metadata, fingerprint, and
   trust state in one call.
 - `Session.addUvDependency(spec)` records a UV dependency for the notebook.
