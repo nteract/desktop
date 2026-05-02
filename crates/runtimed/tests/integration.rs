@@ -166,6 +166,19 @@ async fn wait_for_session_ready(handle: &notebook_sync::DocHandle, timeout: Dura
     )
 }
 
+async fn assert_session_ready(handle: &notebook_sync::DocHandle, context: &str) {
+    if let Err(err) = handle
+        .await_session_ready_timeout(SESSION_READY_TIMEOUT)
+        .await
+    {
+        panic!(
+            "{context} did not become session-ready within {:?}: {err}; status={:?}",
+            SESSION_READY_TIMEOUT,
+            handle.status()
+        );
+    }
+}
+
 async fn wait_for_cell_count(
     handle: &notebook_sync::DocHandle,
     expected: usize,
@@ -1688,18 +1701,14 @@ async fn test_streaming_load_via_open_notebook() {
     assert_eq!(info.cell_count, 0);
     assert!(info.error.is_none());
 
-    // The sync task runs in the background. Wait for cells to arrive.
-    let start = std::time::Instant::now();
+    assert_session_ready(&handle, "OpenNotebook streaming load").await;
     let mut cells = handle.get_cells();
-    while cells.len() < 7 && start.elapsed() < Duration::from_secs(5) {
-        sleep(Duration::from_millis(50)).await;
-        cells = handle.get_cells();
-    }
 
     assert_eq!(
         cells.len(),
         7,
-        "should receive all 7 cells via streaming load"
+        "should receive all 7 cells via streaming load after session-ready; status={:?}",
+        handle.status()
     );
 
     // Verify cell ordering
@@ -1801,15 +1810,13 @@ async fn test_streaming_load_second_client_joins() {
         .expect("client1 should connect");
     let handle1 = result1.handle;
 
-    // Wait for streaming load to complete
-    let start = std::time::Instant::now();
-    while handle1.get_cells().len() < 3 && start.elapsed() < Duration::from_secs(5) {
-        sleep(Duration::from_millis(50)).await;
-    }
+    assert_session_ready(&handle1, "first OpenNotebook client").await;
+    let cells1 = handle1.get_cells();
     assert_eq!(
-        handle1.get_cells().len(),
+        cells1.len(),
         3,
-        "client1 should have all cells"
+        "client1 should have all cells after session-ready; status={:?}",
+        handle1.status()
     );
 
     // Second client opens the same file — should join the existing room
@@ -1821,15 +1828,16 @@ async fn test_streaming_load_second_client_joins() {
 
     // Room already loaded, so handshake may report cells > 0 or 0 depending
     // on whether the room was found with existing cells. Either way, the
-    // second client should converge to the full cell set via sync.
-    let start = std::time::Instant::now();
-    let mut cells2 = handle2.get_cells();
-    while cells2.len() < 3 && start.elapsed() < Duration::from_secs(5) {
-        sleep(Duration::from_millis(50)).await;
-        cells2 = handle2.get_cells();
-    }
+    // second client should be fully ready before we trust its local snapshot.
+    assert_session_ready(&handle2, "second OpenNotebook client").await;
+    let cells2 = handle2.get_cells();
 
-    assert_eq!(cells2.len(), 3, "client2 should see all 3 cells");
+    assert_eq!(
+        cells2.len(),
+        3,
+        "client2 should see all 3 cells after session-ready; status={:?}",
+        handle2.status()
+    );
     let ids: Vec<&str> = cells2.iter().map(|c| c.id.as_str()).collect();
     assert_eq!(ids, vec!["a1", "a2", "a3"]);
     assert_eq!(cells2[0].source, "first");
