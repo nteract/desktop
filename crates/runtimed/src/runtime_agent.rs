@@ -163,11 +163,14 @@ pub async fn run_runtime_agent(
                                     if matches!(envelope.request, RuntimeAgentRequest::InterruptExecution) {
                                         if let Some(ref handle) = interrupt_handle {
                                             let handle = handle.clone();
-                                            // Mark interrupted BEFORE clearing the queue so
-                                            // the subsequent CellError (KeyboardInterrupt on
-                                            // IOPub) doesn't cascade into cells queued after
-                                            // this point.
-                                            kernel_state.mark_interrupted();
+                                            // Only mark interrupted when a cell is actually
+                                            // executing — an idle interrupt has no pending
+                                            // execution_done to clear the flag, so it would
+                                            // persist and incorrectly suppress queue clearing
+                                            // on a later unrelated CellError.
+                                            if kernel_state.executing_cell().is_some() {
+                                                kernel_state.mark_interrupted();
+                                            }
                                             let cleared = kernel_state.clear_queue();
                                             // Write cleared entries to state doc
                                             if let Err(e) = state.with_doc(|sd| {
@@ -876,7 +879,9 @@ async fn handle_runtime_agent_request(
             if let Some(ref mut k) = kernel {
                 match k.interrupt().await {
                     Ok(()) => {
-                        state.mark_interrupted();
+                        if state.executing_cell().is_some() {
+                            state.mark_interrupted();
+                        }
                         let cleared = state.clear_queue();
                         // Write cleared entries to state doc
                         if let Err(e) = ctx.state.with_doc(|sd| {
@@ -1550,5 +1555,41 @@ mod tests {
         assert_eq!(eb.status, "error");
         let ec = handle.read(|sd| sd.get_execution("eC").unwrap()).unwrap();
         assert_eq!(ec.status, "error");
+    }
+
+    /// Interrupt while idle must NOT set the interrupted flag, otherwise
+    /// a later CellError (from a real user-code failure) would skip queue
+    /// clearing and break stop-on-error behavior.
+    #[tokio::test]
+    async fn idle_interrupt_does_not_set_interrupted_flag() {
+        let (_ctx, mut state, _handle) = test_fixtures();
+        let mut mock = MockKernel;
+        state.set_idle();
+
+        // No cell executing — mimic the runtime_agent guard
+        assert!(state.executing_cell().is_none());
+        if state.executing_cell().is_some() {
+            state.mark_interrupted();
+        }
+
+        // Flag should still be false
+        assert!(!state.is_interrupted());
+
+        // Now queue and execute a cell that fails — cascade should work
+        state
+            .queue_cell("c1".into(), "e1".into(), "1/0".into(), &mut mock)
+            .await
+            .unwrap();
+        state
+            .queue_cell("c2".into(), "e2".into(), "x=1".into(), &mut mock)
+            .await
+            .unwrap();
+
+        state.mark_execution_error();
+        assert!(!state.is_interrupted());
+
+        // CellError should cascade — queue should clear
+        let cleared = state.clear_queue();
+        assert_eq!(cleared.len(), 1); // c2
     }
 }
