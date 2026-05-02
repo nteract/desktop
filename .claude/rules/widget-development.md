@@ -18,9 +18,13 @@ Widgets run inside a security-isolated iframe. The parent window owns the Widget
 
 Widget state lives in the **RuntimeStateDoc** CRDT (`doc.comms/` Automerge map). Each comm entry tracks target_name, model_module, model_name, state (as native Automerge map), outputs, and seq.
 
-- **Daemon:** Writes comm state on `comm_open`/`comm_msg(update)`/`comm_close` from kernel IOPub. State updates go through a 16ms coalescing writer to avoid overwhelming CRDT sync. Large comm state values (>1KB serialized JSON) are stored in the blob store as a `ContentRef` object `{blob: hash, size, media_type}` in the CRDT, following the same pattern as binary widget buffers and output ContentRefs. The daemon assigns `media_type` per key — `_esm` → `text/javascript`, `_css` → `text/css`, else `text/plain` — see `crates/runtimed/src/output_prep.rs`. On the frontend, `resolve_comm_state` in `crates/runtimed-wasm/` classifies each ContentRef: binary MIMEs return a URL in `buffer_paths` for ArrayBuffer fetching, text MIMEs return a URL in `text_paths` for the sync engine to fetch + inline as a string. The anywidget-reserved keys `_esm` and `_css` are excluded from `text_paths` (URL stays in state) so `loadESM` can `import(url)` directly and `injectCSS` can render a `<link rel="stylesheet">`. This prevents expensive recursive CRDT expansion of large JSON objects (e.g., Vega-Lite specs embedded in JupyterChart state).
-- **Frontend:** `WidgetStore` in `widget-store.ts` -- per-model subscriptions, IPY_MODEL_ reference resolution, custom message buffering. Populated by a CRDT watcher in `useDaemonKernel.ts` that diffs `runtimeState.comms` and synthesizes Jupyter comm messages.
-- **Frontend → Kernel:** Built-in widget state updates write to RuntimeStateDoc via `getCrdtCommWriter()`. The runtime agent diffs comm state on each sync and forwards deltas to the kernel.
+- **Daemon:** Writes comm state on `comm_open`/`comm_msg(update)`/`comm_close` from kernel IOPub. State updates go through a 16ms coalescing writer to avoid overwhelming CRDT sync. Large comm state values (>1KB serialized JSON) and binary comm `buffers` (the ipywidgets binary-traitlet protocol, e.g. `Image.value`, `BinaryWidget.data`) are stored in the blob store as `ContentRef` objects `{blob: hash, size, media_type}` in the CRDT. The daemon assigns `media_type` per key — `_esm` → `text/javascript`, `_css` → `text/css`, binary buffers → `application/octet-stream`, else `text/plain` — see `crates/runtimed/src/output_prep.rs`.
+- **WASM resolver:** `resolve_comm_state` in `crates/runtimed-wasm/` walks the state and rewrites each ContentRef to a blob-server URL string. Each path is reported to the frontend in one of three categories:
+  - **`buffer_paths`** — binary MIME (or missing `media_type`). The iframe fetches the URL and installs a `DataView` at the path, matching the ipywidgets binary-traitlet protocol.
+  - **`text_paths`** — text MIME (`text/plain`, `text/html`, `application/json`, `image/svg+xml`, etc.). The sync engine fetches the URL and inlines the decoded string back into the state tree before it reaches widget code.
+  - **Neither list** — the anywidget-reserved keys `_esm` and `_css`. The URL stays as a string so `loadESM` can `import(url)` directly and `injectCSS` can render a `<link rel="stylesheet">`. Do NOT list these in `buffer_paths`: the iframe's resolver would fetch them and install a `DataView`, breaking both loaders.
+- **Frontend inbound:** `SyncEngine.commChanges$` (`packages/runtimed/src/sync-engine.ts`) diffs `RuntimeStateDoc.comms`, calls `resolve_comm_state`, inlines text blobs, and emits `ResolvedComm { state, bufferPaths, ... }`. `App.tsx` subscribes and drives the WidgetStore. The iframe's `widget-bridge-client.ts` receives each comm with its `bufferPaths` and resolves the blob URLs to `DataView`s before the anywidget model observes state. `useCommRouter` is **outbound-only** — the Jupyter-protocol `handleMessage` and `applyBufferPaths` paths were dropped when SyncEngine became authoritative (see commit history for `fix/widget-binary-buffers`).
+- **Frontend → Kernel:** Built-in widget state updates write to RuntimeStateDoc via `getCrdtCommWriter()`. The runtime agent diffs comm state on each sync and forwards deltas to the kernel. Custom `model.send(..., buffers)` messages still use the daemon shell channel since they're ephemeral events, not CRDT state.
 
 New clients receive widget state via normal RuntimeStateDoc CRDT sync (frame `0x05`). Custom widget messages (button clicks, etc.) still use `NotebookBroadcast::Comm` since they're ephemeral events, not persistent state.
 
@@ -50,32 +54,39 @@ interface WidgetStore {
 
   // Model operations
   getModel(modelId: string): WidgetModel | undefined;
-  createModel(commId: string, state: Record<string, unknown>, buffers?: ArrayBuffer[]): void;
-  updateModel(commId: string, statePatch: Record<string, unknown>, buffers?: ArrayBuffer[]): void;
+  createModel(commId: string, state: Record<string, unknown>, bufferPaths?: string[][]): void;
+  updateModel(commId: string, statePatch: Record<string, unknown>, bufferPaths?: string[][]): void;
   deleteModel(commId: string): void;
   wasModelClosed(commId: string): boolean;
 
   // Fine-grained subscriptions
   subscribeToKey(modelId: string, key: string, callback: (value: unknown) => void): () => void;
 
-  // Custom messages (e.g., anywidget)
+  // Custom messages (e.g., anywidget model.send())
   emitCustomMessage(commId: string, content: Record<string, unknown>, buffers?: ArrayBuffer[]): void;
   subscribeToCustomMessage(commId: string, callback: CustomMessageCallback): () => void;
 }
 ```
 
-Use `useWidgetModelValue(modelId, "key")` from `widget-store-context.tsx` in components. Under the hood this calls `useSyncExternalStore` with `subscribeToKey` and `getModel`.
+`bufferPaths` is the manifest of JSON paths in `state` whose values are blob URL strings. The iframe fetches each URL and swaps in a `DataView` before the anywidget model observes state. Parent-window code sees URL strings; iframe-local code sees `DataView`s at those paths.
+
+Custom `buffers` on `emitCustomMessage` / `subscribeToCustomMessage` are a separate channel — transient event payloads (ipycanvas draw commands, quak row batches) that don't belong in CRDT state.
+
+Use `useWidgetModelValue(modelId, "key")` from `widget-store-context.tsx` in components.
 
 ## Comm Bridge Protocol
 
-| Message | When | Jupyter Wire Format |
-|---------|------|---------------------|
-| `comm_open` | Widget created | `{ comm_id, target_name, data: { state } }` |
-| `comm_msg` | State update | `{ comm_id, data: { method: "update", state } }` |
-| `comm_msg` | Custom message | `{ comm_id, data: { method: "custom", content } }` |
-| `comm_close` | Widget destroyed | `{ comm_id }` |
+| Message | When | Iframe payload |
+|---------|------|----------------|
+| `comm_open` | Widget created (CRDT opened) | `{ commId, targetName, state, bufferPaths? }` |
+| `comm_msg` method `update` | State delta (CRDT changed) | `{ commId, method: "update", data, bufferPaths? }` |
+| `comm_msg` method `custom` | Ephemeral event | `{ commId, method: "custom", data, buffers? }` |
+| `comm_close` | Widget destroyed | `{ commId }` |
+| `widget_snapshot` | Iframe reconnect | `{ models: [{ commId, targetName, state, bufferPaths? }] }` |
 
-Internal TypeScript types in `frame-bridge.ts` use camelCase (`commId`, `targetName`) and a flatter structure than the wire format. See `CommOpenMessage` and `CommMsgMessage` for actual postMessage payload shapes.
+`bufferPaths` only applies to `open` / `update`. `buffers` only applies to `custom`. The two don't share a channel.
+
+See `CommOpenMessage`, `CommMsgMessage`, `WidgetSnapshotMessage` in `src/components/isolated/frame-bridge.ts` for the exact payload shapes.
 
 ## Adding a New Built-in Widget
 
