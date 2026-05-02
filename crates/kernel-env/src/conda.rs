@@ -1144,7 +1144,7 @@ fn build_spec_strings(deps: &CondaDependencies) -> Vec<String> {
 ///
 /// This is cheaper than spawning `python --version` and works even when the
 /// environment's Python is broken or missing from PATH.
-fn detect_installed_python_version(env_path: &std::path::Path) -> Option<String> {
+pub fn detect_installed_python_version(env_path: &std::path::Path) -> Option<String> {
     let meta_dir = env_path.join("conda-meta");
     let entries = std::fs::read_dir(&meta_dir).ok()?;
     for entry in entries.flatten() {
@@ -1189,6 +1189,56 @@ fn has_freethreading_package(env_path: &std::path::Path) -> bool {
         }
     }
     false
+}
+
+/// Check whether the installed Python version in a conda env matches the
+/// requested constraint from environment.yaml (e.g. `"3.12"`).
+///
+/// Compares major.minor only — a constraint of `"3.12"` matches installed
+/// `"3.12.7"` but not `"3.14.4"`. Returns `true` if the constraint is
+/// satisfied or if either version can't be determined (fail-open to avoid
+/// unnecessary rebuilds). Returns `false` when the installed major.minor
+/// clearly doesn't match the constraint.
+///
+/// Used by the `conda:env_yml` launch path to detect when an existing named
+/// env has a different Python version than what environment.yaml requests,
+/// triggering a rebuild instead of syncing into the wrong Python.
+pub fn installed_python_matches_constraint(env_path: &std::path::Path, requested: &str) -> bool {
+    let installed = match detect_installed_python_version(env_path) {
+        Some(v) => v,
+        None => return true, // Can't detect → fail-open
+    };
+
+    // Extract major.minor from installed (e.g. "3.14.4" → "3.14")
+    let installed_parts: Vec<&str> = installed.split('.').collect();
+    let installed_mm = if installed_parts.len() >= 2 {
+        format!("{}.{}", installed_parts[0], installed_parts[1])
+    } else {
+        return true; // Unusual format → fail-open
+    };
+
+    // Extract major.minor from the constraint. The constraint may be
+    // "3.12", "3.12.7", ">=3.12", etc. Strip common prefixes and take
+    // the first version-like token.
+    let cleaned = requested
+        .trim_start_matches(">=")
+        .trim_start_matches("<=")
+        .trim_start_matches("==")
+        .trim_start_matches('=')
+        .trim_start_matches('>')
+        .trim_start_matches('<');
+    let first = cleaned.split(',').next().unwrap_or(cleaned);
+    let first = first.trim_end_matches(".*");
+    let req_parts: Vec<&str> = first.split('.').collect();
+    let requested_mm = if req_parts.len() >= 2 {
+        format!("{}.{}", req_parts[0], req_parts[1])
+    } else if !req_parts.is_empty() && !req_parts[0].is_empty() {
+        req_parts[0].to_string()
+    } else {
+        return true; // Can't parse → fail-open
+    };
+
+    installed_mm == requested_mm
 }
 
 /// Find the site-packages directory inside a venv/env.
@@ -1491,5 +1541,36 @@ mod tests {
     fn has_freethreading_package_false_when_no_conda_meta() {
         let dir = tempfile::tempdir().unwrap();
         assert!(!has_freethreading_package(dir.path()));
+    }
+
+    #[test]
+    fn python_constraint_matches_same_major_minor() {
+        let dir = tempfile::tempdir().unwrap();
+        let meta = dir.path().join("conda-meta");
+        std::fs::create_dir_all(&meta).unwrap();
+        std::fs::write(meta.join("python-3.12.7-h2b28147_0.json"), "{}").unwrap();
+
+        assert!(installed_python_matches_constraint(dir.path(), "3.12"));
+        assert!(installed_python_matches_constraint(dir.path(), "3.12.7"));
+        assert!(installed_python_matches_constraint(dir.path(), ">=3.12"));
+        assert!(installed_python_matches_constraint(dir.path(), "==3.12"));
+    }
+
+    #[test]
+    fn python_constraint_rejects_different_major_minor() {
+        let dir = tempfile::tempdir().unwrap();
+        let meta = dir.path().join("conda-meta");
+        std::fs::create_dir_all(&meta).unwrap();
+        std::fs::write(meta.join("python-3.14.4-h2b28147_0.json"), "{}").unwrap();
+
+        assert!(!installed_python_matches_constraint(dir.path(), "3.12"));
+        assert!(!installed_python_matches_constraint(dir.path(), "3.13"));
+    }
+
+    #[test]
+    fn python_constraint_fails_open_when_no_env() {
+        let dir = tempfile::tempdir().unwrap();
+        // No conda-meta → can't detect → returns true (fail-open)
+        assert!(installed_python_matches_constraint(dir.path(), "3.12"));
     }
 }

@@ -3262,7 +3262,50 @@ pub(crate) async fn auto_launch_kernel(
         };
 
         let python_path = crate::project_file::conda_python_path(&conda_prefix);
-        if python_path.exists() {
+
+        // Check for Python version mismatch: if environment.yaml
+        // requests e.g. python=3.12 but the existing env has 3.14,
+        // remove the env so it gets recreated with the correct
+        // version. Without this, sync_dependencies pins the
+        // installed version and ignores the yaml constraint.
+        let python_version_ok = if python_path.exists() {
+            if let Some(ref requested) = env_config.python {
+                let matches = kernel_env::conda::installed_python_matches_constraint(
+                    &conda_prefix,
+                    requested,
+                );
+                if !matches {
+                    let installed =
+                        kernel_env::conda::detect_installed_python_version(&conda_prefix)
+                            .unwrap_or_else(|| "unknown".to_string());
+                    warn!(
+                        "[notebook-sync] conda:env_yml Python mismatch: \
+                         environment.yaml requests python={} but env has {}; \
+                         rebuilding env",
+                        requested, installed
+                    );
+                    if let Err(e) = tokio::fs::remove_dir_all(&conda_prefix).await {
+                        warn!(
+                            "[notebook-sync] Failed to remove mismatched env {:?}: {}",
+                            conda_prefix, e
+                        );
+                    }
+                    false
+                } else {
+                    true
+                }
+            } else {
+                true // No python constraint → any version is fine
+            }
+        } else {
+            false // No existing env
+        };
+
+        // Re-check python_path after potential env removal
+        let python_path = crate::project_file::conda_python_path(&conda_prefix);
+
+        if python_path.exists() && python_version_ok {
+            // Existing env with correct Python — sync deps into it
             let conda_env = kernel_env::CondaEnvironment {
                 env_path: conda_prefix.clone(),
                 python_path: python_path.clone(),
