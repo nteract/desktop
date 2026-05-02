@@ -36,7 +36,7 @@ supported because `runtimed` is a per-user daemon.
 Linux users can also install the released AppImage with:
 
 ```bash
-curl -fsSL https://sh.nteract.io | sh
+curl -fsSL https://sh.nteract.io | bash
 ```
 
 ### Crate publishing

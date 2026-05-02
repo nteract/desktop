@@ -2,7 +2,7 @@
 # Install a published nteract Linux release for the current user.
 #
 # Intended future entrypoint:
-#   curl --proto '=https' --tlsv1.2 -sSf https://sh.nteract.io | sh
+#   curl --proto '=https' --tlsv1.2 -sSf https://sh.nteract.io | bash
 #
 # Installs the AppImage plus runt/runtimed/nteract-mcp sidecars into a durable
 # per-user directory, links commands into ~/.local/bin, repairs/installs the

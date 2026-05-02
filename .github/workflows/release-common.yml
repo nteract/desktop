@@ -1554,7 +1554,7 @@ jobs:
             echo "For Linux shell installs, download \`install-linux-release\` from this release or run:"
             echo ''
             echo '```bash'
-            echo 'curl -fsSL https://sh.nteract.io | sh'
+            echo 'curl -fsSL https://sh.nteract.io | bash'
             echo '```'
             echo ''
             echo 'This release includes auto-update support. Existing installations will be notified of this update automatically.'
