@@ -5183,8 +5183,6 @@ mod tests {
 
     #[test]
     fn test_with_metadata_noop_skips_write() {
-        use automerge::ReadDoc;
-
         let mut doc = NotebookDoc::new("nb-noop");
         doc.add_uv_dependency("numpy").unwrap();
 
@@ -5207,8 +5205,6 @@ mod tests {
 
     #[test]
     fn test_with_metadata_noop_remove_absent_skips_write() {
-        use automerge::ReadDoc;
-
         let mut doc = NotebookDoc::new("nb-noop-remove");
         doc.add_uv_dependency("numpy").unwrap();
         let heads_before = doc.doc.get_heads();
