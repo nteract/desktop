@@ -1,5 +1,5 @@
 {
   "name": "nteract",
   "description": "Open, run, and edit nteract notebooks from Claude Code",
-  "version": "0.2.1"
+  "version": "0.2.2"
 }

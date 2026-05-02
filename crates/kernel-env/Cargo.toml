@@ -1,6 +1,6 @@
 [package]
 name = "kernel-env"
-version = "0.3.1"
+version = "0.3.2"
 edition.workspace = true
 description = "Python environment management (UV + Conda) with progress reporting"
 repository.workspace = true

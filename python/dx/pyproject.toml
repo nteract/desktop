@@ -1,6 +1,6 @@
 [project]
 name = "dx"
-version = "2.1.1"
+version = "2.1.2"
 description = "nteract/dx — efficient display and blob-store uploads from Python kernels"
 readme = "README.md"
 license = "BSD-3-Clause"

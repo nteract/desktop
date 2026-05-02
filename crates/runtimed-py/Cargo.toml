@@ -1,6 +1,6 @@
 [package]
 name = "runtimed-py"
-version = "2.4.1"
+version = "2.4.2"
 edition = "2021"
 description = "Python bindings for runtimed daemon client"
 repository.workspace = true
