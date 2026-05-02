@@ -2,84 +2,32 @@ name: Publish npm packages
 
 # Manual-only npm publishing for the Pi package and runtimed Node bindings.
 #
-# This is intentionally separate from the existing nightly/stable release
-# cadence. It only runs when explicitly triggered from the GitHub Actions UI.
-# Before using it, configure npm trusted publishing for this workflow on:
+# Publishes stable releases to the `latest` dist-tag via GitHub OIDC trusted
+# publishing (no npm token required). Nightly releases are published manually
+# with `npm publish --tag next` from a local checkout, since trusted publishing
+# doesn't support operations that require an npm token (like dist-tag management).
+#
+# Before using this workflow, configure npm trusted publishing for:
 # - @runtimed/node
 # - @runtimed/node-darwin-arm64
 # - @runtimed/node-linux-x64-gnu
+# - @runtimed/node-win32-x64-msvc
 # - @nteract/pi
-#
-# The initial 0.0.1 package names were manually bootstrapped on npm. Future
-# runs should publish via GitHub OIDC/provenance without an npm token.
 
 on:
   workflow_dispatch:
-    inputs:
-      release_type:
-        description: Release type
-        default: nightly
-        required: true
-        type: choice
-        options:
-          - stable
-          - nightly
-      mode:
-        description: Action to perform
-        default: publish
-        required: true
-        type: choice
-        options:
-          - publish
-          - promote
 
 permissions:
   contents: read
   id-token: write
 
 concurrency:
-  group: npm-publish-${{ inputs.release_type }}
+  group: npm-publish-stable
   cancel-in-progress: false
 
-env:
-  NPM_TAG: ${{ inputs.release_type == 'stable' && 'latest' || 'next' }}
-
 jobs:
-  promote:
-    name: Promote dist-tags
-    if: inputs.mode == 'promote'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/setup-node@v6
-        with:
-          node-version: "24"
-          registry-url: "https://registry.npmjs.org"
-
-      - name: Use npm with trusted publishing support
-        run: npm install -g npm@latest
-
-      - name: Fetch latest version from current tag
-        id: version
-        run: |
-          # Get the source tag based on release_type
-          SOURCE_TAG="${{ inputs.release_type == 'stable' && 'next' || 'latest' }}"
-          VERSION=$(npm view "@nteract/pi@${SOURCE_TAG}" version)
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "source_tag=$SOURCE_TAG" >> "$GITHUB_OUTPUT"
-
-      - name: Promote packages to ${{ env.NPM_TAG }}
-        run: |
-          VERSION="${{ steps.version.outputs.version }}"
-          echo "Promoting version $VERSION from ${{ steps.version.outputs.source_tag }} to ${{ env.NPM_TAG }}"
-          npm dist-tag add "@nteract/pi@$VERSION" "${{ env.NPM_TAG }}"
-          npm dist-tag add "@runtimed/node@$VERSION" "${{ env.NPM_TAG }}"
-          npm dist-tag add "@runtimed/node-darwin-arm64@$VERSION" "${{ env.NPM_TAG }}"
-          npm dist-tag add "@runtimed/node-linux-x64-gnu@$VERSION" "${{ env.NPM_TAG }}"
-          npm dist-tag add "@runtimed/node-win32-x64-msvc@$VERSION" "${{ env.NPM_TAG }}"
-
   native:
     name: Native package (${{ matrix.target }})
-    if: inputs.mode == 'publish'
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -122,11 +70,10 @@ jobs:
         run: pnpm --dir packages/runtimed-node/npm/${{ matrix.target }} pack:dry-run
 
       - name: Publish platform package
-        run: npm publish packages/runtimed-node/npm/${{ matrix.target }} --tag "${{ env.NPM_TAG }}" --access public --provenance
+        run: npm publish packages/runtimed-node/npm/${{ matrix.target }} --tag latest --access public --provenance
 
   wrapper:
     name: Wrapper package
-    if: inputs.mode == 'publish'
     needs: [native]
     runs-on: ubuntu-latest
     steps:
@@ -160,11 +107,10 @@ jobs:
         run: pnpm --dir packages/runtimed-node pack --pack-destination "$RUNNER_TEMP"
 
       - name: Publish wrapper package
-        run: npm publish "$RUNNER_TEMP"/runtimed-node-*.tgz --tag "${{ env.NPM_TAG }}" --access public --provenance
+        run: npm publish "$RUNNER_TEMP"/runtimed-node-*.tgz --tag latest --access public --provenance
 
   pi:
     name: Pi package
-    if: inputs.mode == 'publish'
     needs: [wrapper]
     runs-on: ubuntu-latest
     steps:
@@ -193,4 +139,4 @@ jobs:
         run: pnpm --dir plugins/nteract/pi pack --pack-destination "$RUNNER_TEMP"
 
       - name: Publish Pi package
-        run: npm publish "$RUNNER_TEMP"/nteract-pi-*.tgz --tag "${{ env.NPM_TAG }}" --access public --provenance
+        run: npm publish "$RUNNER_TEMP"/nteract-pi-*.tgz --tag latest --access public --provenance
