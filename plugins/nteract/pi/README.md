@@ -20,11 +20,8 @@ terminal workflows that need stateful Python execution.
 ## Install
 
 ```bash
-pi install npm:@nteract/pi@next
+pi install npm:@nteract/pi
 ```
-
-Use the `next` tag for prerelease builds until the package is promoted to the
-default npm tag.
 
 ## Local Use
 
