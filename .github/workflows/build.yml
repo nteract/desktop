@@ -21,6 +21,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
+          lfs: true
           fetch-depth: 0
 
       - name: Check changed paths
@@ -60,6 +61,8 @@ jobs:
     runs-on: blacksmith-4vcpu-ubuntu-2404
     steps:
       - uses: actions/checkout@v6
+        with:
+          lfs: true
 
       - name: Install rust
         uses: dsherret/rust-toolchain-file@v1
@@ -95,6 +98,8 @@ jobs:
     runs-on: blacksmith-4vcpu-ubuntu-2404
     steps:
       - uses: actions/checkout@v6
+        with:
+          lfs: true
 
       - name: Install NSIS
         run: |
@@ -113,6 +118,8 @@ jobs:
     runs-on: blacksmith-4vcpu-ubuntu-2404
     steps:
       - uses: actions/checkout@v6
+        with:
+          lfs: true
 
       - name: Install rust
         uses: dsherret/rust-toolchain-file@v1
@@ -146,6 +153,8 @@ jobs:
     runs-on: blacksmith-4vcpu-ubuntu-2404
     steps:
       - uses: actions/checkout@v6
+        with:
+          lfs: true
 
       - name: Install rust
         uses: dsherret/rust-toolchain-file@v1
@@ -180,6 +189,8 @@ jobs:
     runs-on: blacksmith-4vcpu-ubuntu-2404
     steps:
       - uses: actions/checkout@v6
+        with:
+          lfs: true
 
       - name: Install rust
         uses: dsherret/rust-toolchain-file@v1
@@ -224,6 +235,8 @@ jobs:
     runs-on: blacksmith-4vcpu-ubuntu-2404
     steps:
       - uses: actions/checkout@v6
+        with:
+          lfs: true
 
       - name: Install rust
         uses: dsherret/rust-toolchain-file@v1
@@ -251,6 +264,8 @@ jobs:
     runs-on: blacksmith-4vcpu-ubuntu-2404
     steps:
       - uses: actions/checkout@v6
+        with:
+          lfs: true
 
       - name: Download UI build artifacts
         uses: actions/download-artifact@v4
@@ -355,6 +370,8 @@ jobs:
     runs-on: blacksmith-4vcpu-ubuntu-2404
     steps:
       - uses: actions/checkout@v6
+        with:
+          lfs: true
 
       - name: Install system dependencies
         run: |
@@ -436,6 +453,8 @@ jobs:
         run: echo "Skipping this platform for pull_request events."
 
       - uses: actions/checkout@v6
+        with:
+          lfs: true
         if: needs.changes.outputs.source_changed == 'true' && (github.event_name != 'pull_request' || matrix.platform.run_on_pr)
 
       - name: Download UI build artifacts
@@ -562,6 +581,8 @@ jobs:
             timeout: 12
     steps:
       - uses: actions/checkout@v6
+        with:
+          lfs: true
 
       - name: Install system dependencies
         run: |
@@ -789,6 +810,8 @@ jobs:
     if: needs.changes.outputs.source_changed == 'true'
     steps:
       - uses: actions/checkout@v6
+        with:
+          lfs: true
 
       - name: Install rust
         uses: dsherret/rust-toolchain-file@v1
@@ -893,6 +916,8 @@ jobs:
     runs-on: blacksmith-4vcpu-ubuntu-2404
     steps:
       - uses: actions/checkout@v6
+        with:
+          lfs: true
 
       - name: Install rust
         uses: dsherret/rust-toolchain-file@v1

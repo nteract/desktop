@@ -76,6 +76,7 @@ jobs:
       - name: Checkout pinned PR commit
         uses: actions/checkout@v6
         with:
+          lfs: true
           ref: ${{ needs.resolve-pr.outputs.head_sha }}
           fetch-depth: 1
 

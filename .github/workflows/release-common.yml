@@ -64,6 +64,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+        with:
+          lfs: true
 
       - name: Compute version
         id: version
@@ -81,6 +83,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+        with:
+          lfs: true
 
       - name: Set up Rust
         uses: dsherret/rust-toolchain-file@v1
@@ -114,6 +118,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
         with:
+          lfs: true
           fetch-depth: 0
 
       - name: Install system dependencies
@@ -187,6 +192,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
         with:
+          lfs: true
           fetch-depth: 0
 
       - name: Set up Rust
@@ -257,6 +263,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
         with:
+          lfs: true
           fetch-depth: 0
 
       - name: Set up Rust
@@ -434,6 +441,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
         with:
+          lfs: true
           fetch-depth: 0
 
       - name: Set up Rust
@@ -614,6 +622,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
         with:
+          lfs: true
           fetch-depth: 0
 
       - name: Set up Rust
@@ -780,6 +789,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
         with:
+          lfs: true
           fetch-depth: 0
 
       - name: Install system dependencies
@@ -899,6 +909,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+        with:
+          lfs: true
 
       - name: Download Linux AppImage
         uses: actions/download-artifact@v4
@@ -926,6 +938,8 @@ jobs:
     needs: compute-version
     steps:
       - uses: actions/checkout@v6
+        with:
+          lfs: true
 
       - name: Install uv
         uses: astral-sh/setup-uv@v7
@@ -965,6 +979,8 @@ jobs:
     needs: compute-version
     steps:
       - uses: actions/checkout@v6
+        with:
+          lfs: true
 
       - name: Install uv
         uses: astral-sh/setup-uv@v7
@@ -1018,6 +1034,8 @@ jobs:
             target: x86_64-pc-windows-msvc
     steps:
       - uses: actions/checkout@v6
+        with:
+          lfs: true
 
       - name: Set up Rust
         uses: dsherret/rust-toolchain-file@v1
@@ -1142,6 +1160,7 @@ jobs:
       - name: Checkout source repo
         uses: actions/checkout@v6
         with:
+          lfs: true
           fetch-depth: 1
 
       - name: Download nteract-mcp binaries
@@ -1168,6 +1187,7 @@ jobs:
       - name: Checkout distribution repo
         uses: actions/checkout@v6
         with:
+          lfs: true
           repository: nteract/claude-plugin
           token: ${{ secrets.CLAUDE_PLUGIN_DEPLOY_TOKEN }}
           path: plugin-dist-repo
@@ -1250,6 +1270,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
         with:
+          lfs: true
           fetch-depth: 0
 
       - name: Install git-cliff

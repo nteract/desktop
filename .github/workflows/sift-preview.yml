@@ -27,6 +27,8 @@ jobs:
       deployments: write
     steps:
       - uses: actions/checkout@v6
+        with:
+          lfs: true
 
       - name: Install rust
         uses: dsherret/rust-toolchain-file@v1

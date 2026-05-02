@@ -37,6 +37,8 @@ jobs:
     if: github.event_name != 'pull_request'
     steps:
       - uses: actions/checkout@v6
+        with:
+          lfs: true
 
       - name: Set up Rust
         uses: dsherret/rust-toolchain-file@v1
@@ -404,6 +406,8 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v6
+        with:
+          lfs: true
 
       - name: Set up Rust
         uses: dsherret/rust-toolchain-file@v1
