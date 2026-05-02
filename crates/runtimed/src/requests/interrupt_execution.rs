@@ -1,31 +1,19 @@
 //! `NotebookRequest::InterruptExecution` handler.
 
-use tracing::warn;
-
 use crate::notebook_sync_server::{send_runtime_agent_command, NotebookRoom};
 use crate::protocol::NotebookResponse;
 
 pub(crate) async fn handle(room: &NotebookRoom) -> NotebookResponse {
     let has_runtime_agent = room.runtime_agent_request_tx.lock().await.is_some();
     if has_runtime_agent {
-        // Mark all in-flight executions as failed on the coordinator's copy
-        // of RuntimeStateDoc BEFORE sending the interrupt to the runtime
-        // agent.  This catches execution entries created by a concurrent
-        // ExecuteCell that haven't synced to the runtime agent yet — without
-        // this, those entries stay "queued" forever because the runtime
-        // agent's local queue doesn't know about them when it clears.
-        if let Err(e) = room.state.with_doc(|sd| {
-            sd.mark_inflight_executions_failed()?;
-            Ok(())
-        }) {
-            warn!(
-                "[interrupt] Failed to mark inflight executions on coordinator: {}",
-                e
-            );
-        }
-
-        // Fire-and-forget: the agent handles the SIGINT signal and updates
-        // its local queue / RuntimeStateDoc copy.
+        // Do NOT mark executions as failed here on the coordinator side.
+        // A concurrent ExecuteCell may have just queued an entry that should
+        // run normally after the interrupt completes.  The runtime agent's
+        // interrupt handler calls mark_inflight_executions_failed() on its
+        // own CRDT copy, which only catches entries that have already synced
+        // to the agent (i.e. entries that were genuinely in-flight).  Entries
+        // created concurrently arrive in a later sync frame and get picked
+        // up by get_queued_executions() for normal execution.
         match send_runtime_agent_command(
             room,
             notebook_protocol::protocol::RuntimeAgentRequest::InterruptExecution,
