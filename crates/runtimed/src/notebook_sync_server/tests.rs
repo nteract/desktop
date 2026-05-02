@@ -596,7 +596,7 @@ async fn test_untitled_room_preserves_legacy_persisted_automerge_history() {
 async fn test_new_fresh_untitled_trust_from_doc() {
     let temp_dir = tempfile::tempdir().unwrap();
     let key_path = temp_dir.path().join("trust-key");
-    std::env::set_var("RUNT_TRUST_KEY_PATH", key_path.to_str().unwrap());
+    runt_trust::set_test_key_path(Some(key_path.clone()));
 
     let tmp = tempfile::TempDir::new().unwrap();
     let blob_store = test_blob_store(&tmp);
@@ -635,7 +635,7 @@ async fn test_new_fresh_untitled_trust_from_doc() {
         "Untitled notebook trust should survive daemon restart"
     );
 
-    std::env::remove_var("RUNT_TRUST_KEY_PATH");
+    runt_trust::set_test_key_path(None);
 }
 
 #[tokio::test(start_paused = true)]
@@ -4093,14 +4093,14 @@ fn test_verify_trust_from_snapshot_no_deps() {
 fn test_verify_trust_from_snapshot_unsigned_deps() {
     let temp_dir = tempfile::tempdir().unwrap();
     let key_path = temp_dir.path().join("trust-key");
-    std::env::set_var("RUNT_TRUST_KEY_PATH", key_path.to_str().unwrap());
+    runt_trust::set_test_key_path(Some(key_path.clone()));
 
     let snapshot = snapshot_with_uv(vec!["numpy".to_string()]);
     let result = verify_trust_from_snapshot(&snapshot);
     assert_eq!(result.status, runt_trust::TrustStatus::Untrusted);
     assert!(!result.pending_launch);
 
-    std::env::remove_var("RUNT_TRUST_KEY_PATH");
+    runt_trust::set_test_key_path(None);
 }
 
 #[test]
@@ -4108,7 +4108,7 @@ fn test_verify_trust_from_snapshot_unsigned_deps() {
 fn test_verify_trust_from_snapshot_unsigned_pixi_deps() {
     let temp_dir = tempfile::tempdir().unwrap();
     let key_path = temp_dir.path().join("trust-key");
-    std::env::set_var("RUNT_TRUST_KEY_PATH", key_path.to_str().unwrap());
+    runt_trust::set_test_key_path(Some(key_path.clone()));
 
     let snapshot = snapshot_with_pixi(vec!["pandas".to_string()], vec!["requests".to_string()]);
     let result = verify_trust_from_snapshot(&snapshot);
@@ -4117,7 +4117,7 @@ fn test_verify_trust_from_snapshot_unsigned_pixi_deps() {
     assert_eq!(result.info.pixi_pypi_dependencies, vec!["requests"]);
     assert!(!result.pending_launch);
 
-    std::env::remove_var("RUNT_TRUST_KEY_PATH");
+    runt_trust::set_test_key_path(None);
 }
 
 #[test]
@@ -4125,7 +4125,7 @@ fn test_verify_trust_from_snapshot_unsigned_pixi_deps() {
 fn test_verify_trust_from_snapshot_signed_trusted() {
     let temp_dir = tempfile::tempdir().unwrap();
     let key_path = temp_dir.path().join("trust-key");
-    std::env::set_var("RUNT_TRUST_KEY_PATH", key_path.to_str().unwrap());
+    runt_trust::set_test_key_path(Some(key_path.clone()));
 
     let mut snapshot = snapshot_with_uv(vec!["numpy".to_string()]);
 
@@ -4141,7 +4141,7 @@ fn test_verify_trust_from_snapshot_signed_trusted() {
     assert_eq!(result.status, runt_trust::TrustStatus::Trusted);
     assert!(!result.pending_launch);
 
-    std::env::remove_var("RUNT_TRUST_KEY_PATH");
+    runt_trust::set_test_key_path(None);
 }
 
 #[test]
@@ -4149,7 +4149,7 @@ fn test_verify_trust_from_snapshot_signed_trusted() {
 fn test_verify_trust_from_snapshot_invalid_signature() {
     let temp_dir = tempfile::tempdir().unwrap();
     let key_path = temp_dir.path().join("trust-key");
-    std::env::set_var("RUNT_TRUST_KEY_PATH", key_path.to_str().unwrap());
+    runt_trust::set_test_key_path(Some(key_path.clone()));
 
     let mut snapshot = snapshot_with_uv(vec!["numpy".to_string()]);
     // Set a bogus signature that won't match.
@@ -4159,7 +4159,7 @@ fn test_verify_trust_from_snapshot_invalid_signature() {
     assert_eq!(result.status, runt_trust::TrustStatus::SignatureInvalid);
     assert!(!result.pending_launch);
 
-    std::env::remove_var("RUNT_TRUST_KEY_PATH");
+    runt_trust::set_test_key_path(None);
 }
 
 #[test]
@@ -4167,7 +4167,7 @@ fn test_verify_trust_from_snapshot_invalid_signature() {
 fn test_verify_trust_from_snapshot_conda_trusted() {
     let temp_dir = tempfile::tempdir().unwrap();
     let key_path = temp_dir.path().join("trust-key");
-    std::env::set_var("RUNT_TRUST_KEY_PATH", key_path.to_str().unwrap());
+    runt_trust::set_test_key_path(Some(key_path.clone()));
 
     let mut snapshot = snapshot_with_conda(vec!["pandas".to_string()]);
 
@@ -4183,7 +4183,7 @@ fn test_verify_trust_from_snapshot_conda_trusted() {
     assert_eq!(result.status, runt_trust::TrustStatus::Trusted);
     assert!(!result.pending_launch);
 
-    std::env::remove_var("RUNT_TRUST_KEY_PATH");
+    runt_trust::set_test_key_path(None);
 }
 
 #[tokio::test]
@@ -4245,7 +4245,7 @@ async fn test_check_and_update_trust_state_no_deps() {
 async fn test_approve_trust_adds_dependencies_to_allowlist() {
     let tmp = tempfile::TempDir::new().unwrap();
     let key_path = tmp.path().join("trust-key");
-    std::env::set_var("RUNT_TRUST_KEY_PATH", key_path.to_str().unwrap());
+    runt_trust::set_test_key_path(Some(key_path.clone()));
 
     let store =
         crate::trusted_packages::TrustedPackageStore::open(tmp.path().join("trusted.sqlite"))
@@ -4275,7 +4275,7 @@ async fn test_approve_trust_adds_dependencies_to_allowlist() {
     };
     assert!(store.all_dependencies_approved(&info).unwrap());
 
-    std::env::remove_var("RUNT_TRUST_KEY_PATH");
+    runt_trust::set_test_key_path(None);
 }
 
 #[tokio::test]
@@ -4283,7 +4283,7 @@ async fn test_approve_trust_adds_dependencies_to_allowlist() {
 async fn test_allowlisted_unsigned_dependencies_auto_sign_and_trust() {
     let tmp = tempfile::TempDir::new().unwrap();
     let key_path = tmp.path().join("trust-key");
-    std::env::set_var("RUNT_TRUST_KEY_PATH", key_path.to_str().unwrap());
+    runt_trust::set_test_key_path(Some(key_path.clone()));
 
     let store =
         crate::trusted_packages::TrustedPackageStore::open(tmp.path().join("trusted.sqlite"))
@@ -4324,7 +4324,7 @@ async fn test_allowlisted_unsigned_dependencies_auto_sign_and_trust() {
     let snapshot = room.doc.read().await.get_metadata_snapshot().unwrap();
     assert!(snapshot.runt.trust_signature.is_some());
 
-    std::env::remove_var("RUNT_TRUST_KEY_PATH");
+    runt_trust::set_test_key_path(None);
 }
 
 #[tokio::test]
@@ -4332,7 +4332,7 @@ async fn test_allowlisted_unsigned_dependencies_auto_sign_and_trust() {
 async fn test_allowlist_partial_coverage_stays_untrusted_with_markers() {
     let tmp = tempfile::TempDir::new().unwrap();
     let key_path = tmp.path().join("trust-key");
-    std::env::set_var("RUNT_TRUST_KEY_PATH", key_path.to_str().unwrap());
+    runt_trust::set_test_key_path(Some(key_path.clone()));
 
     let store =
         crate::trusted_packages::TrustedPackageStore::open(tmp.path().join("trusted.sqlite"))
@@ -4370,7 +4370,7 @@ async fn test_allowlist_partial_coverage_stays_untrusted_with_markers() {
     let state = room.state.read(|sd| sd.read_state()).unwrap();
     assert_eq!(state.trust.approved_uv_dependencies, vec!["pandas>=2"]);
 
-    std::env::remove_var("RUNT_TRUST_KEY_PATH");
+    runt_trust::set_test_key_path(None);
 }
 
 #[tokio::test]
@@ -4378,7 +4378,7 @@ async fn test_allowlist_partial_coverage_stays_untrusted_with_markers() {
 async fn test_allowlist_does_not_override_invalid_signature() {
     let tmp = tempfile::TempDir::new().unwrap();
     let key_path = tmp.path().join("trust-key");
-    std::env::set_var("RUNT_TRUST_KEY_PATH", key_path.to_str().unwrap());
+    runt_trust::set_test_key_path(Some(key_path.clone()));
 
     let store =
         crate::trusted_packages::TrustedPackageStore::open(tmp.path().join("trusted.sqlite"))
@@ -4410,7 +4410,7 @@ async fn test_allowlist_does_not_override_invalid_signature() {
     let ts = room.trust_state.read().await;
     assert_eq!(ts.status, runt_trust::TrustStatus::SignatureInvalid);
 
-    std::env::remove_var("RUNT_TRUST_KEY_PATH");
+    runt_trust::set_test_key_path(None);
 }
 
 #[tokio::test]
@@ -4418,7 +4418,7 @@ async fn test_allowlist_does_not_override_invalid_signature() {
 async fn test_check_and_update_trust_state_approval_updates_room() {
     let temp_dir = tempfile::tempdir().unwrap();
     let key_path = temp_dir.path().join("trust-key");
-    std::env::set_var("RUNT_TRUST_KEY_PATH", key_path.to_str().unwrap());
+    runt_trust::set_test_key_path(Some(key_path.clone()));
 
     let tmp = tempfile::TempDir::new().unwrap();
     let (room, _path) = test_room_with_path(&tmp, "signed.ipynb");
@@ -4456,7 +4456,7 @@ async fn test_check_and_update_trust_state_approval_updates_room() {
     assert_eq!(state.trust.status, "trusted");
     assert!(!state.trust.needs_approval);
 
-    std::env::remove_var("RUNT_TRUST_KEY_PATH");
+    runt_trust::set_test_key_path(None);
 }
 
 #[tokio::test]
@@ -4523,7 +4523,7 @@ async fn test_check_and_update_trust_state_idempotent() {
 async fn test_check_and_update_trust_state_auto_resigns_trusted_notebook() {
     let temp_dir = tempfile::tempdir().unwrap();
     let key_path = temp_dir.path().join("trust-key");
-    std::env::set_var("RUNT_TRUST_KEY_PATH", key_path.to_str().unwrap());
+    runt_trust::set_test_key_path(Some(key_path.clone()));
 
     let tmp = tempfile::TempDir::new().unwrap();
     let (room, _path) = test_room_with_path(&tmp, "signed_then_edited.ipynb");
@@ -4603,7 +4603,7 @@ async fn test_check_and_update_trust_state_auto_resigns_trusted_notebook() {
         assert!(!state.trust.needs_approval);
     }
 
-    std::env::remove_var("RUNT_TRUST_KEY_PATH");
+    runt_trust::set_test_key_path(None);
 }
 
 /// Auto re-sign must only apply when the notebook was already Trusted.
@@ -4614,7 +4614,7 @@ async fn test_check_and_update_trust_state_auto_resigns_trusted_notebook() {
 async fn test_check_and_update_trust_state_no_autoresign_when_not_previously_trusted() {
     let temp_dir = tempfile::tempdir().unwrap();
     let key_path = temp_dir.path().join("trust-key");
-    std::env::set_var("RUNT_TRUST_KEY_PATH", key_path.to_str().unwrap());
+    runt_trust::set_test_key_path(Some(key_path.clone()));
 
     let tmp = tempfile::TempDir::new().unwrap();
     let (room, _path) = test_room_with_path(&tmp, "fresh_notebook.ipynb");
@@ -4633,7 +4633,7 @@ async fn test_check_and_update_trust_state_no_autoresign_when_not_previously_tru
     let ts = room.trust_state.read().await;
     assert_eq!(ts.status, runt_trust::TrustStatus::Untrusted);
 
-    std::env::remove_var("RUNT_TRUST_KEY_PATH");
+    runt_trust::set_test_key_path(None);
 }
 
 // ── auto_sign_in_place: notebook dependency trust coverage ──
@@ -4647,7 +4647,7 @@ async fn test_check_and_update_trust_state_no_autoresign_when_not_previously_tru
 async fn test_auto_sign_in_place_uv_yields_trusted() {
     let temp_dir = tempfile::tempdir().unwrap();
     let key_path = temp_dir.path().join("trust-key");
-    std::env::set_var("RUNT_TRUST_KEY_PATH", key_path.to_str().unwrap());
+    runt_trust::set_test_key_path(Some(key_path.clone()));
 
     let mut snap = snapshot_with_uv(vec!["pandas".to_string(), "numpy".to_string()]);
     assert!(snap.runt.trust_signature.is_none());
@@ -4661,7 +4661,7 @@ async fn test_auto_sign_in_place_uv_yields_trusted() {
         runt_trust::TrustStatus::Trusted,
     );
 
-    std::env::remove_var("RUNT_TRUST_KEY_PATH");
+    runt_trust::set_test_key_path(None);
 }
 
 #[tokio::test]
@@ -4669,7 +4669,7 @@ async fn test_auto_sign_in_place_uv_yields_trusted() {
 async fn test_auto_sign_in_place_conda_yields_trusted() {
     let temp_dir = tempfile::tempdir().unwrap();
     let key_path = temp_dir.path().join("trust-key");
-    std::env::set_var("RUNT_TRUST_KEY_PATH", key_path.to_str().unwrap());
+    runt_trust::set_test_key_path(Some(key_path.clone()));
 
     let mut snap = snapshot_with_conda(vec!["scipy".to_string()]);
     auto_sign_in_place(&mut snap).expect("auto_sign_in_place");
@@ -4679,7 +4679,7 @@ async fn test_auto_sign_in_place_conda_yields_trusted() {
         runt_trust::TrustStatus::Trusted,
     );
 
-    std::env::remove_var("RUNT_TRUST_KEY_PATH");
+    runt_trust::set_test_key_path(None);
 }
 
 #[tokio::test]
@@ -4687,7 +4687,7 @@ async fn test_auto_sign_in_place_conda_yields_trusted() {
 async fn test_auto_sign_in_place_pixi_writes_signature() {
     let temp_dir = tempfile::tempdir().unwrap();
     let key_path = temp_dir.path().join("trust-key");
-    std::env::set_var("RUNT_TRUST_KEY_PATH", key_path.to_str().unwrap());
+    runt_trust::set_test_key_path(Some(key_path.clone()));
 
     let mut snap = snapshot_empty();
     snap.runt.pixi = Some(notebook_doc::metadata::PixiInlineMetadata {
@@ -4706,7 +4706,7 @@ async fn test_auto_sign_in_place_pixi_writes_signature() {
         runt_trust::TrustStatus::Trusted,
     );
 
-    std::env::remove_var("RUNT_TRUST_KEY_PATH");
+    runt_trust::set_test_key_path(None);
 }
 
 // ── Per-agent oneshot channel tests ──────────────────────────────
@@ -6557,7 +6557,7 @@ fn test_project_file_deps_match_trust_info_no_project_file() {
 async fn test_new_fresh_promotes_untrusted_when_project_file_deps_match() {
     let key_tmp = tempfile::tempdir().unwrap();
     let key_path = key_tmp.path().join("trust-key");
-    std::env::set_var("RUNT_TRUST_KEY_PATH", key_path.to_str().unwrap());
+    runt_trust::set_test_key_path(Some(key_path.clone()));
 
     let tmp = tempfile::tempdir().unwrap();
     write_pyproject_with_deps(tmp.path(), &["pandas", "numpy"]);
@@ -6587,7 +6587,7 @@ async fn test_new_fresh_promotes_untrusted_when_project_file_deps_match() {
         "room init should promote Untrusted -> Trusted when project-file deps match",
     );
 
-    std::env::remove_var("RUNT_TRUST_KEY_PATH");
+    runt_trust::set_test_key_path(None);
 }
 
 /// Counterpart: if deps differ, room init must leave trust Untrusted.
@@ -6596,7 +6596,7 @@ async fn test_new_fresh_promotes_untrusted_when_project_file_deps_match() {
 async fn test_new_fresh_leaves_untrusted_when_deps_differ() {
     let key_tmp = tempfile::tempdir().unwrap();
     let key_path = key_tmp.path().join("trust-key");
-    std::env::set_var("RUNT_TRUST_KEY_PATH", key_path.to_str().unwrap());
+    runt_trust::set_test_key_path(Some(key_path.clone()));
 
     let tmp = tempfile::tempdir().unwrap();
     write_pyproject_with_deps(tmp.path(), &["pandas"]);
@@ -6619,7 +6619,7 @@ async fn test_new_fresh_leaves_untrusted_when_deps_differ() {
         "mismatched deps must not auto-promote",
     );
 
-    std::env::remove_var("RUNT_TRUST_KEY_PATH");
+    runt_trust::set_test_key_path(None);
 }
 
 // ── #2157: environment.yml declares unbuilt conda env ─────────────────

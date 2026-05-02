@@ -21,8 +21,30 @@ use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::Mutex;
 
 type HmacSha256 = Hmac<Sha256>;
+
+/// Thread-safe override for the trust key path.
+///
+/// Tests use [`set_test_key_path`] instead of `std::env::set_var("RUNT_TRUST_KEY_PATH", ...)`
+/// to avoid process-wide env mutation, which is undefined behavior under concurrent
+/// threads (glibc `setenv`/`getenv` are not thread-safe).
+static TEST_KEY_PATH_OVERRIDE: Mutex<Option<PathBuf>> = Mutex::new(None);
+
+/// Set (or clear) the trust key path override for tests.
+///
+/// Pass `Some(path)` to redirect all trust operations to a test-specific key file.
+/// Pass `None` to clear the override and fall back to the default path.
+///
+/// This is safe to call from concurrent tests because it uses a `Mutex` instead
+/// of mutating the process environment.
+pub fn set_test_key_path(path: Option<PathBuf>) {
+    let mut guard = TEST_KEY_PATH_OVERRIDE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    *guard = path;
+}
 
 /// Result of verifying a notebook's trust status.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -77,12 +99,21 @@ pub struct TrustInfo {
 
 /// Path to the trust key file.
 ///
-/// In tests, this can be overridden by setting RUNT_TRUST_KEY_PATH environment variable.
+/// Checks (in order):
+/// 1. Thread-safe override via [`set_test_key_path`] — preferred for tests.
+/// 2. Platform config dir (`~/.config/runt/trust-key` on Linux).
 fn trust_key_path() -> Option<PathBuf> {
-    // Allow override for testing
-    if let Ok(path) = std::env::var("RUNT_TRUST_KEY_PATH") {
-        return Some(PathBuf::from(path));
+    // 1. Thread-safe test override (no env mutation needed)
+    //    Recover from poison so a panicked test doesn't silently fall
+    //    through to the system key path.
+    let guard = TEST_KEY_PATH_OVERRIDE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    if let Some(ref path) = *guard {
+        return Some(path.clone());
     }
+    drop(guard);
+    // 2. Platform default
     dirs::config_dir().map(|d| d.join("runt").join("trust-key"))
 }
 
@@ -428,13 +459,13 @@ mod tests {
     fn setup_test_trust_key() -> tempfile::TempDir {
         let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
         let key_path = temp_dir.path().join("trust-key");
-        std::env::set_var("RUNT_TRUST_KEY_PATH", key_path.to_str().unwrap());
+        set_test_key_path(Some(key_path));
         temp_dir
     }
 
     /// Clean up test trust key path.
     fn teardown_test_trust_key() {
-        std::env::remove_var("RUNT_TRUST_KEY_PATH");
+        set_test_key_path(None);
     }
 
     fn make_test_metadata(
