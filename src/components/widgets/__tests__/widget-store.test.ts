@@ -168,7 +168,7 @@ describe("createWidgetStore", () => {
       expect(model?.modelName).toBe("IntSliderModel");
       expect(model?.modelModule).toBe("@jupyter-widgets/controls");
       expect(model?.state.value).toBe(50);
-      expect(model?.buffers).toEqual([]);
+      expect(model?.bufferPaths).toBeUndefined();
     });
 
     it("uses default values when metadata missing", () => {
@@ -181,15 +181,13 @@ describe("createWidgetStore", () => {
       expect(model?.modelModule).toBe("");
     });
 
-    it("stores buffers with the model", () => {
+    it("stores bufferPaths with the model", () => {
       const store = createWidgetStore();
-      const buffer = new ArrayBuffer(8);
 
-      store.createModel("comm-1", { value: null }, [buffer]);
+      store.createModel("comm-1", { value: null }, [["value"]]);
 
       const model = store.getModel("comm-1");
-      expect(model?.buffers).toHaveLength(1);
-      expect(model?.buffers[0]).toBe(buffer);
+      expect(model?.bufferPaths).toEqual([["value"]]);
     });
 
     it("notifies subscribers on create", () => {
@@ -228,28 +226,24 @@ describe("createWidgetStore", () => {
       expect(model?.state.max).toBe(100);
     });
 
-    it("replaces buffers when provided", () => {
+    it("replaces bufferPaths when provided", () => {
       const store = createWidgetStore();
-      const buffer1 = new ArrayBuffer(4);
-      const buffer2 = new ArrayBuffer(8);
 
-      store.createModel("comm-1", { value: null }, [buffer1]);
-      store.updateModel("comm-1", {}, [buffer2]);
+      store.createModel("comm-1", { value: null }, [["old"]]);
+      store.updateModel("comm-1", {}, [["value"]]);
 
       const model = store.getModel("comm-1");
-      expect(model?.buffers).toHaveLength(1);
-      expect(model?.buffers[0]).toBe(buffer2);
+      expect(model?.bufferPaths).toEqual([["value"]]);
     });
 
-    it("preserves buffers when not provided", () => {
+    it("preserves bufferPaths when not provided", () => {
       const store = createWidgetStore();
-      const buffer = new ArrayBuffer(8);
 
-      store.createModel("comm-1", { value: null }, [buffer]);
+      store.createModel("comm-1", { value: null }, [["value"]]);
       store.updateModel("comm-1", { value: 42 });
 
       const model = store.getModel("comm-1");
-      expect(model?.buffers[0]).toBe(buffer);
+      expect(model?.bufferPaths).toEqual([["value"]]);
     });
 
     it("does nothing for non-existent model", () => {
