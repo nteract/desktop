@@ -192,6 +192,14 @@ pub struct ListActiveNotebooksOptions {
     pub socket_path: Option<String>,
 }
 
+/// Options for top-level `shutdownNotebook()`.
+#[napi(object)]
+#[derive(Default)]
+pub struct ShutdownNotebookOptions {
+    /// Override daemon socket path (otherwise uses `defaultSocketPath()`).
+    pub socket_path: Option<String>,
+}
+
 /// Options for top-level `showNotebook()`.
 #[napi(object)]
 #[derive(Default)]
@@ -698,6 +706,26 @@ impl Session {
         Ok(true)
     }
 
+    /// Shutdown this notebook's kernel and evict its daemon room.
+    #[napi]
+    pub async fn shutdown_notebook(&self) -> Result<bool> {
+        let (socket_path, notebook_id) = {
+            let st = self.state.lock().await;
+            (st.socket_path.clone(), self.notebook_id.clone())
+        };
+        let removed = PoolClient::new(socket_path)
+            .shutdown_notebook(&notebook_id)
+            .await
+            .map_err(to_napi_err)?;
+        if removed {
+            let mut st = self.state.lock().await;
+            st.handle = None;
+            st._broadcast_rx = None;
+            st.kernel_started = false;
+        }
+        Ok(removed)
+    }
+
     /// Open this notebook in nteract Desktop. In headless environments, returns
     /// `opened: false` with a reason instead of failing.
     #[napi]
@@ -803,6 +831,20 @@ pub async fn list_active_notebooks(
         .await
         .map_err(to_napi_err)?;
     Ok(rooms.into_iter().map(active_notebook_from_room).collect())
+}
+
+/// Shutdown a notebook's kernel and evict its daemon room by notebook ID.
+#[napi]
+pub async fn shutdown_notebook(
+    notebook_id: String,
+    options: Option<ShutdownNotebookOptions>,
+) -> Result<bool> {
+    let opts = options.unwrap_or_default();
+    let socket_path = resolve_socket_path(opts.socket_path);
+    PoolClient::new(socket_path)
+        .shutdown_notebook(&notebook_id)
+        .await
+        .map_err(to_napi_err)
 }
 
 /// Open a notebook in nteract Desktop by active notebook ID or file path.

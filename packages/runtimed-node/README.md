@@ -70,6 +70,7 @@ main().catch((error) => {
 - `openNotebookPath(path, options)` opens a notebook file through the daemon.
 - `showNotebook(options)` opens an active notebook or path in nteract Desktop,
   returning a structured `opened: false` response in headless environments.
+- `shutdownNotebook(notebookId, options)` shuts down a notebook room by ID.
 - `getExecutionResult(executionId, options)` reads a result by execution ID.
 - `Session.listCells()` and `Session.getCell(cellId)` inspect notebook cells.
 - `Session.createCell(source, options)`, `Session.setCell(cellId, options)`,
@@ -80,6 +81,7 @@ main().catch((error) => {
   is available.
 - `Session.interruptKernel()`, `Session.shutdownKernel()`, and
   `Session.restartKernel()` manage the running kernel.
+- `Session.shutdownNotebook()` shuts down this notebook room and closes the session.
 - `Session.runCell(source, options)` creates, runs, and waits for a cell.
 - `Session.queueCell(source, options)` queues a cell and returns IDs.
 - `Session.waitForExecution(executionId, options)` waits for queued work.
