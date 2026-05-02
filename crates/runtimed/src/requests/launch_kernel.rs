@@ -926,15 +926,22 @@ pub(crate) async fn handle(
 
                     // Resolve the conda prefix: prefix: → direct path,
                     // name: → search standard dirs, create if not found.
-                    let conda_prefix = if let Some(ref prefix) = env_config.prefix {
-                        // Explicit prefix: path from environment.yml
-                        prefix.clone()
+                    // Track whether the env is daemon-owned (safe to
+                    // auto-rebuild) vs. user-managed (prefix: field or
+                    // pre-existing named env).
+                    let (conda_prefix, is_daemon_owned_env) = if let Some(ref prefix) =
+                        env_config.prefix
+                    {
+                        // Explicit prefix: path from environment.yml — user-managed
+                        (prefix.clone(), false)
                     } else if let Some(ref name) = env_config.name {
-                        // Named env — search for existing, or determine creation path
-                        crate::project_file::find_named_conda_env(name).unwrap_or_else(|| {
-                            // Will create at default location
-                            crate::project_file::default_conda_envs_dir().join(name)
-                        })
+                        match crate::project_file::find_named_conda_env(name) {
+                            Some(found) => (found, false), // Pre-existing user env
+                            None => (
+                                crate::project_file::default_conda_envs_dir().join(name),
+                                true,
+                            ),
+                        }
                     } else {
                         // No name or prefix — use a hash-based env in cache
                         let cache_dir = crate::paths::default_cache_dir().join("conda-envs");
@@ -944,7 +951,10 @@ pub(crate) async fn handle(
                             python: env_config.python.clone(),
                             env_id: None,
                         };
-                        cache_dir.join(kernel_env::conda::compute_env_hash(&conda_deps_tmp))
+                        (
+                            cache_dir.join(kernel_env::conda::compute_env_hash(&conda_deps_tmp)),
+                            true,
+                        )
                     };
 
                     // Merge env.yml deps with any CRDT notebook deps (additive)
@@ -999,9 +1009,9 @@ pub(crate) async fn handle(
 
                     // Check for Python version mismatch: if environment.yaml
                     // requests e.g. python=3.12 but the existing env has 3.14,
-                    // remove the env so it gets recreated with the correct
-                    // version. Without this, sync_dependencies pins the
-                    // installed version and ignores the yaml constraint.
+                    // the env needs rebuilding. Only auto-rebuild daemon-owned
+                    // envs (cache/hash paths). For user-managed envs (prefix:
+                    // field or pre-existing named env), surface an error.
                     let python_version_ok = if python_path.exists() {
                         if let Some(ref requested) = env_config.python {
                             let matches = kernel_env::conda::installed_python_matches_constraint(
@@ -1013,19 +1023,42 @@ pub(crate) async fn handle(
                                     &conda_prefix,
                                 )
                                 .unwrap_or_else(|| "unknown".to_string());
-                                warn!(
-                                    "[notebook-sync] conda:env_yml Python mismatch: \
-                                     environment.yaml requests python={} but env has {}; \
-                                     rebuilding env",
-                                    requested, installed
-                                );
-                                if let Err(e) = tokio::fs::remove_dir_all(&conda_prefix).await {
+                                if is_daemon_owned_env {
                                     warn!(
-                                        "[notebook-sync] Failed to remove mismatched env {:?}: {}",
-                                        conda_prefix, e
+                                        "[notebook-sync] conda:env_yml Python mismatch: \
+                                         environment.yaml requests python={} but env has {}; \
+                                         rebuilding daemon-owned env",
+                                        requested, installed
                                     );
+                                    if let Err(e) = tokio::fs::remove_dir_all(&conda_prefix).await {
+                                        warn!(
+                                            "[notebook-sync] Failed to remove mismatched env {:?}: {}",
+                                            conda_prefix, e
+                                        );
+                                    }
+                                    false
+                                } else {
+                                    let details = format!(
+                                        "Conda env {:?} has Python {} but environment.yml \
+                                         requests python={}. This is a user-managed env — \
+                                         rebuild it manually with: conda env remove -n {} \
+                                         && conda env create -f environment.yml",
+                                        conda_prefix,
+                                        installed,
+                                        requested,
+                                        env_config.name.as_deref().unwrap_or("<env>"),
+                                    );
+                                    reset_starting_state_with_outcome(
+                                        room,
+                                        None,
+                                        ResetOutcome::Error {
+                                            reason: None,
+                                            details: &details,
+                                        },
+                                    )
+                                    .await;
+                                    return NotebookResponse::Error { error: details };
                                 }
-                                false
                             } else {
                                 true
                             }
