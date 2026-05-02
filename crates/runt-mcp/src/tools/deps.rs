@@ -73,6 +73,12 @@ pub struct AddDependencyParams {
 pub struct RemoveDependencyParams {
     /// Package to remove.
     pub package: String,
+    /// Action after removing: "none" (just record, default) or "restart"
+    /// (restart kernel so the package is actually uninstalled).
+    /// Hot-uninstall ("sync") is not supported — removals always require
+    /// a kernel restart to take effect.
+    #[serde(default)]
+    pub after: Option<String>,
 }
 
 #[allow(dead_code)]
@@ -691,14 +697,33 @@ pub async fn manage_dependencies(
 }
 
 /// Remove a package dependency. Auto-detects the notebook's package manager.
+///
+/// Supports `after: "restart"` to restart the kernel so the package is
+/// actually uninstalled from the running environment. Without `after`,
+/// the response includes `needs_restart: true` when the dep was present.
 pub async fn remove_dependency(
     server: &NteractMcp,
     request: &CallToolRequestParams,
 ) -> Result<CallToolResult, McpError> {
     let package = arg_str(request, "package")
         .ok_or_else(|| McpError::invalid_params("Missing required parameter: package", None))?;
+    let after = arg_str(request, "after").unwrap_or("none");
 
-    let handle = require_handle!(server);
+    // "sync" is not meaningful for removals — the daemon's SyncEnvironment
+    // rejects removes and signals needs_restart. Map it to "restart" so the
+    // caller gets the right outcome without a confusing intermediate error.
+    let after = if after == "sync" { "restart" } else { after };
+
+    let (handle, notebook_id) = {
+        let guard = server.session.read().await;
+        match guard.as_ref() {
+            Some(s) => (s.handle.clone(), s.notebook_id.clone()),
+            None => {
+                drop(guard);
+                return super::no_session_error(server).await;
+            }
+        }
+    };
 
     let manager = detect_package_manager(&handle);
 
@@ -713,12 +738,24 @@ pub async fn remove_dependency(
 
     let deps = get_deps_for_manager(&handle, &manager);
 
-    let result = serde_json::json!({
+    let mut result = serde_json::json!({
         "dependencies": deps,
         "removed": package,
         "was_present": removed,
         "package_manager": manager.as_str(),
     });
+
+    if after == "restart" && removed {
+        apply_dependency_changes(&handle, &notebook_id, "restart", &mut result).await;
+        if let Some(apply) = result.as_object_mut().and_then(|obj| obj.remove("apply")) {
+            result["restart"] = apply;
+        }
+    } else if removed {
+        // The dep was removed from metadata but the running environment
+        // still has the package installed. Signal the caller.
+        result["needs_restart"] = serde_json::json!(true);
+    }
+
     tool_success(&serde_json::to_string_pretty(&result).unwrap_or_default())
 }
 
