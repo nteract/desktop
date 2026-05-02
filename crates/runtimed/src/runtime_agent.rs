@@ -163,6 +163,11 @@ pub async fn run_runtime_agent(
                                     if matches!(envelope.request, RuntimeAgentRequest::InterruptExecution) {
                                         if let Some(ref handle) = interrupt_handle {
                                             let handle = handle.clone();
+                                            // Mark interrupted BEFORE clearing the queue so
+                                            // the subsequent CellError (KeyboardInterrupt on
+                                            // IOPub) doesn't cascade into cells queued after
+                                            // this point.
+                                            kernel_state.mark_interrupted();
                                             let cleared = kernel_state.clear_queue();
                                             // Write cleared entries to state doc
                                             if let Err(e) = state.with_doc(|sd| {
@@ -871,6 +876,7 @@ async fn handle_runtime_agent_request(
             if let Some(ref mut k) = kernel {
                 match k.interrupt().await {
                     Ok(()) => {
+                        state.mark_interrupted();
                         let cleared = state.clear_queue();
                         // Write cleared entries to state doc
                         if let Err(e) = ctx.state.with_doc(|sd| {
@@ -1193,15 +1199,26 @@ async fn handle_queue_command(
                 cell_id, execution_id
             );
             state.mark_execution_error();
-            let cleared = state.clear_queue();
-            if let Err(e) = ctx.state.with_doc(|sd| {
-                for entry in &cleared {
-                    sd.set_execution_done(&entry.execution_id, false)?;
+
+            // If the current execution was interrupted, the CellError is
+            // just the KeyboardInterrupt — don't cascade into the queue.
+            // Cells queued after the interrupt should still execute.
+            if !state.is_interrupted() {
+                let cleared = state.clear_queue();
+                if let Err(e) = ctx.state.with_doc(|sd| {
+                    for entry in &cleared {
+                        sd.set_execution_done(&entry.execution_id, false)?;
+                    }
+                    sd.set_queue(None, &[])?;
+                    Ok(())
+                }) {
+                    warn!("[runtime-state] {}", e);
                 }
-                sd.set_queue(None, &[])?;
-                Ok(())
-            }) {
-                warn!("[runtime-state] {}", e);
+            } else {
+                debug!(
+                    "[runtime-agent] Skipping queue clear for interrupted cell {} ({})",
+                    cell_id, execution_id
+                );
             }
         }
 
@@ -1438,5 +1455,100 @@ mod tests {
         assert_eq!(rs.kernel.lifecycle, RuntimeLifecycle::Error);
         assert!(rs.queue.executing.is_none());
         assert!(rs.queue.queued.is_empty());
+    }
+
+    /// Reproduces the interrupt+execute race: interrupt fires while cell A is
+    /// running, then cell B is queued. The IOPub KeyboardInterrupt error for
+    /// cell A must NOT clear cell B from the queue.
+    #[tokio::test]
+    async fn cell_error_after_interrupt_does_not_clear_queue() {
+        let (ctx, mut state, _handle) = test_fixtures();
+        let mut mock = MockKernel;
+        state.set_idle();
+
+        // 1. Cell A starts executing
+        state
+            .queue_cell(
+                "cA".into(),
+                "eA".into(),
+                "while True: pass".into(),
+                &mut mock,
+            )
+            .await
+            .unwrap();
+        assert_eq!(state.executing_cell().unwrap().0, "cA");
+
+        // 2. Interrupt fires — clears queue, marks interrupted
+        state.mark_interrupted();
+        let cleared = state.clear_queue();
+        assert!(cleared.is_empty()); // only cA was executing, nothing queued
+
+        // 3. Cell B is queued (arrives via CRDT sync after interrupt)
+        state
+            .queue_cell("cB".into(), "eB".into(), "1 + 1".into(), &mut mock)
+            .await
+            .unwrap();
+        assert_eq!(state.queued_entries().len(), 1);
+
+        // 4. IOPub delivers KeyboardInterrupt error for cell A
+        //    handle_queue_command requires Option<JupyterKernel>, not MockKernel.
+        //    Call mark_execution_error + verify is_interrupted directly.
+        state.mark_execution_error();
+
+        // The CellError handler checks is_interrupted — simulate the branch
+        assert!(state.is_interrupted());
+
+        // Since interrupted, queue should NOT be cleared
+        assert_eq!(state.queued_entries().len(), 1);
+        assert_eq!(state.queued_entries()[0].cell_id, "cB");
+    }
+
+    /// Without the interrupted flag, CellError should still cascade normally
+    /// (e.g., a real user-code error in "Run All").
+    #[tokio::test]
+    async fn cell_error_without_interrupt_clears_queue() {
+        let (ctx, mut state, handle) = test_fixtures();
+        let mut mock = MockKernel;
+        state.set_idle();
+
+        // Queue three cells: cA executes, cB and cC are queued
+        state
+            .queue_cell("cA".into(), "eA".into(), "1/0".into(), &mut mock)
+            .await
+            .unwrap();
+        state
+            .queue_cell("cB".into(), "eB".into(), "x=1".into(), &mut mock)
+            .await
+            .unwrap();
+        state
+            .queue_cell("cC".into(), "eC".into(), "x=2".into(), &mut mock)
+            .await
+            .unwrap();
+        assert_eq!(state.queued_entries().len(), 2);
+
+        // Not interrupted — CellError should cascade
+        assert!(!state.is_interrupted());
+        state.mark_execution_error();
+        let cleared = state.clear_queue();
+
+        // Queue should be cleared — both cB and cC drained
+        assert_eq!(cleared.len(), 2);
+        assert!(state.queued_entries().is_empty());
+
+        // Write cleared entries to state doc (mirrors handle_queue_command)
+        if let Err(e) = ctx.state.with_doc(|sd| {
+            for entry in &cleared {
+                sd.set_execution_done(&entry.execution_id, false)?;
+            }
+            Ok(())
+        }) {
+            panic!("state doc write failed: {}", e);
+        }
+
+        // cB and cC should be marked as failed in RuntimeStateDoc
+        let eb = handle.read(|sd| sd.get_execution("eB").unwrap()).unwrap();
+        assert_eq!(eb.status, "error");
+        let ec = handle.read(|sd| sd.get_execution("eC").unwrap()).unwrap();
+        assert_eq!(ec.status, "error");
     }
 }

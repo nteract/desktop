@@ -55,6 +55,13 @@ pub struct KernelState {
     /// Whether the current execution produced an error output.
     /// Read by `execution_done` to record success/failure in the state doc.
     execution_had_error: bool,
+    /// Set when `interrupt()` fires; cleared on the next `execution_done`.
+    ///
+    /// When true, `CellError` skips queue clearing — the error is the
+    /// KeyboardInterrupt from the interrupted cell, not a user-code failure
+    /// that should cascade to queued cells. Without this, cells queued
+    /// between `interrupt_kernel` and the IOPub error get silently dropped.
+    interrupted: bool,
     /// Kernel lifecycle status.
     status: KernelStatus,
 
@@ -70,6 +77,7 @@ impl KernelState {
             queue: VecDeque::new(),
             executing: None,
             execution_had_error: false,
+            interrupted: false,
             status: KernelStatus::Starting,
             state,
         }
@@ -82,6 +90,7 @@ impl KernelState {
         self.queue.clear();
         self.executing = None;
         self.execution_had_error = false;
+        self.interrupted = false;
         self.status = KernelStatus::Starting;
     }
 
@@ -172,6 +181,7 @@ impl KernelState {
             let success = !self.execution_had_error;
             self.executing = None;
             self.execution_had_error = false;
+            self.interrupted = false;
             self.status = KernelStatus::Idle;
 
             // Write to state doc
@@ -210,6 +220,19 @@ impl KernelState {
     /// Called before `execution_done` so it can determine success/failure.
     pub fn mark_execution_error(&mut self) {
         self.execution_had_error = true;
+    }
+
+    /// Mark the current execution as interrupted.
+    ///
+    /// Called by the interrupt handler so that subsequent `CellError` events
+    /// (from the KeyboardInterrupt) don't cascade into the queue.
+    pub fn mark_interrupted(&mut self) {
+        self.interrupted = true;
+    }
+
+    /// Whether the current execution was interrupted.
+    pub fn is_interrupted(&self) -> bool {
+        self.interrupted
     }
 
     /// Drain the execution queue.
@@ -556,5 +579,72 @@ mod tests {
 
         assert!(state.executing_cell().is_none());
         assert!(state.queued_entries().is_empty());
+    }
+
+    // ── interrupt tests ──────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn interrupted_flag_cleared_on_execution_done() {
+        let (mut state, _handle) = test_state();
+        let mut mock = MockKernel::new();
+        state.set_idle();
+
+        state
+            .queue_cell("c1".into(), "e1".into(), "x=1".into(), &mut mock)
+            .await
+            .unwrap();
+
+        // Simulate interrupt
+        state.mark_interrupted();
+        assert!(state.is_interrupted());
+
+        // execution_done clears the flag
+        state.execution_done("c1", "e1", &mut mock).await.unwrap();
+        assert!(!state.is_interrupted());
+    }
+
+    #[tokio::test]
+    async fn interrupted_flag_preserved_across_queue_operations() {
+        let (mut state, _handle) = test_state();
+        let mut mock = MockKernel::new();
+        state.set_idle();
+
+        // c1 starts executing
+        state
+            .queue_cell("c1".into(), "e1".into(), "x=1".into(), &mut mock)
+            .await
+            .unwrap();
+
+        // Interrupt fires, then c2 is queued
+        state.mark_interrupted();
+        let cleared = state.clear_queue();
+        assert!(cleared.is_empty()); // c1 is executing, not queued
+
+        // c2 arrives after interrupt
+        state
+            .queue_cell("c2".into(), "e2".into(), "x=2".into(), &mut mock)
+            .await
+            .unwrap();
+
+        // c2 should be in the queue (c1 still executing)
+        assert_eq!(state.queued_entries().len(), 1);
+        assert!(state.is_interrupted());
+
+        // c1 completes → c2 starts executing
+        state.execution_done("c1", "e1", &mut mock).await.unwrap();
+        assert!(!state.is_interrupted());
+        assert!(state.executing_cell().is_some());
+        assert_eq!(state.executing_cell().unwrap().0, "c2");
+    }
+
+    #[tokio::test]
+    async fn reset_clears_interrupted_flag() {
+        let (mut state, _handle) = test_state();
+        state.set_idle();
+        state.mark_interrupted();
+        assert!(state.is_interrupted());
+
+        state.reset();
+        assert!(!state.is_interrupted());
     }
 }
