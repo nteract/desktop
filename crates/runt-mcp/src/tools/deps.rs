@@ -226,42 +226,84 @@ pub(crate) fn detect_package_manager(
     PackageManager::Uv
 }
 
-/// Add a dependency using the appropriate package manager, return error string on failure.
+/// Validate a package specifier for the given package manager.
 ///
-/// `Unknown` package managers fall back to Uv (same default as
-/// `detect_package_manager`) — consistent with the historical behavior.
-pub(crate) fn add_dep_for_manager(
-    handle: &notebook_sync::handle::DocHandle,
+/// Pure validation — no CRDT access. Call this for each package before
+/// applying any mutations so invalid specifiers never reach the document.
+fn validate_specifier_for_manager(
     package: &str,
     manager: &notebook_protocol::connection::PackageManager,
 ) -> Result<(), String> {
     use notebook_protocol::connection::PackageManager;
     match manager {
-        PackageManager::Conda => {
-            // Reject PEP 508 extras (`pkg[extra]`) before they land in
-            // the doc — conda matchspecs crash rattler with `invalid
-            // bracket` and take the kernel with them. See #2119.
-            notebook_doc::metadata::validate_conda_package_specifier(package)?;
-            handle
-                .add_conda_dependency(package)
-                .map_err(|e| format!("Failed to add conda dependency: {e}"))
-        }
-        PackageManager::Pixi => {
-            notebook_doc::metadata::validate_conda_package_specifier(package)?;
-            handle
-                .add_pixi_dependency(package)
-                .map_err(|e| format!("Failed to add pixi dependency: {e}"))
+        PackageManager::Conda | PackageManager::Pixi => {
+            notebook_doc::metadata::validate_conda_package_specifier(package)
         }
         PackageManager::Uv | PackageManager::Unknown(_) => {
-            notebook_doc::metadata::validate_package_specifier(package)?;
-            handle
-                .add_uv_dependency(package)
-                .map_err(|e| format!("Failed to add uv dependency: {e}"))
+            notebook_doc::metadata::validate_package_specifier(package)
         }
     }
 }
 
-/// Remove a dependency using the appropriate package manager.
+/// Apply dependency adds and removes in a single atomic CRDT transaction.
+///
+/// Validates all specifiers first, then acquires the doc lock once, applies
+/// all mutations to the in-memory snapshot, and writes back once. This
+/// produces O(1) Automerge ops and sync notifications regardless of how
+/// many packages are added/removed.
+///
+/// Returns `(removed, not_found)` — packages that were present and removed
+/// vs. packages that were requested for removal but not found.
+fn apply_dep_edits(
+    handle: &notebook_sync::handle::DocHandle,
+    add: &[String],
+    remove: &[String],
+    manager: &notebook_protocol::connection::PackageManager,
+) -> Result<(Vec<String>, Vec<String>), String> {
+    use notebook_protocol::connection::PackageManager;
+
+    // Phase 1: validate all specifiers before touching the CRDT
+    for package in add {
+        validate_specifier_for_manager(package, manager)?;
+    }
+
+    // Phase 2: single lock + single snapshot read/write
+    handle
+        .with_metadata(|snap| {
+            // Adds
+            for package in add {
+                match manager {
+                    PackageManager::Conda => snap.add_conda_dependency(package),
+                    PackageManager::Pixi => snap.add_pixi_dependency(package),
+                    PackageManager::Uv | PackageManager::Unknown(_) => {
+                        snap.add_uv_dependency(package)
+                    }
+                }
+            }
+
+            // Removes
+            let mut removed = Vec::new();
+            let mut not_found = Vec::new();
+            for package in remove {
+                let was_present = match manager {
+                    PackageManager::Conda => snap.remove_conda_dependency(package),
+                    PackageManager::Pixi => snap.remove_pixi_dependency(package),
+                    PackageManager::Uv | PackageManager::Unknown(_) => {
+                        snap.remove_uv_dependency(package)
+                    }
+                };
+                if was_present {
+                    removed.push(package.clone());
+                } else {
+                    not_found.push(package.clone());
+                }
+            }
+            (removed, not_found)
+        })
+        .map_err(|e| format!("Failed to apply dependency edits: {e}"))
+}
+
+/// Remove a single dependency using the appropriate package manager.
 ///
 /// `Unknown` package managers fall back to Uv (same default as `add`).
 fn remove_dep_for_manager(
@@ -269,18 +311,8 @@ fn remove_dep_for_manager(
     package: &str,
     manager: &notebook_protocol::connection::PackageManager,
 ) -> Result<bool, String> {
-    use notebook_protocol::connection::PackageManager;
-    match manager {
-        PackageManager::Conda => handle
-            .remove_conda_dependency(package)
-            .map_err(|e| format!("Failed to remove conda dependency: {e}")),
-        PackageManager::Pixi => handle
-            .remove_pixi_dependency(package)
-            .map_err(|e| format!("Failed to remove pixi dependency: {e}")),
-        PackageManager::Uv | PackageManager::Unknown(_) => handle
-            .remove_uv_dependency(package)
-            .map_err(|e| format!("Failed to remove uv dependency: {e}")),
-    }
+    let (removed, _) = apply_dep_edits(handle, &[], &[package.to_string()], manager)?;
+    Ok(!removed.is_empty())
 }
 
 fn dependency_fingerprint_for_handle(handle: &DocHandle) -> Option<String> {
@@ -534,10 +566,9 @@ pub async fn add_dependency(
 
     let manager = detect_package_manager(&handle);
 
-    for package in &packages {
-        if let Err(e) = add_dep_for_manager(&handle, package, &manager) {
-            return tool_error(&e);
-        }
+    // Validate + apply all packages in a single CRDT transaction
+    if let Err(e) = apply_dep_edits(&handle, &packages, &[], &manager) {
+        return tool_error(&e);
     }
     // For the response, use the first package as `package` for backward compat
     let package = packages.first().map(|s| s.as_str()).unwrap_or(raw_package);
@@ -620,21 +651,13 @@ pub async fn manage_dependencies(
 
     let before = dependency_state_json(&handle, &manager);
 
-    for package in &params.add {
-        if let Err(e) = add_dep_for_manager(&handle, package, &manager) {
-            return tool_error(&e);
-        }
-    }
-
-    let mut removed = Vec::new();
-    let mut not_found = Vec::new();
-    for package in &params.remove {
-        match remove_dep_for_manager(&handle, package, &manager) {
-            Ok(true) => removed.push(package.clone()),
-            Ok(false) => not_found.push(package.clone()),
-            Err(e) => return tool_error(&e),
-        }
-    }
+    // Validate all specifiers and apply adds/removes in a single CRDT
+    // transaction — one lock, one snapshot read/write, one sync notification.
+    let (removed, not_found) = match apply_dep_edits(&handle, &params.add, &params.remove, &manager)
+    {
+        Ok(result) => result,
+        Err(e) => return tool_error(&e),
+    };
 
     let mut trust_approved = false;
     let approved_fingerprint = if params.trust {
