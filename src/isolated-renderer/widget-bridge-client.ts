@@ -32,54 +32,43 @@ import { createWidgetStore, type WidgetStore } from "@/components/widgets/widget
 const BLOB_URL_RE = /^https?:\/\/127\.0\.0\.1:\d+\/blob\/[a-f0-9]+$/;
 
 /**
- * Resolve blob URLs in state at buffer_paths positions to ArrayBuffers.
+ * Fetch the blob URL at each `bufferPaths` position in `state` and replace
+ * it in place with a `DataView` — the shape ipywidgets and anywidget
+ * consumers expect for binary traitlets. Mutates `state`.
  *
- * Only converts blob URLs to DataView/ArrayBuffer at explicitly listed
- * `bufferPaths` positions (binary widget data like NumPy arrays).
- * When `bufferPaths` is absent or empty, returns [] — blob URL strings
- * (e.g. `_esm`, `_css`) stay as strings so `loadESM`/CSS injection
- * can load them natively.
+ * `_esm` / `_css` are *not* listed in `bufferPaths` (the daemon's WASM
+ * resolver keeps them URL-preferring), so they stay as strings for
+ * `loadESM` / `<link rel=stylesheet>` to load natively.
  */
-async function resolveBlobUrls(
+async function resolveBlobUrlsInPlace(
   state: Record<string, unknown>,
-  bufferPaths?: string[][],
-): Promise<ArrayBuffer[]> {
-  if (!bufferPaths || bufferPaths.length === 0) return [];
-  return resolveAtPaths(state, bufferPaths);
-}
-
-/** Resolve blob URLs at known paths to ArrayBuffers. */
-async function resolveAtPaths(
-  state: Record<string, unknown>,
-  paths: string[][],
-): Promise<ArrayBuffer[]> {
-  const resolved = await Promise.all(
-    paths.map(async (path) => {
+  bufferPaths: string[][] | undefined,
+): Promise<void> {
+  if (!bufferPaths || bufferPaths.length === 0) return;
+  await Promise.all(
+    bufferPaths.map(async (path) => {
+      if (path.length === 0) return;
       let current: unknown = state;
       for (const segment of path) {
-        if (typeof current !== "object" || current === null) return null;
+        if (typeof current !== "object" || current === null) return;
         current = (current as Record<string, unknown>)[segment];
       }
-      if (typeof current === "string" && BLOB_URL_RE.test(current)) {
-        try {
-          const resp = await fetch(current);
-          if (!resp.ok) return null;
-          const buffer = await resp.arrayBuffer();
-          // Replace the URL in state with the buffer (DataView for widget protocol)
-          let parent: Record<string, unknown> = state;
-          for (let i = 0; i < path.length - 1; i++) {
-            parent = parent[path[i]] as Record<string, unknown>;
-          }
-          parent[path[path.length - 1]] = new DataView(buffer);
-          return buffer;
-        } catch {
-          return null;
+      if (typeof current !== "string" || !BLOB_URL_RE.test(current)) return;
+      try {
+        const resp = await fetch(current);
+        if (!resp.ok) return;
+        const buffer = await resp.arrayBuffer();
+        let parent: Record<string, unknown> = state;
+        for (let i = 0; i < path.length - 1; i++) {
+          parent = parent[path[i]] as Record<string, unknown>;
         }
+        parent[path[path.length - 1]] = new DataView(buffer);
+      } catch {
+        // Leave URL in place — widget will see the URL string and render
+        // broken, but that's better than dropping the whole update.
       }
-      return null;
     }),
   );
-  return resolved.filter((b): b is ArrayBuffer => b !== null);
 }
 
 /**
@@ -135,15 +124,13 @@ export function createWidgetBridgeClient(transport: JsonRpcTransport): WidgetBri
   });
 
   transport.onNotification(NTERACT_COMM_OPEN, async (params) => {
-    const { commId, state, buffers, bufferPaths } = params as {
+    const { commId, state, bufferPaths } = params as {
       commId: string;
       state: Record<string, unknown>;
-      buffers?: ArrayBuffer[];
       bufferPaths?: string[][];
     };
-    // Resolve blob URLs at buffer_paths positions to ArrayBuffers.
-    const resolvedBuffers = await resolveBlobUrls(state, bufferPaths);
-    store.createModel(commId, state, resolvedBuffers.length > 0 ? resolvedBuffers : buffers);
+    await resolveBlobUrlsInPlace(state, bufferPaths);
+    store.createModel(commId, state, bufferPaths);
   });
 
   transport.onNotification(NTERACT_COMM_MSG, async (params) => {
@@ -155,8 +142,8 @@ export function createWidgetBridgeClient(transport: JsonRpcTransport): WidgetBri
       bufferPaths?: string[][];
     };
     if (method === "update") {
-      const resolvedBuffers = await resolveBlobUrls(data, bufferPaths);
-      store.updateModel(commId, data, resolvedBuffers.length > 0 ? resolvedBuffers : buffers);
+      await resolveBlobUrlsInPlace(data, bufferPaths);
+      store.updateModel(commId, data, bufferPaths);
     } else if (method === "custom") {
       store.emitCustomMessage(commId, data, buffers);
     }
@@ -167,17 +154,20 @@ export function createWidgetBridgeClient(transport: JsonRpcTransport): WidgetBri
     store.deleteModel(commId);
   });
 
-  transport.onNotification(NTERACT_WIDGET_SNAPSHOT, (params) => {
+  transport.onNotification(NTERACT_WIDGET_SNAPSHOT, async (params) => {
     const { models } = params as {
       models: Array<{
         commId: string;
         state: Record<string, unknown>;
-        buffers?: ArrayBuffer[];
+        bufferPaths?: string[][];
       }>;
     };
-    for (const model of models) {
-      store.createModel(model.commId, model.state, model.buffers);
-    }
+    await Promise.all(
+      models.map(async (model) => {
+        await resolveBlobUrlsInPlace(model.state, model.bufferPaths);
+        store.createModel(model.commId, model.state, model.bufferPaths);
+      }),
+    );
   });
 
   // Send initial widget_ready
@@ -189,8 +179,10 @@ export function createWidgetBridgeClient(transport: JsonRpcTransport): WidgetBri
     store,
 
     sendUpdate(commId: string, state: Record<string, unknown>, buffers?: ArrayBuffer[]) {
-      // Update local store immediately for responsive UI (optimistic update)
-      store.updateModel(commId, state, buffers);
+      // Update local store immediately for responsive UI (optimistic update).
+      // Outgoing `buffers` go over the wire to the kernel; they don't shape
+      // the inbound bufferPaths metadata the store tracks.
+      store.updateModel(commId, state);
       transport.notify(NTERACT_WIDGET_COMM_MSG, {
         commId,
         method: "update",

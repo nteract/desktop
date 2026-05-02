@@ -298,8 +298,10 @@ export class CommBridgeManager {
       // Set flag to prevent echoing this update back to iframe
       this.isProcessingIframeUpdate = true;
       try {
-        // Update parent store first (so UI stays in sync)
-        this.store.updateModel(commId, data, buffers);
+        // Update parent store first (so UI stays in sync). Outgoing
+        // `buffers` are in flight to the kernel; they're not a new
+        // bufferPaths manifest so we leave that field untouched.
+        this.store.updateModel(commId, data);
         // Update our tracked state
         const current = this.previousState.get(commId) ?? {};
         this.previousState.set(commId, this.cloneStateSnapshot({ ...current, ...data }));

@@ -108,11 +108,13 @@ export class WidgetUpdateManager {
    * text input, etc.). The store update fires subscriptions instantly for
    * responsive UI. The CRDT write is batched per-comm at 50ms.
    *
-   * Binary buffers bypass debouncing and flush immediately.
+   * Binary buffers bypass debouncing and flush immediately. They're outbound
+   * (headed to the kernel) and don't shape the inbound bufferPaths manifest,
+   * so the optimistic store update doesn't carry them.
    */
   updateAndPersist(commId: string, patch: Record<string, unknown>, buffers?: ArrayBuffer[]): void {
     // 1. Instant store update — UI reflects change immediately
-    this.getStore()?.updateModel(commId, patch, buffers);
+    this.getStore()?.updateModel(commId, patch);
 
     // 2. Append each written value to the per-key trail.
     let keys = this.optimisticKeys.get(commId);
