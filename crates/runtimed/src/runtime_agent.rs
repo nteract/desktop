@@ -1467,7 +1467,7 @@ mod tests {
     /// cell A must NOT clear cell B from the queue.
     #[tokio::test]
     async fn cell_error_after_interrupt_does_not_clear_queue() {
-        let (ctx, mut state, _handle) = test_fixtures();
+        let (_ctx, mut state, _handle) = test_fixtures();
         let mut mock = MockKernel;
         state.set_idle();
 
