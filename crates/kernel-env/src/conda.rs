@@ -1229,18 +1229,18 @@ pub fn installed_python_matches_constraint(env_path: &std::path::Path, requested
     // Detect the operator from the constraint prefix, then extract the
     // version number. Conda environment.yaml uses single `=` for pins
     // (equivalent to `==` in pip).
-    let (op, version_str) = if requested.starts_with(">=") {
-        (">=", &requested[2..])
-    } else if requested.starts_with("<=") {
-        ("<=", &requested[2..])
-    } else if requested.starts_with("==") {
-        ("==", &requested[2..])
-    } else if requested.starts_with('>') {
-        (">", &requested[1..])
-    } else if requested.starts_with('<') {
-        ("<", &requested[1..])
-    } else if requested.starts_with('=') {
-        ("==", &requested[1..])
+    let (op, version_str) = if let Some(rest) = requested.strip_prefix(">=") {
+        (">=", rest)
+    } else if let Some(rest) = requested.strip_prefix("<=") {
+        ("<=", rest)
+    } else if let Some(rest) = requested.strip_prefix("==") {
+        ("==", rest)
+    } else if let Some(rest) = requested.strip_prefix('>') {
+        (">", rest)
+    } else if let Some(rest) = requested.strip_prefix('<') {
+        ("<", rest)
+    } else if let Some(rest) = requested.strip_prefix('=') {
+        ("==", rest)
     } else {
         // Bare version like "3.12" — treat as exact pin
         ("==", requested)
