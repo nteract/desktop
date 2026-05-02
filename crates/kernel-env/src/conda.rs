@@ -8,13 +8,14 @@ use anyhow::{anyhow, Context, Result};
 use log::{info, warn};
 use rattler::{default_cache_dir, install::Installer};
 use rattler_conda_types::{
-    Channel, ChannelConfig, GenericVirtualPackage, MatchSpec, ParseMatchSpecOptions, Platform,
-    PrefixRecord,
+    Channel, ChannelConfig, GenericVirtualPackage, MatchSpec, ParseMatchSpecOptions,
+    ParseStrictness, Platform, PrefixRecord, Version, VersionSpec,
 };
 use rattler_solve::{resolvo, SolverImpl, SolverTask};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -1206,12 +1207,11 @@ fn has_freethreading_package(env_path: &std::path::Path) -> bool {
 }
 
 /// Check whether the installed Python version in a conda env matches the
-/// requested constraint from environment.yaml (e.g. `"3.12"`, `">=3.9"`).
+/// requested constraint from environment.yaml (e.g. `"3.12.*"`, `">=3.9,<4"`).
 ///
-/// Handles exact pins (`python=3.12`, `python==3.12`), range constraints
-/// (`python>=3.9`, `python>=3.9,<3.13`), major-only (`python=3`), and
-/// wildcard (`python=3.*`). Compares on major.minor, using the operator
-/// semantics from the original constraint string.
+/// Delegates to rattler's [`VersionSpec::matches`] for full conda version
+/// constraint semantics — exact pins, ranges, wildcards, compound AND/OR
+/// specs, compatible-release (`~=`), and glob patterns all work correctly.
 ///
 /// Returns `true` if the constraint is satisfied or if either version can't
 /// be determined (fail-open to avoid unnecessary rebuilds). Returns `false`
@@ -1221,102 +1221,126 @@ fn has_freethreading_package(env_path: &std::path::Path) -> bool {
 /// env has a different Python version than what environment.yaml requests,
 /// triggering a rebuild instead of syncing into the wrong Python.
 pub fn installed_python_matches_constraint(env_path: &std::path::Path, requested: &str) -> bool {
-    let installed = match detect_installed_python_version(env_path) {
+    let installed_str = match detect_installed_python_version(env_path) {
         Some(v) => v,
         None => return true, // Can't detect → fail-open
     };
 
-    // Parse installed major.minor as (u32, u32).
-    let installed_parts: Vec<&str> = installed.split('.').collect();
-    let (inst_major, inst_minor) = if installed_parts.len() >= 2 {
-        match (
-            installed_parts[0].parse::<u32>(),
-            installed_parts[1].parse::<u32>(),
-        ) {
-            (Ok(a), Ok(b)) => (a, b),
-            _ => return true, // Unusual format → fail-open
-        }
-    } else {
-        return true; // Unusual format → fail-open
+    let installed = match Version::from_str(&installed_str) {
+        Ok(v) => v,
+        Err(_) => return true, // Unusual format → fail-open
     };
 
-    // Split by comma and check every clause. A compound constraint like
-    // ">=3.9,<3.13" must satisfy ALL parts. Each clause is parsed
-    // independently for its operator and version.
-    for clause in requested.split(',') {
-        let clause = clause.trim();
-        if clause.is_empty() {
-            continue;
-        }
-        if !check_single_clause((inst_major, inst_minor), clause) {
-            return false;
-        }
-    }
-    true
+    // Strip the free-threaded Python `t` selector (e.g. "3.14t" → "3.14").
+    // Conda records the installed version as plain "3.14.4" in conda-meta
+    // and tracks free-threading via the separate `python-freethreading`
+    // package. The `t` suffix is a build selector, not a version component,
+    // so we remove it before version matching.
+    let stripped = strip_free_threading_selector(requested);
+    let constraint = stripped.as_deref().unwrap_or(requested);
+
+    // Bare versions like "3.12" should match any 3.12.x (conda pin
+    // semantics). Rattler treats a bare version as ==3.12.0 which is too
+    // strict. Append ".*" to each bare-version term so rattler uses
+    // starts-with matching. Terms with operators (>=, <, ==) or existing
+    // wildcards pass through unchanged. Handles compound specs like
+    // "3.10|3.11" by normalizing each OR/AND branch independently.
+    let normalized = normalize_bare_versions(constraint);
+    let spec_str = normalized.as_deref().unwrap_or(constraint);
+
+    let spec = match VersionSpec::from_str(spec_str, ParseStrictness::Lenient) {
+        Ok(s) => s,
+        Err(_) => return true, // Unparseable constraint → fail-open
+    };
+
+    spec.matches(&installed)
 }
 
-/// Check a single version constraint clause (e.g. `">=3.9"`, `"3.12.*"`,
-/// `"<4"`) against an installed (major, minor) pair. Returns `true` when
-/// the clause is satisfied or unparseable (fail-open).
-fn check_single_clause(inst: (u32, u32), clause: &str) -> bool {
-    // Detect the operator from the constraint prefix, then extract the
-    // version number. Conda environment.yaml uses single `=` for pins
-    // (equivalent to `==` in pip).
-    let (op, version_str) = if let Some(rest) = clause.strip_prefix(">=") {
-        (">=", rest)
-    } else if let Some(rest) = clause.strip_prefix("<=") {
-        ("<=", rest)
-    } else if let Some(rest) = clause.strip_prefix("==") {
-        ("==", rest)
-    } else if let Some(rest) = clause.strip_prefix('>') {
-        (">", rest)
-    } else if let Some(rest) = clause.strip_prefix('<') {
-        ("<", rest)
-    } else if let Some(rest) = clause.strip_prefix('=') {
-        ("==", rest)
-    } else {
-        // Bare version like "3.12" — treat as exact pin
-        ("==", clause)
-    };
-
-    let trimmed = version_str.trim_end_matches(".*");
-    let req_parts: Vec<&str> = trimmed.split('.').collect();
-
-    let (req_major, req_minor) = if req_parts.len() >= 2 {
-        match (req_parts[0].parse::<u32>(), req_parts[1].parse::<u32>()) {
-            (Ok(a), Ok(b)) => (a, b),
-            _ => return true, // Can't parse → fail-open
+/// Strip the free-threaded Python `t` selector from a version constraint.
+///
+/// Returns `Some(cleaned)` if any `t` suffix was removed, `None` if the
+/// string was already clean. Handles both bare versions (`"3.14t"`),
+/// wildcard versions (`"3.14t.*"`), and operator-prefixed constraints
+/// (`">=3.14t"`).
+fn strip_free_threading_selector(constraint: &str) -> Option<String> {
+    // Quick check — if there's no `t` at all, nothing to strip.
+    if !constraint.contains('t') {
+        return None;
+    }
+    let mut changed = false;
+    let mut result = String::with_capacity(constraint.len());
+    for (i, clause) in constraint.split(',').enumerate() {
+        if i > 0 {
+            result.push(',');
         }
-    } else if !req_parts.is_empty() && !req_parts[0].is_empty() {
-        // Major-only constraint like "3" or "<4" — compare major only.
-        // For ordering operators we treat the version as (major, 0) so
-        // that `<4` means `< 4.0`, which accepts any Python 3.x.
-        match req_parts[0].parse::<u32>() {
-            Ok(major) => {
-                return match op {
-                    ">=" => inst.0 >= major,
-                    ">" => inst.0 > major,
-                    "<=" => inst.0 <= major,
-                    "<" => inst.0 < major,
-                    // "==" and bare: exact major match, any minor
-                    _ => inst.0 == major,
-                };
+        let trimmed = clause.trim();
+        // Find where the version digits start (after >=, <=, ==, >, <, =, ~=)
+        let version_start = trimmed
+            .find(|c: char| c.is_ascii_digit())
+            .unwrap_or(trimmed.len());
+        let (prefix, version_part) = trimmed.split_at(version_start);
+        // Strip trailing `.*` glob, check for `t`, then reattach glob.
+        let (core, glob_suffix) = version_part
+            .strip_suffix(".*")
+            .map_or((version_part, ""), |c| (c, ".*"));
+        if core.ends_with('t') && core.len() > 1 && core.as_bytes()[core.len() - 2] != b'.' {
+            changed = true;
+            result.push_str(prefix);
+            result.push_str(&core[..core.len() - 1]);
+            result.push_str(glob_suffix);
+        } else {
+            result.push_str(trimmed);
+        }
+    }
+    if changed {
+        Some(result)
+    } else {
+        None
+    }
+}
+
+/// Normalize bare version terms in a constraint string to wildcard pins.
+///
+/// Splits on `|` (OR) and `,` (AND) boundaries, and appends `.*` to any
+/// term that starts with a digit and doesn't already contain a wildcard or
+/// operator. Returns `None` if no normalization was needed.
+///
+/// Examples:
+/// - `"3.12"` → `Some("3.12.*")`
+/// - `"3.10|3.11"` → `Some("3.10.*|3.11.*")`
+/// - `">=3.9,<4"` → `None` (no bare versions)
+fn normalize_bare_versions(constraint: &str) -> Option<String> {
+    if constraint.is_empty() {
+        return None;
+    }
+    let mut changed = false;
+    let mut result = String::with_capacity(constraint.len() + 4);
+    // Split on `|` first (OR), then each branch on `,` (AND).
+    for (i, or_branch) in constraint.split('|').enumerate() {
+        if i > 0 {
+            result.push('|');
+        }
+        for (j, term) in or_branch.split(',').enumerate() {
+            if j > 0 {
+                result.push(',');
             }
-            Err(_) => return true, // Can't parse → fail-open
+            let trimmed = term.trim();
+            if !trimmed.is_empty()
+                && trimmed.as_bytes()[0].is_ascii_digit()
+                && !trimmed.contains('*')
+            {
+                changed = true;
+                result.push_str(trimmed);
+                result.push_str(".*");
+            } else {
+                result.push_str(trimmed);
+            }
         }
+    }
+    if changed {
+        Some(result)
     } else {
-        return true; // Can't parse → fail-open
-    };
-
-    let req = (req_major, req_minor);
-
-    match op {
-        ">=" => inst >= req,
-        "<=" => inst <= req,
-        ">" => inst > req,
-        "<" => inst < req,
-        // "==" and bare versions: exact major.minor match
-        _ => inst == req,
+        None
     }
 }
 
@@ -1629,10 +1653,18 @@ mod tests {
         std::fs::create_dir_all(&meta).unwrap();
         std::fs::write(meta.join("python-3.12.7-h2b28147_0.json"), "{}").unwrap();
 
+        // Bare "3.12" → normalized to "3.12.*" (conda pin semantics)
         assert!(installed_python_matches_constraint(dir.path(), "3.12"));
+        // Exact patch version
         assert!(installed_python_matches_constraint(dir.path(), "3.12.7"));
+        // Range constraint
         assert!(installed_python_matches_constraint(dir.path(), ">=3.12"));
-        assert!(installed_python_matches_constraint(dir.path(), "==3.12"));
+        // Wildcard pin (as rattler emits from environment.yml parsing)
+        assert!(installed_python_matches_constraint(dir.path(), "3.12.*"));
+        // ==3.12 means exactly 3.12.0 in conda — 3.12.7 does NOT match
+        assert!(!installed_python_matches_constraint(dir.path(), "==3.12"));
+        // ==3.12.7 is an exact match
+        assert!(installed_python_matches_constraint(dir.path(), "==3.12.7"));
     }
 
     #[test]
@@ -1731,6 +1763,71 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         // No conda-meta → can't detect → returns true (fail-open)
         assert!(installed_python_matches_constraint(dir.path(), "3.12"));
+    }
+
+    #[test]
+    fn python_constraint_free_threaded_selector_stripped() {
+        let dir = tempfile::tempdir().unwrap();
+        let meta = dir.path().join("conda-meta");
+        std::fs::create_dir_all(&meta).unwrap();
+        // conda-meta records "3.14.4" (no `t` suffix)
+        std::fs::write(meta.join("python-3.14.4-h2b28147_0.json"), "{}").unwrap();
+
+        // Free-threaded pins: the `t` selector is stripped before matching
+        assert!(installed_python_matches_constraint(dir.path(), "3.14t"));
+        assert!(installed_python_matches_constraint(dir.path(), "3.14t.*"));
+        assert!(installed_python_matches_constraint(dir.path(), ">=3.14t"));
+        assert!(!installed_python_matches_constraint(dir.path(), ">=3.15t"));
+    }
+
+    #[test]
+    fn strip_free_threading_selector_cases() {
+        assert_eq!(strip_free_threading_selector("3.14t"), Some("3.14".into()));
+        assert_eq!(
+            strip_free_threading_selector("3.14t.*"),
+            Some("3.14.*".into())
+        );
+        assert_eq!(
+            strip_free_threading_selector(">=3.14t"),
+            Some(">=3.14".into())
+        );
+        assert_eq!(
+            strip_free_threading_selector(">=3.14t,<4"),
+            Some(">=3.14,<4".into())
+        );
+        assert_eq!(strip_free_threading_selector("3.14"), None);
+        assert_eq!(strip_free_threading_selector(">=3.9,<4"), None);
+    }
+
+    #[test]
+    fn python_constraint_or_branches() {
+        let dir = tempfile::tempdir().unwrap();
+        let meta = dir.path().join("conda-meta");
+        std::fs::create_dir_all(&meta).unwrap();
+        std::fs::write(meta.join("python-3.11.0-h2b28147_0.json"), "{}").unwrap();
+
+        // OR constraint: "3.10|3.11" → 3.11 matches second branch
+        assert!(installed_python_matches_constraint(dir.path(), "3.10|3.11"));
+        // Neither branch matches
+        assert!(!installed_python_matches_constraint(
+            dir.path(),
+            "3.12|3.13"
+        ));
+    }
+
+    #[test]
+    fn normalize_bare_versions_cases() {
+        assert_eq!(normalize_bare_versions("3.12"), Some("3.12.*".into()));
+        assert_eq!(
+            normalize_bare_versions("3.10|3.11"),
+            Some("3.10.*|3.11.*".into())
+        );
+        assert_eq!(normalize_bare_versions(">=3.9,<4"), None);
+        assert_eq!(normalize_bare_versions("3.12.*"), None);
+        assert_eq!(
+            normalize_bare_versions("3.10|>=3.11"),
+            Some("3.10.*|>=3.11".into())
+        );
     }
 
     #[test]
