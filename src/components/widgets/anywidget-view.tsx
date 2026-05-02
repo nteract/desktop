@@ -415,6 +415,7 @@ export function createAFMModelProxy(
           data: {
             method: "custom",
             content: content, // Wrap content properly for ipywidgets protocol
+            buffer_paths: [],
           },
         },
         buffers: buffers ?? [],
@@ -555,7 +556,6 @@ export function AnyWidgetView({ modelId, className }: AnyWidgetViewProps) {
           {
             id: stableModelId,
             state: {},
-            buffers: [],
             modelName: "",
             modelModule: "",
           } as WidgetModel,
