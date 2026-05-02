@@ -8,6 +8,21 @@ import type {
 } from "./frame-bridge";
 import type { IsolatedFrameHandle } from "./isolated-frame";
 
+/**
+ * Narrow a full-state `bufferPaths` list to only the entries rooted at one of
+ * `keys`. Used when building a delta update so the iframe only tries to
+ * resolve buffers for paths that are actually present in the delta.
+ */
+function filterBufferPathsToKeys(
+  bufferPaths: string[][] | undefined,
+  keys: string[],
+): string[][] | undefined {
+  if (!bufferPaths || bufferPaths.length === 0) return undefined;
+  const keySet = new Set(keys);
+  const filtered = bufferPaths.filter((path) => path.length > 0 && keySet.has(path[0]));
+  return filtered.length > 0 ? filtered : undefined;
+}
+
 // Type for sending messages to kernel
 type SendUpdate = (commId: string, state: Record<string, unknown>, buffers?: ArrayBuffer[]) => void;
 
@@ -112,7 +127,7 @@ export class CommBridgeManager {
     commId: string,
     targetName: string,
     state: Record<string, unknown>,
-    buffers?: ArrayBuffer[],
+    bufferPaths?: string[][],
   ): void {
     const msg: CommOpenMessage = {
       type: "comm_open",
@@ -120,7 +135,7 @@ export class CommBridgeManager {
         commId,
         targetName,
         state,
-        buffers,
+        bufferPaths,
       },
     };
 
@@ -139,12 +154,15 @@ export class CommBridgeManager {
   /**
    * Forward a comm_msg (state update or custom message) to the iframe.
    * Called when the kernel sends a state update or custom message.
+   *
+   * `bufferPaths` only applies to `method: "update"`; `buffers` only applies
+   * to `method: "custom"` (transient event payload).
    */
   sendCommMsg(
     commId: string,
     method: "update" | "custom",
     data: Record<string, unknown>,
-    buffers?: ArrayBuffer[],
+    opts: { bufferPaths?: string[][]; buffers?: ArrayBuffer[] } = {},
   ): void {
     const msg: CommMsgMessage = {
       type: "comm_msg",
@@ -152,7 +170,8 @@ export class CommBridgeManager {
         commId,
         method,
         data,
-        buffers,
+        bufferPaths: opts.bufferPaths,
+        buffers: opts.buffers,
       },
     };
 
@@ -214,7 +233,7 @@ export class CommBridgeManager {
         commId,
         targetName: model.modelModule || "jupyter.widget",
         state: model.state,
-        buffers: model.buffers,
+        bufferPaths: model.bufferPaths,
       });
       this.sentModels.add(commId);
       // Store initial state for change detection
@@ -320,7 +339,7 @@ export class CommBridgeManager {
           commId,
           model.modelModule || "jupyter.widget",
           model.state,
-          model.buffers,
+          model.bufferPaths,
         );
         // Store initial state for change detection
         this.previousState.set(commId, this.cloneStateSnapshot(model.state));
@@ -337,8 +356,10 @@ export class CommBridgeManager {
             for (const key of changedKeys) {
               delta[key] = model.state[key];
             }
-            // Forward state update to iframe
-            this.sendCommMsg(commId, "update", delta, model.buffers);
+            // Forward state update to iframe. bufferPaths on the model cover
+            // the full state; only pass the ones that overlap with the delta.
+            const deltaPaths = filterBufferPathsToKeys(model.bufferPaths, changedKeys);
+            this.sendCommMsg(commId, "update", delta, { bufferPaths: deltaPaths });
             // Update tracked state
             this.previousState.set(commId, this.cloneStateSnapshot(model.state));
           }
@@ -369,7 +390,7 @@ export class CommBridgeManager {
       // Convert DataView[] to ArrayBuffer[] for postMessage
       const arrayBuffers = buffers?.map((dv) => dv.buffer as ArrayBuffer);
       // Forward custom message to iframe
-      this.sendCommMsg(commId, "custom", content, arrayBuffers);
+      this.sendCommMsg(commId, "custom", content, { buffers: arrayBuffers });
     });
 
     this.customMessageUnsubscribers.set(commId, unsubscribe);

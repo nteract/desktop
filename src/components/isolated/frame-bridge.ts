@@ -128,12 +128,13 @@ export interface CommOpenMessage {
     commId: string;
     /** Target name (e.g., "jupyter.widget") */
     targetName: string;
-    /** Initial widget state */
+    /**
+     * Widget state. Binary blobs appear as blob URL strings; the iframe
+     * fetches them and installs a DataView at each `bufferPaths` position.
+     */
     state: Record<string, unknown>;
-    /** Buffer paths for binary data reconstruction */
+    /** JSON paths in `state` where binary blob URLs live. */
     bufferPaths?: string[][];
-    /** Binary buffers (transferred via structured clone) */
-    buffers?: ArrayBuffer[];
   };
 }
 
@@ -150,9 +151,16 @@ export interface CommMsgMessage {
     method: "update" | "custom";
     /** State patch (for update) or custom content (for custom) */
     data: Record<string, unknown>;
-    /** Buffer paths for binary data reconstruction */
+    /**
+     * JSON paths in `data` where binary blob URLs live. Only populated for
+     * `method: "update"` — custom-method messages carry their own transient
+     * `buffers` payload instead.
+     */
     bufferPaths?: string[][];
-    /** Binary buffers (transferred via structured clone) */
+    /**
+     * Transient binary buffers for `method: "custom"` (e.g. ipycanvas draw
+     * commands, quak row batches). Event payload, not CRDT state.
+     */
     buffers?: ArrayBuffer[];
   };
 }
@@ -181,7 +189,8 @@ export interface WidgetSnapshotMessage {
       commId: string;
       targetName: string;
       state: Record<string, unknown>;
-      buffers?: ArrayBuffer[];
+      /** JSON paths in `state` where binary blob URLs live. */
+      bufferPaths?: string[][];
     }>;
   };
 }
