@@ -760,7 +760,9 @@ impl Session {
             NotebookResponse::InterruptSent {} => Ok(true),
             NotebookResponse::NoKernel {} => Ok(false),
             NotebookResponse::Error { error } => Err(Error::from_reason(error)),
-            _ => Ok(true),
+            other => Err(Error::from_reason(format!(
+                "Unexpected response to interruptKernel: {other:?}"
+            ))),
         }
     }
 
@@ -784,15 +786,20 @@ impl Session {
                 Ok(false)
             }
             NotebookResponse::Error { error } => Err(Error::from_reason(error)),
-            _ => Ok(true),
+            other => Err(Error::from_reason(format!(
+                "Unexpected response to shutdownKernel: {other:?}"
+            ))),
         }
     }
 
     /// Restart the kernel, clearing in-memory state while preserving notebook dependencies.
     #[napi]
     pub async fn restart_kernel(&self) -> Result<bool> {
-        let _ = self.shutdown_kernel().await;
-        tokio::time::sleep(Duration::from_millis(500)).await;
+        let handle = session_handle(&self.state).await?;
+        let had_kernel = self.shutdown_kernel().await?;
+        if had_kernel {
+            wait_for_kernel_not_running(&handle, Duration::from_secs(30)).await?;
+        }
         {
             let mut st = self.state.lock().await;
             st.kernel_started = false;
@@ -1227,6 +1234,36 @@ fn kernel_state_from_handle(handle: &DocHandle) -> (bool, String) {
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "python".to_string());
     (started, runtime)
+}
+
+async fn wait_for_kernel_not_running(handle: &DocHandle, timeout: Duration) -> Result<()> {
+    let start = std::time::Instant::now();
+    loop {
+        match handle.get_runtime_state() {
+            Ok(state)
+                if !matches!(
+                    state.kernel.lifecycle,
+                    runtime_doc::RuntimeLifecycle::Running(_)
+                ) =>
+            {
+                return Ok(());
+            }
+            Ok(_) | Err(_) if start.elapsed() < timeout => {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            Ok(state) => {
+                return Err(Error::from_reason(format!(
+                    "Timed out waiting for kernel shutdown; lifecycle is {}",
+                    state.kernel.lifecycle.variant_str()
+                )));
+            }
+            Err(e) => {
+                return Err(Error::from_reason(format!(
+                    "Timed out waiting for kernel shutdown; runtime state unavailable: {e}"
+                )));
+            }
+        }
+    }
 }
 
 fn active_notebook_from_room(room: runtimed_client::protocol::RoomInfo) -> ActiveNotebook {
