@@ -1,0 +1,254 @@
+#!/usr/bin/env bash
+# Install a published nteract Linux release for the current user.
+#
+# Intended future entrypoint:
+#   curl --proto '=https' --tlsv1.2 -sSf https://sh.nteract.io | sh
+#
+# Installs the AppImage plus runt/runtimed/nteract-mcp sidecars into a durable
+# per-user directory, links commands into ~/.local/bin, repairs/installs the
+# user systemd daemon with `runt daemon doctor --fix`, and starts it by default.
+
+set -euo pipefail
+
+usage() {
+  cat <<'USAGE'
+Usage:
+  scripts/install-linux-release [--tag v2.4.1-stable.YYYYMMDDHHMM]
+  scripts/install-linux-release --from-dir /path/to/release-assets
+
+Options:
+  --tag <tag>          Download artifacts from a GitHub release tag.
+                       Defaults to GitHub's latest non-prerelease release.
+  --from-dir <dir>     Install artifacts from a local directory instead of GitHub.
+  --repo <owner/repo>  GitHub repository (default: nteract/desktop).
+  --channel <name>     stable or nightly (default: stable). Nightly requires --tag.
+  --prefix <dir>       Install root (default: $XDG_DATA_HOME/nteract/<channel>,
+                       or ~/.local/share/nteract/<channel>).
+  --bin-dir <dir>      Symlink directory (default: ~/.local/bin).
+  --no-start           Install/repair the daemon service but do not start it.
+  --no-pi              Do not install npm:@nteract/pi even if `pi` is on PATH.
+  -h, --help           Show this help.
+
+Installs, for stable:
+  nteract-stable-linux-x64.AppImage -> <prefix>/nteract.AppImage
+  runt-linux-x64                    -> <prefix>/bin/runt
+  runtimed-linux-x64                -> <prefix>/bin/runtimed
+  nteract-mcp-linux-x64             -> <prefix>/bin/nteract-mcp
+
+Then links:
+  ~/.local/bin/nteract
+  ~/.local/bin/runt
+  ~/.local/bin/runtimed
+  ~/.local/bin/nteract-mcp
+USAGE
+}
+
+if [[ "$(uname -s)" != "Linux" ]]; then
+  echo "nteract Linux installer can only run on Linux." >&2
+  exit 1
+fi
+
+case "$(uname -m)" in
+  x86_64|amd64) ARCH="x64" ;;
+  *)
+    echo "Unsupported architecture: $(uname -m). Only Linux x64 release assets exist today." >&2
+    exit 1
+    ;;
+esac
+
+REPO="nteract/desktop"
+CHANNEL="stable"
+TAG=""
+FROM_DIR=""
+NO_START=0
+INSTALL_PI=1
+XDG_DATA_HOME_DEFAULT="${XDG_DATA_HOME:-$HOME/.local/share}"
+PREFIX=""
+BIN_DIR="$HOME/.local/bin"
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --tag)
+      TAG="${2:-}"
+      shift 2
+      ;;
+    --from-dir)
+      FROM_DIR="${2:-}"
+      shift 2
+      ;;
+    --repo)
+      REPO="${2:-}"
+      shift 2
+      ;;
+    --channel)
+      CHANNEL="${2:-}"
+      shift 2
+      ;;
+    --prefix)
+      PREFIX="${2:-}"
+      shift 2
+      ;;
+    --bin-dir)
+      BIN_DIR="${2:-}"
+      shift 2
+      ;;
+    --no-start)
+      NO_START=1
+      shift
+      ;;
+    --no-pi)
+      INSTALL_PI=0
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "Unknown argument: $1" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+done
+
+if [[ -n "$TAG" && -n "$FROM_DIR" ]]; then
+  echo "Use either --tag or --from-dir, not both." >&2
+  exit 2
+fi
+if [[ "$CHANNEL" != "stable" && "$CHANNEL" != "nightly" ]]; then
+  echo "--channel must be stable or nightly." >&2
+  exit 2
+fi
+if [[ "$CHANNEL" == "nightly" && -z "$TAG" && -z "$FROM_DIR" ]]; then
+  echo "Nightly installs require --tag until a nightly channel endpoint exists." >&2
+  exit 2
+fi
+
+if [[ -z "$PREFIX" ]]; then
+  PREFIX="$XDG_DATA_HOME_DEFAULT/nteract/$CHANNEL"
+fi
+
+if [[ "$CHANNEL" == "stable" ]]; then
+  APPIMAGE_ASSET="nteract-stable-linux-$ARCH.AppImage"
+  CLI_ASSET="runt-linux-$ARCH"
+  DAEMON_ASSET="runtimed-linux-$ARCH"
+  MCP_ASSET="nteract-mcp-linux-$ARCH"
+  CLI_NAME="runt"
+  DAEMON_NAME="runtimed"
+  MCP_NAME="nteract-mcp"
+else
+  APPIMAGE_ASSET="nteract-nightly-linux-$ARCH.AppImage"
+  CLI_ASSET="runt-nightly-linux-$ARCH"
+  DAEMON_ASSET="runtimed-nightly-linux-$ARCH"
+  MCP_ASSET="nteract-mcp-nightly-linux-$ARCH"
+  CLI_NAME="runt-nightly"
+  DAEMON_NAME="runtimed-nightly"
+  MCP_NAME="nteract-mcp-nightly"
+fi
+
+APPIMAGE_DEST="$PREFIX/nteract.AppImage"
+SIDE_BIN_DIR="$PREFIX/bin"
+TMP_DIR="$(mktemp -d)"
+cleanup() { rm -rf "$TMP_DIR"; }
+trap cleanup EXIT
+
+base_url() {
+  if [[ -n "$TAG" ]]; then
+    printf 'https://github.com/%s/releases/download/%s' "$REPO" "$TAG"
+  else
+    printf 'https://github.com/%s/releases/latest/download' "$REPO"
+  fi
+}
+
+fetch_asset() {
+  local asset="$1"
+  local dest="$2"
+  if [[ -n "$FROM_DIR" ]]; then
+    local src="$FROM_DIR/$asset"
+    if [[ ! -f "$src" ]]; then
+      echo "Missing artifact: $src" >&2
+      exit 1
+    fi
+    echo "Using $src"
+    cp "$src" "$dest"
+  else
+    local url
+    url="$(base_url)/$asset"
+    echo "Downloading $url"
+    curl --fail --location --show-error --silent "$url" --output "$dest"
+  fi
+  chmod 0755 "$dest"
+}
+
+atomic_install() {
+  local src="$1"
+  local dest="$2"
+  mkdir -p "$(dirname "$dest")"
+  local tmp="$dest.new"
+  cp "$src" "$tmp"
+  chmod 0755 "$tmp"
+  mv -f "$tmp" "$dest"
+  echo "Installed $dest"
+}
+
+mkdir -p "$PREFIX" "$SIDE_BIN_DIR" "$BIN_DIR"
+
+fetch_asset "$APPIMAGE_ASSET" "$TMP_DIR/$APPIMAGE_ASSET"
+fetch_asset "$CLI_ASSET" "$TMP_DIR/$CLI_NAME"
+fetch_asset "$DAEMON_ASSET" "$TMP_DIR/$DAEMON_NAME"
+fetch_asset "$MCP_ASSET" "$TMP_DIR/$MCP_NAME"
+
+atomic_install "$TMP_DIR/$APPIMAGE_ASSET" "$APPIMAGE_DEST"
+atomic_install "$TMP_DIR/$CLI_NAME" "$SIDE_BIN_DIR/$CLI_NAME"
+atomic_install "$TMP_DIR/$DAEMON_NAME" "$SIDE_BIN_DIR/$DAEMON_NAME"
+atomic_install "$TMP_DIR/$MCP_NAME" "$SIDE_BIN_DIR/$MCP_NAME"
+
+# Stable convenience aliases. These let @nteract/pi and shell users rely on the
+# stable command names even when the downloaded asset had a platform suffix.
+ln -sfn "$APPIMAGE_DEST" "$BIN_DIR/nteract"
+ln -sfn "$SIDE_BIN_DIR/$CLI_NAME" "$BIN_DIR/$CLI_NAME"
+ln -sfn "$SIDE_BIN_DIR/$DAEMON_NAME" "$BIN_DIR/$DAEMON_NAME"
+ln -sfn "$SIDE_BIN_DIR/$MCP_NAME" "$BIN_DIR/$MCP_NAME"
+
+echo "Linked $BIN_DIR/nteract -> $APPIMAGE_DEST"
+echo "Linked $BIN_DIR/$CLI_NAME -> $SIDE_BIN_DIR/$CLI_NAME"
+echo "Linked $BIN_DIR/$DAEMON_NAME -> $SIDE_BIN_DIR/$DAEMON_NAME"
+echo "Linked $BIN_DIR/$MCP_NAME -> $SIDE_BIN_DIR/$MCP_NAME"
+
+if [[ ":$PATH:" != *":$BIN_DIR:"* ]]; then
+  echo "Note: $BIN_DIR is not on PATH for this shell. Add it to use nteract/runt commands directly." >&2
+fi
+
+# Avoid accidentally installing a per-worktree dev daemon when the installer is
+# run from a checkout with RUNTIMED_DEV set (common for contributors/agents).
+DOCTOR_ARGS=(daemon doctor --fix)
+if [[ "$NO_START" == "1" ]]; then
+  DOCTOR_ARGS+=(--no-start)
+fi
+
+echo "Repairing daemon service with $SIDE_BIN_DIR/$CLI_NAME ${DOCTOR_ARGS[*]}"
+env -u RUNTIMED_DEV -u RUNTIMED_WORKSPACE_PATH PATH="$SIDE_BIN_DIR:$BIN_DIR:$PATH" \
+  "$SIDE_BIN_DIR/$CLI_NAME" "${DOCTOR_ARGS[@]}"
+
+if command -v pi >/dev/null 2>&1 && [[ "$INSTALL_PI" == "1" ]]; then
+  echo "Installing Pi nteract extension (npm:@nteract/pi)"
+  pi install npm:@nteract/pi || {
+    echo "Warning: pi extension install failed; you can retry with: pi install npm:@nteract/pi" >&2
+  }
+else
+  echo "Skipping Pi extension install. Install later with: pi install npm:@nteract/pi"
+fi
+
+echo
+echo "nteract $CHANNEL install complete."
+echo "AppImage: $APPIMAGE_DEST"
+echo "CLI:      $BIN_DIR/$CLI_NAME"
+echo "Daemon:   $BIN_DIR/$DAEMON_NAME"
+echo "MCP:      $BIN_DIR/$MCP_NAME"
+if [[ "$NO_START" == "1" ]]; then
+  echo "Daemon was installed/repaired but not started (--no-start). Start with: $CLI_NAME daemon start"
+else
+  env -u RUNTIMED_DEV -u RUNTIMED_WORKSPACE_PATH PATH="$SIDE_BIN_DIR:$BIN_DIR:$PATH" \
+    "$SIDE_BIN_DIR/$CLI_NAME" daemon status || true
+fi
