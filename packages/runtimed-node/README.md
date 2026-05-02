@@ -64,14 +64,19 @@ main().catch((error) => {
   or the `RUNTIMED_SOCKET_PATH` override.
 - `socketPathForChannel("stable" | "nightly")` returns a channel-specific
   daemon socket path.
+- `listActiveNotebooks(options)` lists active daemon notebook rooms.
 - `createNotebook(options)` creates a notebook and records optional first-call dependencies.
 - `openNotebook(notebookId, options)` connects to an existing notebook.
+- `showNotebook(options)` opens an active notebook or path in nteract Desktop,
+  returning a structured `opened: false` response in headless environments.
 - `getExecutionResult(executionId, options)` reads a result by execution ID.
 - `Session.listCells()` and `Session.getCell(cellId)` inspect notebook cells.
 - `Session.createCell(source, options)`, `Session.setCell(cellId, options)`,
   `Session.deleteCell(cellId)`, and `Session.moveCell(cellId, options)` provide
   direct notebook editing without MCP JSON round-trips.
 - `Session.executeCell(cellId, options)` runs an existing code cell.
+- `Session.showNotebook()` opens the session in nteract Desktop when a display
+  is available.
 - `Session.runCell(source, options)` creates, runs, and waits for a cell.
 - `Session.queueCell(source, options)` queues a cell and returns IDs.
 - `Session.waitForExecution(executionId, options)` waits for queued work.

@@ -15,6 +15,7 @@ use tokio::sync::Mutex;
 
 use notebook_protocol::protocol::{NotebookRequest, NotebookResponse};
 use notebook_sync::{BroadcastReceiver, DocHandle};
+use runtimed_client::client::PoolClient;
 use runtimed_client::output_resolver as shared_resolver;
 use runtimed_client::resolved_output::DataValue as SharedDataValue;
 
@@ -160,11 +161,55 @@ pub struct GetExecutionResultOptions {
     pub socket_path: Option<String>,
 }
 
+/// Options for top-level `listActiveNotebooks()`.
+#[napi(object)]
+#[derive(Default)]
+pub struct ListActiveNotebooksOptions {
+    /// Override daemon socket path (otherwise uses `defaultSocketPath()`).
+    pub socket_path: Option<String>,
+}
+
+/// Options for top-level `showNotebook()`.
+#[napi(object)]
+#[derive(Default)]
+pub struct ShowNotebookOptions {
+    /// Override daemon socket path (otherwise uses `defaultSocketPath()`).
+    pub socket_path: Option<String>,
+    /// Active notebook UUID to open in the app.
+    pub notebook_id: Option<String>,
+    /// File path to open in the app. If both path and notebookId are provided, path wins.
+    pub path: Option<String>,
+}
+
 /// A queued execution handle.
 #[napi(object)]
 pub struct QueuedExecution {
     pub cell_id: String,
     pub execution_id: String,
+}
+
+/// An active notebook room reported by the daemon.
+#[napi(object)]
+pub struct ActiveNotebook {
+    pub notebook_id: String,
+    pub active_peers: u32,
+    pub had_peers: bool,
+    pub has_kernel: bool,
+    pub kernel_type: Option<String>,
+    pub env_source: Option<String>,
+    pub kernel_status: Option<String>,
+    pub ephemeral: bool,
+    pub notebook_path: Option<String>,
+}
+
+/// Result of asking nteract Desktop to show a notebook.
+#[napi(object)]
+pub struct ShowNotebookResult {
+    pub notebook_id: Option<String>,
+    pub path: Option<String>,
+    pub opened: bool,
+    pub reason: Option<String>,
+    pub warning: Option<String>,
 }
 
 /// A notebook cell snapshot.
@@ -576,6 +621,17 @@ impl Session {
         })
     }
 
+    /// Open this notebook in nteract Desktop. In headless environments, returns
+    /// `opened: false` with a reason instead of failing.
+    #[napi]
+    pub async fn show_notebook(&self) -> Result<ShowNotebookResult> {
+        let (socket_path, notebook_id) = {
+            let st = self.state.lock().await;
+            (st.socket_path.clone(), self.notebook_id.clone())
+        };
+        show_notebook_inner(socket_path, Some(notebook_id), None).await
+    }
+
     /// Wait for an already-queued execution in this live session.
     #[napi]
     pub async fn wait_for_execution(
@@ -660,6 +716,29 @@ pub async fn create_notebook(options: Option<CreateNotebookOptions>) -> Result<S
         notebook_id,
         state: Arc::new(Mutex::new(state)),
     })
+}
+
+/// List active notebook rooms from the daemon.
+#[napi]
+pub async fn list_active_notebooks(
+    options: Option<ListActiveNotebooksOptions>,
+) -> Result<Vec<ActiveNotebook>> {
+    let opts = options.unwrap_or_default();
+    let socket_path = resolve_socket_path(opts.socket_path);
+    let rooms = PoolClient::new(socket_path)
+        .list_rooms()
+        .await
+        .map_err(to_napi_err)?;
+    Ok(rooms.into_iter().map(active_notebook_from_room).collect())
+}
+
+/// Open a notebook in nteract Desktop by active notebook ID or file path.
+/// In headless environments, returns `opened: false` with a reason instead of failing.
+#[napi]
+pub async fn show_notebook(options: Option<ShowNotebookOptions>) -> Result<ShowNotebookResult> {
+    let opts = options.unwrap_or_default();
+    let socket_path = resolve_socket_path(opts.socket_path);
+    show_notebook_inner(socket_path, opts.notebook_id, opts.path).await
 }
 
 /// Open an existing notebook by ID.
@@ -798,6 +877,106 @@ async fn session_handle(state: &Arc<Mutex<SessionState>>) -> Result<DocHandle> {
         .as_ref()
         .ok_or_else(|| Error::from_reason("Not connected"))
         .cloned()
+}
+
+fn active_notebook_from_room(room: runtimed_client::protocol::RoomInfo) -> ActiveNotebook {
+    ActiveNotebook {
+        notebook_id: room.notebook_id,
+        active_peers: room.active_peers.try_into().unwrap_or(u32::MAX),
+        had_peers: room.had_peers,
+        has_kernel: room.has_kernel,
+        kernel_type: room.kernel_type,
+        env_source: room.env_source,
+        kernel_status: room.kernel_status,
+        ephemeral: room.ephemeral,
+        notebook_path: room.notebook_path,
+    }
+}
+
+fn has_display() -> bool {
+    if cfg!(target_os = "macos") || cfg!(target_os = "windows") {
+        return true;
+    }
+    std::env::var("DISPLAY").is_ok() || std::env::var("WAYLAND_DISPLAY").is_ok()
+}
+
+async fn show_notebook_inner(
+    socket_path: PathBuf,
+    notebook_id: Option<String>,
+    path: Option<String>,
+) -> Result<ShowNotebookResult> {
+    if let Some(path) = path {
+        if !has_display() {
+            return Ok(ShowNotebookResult {
+                notebook_id,
+                path: Some(path),
+                opened: false,
+                reason: Some(
+                    "No display available (headless environment). The notebook can still be used through @runtimed/node."
+                        .to_string(),
+                ),
+                warning: None,
+            });
+        }
+        runt_workspace::open_notebook_app(Some(std::path::Path::new(&path)), &[])
+            .map_err(|e| Error::from_reason(format!("Failed to open app: {e}")))?;
+        return Ok(ShowNotebookResult {
+            notebook_id,
+            path: Some(path),
+            opened: true,
+            reason: None,
+            warning: None,
+        });
+    }
+
+    let notebook_id = notebook_id.ok_or_else(|| {
+        Error::from_reason("showNotebook requires notebookId or path when not called on a Session")
+    })?;
+    let rooms = PoolClient::new(socket_path)
+        .list_rooms()
+        .await
+        .map_err(to_napi_err)?;
+    let room = rooms
+        .iter()
+        .find(|room| room.notebook_id == notebook_id)
+        .ok_or_else(|| Error::from_reason(format!("Notebook {notebook_id} is not active")))?;
+    let resolved_path = room
+        .notebook_path
+        .as_deref()
+        .filter(|p| std::path::Path::new(p).is_absolute());
+
+    if !has_display() {
+        return Ok(ShowNotebookResult {
+            notebook_id: Some(notebook_id),
+            path: resolved_path.map(str::to_string),
+            opened: false,
+            reason: Some(
+                "No display available (headless environment). The notebook is running in the daemon and accessible through @runtimed/node."
+                    .to_string(),
+            ),
+            warning: room.ephemeral.then(|| {
+                "This notebook is ephemeral. Save it to a path to persist it.".to_string()
+            }),
+        });
+    }
+
+    if let Some(path) = resolved_path {
+        runt_workspace::open_notebook_app(Some(std::path::Path::new(path)), &[])
+            .map_err(|e| Error::from_reason(format!("Failed to open app: {e}")))?;
+    } else {
+        runt_workspace::open_notebook_app(None, &["--notebook-id", &notebook_id])
+            .map_err(|e| Error::from_reason(format!("Failed to open app: {e}")))?;
+    }
+
+    Ok(ShowNotebookResult {
+        notebook_id: Some(notebook_id),
+        path: resolved_path.map(str::to_string),
+        opened: true,
+        reason: None,
+        warning: room
+            .ephemeral
+            .then(|| "This notebook is ephemeral. Save it from the app to keep it.".to_string()),
+    })
 }
 
 fn dependency_package_manager(options: Option<DependencyEditOptions>) -> PackageManager {
