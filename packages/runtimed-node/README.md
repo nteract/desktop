@@ -102,6 +102,8 @@ as a human-readable peer label for agent-created sessions.
   metadata transaction.
 - `Session.getDependencyStatus()` returns dependency metadata, fingerprint, and
   trust state in one call.
+- `Session.getRuntimeStatus()` returns kernel lifecycle, activity, env source,
+  and startup error details.
 - `Session.addUvDependency(spec)` records a UV dependency for the notebook.
 - `Session.syncEnvironment()` installs recorded notebook dependencies.
 - `Session.saveNotebook(path?)` saves the notebook.

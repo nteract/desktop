@@ -54,6 +54,10 @@ async function main() {
     assert(deps.trust, "trust status is grouped");
     assert.equal(typeof deps.fingerprint, "string", "dependency fingerprint is present");
 
+    const runtime = await session.getRuntimeStatus();
+    assert.equal(typeof runtime.status, "string", "runtime status is present");
+    assert.equal(typeof runtime.lifecycle, "string", "runtime lifecycle is present");
+
     const rooms = await rt.listActiveNotebooks();
     assert(
       rooms.some((room) => room.notebookId === session.notebookId),

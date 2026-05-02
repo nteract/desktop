@@ -137,6 +137,21 @@ pub struct DependencyStatus {
     pub trust: DependencyTrustStatus,
 }
 
+/// Runtime/kernel status from RuntimeStateDoc.
+#[napi(object)]
+pub struct RuntimeStatus {
+    pub status: String,
+    pub lifecycle: String,
+    pub activity: Option<String>,
+    pub starting_phase: String,
+    pub name: String,
+    pub language: String,
+    pub env_source: String,
+    pub runtime_agent_id: String,
+    pub error_reason: Option<String>,
+    pub error_details: Option<String>,
+}
+
 /// Options for `Session.runCell()`.
 #[napi(object)]
 #[derive(Default)]
@@ -483,6 +498,13 @@ impl Session {
             }),
         )
         .await
+    }
+
+    /// Get runtime/kernel state, including lifecycle error details.
+    #[napi]
+    pub async fn get_runtime_status(&self) -> Result<RuntimeStatus> {
+        let handle = session_handle(&self.state).await?;
+        Ok(runtime_status_for_handle(&handle))
     }
 
     /// Get dependency metadata, fingerprint, and current trust state.
@@ -1357,6 +1379,33 @@ fn dependency_fingerprint_for_handle(handle: &DocHandle) -> Option<String> {
     handle
         .get_notebook_metadata()
         .map(|snapshot| snapshot.dependency_fingerprint())
+}
+
+fn runtime_status_for_handle(handle: &DocHandle) -> RuntimeStatus {
+    let kernel = handle
+        .get_runtime_state()
+        .ok()
+        .map(|state| state.kernel)
+        .unwrap_or_default();
+    let (lifecycle, activity) = match &kernel.lifecycle {
+        runtime_doc::RuntimeLifecycle::Running(activity) => (
+            kernel.lifecycle.variant_str().to_string(),
+            Some(activity.as_str().to_string()),
+        ),
+        lifecycle => (lifecycle.variant_str().to_string(), None),
+    };
+    RuntimeStatus {
+        status: kernel.status,
+        lifecycle,
+        activity,
+        starting_phase: kernel.starting_phase,
+        name: kernel.name,
+        language: kernel.language,
+        env_source: kernel.env_source,
+        runtime_agent_id: kernel.runtime_agent_id,
+        error_reason: kernel.error_reason.filter(|s| !s.is_empty()),
+        error_details: kernel.error_details.filter(|s| !s.is_empty()),
+    }
 }
 
 fn dependency_status_for_handle(handle: &DocHandle) -> DependencyStatus {

@@ -35,8 +35,8 @@ pub use session::{
     DependencyStatus, DependencyTrustStatus, ExecuteCellOptions, GetExecutionResultOptions,
     JsCellSnapshot, JsOutput, ListActiveNotebooksOptions, MoveCellOptions, OpenNotebookOptions,
     PackageManager, PixiDependencyStatus, QueueCellOptions, QueuedExecution, RunCellOptions,
-    Session, SetCellOptions, ShowNotebookOptions, ShowNotebookResult, ShutdownNotebookOptions,
-    UvDependencyStatus, WaitExecutionOptions,
+    RuntimeStatus, Session, SetCellOptions, ShowNotebookOptions, ShowNotebookResult,
+    ShutdownNotebookOptions, UvDependencyStatus, WaitExecutionOptions,
 };
 
 /// Return the default daemon socket path.
