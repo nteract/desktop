@@ -1379,6 +1379,8 @@ jobs:
             -e "s/^DEFAULT_TAG=\"\"$/DEFAULT_TAG=\"v${{ needs.compute-version.outputs.version }}\"/" \
             scripts/install-linux-release > release-assets/install-linux-release
           chmod 0755 release-assets/install-linux-release
+          grep -Fqx "DEFAULT_CHANNEL=\"${CHANNEL}\"" release-assets/install-linux-release
+          grep -Fqx "DEFAULT_TAG=\"v${{ needs.compute-version.outputs.version }}\"" release-assets/install-linux-release
           # Notebook installers
           cp "notebook-macos-arm64/nteract-${CHANNEL}-darwin-arm64.dmg" release-assets/
           cp "notebook-macos-x64/nteract-${CHANNEL}-darwin-x64.dmg" release-assets/
