@@ -8,14 +8,15 @@ import { useMemo } from "react";
 import { Label } from "@/components/ui/label";
 import { cn } from "@/lib/utils";
 import { buildMediaSrc } from "../buffer-utils";
+import { toCssLength } from "../css-length";
 import type { WidgetComponentProps } from "../widget-registry";
 import { useWidgetModelValue } from "../widget-store-context";
 
 export function VideoWidget({ modelId, className }: WidgetComponentProps) {
   const value = useWidgetModelValue<string | ArrayBuffer | DataView>(modelId, "value");
   const format = useWidgetModelValue<string>(modelId, "format") ?? "mp4";
-  const width = useWidgetModelValue<string>(modelId, "width") ?? "";
-  const height = useWidgetModelValue<string>(modelId, "height") ?? "";
+  const width = useWidgetModelValue<string | number>(modelId, "width");
+  const height = useWidgetModelValue<string | number>(modelId, "height");
   const autoplay = useWidgetModelValue<boolean>(modelId, "autoplay") ?? true;
   const loop = useWidgetModelValue<boolean>(modelId, "loop") ?? true;
   const controls = useWidgetModelValue<boolean>(modelId, "controls") ?? true;
@@ -27,9 +28,12 @@ export function VideoWidget({ modelId, className }: WidgetComponentProps) {
     return null;
   }
 
+  const cssWidth = toCssLength(width);
+  const cssHeight = toCssLength(height);
+
   const style: React.CSSProperties = {};
-  if (width) style.width = width;
-  if (height) style.height = height;
+  if (cssWidth) style.width = cssWidth;
+  if (cssHeight) style.height = cssHeight;
 
   return (
     <div
