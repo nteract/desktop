@@ -1152,9 +1152,10 @@ impl RuntimeStateDoc {
     }
 
     /// Mark all in-flight executions (status "running" or "queued") as failed.
-    /// Returns the number of executions marked. Used during kernel restart to
-    /// catch any entries that the local KernelState doesn't know about (e.g.,
-    /// entries created by CRDT sync that haven't been processed locally yet).
+    /// Returns the number of executions marked. Used during kernel restart or
+    /// interrupt to catch any entries that the local KernelState doesn't know
+    /// about (e.g., entries created by CRDT sync that haven't been processed
+    /// locally yet).
     pub fn mark_inflight_executions_failed(&mut self) -> Result<usize, RuntimeStateError> {
         let Some(executions) = self.get_map("executions") else {
             return Ok(0);

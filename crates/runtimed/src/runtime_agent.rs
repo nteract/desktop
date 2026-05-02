@@ -164,11 +164,16 @@ pub async fn run_runtime_agent(
                                         if let Some(ref handle) = interrupt_handle {
                                             let handle = handle.clone();
                                             let cleared = kernel_state.clear_queue();
-                                            // Write cleared entries to state doc
+                                            // Write cleared entries AND sweep any CRDT-synced
+                                            // executions that haven't reached the local queue yet.
+                                            // The coordinator does this too, but belt-and-suspenders
+                                            // catches entries that arrived via sync after the
+                                            // coordinator's sweep.
                                             if let Err(e) = state.with_doc(|sd| {
                                                 for entry in &cleared {
                                                     sd.set_execution_done(&entry.execution_id, false)?;
                                                 }
+                                                sd.mark_inflight_executions_failed()?;
                                                 Ok(())
                                             }) {
                                                 warn!("[runtime-state] {}", e);
@@ -872,11 +877,12 @@ async fn handle_runtime_agent_request(
                 match k.interrupt().await {
                     Ok(()) => {
                         let cleared = state.clear_queue();
-                        // Write cleared entries to state doc
+                        // Write cleared entries AND sweep CRDT-synced executions
                         if let Err(e) = ctx.state.with_doc(|sd| {
                             for entry in &cleared {
                                 sd.set_execution_done(&entry.execution_id, false)?;
                             }
+                            sd.mark_inflight_executions_failed()?;
                             Ok(())
                         }) {
                             warn!("[runtime-state] {}", e);
@@ -1438,5 +1444,124 @@ mod tests {
         assert_eq!(rs.kernel.lifecycle, RuntimeLifecycle::Error);
         assert!(rs.queue.executing.is_none());
         assert!(rs.queue.queued.is_empty());
+    }
+
+    /// Simulate the interrupt+execute race: a concurrent execute_cell creates
+    /// an execution entry in RuntimeStateDoc that the runtime agent's local
+    /// queue doesn't know about yet. The interrupt handler must mark ALL
+    /// in-flight entries as failed, not just the ones in the local queue.
+    #[tokio::test]
+    async fn interrupt_marks_crdt_synced_executions_not_in_local_queue() {
+        let (_ctx, mut state, handle) = test_fixtures();
+        let mut mock = MockKernel;
+        state.set_idle();
+
+        // Cell A is executing via the normal queue path
+        state
+            .queue_cell(
+                "cA".into(),
+                "eA".into(),
+                "while True: pass".into(),
+                &mut mock,
+            )
+            .await
+            .unwrap();
+        assert!(state.executing_cell().is_some());
+
+        // Simulate a concurrent execute_cell: the coordinator wrote an
+        // execution entry directly to RuntimeStateDoc, but CRDT sync hasn't
+        // delivered it to the runtime agent's local queue yet.
+        handle
+            .with_doc(|sd| sd.create_execution_with_source("eB", "cB", "1 + 1", 1))
+            .unwrap();
+
+        // Verify eB is "queued" in the doc but NOT in the local queue
+        let eb = handle.read(|sd| sd.get_execution("eB").unwrap()).unwrap();
+        assert_eq!(eb.status, "queued");
+        assert!(state.queued_entries().is_empty()); // Only cA is executing, no queue
+
+        // Simulate interrupt: clear local queue + mark_inflight_executions_failed
+        let cleared = state.clear_queue();
+        assert!(cleared.is_empty()); // clear_queue drains pending queue only, not the executing cell
+
+        handle
+            .with_doc(|sd| {
+                for entry in &cleared {
+                    sd.set_execution_done(&entry.execution_id, false)?;
+                }
+                sd.mark_inflight_executions_failed()?;
+                Ok(())
+            })
+            .unwrap();
+        state.write_queue_to_state_doc();
+
+        // eA (executing) should be marked failed by mark_inflight
+        let ea = handle.read(|sd| sd.get_execution("eA").unwrap()).unwrap();
+        assert_eq!(ea.status, "error");
+        assert_eq!(ea.success, Some(false));
+
+        // eB (CRDT-only, not in local queue) should ALSO be marked failed
+        let eb = handle.read(|sd| sd.get_execution("eB").unwrap()).unwrap();
+        assert_eq!(eb.status, "error");
+        assert_eq!(eb.success, Some(false));
+    }
+
+    /// After interrupt, CellError from the interrupted cell should be a
+    /// no-op for queue clearing (queue is already empty).
+    #[tokio::test]
+    async fn cell_error_after_interrupt_is_noop_for_queue() {
+        let (ctx, mut state, handle) = test_fixtures();
+        let mut mock = MockKernel;
+        state.set_idle();
+
+        // Queue cell A (executing) and cell B (queued)
+        state
+            .queue_cell(
+                "cA".into(),
+                "eA".into(),
+                "while True: pass".into(),
+                &mut mock,
+            )
+            .await
+            .unwrap();
+        state
+            .queue_cell("cB".into(), "eB".into(), "1 + 1".into(), &mut mock)
+            .await
+            .unwrap();
+
+        // Simulate interrupt: clear queue
+        let cleared = state.clear_queue();
+        assert_eq!(cleared.len(), 1); // cB
+        assert_eq!(cleared[0].cell_id, "cB");
+
+        handle
+            .with_doc(|sd| {
+                for entry in &cleared {
+                    sd.set_execution_done(&entry.execution_id, false)?;
+                }
+                sd.mark_inflight_executions_failed()?;
+                Ok(())
+            })
+            .unwrap();
+        state.write_queue_to_state_doc();
+
+        // Now simulate CellError from the interrupted cell A
+        handle_queue_command(
+            QueueCommand::CellError {
+                cell_id: "cA".to_string(),
+                execution_id: "eA".to_string(),
+            },
+            &ctx,
+            &mut None::<JupyterKernel>,
+            &mut state,
+        )
+        .await
+        .unwrap();
+
+        // Both should be error
+        let ea = handle.read(|sd| sd.get_execution("eA").unwrap()).unwrap();
+        assert_eq!(ea.status, "error");
+        let eb = handle.read(|sd| sd.get_execution("eB").unwrap()).unwrap();
+        assert_eq!(eb.status, "error");
     }
 }
