@@ -128,6 +128,13 @@ pub fn all_tools() -> Vec<Tool> {
             schema_for::<session::ShowNotebookParams>(),
         )
         .annotate(ToolAnnotations::new().read_only(true).open_world(false)),
+        Tool::new(
+            "disconnect_notebook",
+            "Disconnect a notebook session, releasing its peer connection and kernel. \
+             Pass notebook_id to release a specific parked session, or omit to disconnect the active session.",
+            schema_for::<session::DisconnectNotebookParams>(),
+        )
+        .annotate(ToolAnnotations::new().destructive(true).open_world(false)),
         // -- Cell read --
         Tool::new(
             "get_cell",
@@ -268,6 +275,7 @@ pub async fn dispatch(
         "create_notebook" => session::create_notebook(server, request).await,
         "save_notebook" => session::save_notebook(server, request).await,
         "show_notebook" | "launch_app" => session::show_notebook(server, request).await,
+        "disconnect_notebook" => session::disconnect_notebook(server, request).await,
         // Cell read
         "get_cell" => cell_read::get_cell(server, request).await,
         "get_all_cells" => cell_read::get_all_cells(server, request).await,

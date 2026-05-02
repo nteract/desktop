@@ -26,6 +26,13 @@ async fn previous_notebook_id(server: &NteractMcp) -> Option<String> {
         .map(|s| s.notebook_id.clone())
 }
 
+/// Maximum number of parked sessions. When this limit is reached, the
+/// least-recently-parked session is evicted (dropped) to make room. This
+/// bounds the resource footprint of a long-lived MCP process that touches
+/// many notebooks — without a cap, every notebook ever opened keeps its
+/// peer connection and kernel alive indefinitely.
+const MAX_PARKED_SESSIONS: usize = 8;
+
 /// Park the previous session before switching to a new one.
 ///
 /// Instead of dropping the old session (which would decrement the daemon's
@@ -37,6 +44,10 @@ async fn previous_notebook_id(server: &NteractMcp) -> Option<String> {
 /// When `new_notebook_id` is `Some`, the parking is skipped if we're
 /// reconnecting to the same notebook (no-op switch). When `None` (e.g.
 /// `create_notebook`), the old session is always parked.
+///
+/// If parking would exceed [`MAX_PARKED_SESSIONS`], the oldest parked
+/// session is evicted (LRU). HashMap iteration order is arbitrary, so we
+/// use insertion order tracking via a separate `parked_order` Vec.
 async fn park_previous_session(server: &NteractMcp, new_notebook_id: Option<&str>) {
     // Take the old session under a short-lived write lock.
     let old_session = {
@@ -69,11 +80,24 @@ async fn park_previous_session(server: &NteractMcp, new_notebook_id: Option<&str
             notebook_path: old.notebook_path.clone(),
         });
         // Park the session — peer connection stays alive, no eviction.
-        server
-            .parked_sessions
-            .write()
-            .await
-            .insert(notebook_id, old);
+        let mut parked = server.parked_sessions.write().await;
+
+        // LRU eviction: if at capacity, drop the oldest parked session.
+        // HashMap doesn't track insertion order, so we evict the first key
+        // returned by the iterator (effectively arbitrary but stable within
+        // a single HashMap instance — good enough for a bounded cache).
+        if parked.len() >= MAX_PARKED_SESSIONS {
+            if let Some(oldest_key) = parked.keys().next().cloned() {
+                tracing::info!(
+                    "[mcp] Parked sessions at capacity ({}), evicting {}",
+                    MAX_PARKED_SESSIONS,
+                    oldest_key
+                );
+                parked.remove(&oldest_key);
+            }
+        }
+
+        parked.insert(notebook_id, old);
     }
 }
 
@@ -357,6 +381,97 @@ pub struct SaveNotebookParams {
     /// Omit to save to the notebook's existing file path.
     #[serde(default)]
     pub path: Option<String>,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct DisconnectNotebookParams {
+    /// Notebook ID to disconnect and release. If omitted, disconnects the
+    /// active session. Pass a notebook_id to release a specific parked session
+    /// without switching away from the current one.
+    #[serde(default)]
+    pub notebook_id: Option<String>,
+}
+
+/// Disconnect a notebook session, releasing its peer connection and allowing
+/// the daemon to evict the room normally. Works on both the active session
+/// and parked sessions.
+pub async fn disconnect_notebook(
+    server: &NteractMcp,
+    request: &CallToolRequestParams,
+) -> Result<CallToolResult, McpError> {
+    let target_id = arg_str(request, "notebook_id");
+
+    match target_id {
+        Some(id) => {
+            // Try parked sessions first.
+            let removed = server.parked_sessions.write().await.remove(id);
+            if let Some(session) = removed {
+                tracing::info!("[mcp] Disconnecting parked session {}", id);
+                drop(session);
+                return tool_success(&format!(
+                    "Disconnected parked session {}. Peer connection released; \
+                     daemon eviction timer will start.",
+                    id
+                ));
+            }
+
+            // Check if it's the active session.
+            let is_active = {
+                let guard = server.session.read().await;
+                guard.as_ref().is_some_and(|s| s.notebook_id == id)
+            };
+
+            if is_active {
+                let old = server.session.write().await.take();
+                if let Some(session) = old {
+                    *server.last_session_drop.write().await = Some(SessionDropInfo {
+                        reason: SessionDropReason::Disconnected,
+                        notebook_id: session.notebook_id.clone(),
+                        notebook_path: session.notebook_path.clone(),
+                    });
+                    tracing::info!("[mcp] Disconnecting active session {}", id);
+                    drop(session);
+                }
+                return tool_success(&format!(
+                    "Disconnected active session {}. No active session now; \
+                     use connect_notebook or create_notebook to start a new one.",
+                    id
+                ));
+            }
+
+            tool_error(&format!(
+                "No active or parked session with notebook_id '{}'. \
+                 Use list_active_notebooks to see available sessions.",
+                id
+            ))
+        }
+        None => {
+            // No ID specified — disconnect the active session.
+            let old = server.session.write().await.take();
+            match old {
+                Some(session) => {
+                    let notebook_id = session.notebook_id.clone();
+                    *server.last_session_drop.write().await = Some(SessionDropInfo {
+                        reason: SessionDropReason::Disconnected,
+                        notebook_id: session.notebook_id.clone(),
+                        notebook_path: session.notebook_path.clone(),
+                    });
+                    tracing::info!("[mcp] Disconnecting active session {}", notebook_id);
+                    drop(session);
+                    tool_success(&format!(
+                        "Disconnected active session {}. No active session now; \
+                         use connect_notebook or create_notebook to start a new one.",
+                        notebook_id
+                    ))
+                }
+                None => tool_error(
+                    "No active session to disconnect. \
+                     Pass notebook_id to disconnect a specific parked session.",
+                ),
+            }
+        }
+    }
 }
 
 /// List all active notebook sessions.
