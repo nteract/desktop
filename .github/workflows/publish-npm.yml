@@ -63,19 +63,19 @@ jobs:
         run: |
           # Get the source tag based on release_type
           SOURCE_TAG="${{ inputs.release_type == 'stable' && 'next' || 'latest' }}"
-          VERSION=$(npm view @nteract/pi@${SOURCE_TAG} version)
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "source_tag=$SOURCE_TAG" >> $GITHUB_OUTPUT
+          VERSION=$(npm view "@nteract/pi@${SOURCE_TAG}" version)
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "source_tag=$SOURCE_TAG" >> "$GITHUB_OUTPUT"
 
       - name: Promote packages to ${{ env.NPM_TAG }}
         run: |
           VERSION="${{ steps.version.outputs.version }}"
           echo "Promoting version $VERSION from ${{ steps.version.outputs.source_tag }} to ${{ env.NPM_TAG }}"
-          npm dist-tag add @nteract/pi@$VERSION ${{ env.NPM_TAG }}
-          npm dist-tag add @runtimed/node@$VERSION ${{ env.NPM_TAG }}
-          npm dist-tag add @runtimed/node-darwin-arm64@$VERSION ${{ env.NPM_TAG }}
-          npm dist-tag add @runtimed/node-linux-x64-gnu@$VERSION ${{ env.NPM_TAG }}
-          npm dist-tag add @runtimed/node-win32-x64-msvc@$VERSION ${{ env.NPM_TAG }}
+          npm dist-tag add "@nteract/pi@$VERSION" "${{ env.NPM_TAG }}"
+          npm dist-tag add "@runtimed/node@$VERSION" "${{ env.NPM_TAG }}"
+          npm dist-tag add "@runtimed/node-darwin-arm64@$VERSION" "${{ env.NPM_TAG }}"
+          npm dist-tag add "@runtimed/node-linux-x64-gnu@$VERSION" "${{ env.NPM_TAG }}"
+          npm dist-tag add "@runtimed/node-win32-x64-msvc@$VERSION" "${{ env.NPM_TAG }}"
 
   native:
     name: Native package (${{ matrix.target }})
