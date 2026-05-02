@@ -266,40 +266,37 @@ pub async fn run_runtime_agent(
                                     // handler treats it as best-effort, but it still bumps
                                     // the generation so the sync task will skip terminal
                                     // Ready/Error writes after the kernel is gone.
-                                    if matches!(
-                                        envelope.request,
+                                    let is_launch_or_restart = matches!(
+                                        &envelope.request,
                                         RuntimeAgentRequest::LaunchKernel { .. }
                                             | RuntimeAgentRequest::RestartKernel { .. }
-                                    ) {
-                                        if inflight_sync.is_some() {
-                                            if let Err(e) = send_runtime_agent_response(
-                                                &mut writer,
-                                                envelope.id.clone(),
-                                                RuntimeAgentResponse::Error {
-                                                    error: "Environment sync in progress; retry after it completes"
-                                                        .to_string(),
-                                                },
-                                            )
-                                            .await
-                                            {
-                                                warn!(
-                                                    "[runtime-agent] Failed to send lifecycle busy response: {}",
-                                                    e
-                                                );
-                                                break;
-                                            }
-                                            continue;
+                                    );
+                                    if is_launch_or_restart && inflight_sync.is_some() {
+                                        if let Err(e) = send_runtime_agent_response(
+                                            &mut writer,
+                                            envelope.id.clone(),
+                                            RuntimeAgentResponse::Error {
+                                                error: "Environment sync in progress; retry after it completes"
+                                                    .to_string(),
+                                            },
+                                        )
+                                        .await
+                                        {
+                                            warn!(
+                                                "[runtime-agent] Failed to send lifecycle busy response: {}",
+                                                e
+                                            );
+                                            break;
                                         }
+                                        continue;
                                     }
 
-                                    if matches!(envelope.request, RuntimeAgentRequest::ShutdownKernel) {
-                                        sync_generation
-                                            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                                    } else if matches!(
-                                        envelope.request,
-                                        RuntimeAgentRequest::LaunchKernel { .. }
-                                            | RuntimeAgentRequest::RestartKernel { .. }
-                                    ) {
+                                    if is_launch_or_restart
+                                        || matches!(
+                                            &envelope.request,
+                                            RuntimeAgentRequest::ShutdownKernel
+                                        )
+                                    {
                                         sync_generation
                                             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                                     }
