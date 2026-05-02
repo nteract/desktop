@@ -42,6 +42,8 @@ jobs:
             runner: macos-latest
           - target: linux-x64-gnu
             runner: ubuntu-latest
+          - target: win32-x64-msvc
+            runner: windows-latest
     steps:
       - uses: actions/checkout@v6
         with:
