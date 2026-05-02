@@ -479,6 +479,7 @@ const VALID_CONFIG_KEYS: &[&str] = &[
     "uv_pool_size",
     "conda_pool_size",
     "pixi_pool_size",
+    "bootstrap_dx",
 ];
 
 /// Daemon management commands (replaces Pool + runtimed service commands)
