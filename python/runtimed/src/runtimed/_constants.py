@@ -27,6 +27,7 @@ KernelErrorReasonKey = Literal[
     "dependency_cache_missing_ipykernel",
     "ipykernel_site_packages_mismatch",
     "conda_env_yml_missing",
+    "conda_env_build_failed",
 ]
 
 
@@ -52,6 +53,10 @@ class KERNEL_ERROR_REASON:
     #: banner and MCP tools can report the miss. ``kernel.error_details``
     #: carries the declared env name and remediation command.
     CONDA_ENV_YML_MISSING: Final[KernelErrorReasonKey] = "conda_env_yml_missing"
+    #: An approved environment.yml build was attempted but failed (e.g.,
+    #: channel unreachable, dependency solve error). ``kernel.error_details``
+    #: carries the rattler/conda error message.
+    CONDA_ENV_BUILD_FAILED: Final[KernelErrorReasonKey] = "conda_env_build_failed"
 
 
 # ── Kernel status strings (legacy `kernel.status` vocabulary) ───────
