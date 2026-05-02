@@ -4,11 +4,14 @@
  * Widget interactions (slider drags, button clicks, `model.send()` calls)
  * travel frontend → kernel through two channels:
  *
- * - State updates (method: "update") prefer the CRDT path — the store
- *   writes directly into `RuntimeStateDoc.comms[commId].state` and the
- *   daemon forwards to the kernel.
- * - Custom messages (method: "custom") and fallback updates still use the
- *   daemon shell channel, wrapped in a Jupyter comm_msg frame.
+ * - State updates (method: "update") go to `WidgetUpdateManager`, which
+ *   writes a debounced delta into `RuntimeStateDoc.comms[commId].state`;
+ *   the daemon diffs and forwards to the kernel. If the CRDT writer
+ *   isn't installed yet, the manager re-queues the flush — no shell-
+ *   channel fallback.
+ * - Custom messages (method: "custom") and `comm_close` still use the
+ *   daemon shell channel, wrapped in a Jupyter comm_msg frame, because
+ *   they're ephemeral events rather than CRDT state.
  *
  * Inbound state arrives via `SyncEngine.commChanges$` (see `App.tsx`);
  * there's no Jupyter-protocol inbound path in this file.
@@ -18,7 +21,6 @@
  */
 
 import { useCallback, useEffect, useRef } from "react";
-import { getCrdtCommWriter } from "./crdt-comm-writer";
 import type { WidgetStore } from "./widget-store";
 import type { WidgetUpdateManager } from "./widget-update-manager";
 
@@ -60,14 +62,14 @@ interface OutgoingJupyterCommMessage {
 export type SendMessage = (msg: OutgoingJupyterCommMessage) => void;
 
 export interface UseCommRouterOptions {
-  /** Function to send messages to the kernel */
+  /** Function to send messages to the kernel (used for custom messages and comm_close). */
   sendMessage: SendMessage;
   /** Widget store instance */
   store: WidgetStore;
   /** Optional username for message headers (default: "frontend") */
   username?: string;
-  /** Optional update manager for debounced CRDT writes + echo suppression. */
-  updateManager?: WidgetUpdateManager;
+  /** Debounced CRDT writer for outbound state updates. */
+  updateManager: WidgetUpdateManager;
 }
 
 export interface UseCommRouterReturn {
@@ -90,29 +92,6 @@ function createHeader(msgType: string, username: string): JupyterMessageHeader {
     session: SESSION_ID,
     date: new Date().toISOString(),
     version: "5.3",
-  };
-}
-
-function createUpdateMessage(
-  commId: string,
-  state: Record<string, unknown>,
-  buffers: ArrayBuffer[] | undefined,
-  username: string,
-): OutgoingJupyterCommMessage {
-  return {
-    header: createHeader("comm_msg", username),
-    parent_header: null,
-    metadata: {},
-    content: {
-      comm_id: commId,
-      data: {
-        method: "update",
-        state,
-        buffer_paths: [],
-      },
-    },
-    buffers: buffers ?? [],
-    channel: "shell",
   };
 }
 
@@ -155,9 +134,10 @@ function createCloseMessage(commId: string, username: string): OutgoingJupyterCo
 /**
  * Hook exposing outbound comm helpers.
  *
- * `sendUpdate` prefers the CRDT writer when no binary buffers are involved;
- * the fallback path is the daemon shell channel. `sendCustom` and
- * `closeComm` always go through the shell channel.
+ * `sendUpdate` always routes through `WidgetUpdateManager` — the manager
+ * applies the patch to the store immediately for optimistic UI and then
+ * debounces the CRDT write. `sendCustom` and `closeComm` go through the
+ * shell channel because they're ephemeral events, not CRDT state.
  */
 export function useCommRouter({
   sendMessage,
@@ -179,19 +159,7 @@ export function useCommRouter({
 
   const sendUpdate = useCallback(
     (commId: string, state: Record<string, unknown>, buffers?: ArrayBuffer[]) => {
-      const manager = managerRef.current;
-      if (manager) {
-        manager.updateAndPersist(commId, state, buffers);
-        return;
-      }
-      // Fallback for contexts without a manager (iframe outbound bridge).
-      storeRef.current.updateModel(commId, state);
-      const writer = getCrdtCommWriter();
-      if (writer && !buffers?.length) {
-        writer(commId, state);
-      } else {
-        sendMessageRef.current(createUpdateMessage(commId, state, buffers, usernameRef.current));
-      }
+      managerRef.current.updateAndPersist(commId, state, buffers);
     },
     [],
   );

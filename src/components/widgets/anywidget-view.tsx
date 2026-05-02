@@ -8,9 +8,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { getCrdtCommWriter } from "./crdt-comm-writer";
 import {
-  type SendMessage,
   useWidgetModel,
   useWidgetStoreRequired,
   type WidgetModel,
@@ -203,43 +201,32 @@ export function injectCSS(modelId: string, css: string): InjectedCSS {
   };
 }
 
-// === Message Headers ===
-
-/**
- * Session ID for all outgoing messages.
- * Must be stable across messages for the kernel to track the session.
- */
-const SESSION_ID = crypto.randomUUID();
-
-/**
- * Create a complete Jupyter message header with all fields.
- * All fields are required for compatibility with strongly-typed backends (Rust, Go).
- */
-function createHeader(msgType: string, username: string = "frontend") {
-  return {
-    msg_id: crypto.randomUUID(),
-    msg_type: msgType,
-    username,
-    session: SESSION_ID,
-    date: new Date().toISOString(),
-    version: "5.3",
-  };
-}
-
 // === AFM Model Proxy ===
 
 type EventCallback = (...args: unknown[]) => void;
 
 /**
+ * Outbound helpers the AFM proxy uses to reach the kernel. `sendUpdate`
+ * goes through `WidgetUpdateManager` → CRDT; `sendCustom` goes through the
+ * daemon shell channel as a Jupyter `comm_msg(method: "custom")`.
+ */
+export interface AFMProxyOutbound {
+  sendUpdate: (commId: string, state: Record<string, unknown>, buffers?: ArrayBuffer[]) => void;
+  sendCustom: (commId: string, content: Record<string, unknown>, buffers?: ArrayBuffer[]) => void;
+}
+
+/**
  * Create an AFM-compatible model proxy that wraps the widget store.
  *
- * The proxy buffers local changes until save_changes() is called,
- * at which point it sends a comm_msg to the kernel.
+ * The proxy buffers local changes until `save_changes()` is called. State
+ * patches flow through `outbound.sendUpdate` (CRDT via update manager);
+ * custom messages go through `outbound.sendCustom` (shell channel). The
+ * proxy never builds Jupyter comm frames itself.
  */
 export function createAFMModelProxy(
   model: WidgetModel,
   store: WidgetStore,
-  sendMessage: SendMessage,
+  outbound: AFMProxyOutbound,
   getCurrentState: () => Record<string, unknown>,
 ): AnyWidgetModel {
   // Buffer for local changes (set but not yet saved)
@@ -286,34 +273,13 @@ export function createAFMModelProxy(
 
       const patch = { ...pendingChanges };
 
-      // Try CRDT path first (writes directly to RuntimeStateDoc,
-      // no SendComm round-trip). Falls back to SendComm if CRDT
-      // writer isn't available yet.
-      const writer = getCrdtCommWriter();
-      if (writer) {
-        writer(model.id, patch);
-        // Optimistically update the WidgetStore for instant feedback
-        store.updateModel(model.id, patch);
-      } else {
-        // Fallback: Send comm_msg with update method to kernel
-        sendMessage({
-          header: createHeader("comm_msg"),
-          parent_header: null,
-          metadata: {},
-          content: {
-            comm_id: model.id,
-            data: {
-              method: "update",
-              state: patch,
-              buffer_paths: [],
-            },
-          },
-          buffers: [],
-          channel: "shell",
-        });
-      }
+      // Route through the context's sendUpdate. In the parent window this
+      // hits WidgetUpdateManager → debounced CRDT write with optimistic
+      // store update + echo suppression. In the iframe it posts a bridge
+      // notification to the parent which then takes the same path. Either
+      // way, no hand-built comm_msg frame and no shell-channel fallback.
+      outbound.sendUpdate(model.id, patch);
 
-      // Clear pending changes after sending
       for (const key of Object.keys(pendingChanges)) {
         delete pendingChanges[key];
       }
@@ -403,24 +369,9 @@ export function createAFMModelProxy(
       _callbacks?: Record<string, unknown>,
       buffers?: ArrayBuffer[],
     ): void {
-      // Send custom message to kernel
-      // Full Jupyter protocol message format for strongly-typed backends
-      // Note: ipywidgets expects content to be nested in data.content, not spread
-      sendMessage({
-        header: createHeader("comm_msg"),
-        parent_header: null,
-        metadata: {},
-        content: {
-          comm_id: model.id,
-          data: {
-            method: "custom",
-            content: content, // Wrap content properly for ipywidgets protocol
-            buffer_paths: [],
-          },
-        },
-        buffers: buffers ?? [],
-        channel: "shell",
-      });
+      // Custom messages are ephemeral events (ipycanvas draw commands,
+      // quak row requests, button-click side effects). Always shell.
+      outbound.sendCustom(model.id, content, buffers);
     },
 
     widget_manager: {
@@ -429,11 +380,10 @@ export function createAFMModelProxy(
         if (!refModel) {
           throw new Error(`Model not found: ${modelId}`);
         }
-        // Create a proxy for the referenced model
         return createAFMModelProxy(
           refModel,
           store,
-          sendMessage,
+          outbound,
           () => store.getModel(modelId)?.state ?? {},
         );
       },
@@ -462,17 +412,17 @@ interface AnyWidgetViewProps {
  */
 export function AnyWidgetView({ modelId, className }: AnyWidgetViewProps) {
   const containerRef = useRef<HTMLDivElement>(null);
-  const { store, sendMessage } = useWidgetStoreRequired();
+  const { store, sendUpdate, sendCustom } = useWidgetStoreRequired();
   const [error, setError] = useState<Error | null>(null);
 
   // Refs for values that need to be fresh but shouldn't trigger effect re-runs
   const storeRef = useRef(store);
-  const sendMessageRef = useRef(sendMessage);
+  const outboundRef = useRef<AFMProxyOutbound>({ sendUpdate, sendCustom });
 
   // Keep refs up to date without triggering the main effect
   useEffect(() => {
     storeRef.current = store;
-    sendMessageRef.current = sendMessage;
+    outboundRef.current = { sendUpdate, sendCustom };
   });
 
   // Use reactive model hook - triggers re-render when model changes
@@ -551,7 +501,16 @@ export function AnyWidgetView({ modelId, className }: AnyWidgetViewProps) {
           if (isCancelled) return;
         }
 
-        // Create the AFM model proxy using refs for stable references
+        // Create the AFM model proxy using refs for stable references.
+        // `outboundRef` returns a stable wrapper so callbacks captured inside
+        // the widget (event listeners, timers) always see the current
+        // sendUpdate/sendCustom without triggering this effect to re-run.
+        const outboundProxy: AFMProxyOutbound = {
+          sendUpdate: (commId, state, buffers) =>
+            outboundRef.current.sendUpdate(commId, state, buffers),
+          sendCustom: (commId, content, buffers) =>
+            outboundRef.current.sendCustom(commId, content, buffers),
+        };
         const modelProxy = createAFMModelProxy(
           {
             id: stableModelId,
@@ -560,7 +519,7 @@ export function AnyWidgetView({ modelId, className }: AnyWidgetViewProps) {
             modelModule: "",
           } as WidgetModel,
           storeRef.current,
-          sendMessageRef.current,
+          outboundProxy,
           getCurrentState,
         );
 
