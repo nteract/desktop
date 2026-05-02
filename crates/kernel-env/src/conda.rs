@@ -904,6 +904,14 @@ pub async fn sync_dependencies(
 
     let match_spec_options = ParseMatchSpecOptions::strict();
 
+    // Pin the installed Python version so the solver cannot upgrade or
+    // downgrade it. Without this, the solver treats Python as a soft
+    // preference (locked_packages) and can swap it out to satisfy new
+    // deps — producing site-packages for the wrong Python version.
+    // Also enforce `python-gil` to prevent switching to the
+    // free-threaded build. See: conda-sequential pinning bug.
+    let installed_python_version = detect_installed_python_version(&env.env_path);
+
     // Always include base runtime packages — the solver only returns packages
     // needed to satisfy specs, and locked_packages are "preferred" not "required".
     // Without these, the Installer will remove ipykernel etc from the env.
@@ -914,6 +922,32 @@ pub async fn sync_dependencies(
         MatchSpec::from_str("nbformat", match_spec_options)?,
         MatchSpec::from_str("pyarrow>=14", match_spec_options)?,
     ];
+
+    if let Some(ref py_ver) = installed_python_version {
+        info!("Pinning Python to installed version: {}", py_ver);
+        specs.push(MatchSpec::from_str(
+            &format!("python={}", py_ver),
+            match_spec_options,
+        )?);
+        // Preserve the installed GIL/free-threaded selector. conda-meta
+        // stores "3.14.4" not "3.14t", so we can't infer from the version
+        // string. Instead, check if `python-freethreading` is installed:
+        // if so, keep `python-freethreading`; otherwise pin `python-gil`.
+        if has_freethreading_package(&env.env_path) {
+            info!("Free-threaded Python detected, keeping python-freethreading selector");
+            specs.push(MatchSpec::from_str(
+                "python-freethreading",
+                match_spec_options,
+            )?);
+        } else {
+            specs.push(MatchSpec::from_str(CONDA_GIL_SELECTOR, match_spec_options)?);
+        }
+    } else {
+        warn!(
+            "Could not detect installed Python version in {:?}, solver may change Python",
+            env.env_path
+        );
+    }
 
     for dep in &deps.dependencies {
         if dep != "ipykernel"
@@ -1103,6 +1137,58 @@ fn build_spec_strings(deps: &CondaDependencies) -> Vec<String> {
     }
 
     specs
+}
+
+/// Detect the Python version installed in a conda environment by reading
+/// `conda-meta/python-*.json`. Returns `"major.minor.patch"` (e.g. `"3.14.4"`).
+///
+/// This is cheaper than spawning `python --version` and works even when the
+/// environment's Python is broken or missing from PATH.
+fn detect_installed_python_version(env_path: &std::path::Path) -> Option<String> {
+    let meta_dir = env_path.join("conda-meta");
+    let entries = std::fs::read_dir(&meta_dir).ok()?;
+    for entry in entries.flatten() {
+        let fname = entry.file_name();
+        let fname = fname.to_string_lossy();
+        // conda-meta filenames: python-3.14.4-h0abcdef_0.json
+        if let Some(rest) = fname.strip_prefix("python-") {
+            if let Some(stem) = rest.strip_suffix(".json") {
+                // Extract version: everything before the first '-' after the version
+                // e.g. "3.14.4-h0abcdef_0" → "3.14.4"
+                let version = stem.split('-').next().unwrap_or(stem);
+                if version.contains('.') {
+                    return Some(version.to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Check whether the `python-freethreading` package is installed in a conda
+/// environment by looking for `python-freethreading-*.json` in `conda-meta`.
+///
+/// `conda-meta` stores the plain version number (e.g. `3.14.4`), not the
+/// `3.14t` constraint syntax, so we cannot infer free-threading from the
+/// Python version string. Instead, check for the selector package that conda
+/// uses to distinguish GIL vs free-threaded builds. If `python-freethreading`
+/// is present, the env was created as free-threaded; otherwise it uses the
+/// default GIL build.
+fn has_freethreading_package(env_path: &std::path::Path) -> bool {
+    let meta_dir = env_path.join("conda-meta");
+    let entries = match std::fs::read_dir(&meta_dir) {
+        Ok(e) => e,
+        Err(_) => return false,
+    };
+    for entry in entries.flatten() {
+        let fname = entry.file_name();
+        let fname = fname.to_string_lossy();
+        // e.g. python-freethreading-3.14.4-h0abcdef_0.json
+        if fname.starts_with("python-freethreading-") && fname.ends_with(".json") {
+            return true;
+        }
+    }
+    false
 }
 
 /// Find the site-packages directory inside a venv/env.
@@ -1338,5 +1424,72 @@ mod tests {
             compute_env_hash(&gil_deps),
             compute_env_hash(&free_threaded_deps)
         );
+    }
+
+    #[test]
+    fn detect_installed_python_version_reads_conda_meta() {
+        let dir = tempfile::tempdir().unwrap();
+        let meta = dir.path().join("conda-meta");
+        std::fs::create_dir_all(&meta).unwrap();
+        std::fs::write(meta.join("python-3.14.4-h2b28147_0.json"), "{}").unwrap();
+
+        let version = detect_installed_python_version(dir.path());
+        assert_eq!(version.as_deref(), Some("3.14.4"));
+    }
+
+    #[test]
+    fn detect_installed_python_version_none_when_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let meta = dir.path().join("conda-meta");
+        std::fs::create_dir_all(&meta).unwrap();
+        // Only numpy, no python
+        std::fs::write(meta.join("numpy-2.4.3-py314h2b28147_0.json"), "{}").unwrap();
+
+        let version = detect_installed_python_version(dir.path());
+        assert_eq!(version, None);
+    }
+
+    #[test]
+    fn detect_installed_python_version_free_threaded() {
+        // Free-threaded builds have version like 3.14t in the spec
+        // but conda-meta uses the real version number (3.14.4)
+        let dir = tempfile::tempdir().unwrap();
+        let meta = dir.path().join("conda-meta");
+        std::fs::create_dir_all(&meta).unwrap();
+        std::fs::write(meta.join("python-3.14.4-h2b28147_0_cpython.json"), "{}").unwrap();
+
+        let version = detect_installed_python_version(dir.path());
+        assert_eq!(version.as_deref(), Some("3.14.4"));
+    }
+
+    #[test]
+    fn has_freethreading_package_detects_selector() {
+        let dir = tempfile::tempdir().unwrap();
+        let meta = dir.path().join("conda-meta");
+        std::fs::create_dir_all(&meta).unwrap();
+        std::fs::write(meta.join("python-3.14.4-h2b28147_0_cpython.json"), "{}").unwrap();
+        std::fs::write(
+            meta.join("python-freethreading-3.14.4-h2b28147_0.json"),
+            "{}",
+        )
+        .unwrap();
+
+        assert!(has_freethreading_package(dir.path()));
+    }
+
+    #[test]
+    fn has_freethreading_package_false_for_gil_env() {
+        let dir = tempfile::tempdir().unwrap();
+        let meta = dir.path().join("conda-meta");
+        std::fs::create_dir_all(&meta).unwrap();
+        std::fs::write(meta.join("python-3.14.4-h2b28147_0.json"), "{}").unwrap();
+
+        assert!(!has_freethreading_package(dir.path()));
+    }
+
+    #[test]
+    fn has_freethreading_package_false_when_no_conda_meta() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(!has_freethreading_package(dir.path()));
     }
 }
