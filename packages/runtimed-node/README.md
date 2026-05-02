@@ -24,6 +24,9 @@ async function main() {
   const session = await createNotebook({
     runtime: "python",
     workingDir: process.cwd(),
+    // Install these before the first cell runs.
+    dependencies: ["numpy", "matplotlib"],
+    packageManager: "uv",
   });
 
   try {
@@ -51,7 +54,7 @@ main().catch((error) => {
   or the `RUNTIMED_SOCKET_PATH` override.
 - `socketPathForChannel("stable" | "nightly")` returns a channel-specific
   daemon socket path.
-- `createNotebook(options)` creates a notebook and starts a runtime.
+- `createNotebook(options)` creates a notebook and records optional first-call dependencies.
 - `openNotebook(notebookId, options)` connects to an existing notebook.
 - `getExecutionResult(executionId, options)` reads a result by execution ID.
 - `Session.runCell(source, options)` creates, runs, and waits for a cell.
@@ -63,6 +66,12 @@ main().catch((error) => {
 - `Session.close()` releases the daemon connection.
 
 ## Daemon Requirements
+
+`createNotebook()` accepts `dependencies` so agent code can declare packages
+up-front instead of failing the first import and retrying after `addUvDependency()`.
+The `packageManager` option is typed from the native binding's `PackageManager`
+string enum (`"uv"`, `"conda"`, or `"pixi"`) and is converted to the shared
+notebook protocol enum before the daemon handshake.
 
 The package talks to a local `runtimed` daemon over its Unix socket. In a
 development checkout, run the per-worktree daemon before using the bindings:

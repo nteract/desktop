@@ -6,7 +6,7 @@
 //!
 //! Phase 1 surface (intentionally small):
 //!   - `defaultSocketPath()` / `socketPathForChannel(channel)`
-//!   - `createNotebook({ runtime, workingDir?, socketPath? }) -> Session`
+//!   - `createNotebook({ runtime, workingDir?, socketPath?, dependencies?, packageManager? }) -> Session`
 //!   - `openNotebook(notebookId, { socketPath? }) -> Session`
 //!   - `getExecutionResult(executionId, { socketPath? }) -> CellResult`
 //!   - `Session.notebookId`
@@ -30,8 +30,8 @@ pub use error::NodeError;
 pub use parquet::{read_parquet_file, summarize_parquet_file};
 pub use session::{
     create_notebook, get_execution_result, open_notebook, CellResult, CreateNotebookOptions,
-    GetExecutionResultOptions, JsOutput, OpenNotebookOptions, QueueCellOptions, QueuedExecution,
-    RunCellOptions, Session, WaitExecutionOptions,
+    GetExecutionResultOptions, JsOutput, OpenNotebookOptions, PackageManager, QueueCellOptions,
+    QueuedExecution, RunCellOptions, Session, WaitExecutionOptions,
 };
 
 /// Return the default daemon socket path.

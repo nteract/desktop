@@ -27,6 +27,24 @@ type CommMap = std::collections::HashMap<String, runtime_doc::CommDocEntry>;
 
 // ── Options ────────────────────────────────────────────────────────────
 
+/// Package manager for Python notebook dependencies.
+#[napi(string_enum = "lowercase")]
+pub enum PackageManager {
+    Uv,
+    Conda,
+    Pixi,
+}
+
+impl From<PackageManager> for notebook_protocol::connection::PackageManager {
+    fn from(value: PackageManager) -> Self {
+        match value {
+            PackageManager::Uv => Self::Uv,
+            PackageManager::Conda => Self::Conda,
+            PackageManager::Pixi => Self::Pixi,
+        }
+    }
+}
+
 /// Options for `createNotebook()`.
 #[napi(object)]
 #[derive(Default)]
@@ -39,6 +57,12 @@ pub struct CreateNotebookOptions {
     pub socket_path: Option<String>,
     /// Actor label for presence / Automerge provenance.
     pub peer_label: Option<String>,
+    /// Packages to record before the kernel starts (for example `["numpy", "matplotlib"]`).
+    /// Python notebooks use the selected package manager; Deno notebooks treat these as
+    /// runtime-native import dependencies.
+    pub dependencies: Option<Vec<String>>,
+    /// Package manager for Python dependencies. Defaults to the daemon/user setting.
+    pub package_manager: Option<PackageManager>,
 }
 
 /// Options for `openNotebook()`.
@@ -383,6 +407,8 @@ pub async fn create_notebook(options: Option<CreateNotebookOptions>) -> Result<S
         .peer_label
         .clone()
         .unwrap_or_else(|| "runtimed-node".to_string());
+    let dependencies = opts.dependencies.unwrap_or_default();
+    let package_manager = opts.package_manager.map(Into::into);
 
     let result = notebook_sync::connect::connect_create(
         socket_path.clone(),
@@ -390,8 +416,8 @@ pub async fn create_notebook(options: Option<CreateNotebookOptions>) -> Result<S
         working_dir.clone(),
         &actor_label,
         /* ephemeral */ false,
-        None,
-        vec![],
+        package_manager,
+        dependencies,
     )
     .await
     .map_err(to_napi_err)?;
@@ -916,6 +942,17 @@ mod tests {
         let err = normalize_cell_type(Some("sql".to_string())).unwrap_err();
         assert!(err.reason.contains("Invalid cell_type"));
         assert!(err.reason.contains("code, markdown, raw"));
+    }
+
+    #[test]
+    fn package_manager_converts_to_protocol_enum() {
+        let uv: notebook_protocol::connection::PackageManager = PackageManager::Uv.into();
+        let conda: notebook_protocol::connection::PackageManager = PackageManager::Conda.into();
+        let pixi: notebook_protocol::connection::PackageManager = PackageManager::Pixi.into();
+
+        assert_eq!(uv.as_str(), "uv");
+        assert_eq!(conda.as_str(), "conda");
+        assert_eq!(pixi.as_str(), "pixi");
     }
 
     #[test]
