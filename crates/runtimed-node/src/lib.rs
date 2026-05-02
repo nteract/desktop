@@ -29,9 +29,10 @@ mod session;
 pub use error::NodeError;
 pub use parquet::{read_parquet_file, summarize_parquet_file};
 pub use session::{
-    create_notebook, get_execution_result, open_notebook, CellResult, CreateNotebookOptions,
-    GetExecutionResultOptions, JsOutput, OpenNotebookOptions, PackageManager, QueueCellOptions,
-    QueuedExecution, RunCellOptions, Session, WaitExecutionOptions,
+    create_notebook, get_execution_result, open_notebook, CellResult, CreateCellOptions,
+    CreateNotebookOptions, ExecuteCellOptions, GetExecutionResultOptions, JsCellSnapshot, JsOutput,
+    MoveCellOptions, OpenNotebookOptions, PackageManager, QueueCellOptions, QueuedExecution,
+    RunCellOptions, Session, SetCellOptions, WaitExecutionOptions,
 };
 
 /// Return the default daemon socket path.

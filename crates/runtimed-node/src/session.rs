@@ -28,6 +28,11 @@ type CommMap = std::collections::HashMap<String, runtime_doc::CommDocEntry>;
 // ── Options ────────────────────────────────────────────────────────────
 
 /// Package manager for Python notebook dependencies.
+///
+/// This mirrors `notebook_protocol::connection::PackageManager` at the N-API
+/// boundary. We cannot attach `#[napi]` to the protocol crate's external enum,
+/// and that enum intentionally includes an `Unknown(String)` wire-compatibility
+/// variant that should not be exposed as a typed JavaScript option.
 #[napi(string_enum = "lowercase")]
 pub enum PackageManager {
     Uv,
@@ -57,6 +62,8 @@ pub struct CreateNotebookOptions {
     pub socket_path: Option<String>,
     /// Actor label for presence / Automerge provenance.
     pub peer_label: Option<String>,
+    /// Human-readable session description. Used as the peer label when `peerLabel` is omitted.
+    pub description: Option<String>,
     /// Packages to record before the kernel starts (for example `["numpy", "matplotlib"]`).
     /// Python notebooks use the selected package manager; Deno notebooks treat these as
     /// runtime-native import dependencies.
@@ -81,6 +88,42 @@ pub struct RunCellOptions {
     pub timeout_ms: Option<u32>,
     /// Cell source type: `"code"` (default), `"markdown"`, or `"raw"`.
     pub cell_type: Option<String>,
+}
+
+/// Options for `Session.createCell()`.
+#[napi(object)]
+#[derive(Default)]
+pub struct CreateCellOptions {
+    /// Cell source type: `"code"` (default), `"markdown"`, or `"raw"`.
+    pub cell_type: Option<String>,
+    /// Insert after this cell, or omit to insert at the beginning.
+    pub after_cell_id: Option<String>,
+}
+
+/// Options for `Session.setCell()`.
+#[napi(object)]
+#[derive(Default)]
+pub struct SetCellOptions {
+    /// New source text. Omit to leave unchanged.
+    pub source: Option<String>,
+    /// New cell source type. Omit to leave unchanged.
+    pub cell_type: Option<String>,
+}
+
+/// Options for `Session.moveCell()`.
+#[napi(object)]
+#[derive(Default)]
+pub struct MoveCellOptions {
+    /// Move after this cell, or omit/null to move to the beginning.
+    pub after_cell_id: Option<String>,
+}
+
+/// Options for `Session.executeCell()`.
+#[napi(object)]
+#[derive(Default)]
+pub struct ExecuteCellOptions {
+    /// Max milliseconds to wait for execution. Default 120_000 (2 min).
+    pub timeout_ms: Option<u32>,
 }
 
 /// Options for `Session.queueCell()`.
@@ -114,6 +157,19 @@ pub struct GetExecutionResultOptions {
 pub struct QueuedExecution {
     pub cell_id: String,
     pub execution_id: String,
+}
+
+/// A notebook cell snapshot.
+#[napi(object)]
+pub struct JsCellSnapshot {
+    pub id: String,
+    pub cell_type: String,
+    pub position: String,
+    pub source: String,
+    /// JSON-encoded metadata object.
+    pub metadata_json: String,
+    /// Legacy execution count as stored in the notebook doc.
+    pub execution_count: Option<String>,
 }
 
 // ── Outputs (serialized to JS via serde_json) ──────────────────────────
@@ -302,6 +358,116 @@ impl Session {
         }
     }
 
+    /// Return all cells in notebook order.
+    #[napi]
+    pub async fn list_cells(&self) -> Result<Vec<JsCellSnapshot>> {
+        let handle = session_handle(&self.state).await?;
+        Ok(handle
+            .get_cells()
+            .into_iter()
+            .map(js_cell_from_snapshot)
+            .collect())
+    }
+
+    /// Return one cell by ID, or null if it does not exist.
+    #[napi]
+    pub async fn get_cell(&self, cell_id: String) -> Result<Option<JsCellSnapshot>> {
+        let handle = session_handle(&self.state).await?;
+        Ok(handle.get_cell(&cell_id).map(js_cell_from_snapshot))
+    }
+
+    /// Create a cell without executing it. Returns the new cell ID.
+    #[napi]
+    pub async fn create_cell(
+        &self,
+        source: String,
+        options: Option<CreateCellOptions>,
+    ) -> Result<String> {
+        let opts = options.unwrap_or_default();
+        let cell_type = normalize_cell_type(opts.cell_type)?;
+        let handle = session_handle(&self.state).await?;
+        let cell_id = format!("cell-{}", uuid::Uuid::new_v4());
+        handle
+            .add_cell_with_source(&cell_id, &cell_type, opts.after_cell_id.as_deref(), &source)
+            .map_err(to_napi_err)?;
+        Ok(cell_id)
+    }
+
+    /// Replace a cell's source and/or type. Returns true if the cell existed.
+    #[napi]
+    pub async fn set_cell(&self, cell_id: String, options: SetCellOptions) -> Result<bool> {
+        let cell_type = options
+            .cell_type
+            .map(|cell_type| normalize_cell_type(Some(cell_type)))
+            .transpose()?;
+        let handle = session_handle(&self.state).await?;
+        let mut found = false;
+        if let Some(source) = options.source {
+            found |= handle
+                .update_source(&cell_id, &source)
+                .map_err(to_napi_err)?;
+        }
+        if let Some(cell_type) = cell_type {
+            found |= handle
+                .set_cell_type(&cell_id, &cell_type)
+                .map_err(to_napi_err)?;
+        }
+        Ok(found)
+    }
+
+    /// Delete a cell. Returns true if the cell existed.
+    #[napi]
+    pub async fn delete_cell(&self, cell_id: String) -> Result<bool> {
+        let handle = session_handle(&self.state).await?;
+        handle.delete_cell(&cell_id).map_err(to_napi_err)
+    }
+
+    /// Move a cell after another cell, or to the beginning when omitted/null.
+    /// Returns the new position string.
+    #[napi]
+    pub async fn move_cell(
+        &self,
+        cell_id: String,
+        options: Option<MoveCellOptions>,
+    ) -> Result<String> {
+        let handle = session_handle(&self.state).await?;
+        let after_cell_id = options.and_then(|opts| opts.after_cell_id);
+        handle
+            .move_cell(&cell_id, after_cell_id.as_deref())
+            .map_err(to_napi_err)
+    }
+
+    /// Execute an existing code cell and wait for terminal outputs.
+    #[napi]
+    pub async fn execute_cell(
+        &self,
+        cell_id: String,
+        options: Option<ExecuteCellOptions>,
+    ) -> Result<CellResult> {
+        let opts = options.unwrap_or_default();
+        let timeout = Duration::from_millis(opts.timeout_ms.unwrap_or(120_000) as u64);
+        ensure_kernel_started(&self.state).await?;
+        let execution_id = queue_existing_cell(&self.state, &cell_id).await?;
+
+        let result = tokio::time::timeout(timeout, async {
+            collect_outputs(&self.state, &cell_id, &execution_id).await
+        })
+        .await;
+
+        match result {
+            Ok(Ok(cell_result)) => Ok(cell_result),
+            Ok(Err(e)) => Err(e),
+            Err(_) => Ok(CellResult {
+                cell_id,
+                execution_id,
+                execution_count: None,
+                status: "timeout".to_string(),
+                success: false,
+                outputs: vec![],
+            }),
+        }
+    }
+
     /// Execute a source string as a new cell. Starts the kernel on demand.
     /// Returns the cell's outputs once execution is terminal.
     #[napi]
@@ -406,6 +572,7 @@ pub async fn create_notebook(options: Option<CreateNotebookOptions>) -> Result<S
     let actor_label = opts
         .peer_label
         .clone()
+        .or_else(|| opts.description.map(|desc| format!("runtimed-node:{desc}")))
         .unwrap_or_else(|| "runtimed-node".to_string());
     let dependencies = opts.dependencies.unwrap_or_default();
     let package_manager = opts.package_manager.map(Into::into);
@@ -575,6 +742,29 @@ async fn resolve_blob_paths(socket_path: &std::path::Path) -> (Option<String>, O
         (base_url, store_path)
     } else {
         (None, None)
+    }
+}
+
+async fn session_handle(state: &Arc<Mutex<SessionState>>) -> Result<DocHandle> {
+    let st = state.lock().await;
+    st.handle
+        .as_ref()
+        .ok_or_else(|| Error::from_reason("Not connected"))
+        .cloned()
+}
+
+fn js_cell_from_snapshot(cell: notebook_doc::CellSnapshot) -> JsCellSnapshot {
+    JsCellSnapshot {
+        id: cell.id,
+        cell_type: cell.cell_type,
+        position: cell.position,
+        source: cell.source,
+        metadata_json: serde_json::to_string(&cell.metadata).unwrap_or_else(|_| "{}".to_string()),
+        execution_count: if cell.execution_count == "null" {
+            None
+        } else {
+            Some(cell.execution_count)
+        },
     }
 }
 

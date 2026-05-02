@@ -15,6 +15,7 @@ napi = { version = "3", default-features = false, features = ["napi9", "async", 
 napi-derive = "3"
 runtimed-client = { path = "../runtimed-client" }
 notebook-protocol = { path = "../notebook-protocol" }
+notebook-doc = { path = "../notebook-doc" }
 notebook-sync = { path = "../notebook-sync" }
 runtime-doc = { path = "../runtime-doc" }
 runt-workspace = { path = "../runt-workspace" }
