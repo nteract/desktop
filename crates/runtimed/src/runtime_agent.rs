@@ -874,11 +874,14 @@ async fn handle_runtime_agent_request(
                             python_path,
                         };
 
-                        // Runtime-agent hot-sync path has no progress channel back to
-                        // the coordinator yet. Route to logs only; follow-up can thread
-                        // this through the agent's sync connection.
+                        // Write progress phases into the runtime-agent's local
+                        // RuntimeStateDoc. The coordinator sync loop forwards them to the
+                        // room's authoritative doc, so the frontend banner tracks hot-sync
+                        // the same way it tracks auto-launch.
                         let handler: std::sync::Arc<dyn kernel_env::ProgressHandler> =
-                            std::sync::Arc::new(kernel_env::LogHandler);
+                            std::sync::Arc::new(crate::inline_env::RuntimeDocProgressHandler::new(
+                                ctx.state.clone(),
+                            ));
                         match kernel_env::uv::sync_dependencies(&uv_env, &packages, handler).await {
                             Ok(()) => (
                                 RuntimeAgentResponse::EnvironmentSynced {
@@ -918,7 +921,9 @@ async fn handle_runtime_agent_request(
                         };
 
                         let handler: std::sync::Arc<dyn kernel_env::ProgressHandler> =
-                            std::sync::Arc::new(kernel_env::LogHandler);
+                            std::sync::Arc::new(crate::inline_env::RuntimeDocProgressHandler::new(
+                                ctx.state.clone(),
+                            ));
                         match kernel_env::conda::sync_dependencies(&conda_env, &conda_deps, handler)
                             .await
                         {
