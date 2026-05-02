@@ -87,7 +87,6 @@ function createModel(
   return {
     id,
     state: { _model_name: "TestModel", _model_module: modelModule, ...state },
-    buffers: [],
     modelName: "TestModel",
     modelModule,
   };
@@ -332,7 +331,7 @@ describe("CommBridgeManager", () => {
         },
       });
 
-      expect(mockStore.store.updateModel).toHaveBeenCalledWith("comm-1", { value: 42 }, undefined);
+      expect(mockStore.store.updateModel).toHaveBeenCalledWith("comm-1", { value: 42 });
       expect(sendUpdate).toHaveBeenCalledWith("comm-1", { value: 42 }, undefined);
     });
 

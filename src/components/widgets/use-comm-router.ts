@@ -1,41 +1,31 @@
 /**
- * Comm Protocol Router Hook
+ * Outbound comm protocol helpers.
  *
- * Handles routing of Jupyter comm messages between the kernel and widget store.
- * Provides both inbound message handling and outbound message construction.
+ * Widget interactions (slider drags, button clicks, `model.send()` calls)
+ * travel frontend → kernel through two channels:
  *
- * Message format follows the Jupyter messaging protocol specification and is
- * compatible with strongly-typed backends (Rust, Go) that require explicit fields.
+ * - State updates (method: "update") prefer the CRDT path — the store
+ *   writes directly into `RuntimeStateDoc.comms[commId].state` and the
+ *   daemon forwards to the kernel.
+ * - Custom messages (method: "custom") and fallback updates still use the
+ *   daemon shell channel, wrapped in a Jupyter comm_msg frame.
+ *
+ * Inbound state arrives via `SyncEngine.commChanges$` (see `App.tsx`);
+ * there's no Jupyter-protocol inbound path in this file.
  *
  * @see https://jupyter-widgets.readthedocs.io/en/latest/examples/Widget%20Low%20Level.html
  * @see https://jupyter-client.readthedocs.io/en/latest/messaging.html
  */
 
 import { useCallback, useEffect, useRef } from "react";
-import { applyBufferPaths } from "./buffer-utils";
 import { getCrdtCommWriter } from "./crdt-comm-writer";
-import type { WidgetUpdateManager } from "./widget-update-manager";
 import type { WidgetStore } from "./widget-store";
-
-// === Message Types ===
+import type { WidgetUpdateManager } from "./widget-update-manager";
 
 /**
  * Jupyter message header.
- * Required fields vary between incoming (may have fewer) and outgoing (should have all).
  */
 export interface JupyterMessageHeader {
-  msg_id: string;
-  msg_type: string;
-  username?: string;
-  session?: string;
-  date?: string;
-  version?: string;
-}
-
-/**
- * Full header with all fields required (for outgoing messages).
- */
-interface FullJupyterMessageHeader {
   msg_id: string;
   msg_type: string;
   username: string;
@@ -45,35 +35,10 @@ interface FullJupyterMessageHeader {
 }
 
 /**
- * Jupyter comm message.
- * Some fields are optional for incoming messages but should be set for outgoing.
- */
-export interface JupyterCommMessage {
-  header: JupyterMessageHeader;
-  /** Should be null for outgoing messages (not undefined or empty object) */
-  parent_header?: JupyterMessageHeader | null;
-  metadata?: Record<string, unknown>;
-  content: {
-    comm_id?: string;
-    target_name?: string;
-    data?: {
-      state?: Record<string, unknown>;
-      method?: string;
-      content?: Record<string, unknown>;
-      buffer_paths?: string[][];
-      [key: string]: unknown;
-    };
-  };
-  buffers?: ArrayBuffer[];
-  channel?: string | null;
-}
-
-/**
- * Outgoing message with all fields populated for protocol compliance.
- * Use this type for messages being sent to strongly-typed backends.
+ * Outgoing comm message. All fields populated for strongly-typed backends.
  */
 interface OutgoingJupyterCommMessage {
-  header: FullJupyterMessageHeader;
+  header: JupyterMessageHeader;
   parent_header: null;
   metadata: Record<string, unknown>;
   content: {
@@ -92,9 +57,7 @@ interface OutgoingJupyterCommMessage {
 /**
  * Function type for sending messages to the kernel.
  */
-export type SendMessage = (msg: JupyterCommMessage) => void;
-
-// === Hook Types ===
+export type SendMessage = (msg: OutgoingJupyterCommMessage) => void;
 
 export interface UseCommRouterOptions {
   /** Function to send messages to the kernel */
@@ -108,8 +71,6 @@ export interface UseCommRouterOptions {
 }
 
 export interface UseCommRouterReturn {
-  /** Handle incoming Jupyter comm messages */
-  handleMessage: (msg: JupyterCommMessage) => void;
   /** Send a state update to the kernel */
   sendUpdate: (commId: string, state: Record<string, unknown>, buffers?: ArrayBuffer[]) => void;
   /** Send a custom message to the kernel */
@@ -118,16 +79,10 @@ export interface UseCommRouterReturn {
   closeComm: (commId: string) => void;
 }
 
-// === Message Construction Helpers ===
-
 // Session ID for this frontend instance (stable across messages)
 const SESSION_ID = crypto.randomUUID();
 
-/**
- * Create a complete Jupyter message header with all fields.
- * All fields are required for compatibility with strongly-typed backends.
- */
-function createHeader(msgType: string, username: string): FullJupyterMessageHeader {
+function createHeader(msgType: string, username: string): JupyterMessageHeader {
   return {
     msg_id: crypto.randomUUID(),
     msg_type: msgType,
@@ -138,10 +93,6 @@ function createHeader(msgType: string, username: string): FullJupyterMessageHead
   };
 }
 
-/**
- * Create a comm_msg for state updates.
- * Includes all required fields for Jupyter protocol compliance.
- */
 function createUpdateMessage(
   commId: string,
   state: Record<string, unknown>,
@@ -165,10 +116,6 @@ function createUpdateMessage(
   };
 }
 
-/**
- * Create a comm_msg for custom messages.
- * Includes all required fields for Jupyter protocol compliance.
- */
 function createCustomMessage(
   commId: string,
   content: Record<string, unknown>,
@@ -192,10 +139,6 @@ function createCustomMessage(
   };
 }
 
-/**
- * Create a comm_close message.
- * Includes all required fields for Jupyter protocol compliance.
- */
 function createCloseMessage(commId: string, username: string): OutgoingJupyterCommMessage {
   return {
     header: createHeader("comm_close", username),
@@ -209,26 +152,12 @@ function createCloseMessage(commId: string, username: string): OutgoingJupyterCo
   };
 }
 
-// === Hook Implementation ===
-
 /**
- * Hook for routing Jupyter comm protocol messages.
+ * Hook exposing outbound comm helpers.
  *
- * Handles:
- * - Inbound: comm_open, comm_msg (update/custom), comm_close
- * - Outbound: sendUpdate, sendCustom, closeComm
- *
- * @example
- * const { handleMessage, sendUpdate, sendCustom, closeComm } = useCommRouter({
- *   sendMessage: (msg) => kernel.send(msg),
- *   store: widgetStore,
- * });
- *
- * // Route incoming messages
- * kernel.onMessage((msg) => handleMessage(msg));
- *
- * // Send updates back to kernel
- * sendUpdate(commId, { value: 42 });
+ * `sendUpdate` prefers the CRDT writer when no binary buffers are involved;
+ * the fallback path is the daemon shell channel. `sendCustom` and
+ * `closeComm` always go through the shell channel.
  */
 export function useCommRouter({
   sendMessage,
@@ -236,15 +165,11 @@ export function useCommRouter({
   username = "frontend",
   updateManager,
 }: UseCommRouterOptions): UseCommRouterReturn {
-  // Refs for values that need to be fresh but shouldn't cause function identity changes.
-  // This ensures sendUpdate, sendCustom, etc. are stable across renders, preventing
-  // unnecessary effect re-runs in consumer widgets (see PR #137 pattern).
   const sendMessageRef = useRef(sendMessage);
   const storeRef = useRef(store);
   const usernameRef = useRef(username);
   const managerRef = useRef(updateManager);
 
-  // Keep refs up-to-date without changing function identities
   useEffect(() => {
     sendMessageRef.current = sendMessage;
     storeRef.current = store;
@@ -252,77 +177,15 @@ export function useCommRouter({
     managerRef.current = updateManager;
   });
 
-  /**
-   * Handle incoming Jupyter comm messages.
-   * Routes to appropriate store methods based on message type.
-   */
-  const handleMessage = useCallback((msg: JupyterCommMessage) => {
-    const msgType = msg.header.msg_type;
-    const commId = msg.content.comm_id;
-
-    if (!commId) return;
-
-    switch (msgType) {
-      case "comm_open": {
-        // Get state and apply buffer paths if present
-        let state = msg.content.data?.state || {};
-        const bufferPaths = msg.content.data?.buffer_paths;
-
-        if (bufferPaths && msg.buffers?.length) {
-          state = { ...state };
-          applyBufferPaths(state, bufferPaths, msg.buffers);
-        }
-
-        storeRef.current.createModel(commId, state, msg.buffers);
-        break;
-      }
-
-      case "comm_msg": {
-        const data = msg.content.data;
-        const method = data?.method;
-
-        if (method === "update" && data?.state) {
-          // Apply buffer paths to state update
-          let state = data.state;
-          const bufferPaths = data.buffer_paths;
-
-          if (bufferPaths && msg.buffers?.length) {
-            state = { ...state };
-            applyBufferPaths(state, bufferPaths, msg.buffers);
-          }
-
-          storeRef.current.updateModel(commId, state, msg.buffers);
-        } else if (method === "custom") {
-          // Dispatch custom message to widget handlers
-          const content = (data?.content as Record<string, unknown>) || {};
-          storeRef.current.emitCustomMessage(commId, content, msg.buffers);
-        }
-        break;
-      }
-
-      case "comm_close": {
-        storeRef.current.deleteModel(commId);
-        break;
-      }
-    }
-  }, []);
-
-  /**
-   * Send a state update to the kernel.
-   * Also applies optimistic update to local store for immediate UI response.
-   */
   const sendUpdate = useCallback(
     (commId: string, state: Record<string, unknown>, buffers?: ArrayBuffer[]) => {
-      // When a manager is available, delegate to it for debounced CRDT
-      // writes + echo suppression. Otherwise fall back to direct write
-      // (used in iframe context where no manager exists).
       const manager = managerRef.current;
       if (manager) {
         manager.updateAndPersist(commId, state, buffers);
         return;
       }
-      // Fallback: immediate optimistic update + direct CRDT write
-      storeRef.current.updateModel(commId, state, buffers);
+      // Fallback for contexts without a manager (iframe outbound bridge).
+      storeRef.current.updateModel(commId, state);
       const writer = getCrdtCommWriter();
       if (writer && !buffers?.length) {
         writer(commId, state);
@@ -333,9 +196,6 @@ export function useCommRouter({
     [],
   );
 
-  /**
-   * Send a custom message to the kernel.
-   */
   const sendCustom = useCallback(
     (commId: string, content: Record<string, unknown>, buffers?: ArrayBuffer[]) => {
       sendMessageRef.current(createCustomMessage(commId, content, buffers, usernameRef.current));
@@ -343,17 +203,12 @@ export function useCommRouter({
     [],
   );
 
-  /**
-   * Close a comm channel.
-   * Sends comm_close to kernel and removes model from store.
-   */
   const closeComm = useCallback((commId: string) => {
     sendMessageRef.current(createCloseMessage(commId, usernameRef.current));
     storeRef.current.deleteModel(commId);
   }, []);
 
   return {
-    handleMessage,
     sendUpdate,
     sendCustom,
     closeComm,

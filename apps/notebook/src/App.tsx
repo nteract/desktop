@@ -493,7 +493,7 @@ function AppContent() {
 
     const commSub = engine.commChanges$.subscribe((changes) => {
       for (const comm of changes.opened) {
-        widgetStore.createModel(comm.commId, comm.state);
+        widgetStore.createModel(comm.commId, comm.state, comm.bufferPaths);
         if (comm.unresolvedOutputs) {
           resolveCommOutputs(comm.commId, comm.unresolvedOutputs, widgetStore);
         }
@@ -503,7 +503,7 @@ function AppContent() {
         // (e.g. slider being dragged — don't clobber with stale echo).
         const filtered = updateManager.shouldSuppressEcho(comm.commId, comm.state);
         if (filtered) {
-          widgetStore.updateModel(comm.commId, filtered);
+          widgetStore.updateModel(comm.commId, filtered, comm.bufferPaths);
         }
         if (comm.unresolvedOutputs) {
           resolveCommOutputs(comm.commId, comm.unresolvedOutputs, widgetStore);

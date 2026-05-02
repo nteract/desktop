@@ -6,33 +6,46 @@ This guide covers widget system internals for developers. For user-facing widget
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
+│ Daemon (kernel + blob store + RuntimeStateDoc)                          │
+│   comm_open / comm_msg / binary buffers → blob-store + CRDT ContentRefs │
+└──────────────────────────────────┬──────────────────────────────────────┘
+                                   │ Automerge sync
+┌──────────────────────────────────▼──────────────────────────────────────┐
 │ Parent Window                                                           │
 │                                                                         │
-│  ┌──────────────┐    comm_open/msg/close    ┌─────────────────────────┐│
-│  │ Kernel       │◄────────────────────────►│ WidgetStore             ││
-│  │ (via daemon) │                           │ (state management)      ││
-│  └──────────────┘                           └───────────┬─────────────┘│
-│                                                         │              │
-│                                            ┌────────────┴────────────┐ │
-│                                            │ CommBridgeManager       │ │
-│                                            │ (routes messages)       │ │
-│                                            └────────────┬────────────┘ │
-│                                                         │ postMessage  │
-└─────────────────────────────────────────────────────────┼──────────────┘
-                                                          │
-┌─────────────────────────────────────────────────────────┼──────────────┐
-│ Isolated Iframe (sandboxed, no Tauri access)            ▼              │
+│  ┌──────────────────┐ commChanges$ ┌───────────────────────────────┐   │
+│  │ SyncEngine       │─────────────►│ WidgetStore                   │   │
+│  │ (resolve_comm +  │              │ (state + bufferPaths)         │   │
+│  │  text-blob fetch)│              └───────────┬───────────────────┘   │
+│  └──────────────────┘                          │                       │
+│                                    ┌───────────┴──────────────────┐    │
+│                                    │ CommBridgeManager            │    │
+│                                    │ (forwards state+bufferPaths) │    │
+│                                    └───────────┬──────────────────┘    │
+│                                                │ postMessage / JSON-RPC│
+└────────────────────────────────────────────────┼───────────────────────┘
+                                                 │
+┌────────────────────────────────────────────────┼───────────────────────┐
+│ Isolated Iframe (sandboxed, no Tauri access)   ▼                       │
 │                                                                         │
-│  ┌─────────────────┐         ┌──────────────────┐                      │
-│  │ WidgetBridge    │◄───────►│ Widget Components │                      │
-│  │ (JSON-RPC 2.0)  │         │ (React renders)   │                      │
-│  └─────────────────┘         └──────────────────┘                      │
+│  ┌─────────────────────┐    fetch blob URLs → install DataView         │
+│  │ WidgetBridgeClient  │──► at each bufferPath, then store.createModel │
+│  │ (resolveBlobUrls)   │                                                │
+│  └─────────────────────┘                                                │
+│            │                                                            │
+│  ┌─────────▼───────────┐     ┌──────────────────┐                      │
+│  │ Iframe WidgetStore  │────►│ Widget Components │                      │
+│  │                     │     │ (React renders)   │                      │
+│  └─────────────────────┘     └──────────────────┘                      │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
-Widgets run inside a security-isolated iframe. The parent window owns the
-WidgetStore and proxies Jupyter comm messages through the CommBridgeManager.
-Across the iframe boundary, widget traffic now uses JSON-RPC 2.0 over
+Widgets run inside a security-isolated iframe. State is **not** shipped as
+Jupyter comm frames; it flows through the RuntimeStateDoc CRDT. SyncEngine
+diffs the CRDT, runs the WASM resolver, emits typed `ResolvedComm` events,
+and the CommBridgeManager forwards them (plus `bufferPaths`) to the iframe.
+The iframe resolves blob URLs into `DataView`s at those paths before widget
+code observes state. Cross-iframe traffic uses JSON-RPC 2.0 over
 `postMessage` via `jsonrpc-transport.ts` and `rpc-methods.ts`.
 
 ### Reserved comm namespace: `nteract.dx.*`
@@ -73,19 +86,28 @@ interface WidgetStore {
 
   // Model operations
   getModel(modelId: string): WidgetModel | undefined;
-  createModel(commId: string, state: Record<string, unknown>, buffers?: ArrayBuffer[]): void;
-  updateModel(commId: string, statePatch: Record<string, unknown>, buffers?: ArrayBuffer[]): void;
+  createModel(commId: string, state: Record<string, unknown>, bufferPaths?: string[][]): void;
+  updateModel(commId: string, statePatch: Record<string, unknown>, bufferPaths?: string[][]): void;
   deleteModel(commId: string): void;
   wasModelClosed(commId: string): boolean;
 
   // Fine-grained subscriptions
   subscribeToKey(modelId: string, key: string, callback: (value: unknown) => void): () => void;
 
-  // Custom messages (e.g., anywidget)
+  // Custom messages (e.g., anywidget model.send())
   emitCustomMessage(commId: string, content: Record<string, unknown>, buffers?: ArrayBuffer[]): void;
   subscribeToCustomMessage(commId: string, callback: CustomMessageCallback): () => void;
 }
 ```
+
+`bufferPaths` is the manifest of JSON paths in `state` whose values are
+blob URL strings. The iframe fetches each URL and swaps in a `DataView`
+before the anywidget model observes state. Parent-window code sees URL
+strings; iframe-local code sees `DataView`s at those paths.
+
+Custom `buffers` on `emitCustomMessage` / `subscribeToCustomMessage` are a
+separate channel — transient event payloads (ipycanvas draw commands, quak
+row batches) that don't belong in CRDT state.
 
 Usage in components via the `useWidgetModelValue` hook from `widget-store-context.tsx`:
 
@@ -100,21 +122,42 @@ Under the hood this calls `useSyncExternalStore` with `subscribeToKey` and `getM
 
 ## Comm Bridge Protocol
 
-Widget communication follows the Jupyter Comm protocol:
+Inbound widget state flows from the CRDT, not from Jupyter comm frames.
+SyncEngine emits `commChanges$` events; the CommBridgeManager forwards them
+to the iframe via JSON-RPC notifications with the shapes below.
 
-| Message | When | Jupyter Wire Format |
-|---------|------|---------------------|
-| `comm_open` | Widget created | `{ comm_id, target_name, data: { state } }` |
-| `comm_msg` | State update | `{ comm_id, data: { method: "update", state } }` |
-| `comm_msg` | Custom message | `{ comm_id, data: { method: "custom", content } }` |
-| `comm_close` | Widget destroyed | `{ comm_id }` |
+| Message | When | Iframe payload |
+|---------|------|----------------|
+| `comm_open` | Widget created (CRDT opened) | `{ commId, targetName, state, bufferPaths? }` |
+| `comm_msg` method `update` | State delta (CRDT changed) | `{ commId, method: "update", data, bufferPaths? }` |
+| `comm_msg` method `custom` | Ephemeral event | `{ commId, method: "custom", data, buffers? }` |
+| `comm_close` | Widget destroyed | `{ commId }` |
+| `widget_snapshot` | Iframe reconnect | `{ models: [{ commId, targetName, state, bufferPaths? }] }` |
 
-> **Note:** The table above shows the Jupyter wire protocol message shapes. The internal TypeScript types in `frame-bridge.ts` use camelCase (`commId`, `targetName`) and a flatter structure (e.g., `method` is a sibling of `data` in `CommMsgMessage`, not nested inside it). See `CommOpenMessage` and `CommMsgMessage` in `src/components/isolated/frame-bridge.ts` for the actual postMessage payload shapes.
+- `bufferPaths` only applies to `open` / `update` — it tells the iframe which
+  paths are blob URLs the resolver must fetch and install as `DataView`s
+  before the anywidget model sees state.
+- `buffers` only applies to `custom` — transient binary payloads alongside
+  the event content. The two don't share a channel.
+
+See `CommOpenMessage`, `CommMsgMessage`, and `WidgetSnapshotMessage` in
+`src/components/isolated/frame-bridge.ts` for the exact payload types.
 
 The CommBridgeManager:
-1. Subscribes to WidgetStore changes
-2. Forwards model updates to the isolated iframe via JSON-RPC notifications
-3. Receives iframe messages and routes them to kernel or store
+1. Subscribes to WidgetStore changes.
+2. Forwards model updates (state + `bufferPaths`) to the iframe via
+   JSON-RPC notifications.
+3. Receives iframe-originated `widget_comm_msg` / `widget_comm_close`
+   messages and routes them to the kernel (via `sendUpdate` /
+   `sendCustom` / `closeComm`) and the parent store.
+
+### Inbound path is CRDT-driven, not Jupyter-message-synthesized
+
+`useCommRouter` is **outbound-only**. Older versions synthesized
+`JupyterCommMessage` inbound envelopes and ran `applyBufferPaths` to stitch
+buffers back into state; that path was removed once
+`SyncEngine.commChanges$` became authoritative. If you're tempted to re-add
+an inbound `handleMessage`, reach for SyncEngine instead.
 
 ## Adding a New Built-in Widget
 
@@ -188,9 +231,32 @@ if (isModelRef(child)) {
 
 Anywidgets use ESM modules loaded at runtime. The `anywidget-view.tsx` component:
 
-1. Detects `_esm` field in model state
-2. Dynamically imports the ESM module
-3. Calls the module's `render` function with a model proxy
+1. Detects `_esm` field in model state.
+2. Dynamically imports the ESM module.
+3. Calls the module's `render` function with an AFM-compatible model proxy.
+
+### Binary traitlets (`traitlets.Bytes(sync=True)`)
+
+When a widget defines a binary traitlet, `ipywidgets`' `_remove_buffers()`
+extracts the raw bytes out of state before sending the comm message. The
+daemon's kernel handler blob-stores each buffer with
+`media_type: application/octet-stream` and replaces the state placeholder
+with a ContentRef. The WASM resolver rewrites that ContentRef to a blob
+URL and lists the path in `buffer_paths`. The iframe fetches the URL and
+installs a `DataView` at that path, which is exactly what anywidget
+consumers expect (`model.get("data").byteLength`, etc).
+
+The anywidget-reserved keys `_esm` and `_css` are intentionally **not**
+listed in `buffer_paths`. They stay as URL strings so `loadESM` can
+`import(url)` and `injectCSS` can render a `<link rel="stylesheet">`.
+Listing them would cause the iframe's resolver to swap in a `DataView` and
+break both loaders.
+
+ipywidgets `Image` / `Audio` / `Video` `value` traitlets also flow through
+the binary path. `buildMediaSrc` in `buffer-utils.ts` accepts `DataView` in
+addition to `ArrayBuffer` / `Uint8Array` / URL string, so the resolved
+`DataView` turns into a valid `data:` URL for the `<img>` / `<audio>` /
+`<video>` `src`.
 
 ## Testing Widgets
 

@@ -105,14 +105,12 @@ export function IframeWidgetStoreProvider({ children }: IframeWidgetStoreProvide
     [client],
   );
 
-  // Value for main WidgetStoreContext (so existing widget components work)
-  // sendMessage parses Jupyter protocol and routes to bridge functions
+  // Value for main WidgetStoreContext (so existing widget components work).
+  // sendMessage parses outgoing Jupyter comm frames and dispatches to the
+  // bridge — inbound messages arrive via postMessage / the bridge client.
   const mainContextValue = useMemo(
     () => ({
       store: client.store,
-      handleMessage: () => {
-        // No-op: messages come through postMessage in iframe
-      },
       sendMessage: (msg: {
         content: {
           comm_id?: string;
@@ -124,7 +122,6 @@ export function IframeWidgetStoreProvider({ children }: IframeWidgetStoreProvide
         };
         buffers?: ArrayBuffer[];
       }) => {
-        // Route Jupyter protocol messages to bridge functions
         const commId = msg.content?.comm_id;
         const method = msg.content?.data?.method;
         const buffers = msg.buffers;

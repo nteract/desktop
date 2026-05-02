@@ -21,7 +21,7 @@ import {
 } from "react";
 import { createCanvasManagerRouter } from "./canvas-manager-subscriptions";
 import { createLinkManager } from "./link-subscriptions";
-import { type JupyterCommMessage, type SendMessage, useCommRouter } from "./use-comm-router";
+import { type SendMessage, useCommRouter } from "./use-comm-router";
 import {
   createWidgetStore,
   resolveModelRef,
@@ -33,8 +33,6 @@ import {
 
 interface WidgetStoreContextValue {
   store: WidgetStore;
-  /** Handle incoming Jupyter comm messages */
-  handleMessage: (msg: JupyterCommMessage) => void;
   /** Raw send function (prefer sendUpdate/sendCustom for specific cases) */
   sendMessage: SendMessage;
   /** Send a state update to the kernel */
@@ -78,8 +76,8 @@ export function WidgetStoreProvider({
   }
   const store = storeRef.current;
 
-  // Use the comm router hook for message handling
-  const { handleMessage, sendUpdate, sendCustom, closeComm } = useCommRouter({
+  // Outbound comm helpers (inbound is driven by SyncEngine.commChanges$)
+  const { sendUpdate, sendCustom, closeComm } = useCommRouter({
     sendMessage,
     store,
     updateManager,
@@ -95,13 +93,12 @@ export function WidgetStoreProvider({
   const value = useMemo(
     () => ({
       store,
-      handleMessage,
       sendMessage,
       sendUpdate,
       sendCustom,
       closeComm,
     }),
-    [store, handleMessage, sendMessage, sendUpdate, sendCustom, closeComm],
+    [store, sendMessage, sendUpdate, sendCustom, closeComm],
   );
 
   return <WidgetStoreContext.Provider value={value}>{children}</WidgetStoreContext.Provider>;
@@ -217,8 +214,7 @@ export function useWasWidgetClosed(modelId: string): boolean {
 // Re-export store-level managers for non-React integrations (e.g. iframe isolation)
 export { createCanvasManagerRouter } from "./canvas-manager-subscriptions";
 export { createLinkManager } from "./link-subscriptions";
-export type { JupyterCommMessage, JupyterMessageHeader, SendMessage } from "./use-comm-router";
-// Re-export types from use-comm-router
+export type { JupyterMessageHeader, SendMessage } from "./use-comm-router";
 export { useCommRouter } from "./use-comm-router";
 export type { WidgetModel, WidgetStore } from "./widget-store";
 // Re-export types and utilities from widget-store

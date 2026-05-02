@@ -333,11 +333,15 @@ fn js_cell_from_parts(index: usize, snap: CellSnapshot, outputs: Vec<serde_json:
 /// - `{"inline": V}` → unwrap to `V`
 /// - `{"blob": H, "size": N, "media_type": M?}` → plain URL string. The JSON
 ///   path is recorded in either `buffer_paths` (binary MIME, caller should
-///   fetch as ArrayBuffer) or `text_paths` (text MIME, caller should fetch
-///   the URL and substitute the decoded text back into the state tree before
-///   handing it to widget code). A missing or unknown `media_type` is treated
-///   as binary so the value stays a URL — matches the legacy behavior for
-///   comms that don't carry MIME metadata.
+///   fetch as ArrayBuffer and install a DataView at the path — this is the
+///   ipywidgets binary-traitlet protocol), `text_paths` (text MIME, caller
+///   should fetch the URL and substitute the decoded text back into the state
+///   tree before handing it to widget code), or neither — url-preferred keys
+///   like anywidget `_esm` / `_css` stay as bare URL strings that consumers
+///   read by known key (`import(url)`, `<link rel=stylesheet href=url>`).
+///   A missing or unknown `media_type` is treated as binary so the value
+///   stays a URL — matches the legacy behavior for comms that don't carry
+///   MIME metadata.
 /// - Arrays/objects → recurse
 /// - Primitives → pass through
 fn walk_and_resolve_comm_state(
@@ -361,22 +365,26 @@ fn walk_and_resolve_comm_state(
                 // Anywidget reserves `_esm` and `_css` for URL-preferring
                 // loaders: `_esm` flows through `import(url)` and `_css`
                 // through `<link rel=stylesheet href=url>`, both of which
-                // handle URLs natively. Pulling those blobs over HTTP
-                // in the sync engine just to re-serve the decoded string
-                // is wasted work and defeats browser caching, so keep
-                // them on the URL path regardless of media_type.
+                // handle URLs natively. Pulling those blobs over HTTP in
+                // the sync engine just to re-serve the decoded string is
+                // wasted work and defeats browser caching, and if we listed
+                // them in `buffer_paths` the iframe resolver would rewrite
+                // the URL string to a DataView and break the loaders. Emit
+                // neither path entry — consumers read these by known key.
                 let last_key = current_path.last().map(String::as_str);
                 let url_preferred = matches!(last_key, Some("_esm") | Some("_css"));
 
-                let media_type = obj.get("media_type").and_then(|v| v.as_str());
-                // Only classify as text when we have a media_type that says so.
-                // Missing media_type → binary (URL) to preserve legacy behavior.
-                let is_text =
-                    !url_preferred && media_type.map(|mt| !is_binary_mime(mt)).unwrap_or(false);
-                if is_text {
-                    text_paths.push(current_path.clone());
-                } else {
-                    buffer_paths.push(current_path.clone());
+                if !url_preferred {
+                    let media_type = obj.get("media_type").and_then(|v| v.as_str());
+                    // Only classify as text when we have a media_type that
+                    // says so. Missing media_type → binary (URL stays, iframe
+                    // installs a DataView for widget protocol).
+                    let is_text = media_type.map(|mt| !is_binary_mime(mt)).unwrap_or(false);
+                    if is_text {
+                        text_paths.push(current_path.clone());
+                    } else {
+                        buffer_paths.push(current_path.clone());
+                    }
                 }
                 return serde_json::Value::String(format!(
                     "http://127.0.0.1:{}/blob/{}",
@@ -2167,7 +2175,9 @@ mod tests {
     fn esm_blob_stays_as_url_not_text_inlined() {
         // Anywidget's `_esm` loads via native `import(url)`; pre-fetching
         // the text in the sync engine just to re-import it defeats
-        // browser caching. Keep it on the URL path regardless of MIME.
+        // browser caching. Emit neither buffer_paths nor text_paths so the
+        // iframe's blob-URL resolver leaves the string alone — `loadESM`
+        // reads it as a URL by key name.
         let (resolved, buffer_paths, text_paths) = resolve(json!({
             "_esm": { "blob": "esmhash", "size": 50000, "media_type": "text/javascript" },
         }));
@@ -2175,18 +2185,19 @@ mod tests {
             resolved["_esm"],
             json!("http://127.0.0.1:1234/blob/esmhash")
         );
-        assert_eq!(buffer_paths, vec![vec!["_esm".to_string()]]);
         assert!(
-            text_paths.is_empty(),
-            "_esm must not be inlined — loadESM handles URLs natively"
+            buffer_paths.is_empty(),
+            "_esm must not appear in buffer_paths"
         );
+        assert!(text_paths.is_empty(), "_esm must not appear in text_paths");
     }
 
     #[test]
     fn css_blob_stays_as_url_not_text_inlined() {
         // Anywidget's `_css` is rendered as `<link rel=stylesheet
-        // href=url>`; the browser fetches + caches it directly. No
-        // reason to round-trip through the sync engine.
+        // href=url>`; the browser fetches + caches it directly. Emit
+        // neither buffer_paths nor text_paths — `injectCSS` reads the URL
+        // by key name and nothing else should touch the value.
         let (resolved, buffer_paths, text_paths) = resolve(json!({
             "_css": { "blob": "csshash", "size": 2048, "media_type": "text/css" },
         }));
@@ -2194,34 +2205,32 @@ mod tests {
             resolved["_css"],
             json!("http://127.0.0.1:1234/blob/csshash")
         );
-        assert_eq!(buffer_paths, vec![vec!["_css".to_string()]]);
         assert!(
-            text_paths.is_empty(),
-            "_css must not be inlined — injectCSS handles URLs natively"
+            buffer_paths.is_empty(),
+            "_css must not appear in buffer_paths"
         );
+        assert!(text_paths.is_empty(), "_css must not appear in text_paths");
     }
 
     #[test]
     fn esm_under_nested_parent_also_excluded() {
         // Exclusion matches the last path segment, not the full path.
         // Collateral: a stray `_esm` buried in user state is also
-        // URL-routed. Acceptable since the identifier is reserved.
-        let (_, buffer_paths, text_paths) = resolve(json!({
+        // URL-routed (no buffer/text path entry). Acceptable since the
+        // identifier is reserved.
+        let (resolved, buffer_paths, text_paths) = resolve(json!({
             "children": [
                 {
                     "_esm": { "blob": "h", "size": 100, "media_type": "text/javascript" },
                 },
             ],
         }));
-        assert!(text_paths.is_empty());
         assert_eq!(
-            buffer_paths,
-            vec![vec![
-                "children".to_string(),
-                "0".to_string(),
-                "_esm".to_string(),
-            ]]
+            resolved["children"][0]["_esm"],
+            json!("http://127.0.0.1:1234/blob/h"),
         );
+        assert!(buffer_paths.is_empty());
+        assert!(text_paths.is_empty());
     }
 
     #[test]
