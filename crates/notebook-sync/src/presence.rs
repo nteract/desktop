@@ -4,12 +4,21 @@
 //! bindings: encode a labeled presence update and send it through `DocHandle`.
 //! Presence is UX-only, so all send helpers deliberately swallow errors after
 //! logging at debug level.
+//!
+//! Actor labels are intentionally read from `DocHandle` rather than from each
+//! binding's side-car session state. The handle owns the Automerge actor used
+//! for document writes, so deriving presence provenance from it keeps generated
+//! actor labels visible consistently across Python, Node, and MCP clients.
 
 use notebook_doc::presence::{self, CursorPosition};
 
 use crate::handle::DocHandle;
 
 /// Get the Automerge actor label from the handle, or `None` when unavailable.
+///
+/// This is the canonical actor label for presence provenance. Some bindings
+/// keep an optional requested actor label in session state, but the handle is
+/// where the effective generated actor label lives.
 pub fn actor_label(handle: &DocHandle) -> Option<String> {
     handle.get_actor_id().ok().filter(|s| !s.is_empty())
 }
