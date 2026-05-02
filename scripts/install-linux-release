@@ -14,6 +14,7 @@ usage() {
   cat <<'USAGE'
 Usage:
   scripts/install-linux-release [--tag v2.4.1-stable.YYYYMMDDHHMM]
+  scripts/install-linux-release --channel nightly --tag v2.4.1-nightly.YYYYMMDDHHMM
   scripts/install-linux-release --from-dir /path/to/release-assets
 
 Options:
@@ -40,6 +41,12 @@ Then links:
   ~/.local/bin/runt
   ~/.local/bin/runtimed
   ~/.local/bin/nteract-mcp
+
+For nightly, the installed AppImage and public commands are channel-suffixed:
+  ~/.local/bin/nteract-nightly
+  ~/.local/bin/runt-nightly
+  ~/.local/bin/runtimed-nightly
+  ~/.local/bin/nteract-mcp-nightly
 USAGE
 }
 
@@ -137,6 +144,7 @@ if [[ "$CHANNEL" == "stable" ]]; then
   CLI_NAME="runt"
   DAEMON_NAME="runtimed"
   MCP_NAME="nteract-mcp"
+  APPIMAGE_NAME="nteract"
 else
   APPIMAGE_ASSET="nteract-nightly-linux-$ARCH.AppImage"
   CLI_ASSET="runt-nightly-linux-$ARCH"
@@ -145,9 +153,10 @@ else
   CLI_NAME="runt-nightly"
   DAEMON_NAME="runtimed-nightly"
   MCP_NAME="nteract-mcp-nightly"
+  APPIMAGE_NAME="nteract-nightly"
 fi
 
-APPIMAGE_DEST="$PREFIX/nteract.AppImage"
+APPIMAGE_DEST="$PREFIX/$APPIMAGE_NAME.AppImage"
 SIDE_BIN_DIR="$PREFIX/bin"
 TMP_DIR="$(mktemp -d)"
 cleanup() { rm -rf "$TMP_DIR"; }
@@ -204,14 +213,14 @@ atomic_install "$TMP_DIR/$CLI_NAME" "$SIDE_BIN_DIR/$CLI_NAME"
 atomic_install "$TMP_DIR/$DAEMON_NAME" "$SIDE_BIN_DIR/$DAEMON_NAME"
 atomic_install "$TMP_DIR/$MCP_NAME" "$SIDE_BIN_DIR/$MCP_NAME"
 
-# Stable convenience aliases. These let @nteract/pi and shell users rely on the
-# stable command names even when the downloaded asset had a platform suffix.
-ln -sfn "$APPIMAGE_DEST" "$BIN_DIR/nteract"
+# Public command links. Stable owns `nteract`; nightly owns `nteract-nightly`
+# so the two channels can be installed side-by-side without clobbering launchers.
+ln -sfn "$APPIMAGE_DEST" "$BIN_DIR/$APPIMAGE_NAME"
 ln -sfn "$SIDE_BIN_DIR/$CLI_NAME" "$BIN_DIR/$CLI_NAME"
 ln -sfn "$SIDE_BIN_DIR/$DAEMON_NAME" "$BIN_DIR/$DAEMON_NAME"
 ln -sfn "$SIDE_BIN_DIR/$MCP_NAME" "$BIN_DIR/$MCP_NAME"
 
-echo "Linked $BIN_DIR/nteract -> $APPIMAGE_DEST"
+echo "Linked $BIN_DIR/$APPIMAGE_NAME -> $APPIMAGE_DEST"
 echo "Linked $BIN_DIR/$CLI_NAME -> $SIDE_BIN_DIR/$CLI_NAME"
 echo "Linked $BIN_DIR/$DAEMON_NAME -> $SIDE_BIN_DIR/$DAEMON_NAME"
 echo "Linked $BIN_DIR/$MCP_NAME -> $SIDE_BIN_DIR/$MCP_NAME"
@@ -243,6 +252,7 @@ fi
 echo
 echo "nteract $CHANNEL install complete."
 echo "AppImage: $APPIMAGE_DEST"
+echo "Launcher: $BIN_DIR/$APPIMAGE_NAME"
 echo "CLI:      $BIN_DIR/$CLI_NAME"
 echo "Daemon:   $BIN_DIR/$DAEMON_NAME"
 echo "MCP:      $BIN_DIR/$MCP_NAME"
