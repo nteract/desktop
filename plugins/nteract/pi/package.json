@@ -1,7 +1,9 @@
 {
   "name": "@nteract/pi",
   "version": "0.1.2",
-  "description": "Pi extensions that run Python through the local nteract runtimed daemon.",
+  "description": "Persistent notebook-backed Python REPL for Pi coding agents. Stateful execution, hot dependency sync, zero cold starts.",
+  "author": "nteract contributors",
+  "icon": "icon.png",
   "type": "module",
   "license": "BSD-3-Clause",
   "repository": {
@@ -30,6 +32,7 @@
   },
   "files": [
     "README.md",
+    "icon.png",
     "extensions"
   ],
   "scripts": {
