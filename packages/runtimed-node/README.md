@@ -32,9 +32,17 @@ async function main() {
   try {
     console.log("daemon socket:", defaultSocketPath());
 
-    const result = await session.runCell("sum(range(10))");
-    console.log(result.status);
-    console.log(result.outputs);
+    const result = await session.run(`
+import numpy as np
+import matplotlib.pyplot as plt
+
+x = np.linspace(0, 6.28, 200)
+plt.plot(x, np.sin(x))
+plt.show()
+`);
+    console.log(result.ok);
+    console.log(result.text);
+    console.log(result.richData);
 
     await session.saveNotebook();
   } finally {
@@ -58,6 +66,11 @@ main().catch((error) => {
 - `openNotebook(notebookId, options)` connects to an existing notebook.
 - `getExecutionResult(executionId, options)` reads a result by execution ID.
 - `Session.runCell(source, options)` creates, runs, and waits for a cell.
+- `Session.run(source, options)` does the same and returns decoded MIME data,
+  `text`, `errors`, `richData`, and `ok` convenience fields.
+- `Session.install(dependencies, options)` records dependencies and hot-syncs
+  them by default.
+- `runPython(source, options)` is a one-shot helper for scripts and agents.
 - `Session.queueCell(source, options)` queues a cell and returns IDs.
 - `Session.waitForExecution(executionId, options)` waits for queued work.
 - `Session.addUvDependency(spec)` records a UV dependency for the notebook.
@@ -71,7 +84,25 @@ main().catch((error) => {
 up-front instead of failing the first import and retrying after `addUvDependency()`.
 The `packageManager` option is typed from the native binding's `PackageManager`
 string enum (`"uv"`, `"conda"`, or `"pixi"`) and is converted to the shared
-notebook protocol enum before the daemon handshake.
+notebook protocol enum before the daemon handshake. JavaScript also accepts
+agent-friendly aliases (`deps`, `packages`) plus `description`, which becomes a
+human-readable peer label.
+
+For tiny scripts, use the one-shot helper:
+
+```js
+const { runPython } = require("@runtimed/node");
+
+const result = await runPython("import numpy as np; np.arange(3)", {
+  dependencies: ["numpy"],
+});
+console.log(result.text);
+```
+
+For longer sessions, use `session.run()` instead of `runCell()` when you want
+parsed outputs: `dataJson` becomes `output.data`, binary MIME bundles become
+`Buffer`s, blob URL/path JSON is parsed, and common result fields are summarized
+as `result.text`, `result.richData`, `result.errors`, and `result.ok`.
 
 The package talks to a local `runtimed` daemon over its Unix socket. In a
 development checkout, run the per-worktree daemon before using the bindings:
