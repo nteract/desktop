@@ -27,7 +27,8 @@ export type KernelErrorReasonKey =
   | "missing_ipykernel"
   | "dependency_cache_missing_ipykernel"
   | "ipykernel_site_packages_mismatch"
-  | "conda_env_yml_missing";
+  | "conda_env_yml_missing"
+  | "conda_env_build_failed";
 
 /**
  * Typed error-reason strings. Mirrors `KernelErrorReason::as_str()` on
@@ -46,6 +47,12 @@ export const KERNEL_ERROR_REASON = {
    * remediation command.
    */
   CONDA_ENV_YML_MISSING: "conda_env_yml_missing",
+  /**
+   * An approved environment.yml build was attempted but failed (e.g.,
+   * channel unreachable, dependency solve error). `kernel.error_details`
+   * carries the rattler/conda error message.
+   */
+  CONDA_ENV_BUILD_FAILED: "conda_env_build_failed",
 } as const satisfies Record<string, KernelErrorReasonKey>;
 
 /**

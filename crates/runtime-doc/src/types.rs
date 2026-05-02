@@ -222,6 +222,10 @@ pub enum KernelErrorReason {
     /// to do (`conda env create -f environment.yml`). Accompanying
     /// `error_details` carries the env name.
     CondaEnvYmlMissing,
+    /// An approved environment.yml build was attempted but failed (e.g.,
+    /// channel unreachable, dependency solve error). `error_details`
+    /// carries the rattler/conda error message.
+    CondaEnvBuildFailed,
 }
 
 impl KernelErrorReason {
@@ -231,6 +235,7 @@ impl KernelErrorReason {
             Self::DependencyCacheMissingIpykernel => "dependency_cache_missing_ipykernel",
             Self::IpykernelSitePackagesMismatch => "ipykernel_site_packages_mismatch",
             Self::CondaEnvYmlMissing => "conda_env_yml_missing",
+            Self::CondaEnvBuildFailed => "conda_env_build_failed",
         }
     }
 
@@ -240,6 +245,7 @@ impl KernelErrorReason {
             "dependency_cache_missing_ipykernel" => Some(Self::DependencyCacheMissingIpykernel),
             "ipykernel_site_packages_mismatch" => Some(Self::IpykernelSitePackagesMismatch),
             "conda_env_yml_missing" => Some(Self::CondaEnvYmlMissing),
+            "conda_env_build_failed" => Some(Self::CondaEnvBuildFailed),
             _ => None,
         }
     }
