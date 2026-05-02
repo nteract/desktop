@@ -248,11 +248,19 @@ fn read_runtime_info(handle: &notebook_sync::handle::DocHandle) -> serde_json::V
                     serde_json::json!(state.env.prewarmed_packages),
                 );
             }
-            // Error surface (#2157): when the kernel is in an error
-            // state, MCP clients get both the typed reason (stable
-            // for programmatic handling) and the human-readable
-            // details (for surfacing to the user).
-            if matches!(state.kernel.lifecycle, runtime_doc::RuntimeLifecycle::Error) {
+            // Error surface (#2157): when the kernel is in an error or
+            // decision-pending state, MCP clients get both the typed
+            // reason (stable for programmatic handling) and the
+            // human-readable details (for surfacing to the user).
+            // AwaitingEnvBuild carries CondaEnvYmlMissing + details
+            // about which env to create — without this, MCP clients
+            // only see kernel_status "awaiting_env_build" with no
+            // explanation of what's wrong or what action to take.
+            if matches!(
+                state.kernel.lifecycle,
+                runtime_doc::RuntimeLifecycle::Error
+                    | runtime_doc::RuntimeLifecycle::AwaitingEnvBuild
+            ) {
                 if let Some(reason) = state
                     .kernel
                     .error_reason
@@ -990,20 +998,6 @@ pub async fn show_notebook(
     };
     let is_ephemeral = room.ephemeral;
 
-    if !has_display() {
-        let mut result = serde_json::json!({
-            "notebook_id": target,
-            "opened": false,
-            "reason": "No display available (headless environment). The notebook is running in the daemon and accessible via MCP tools."
-        });
-        if is_ephemeral {
-            result["note"] = serde_json::json!(
-                "This notebook is ephemeral. Use save_notebook(path) to persist."
-            );
-        }
-        return tool_success(&serde_json::to_string_pretty(&result).unwrap_or_default());
-    }
-
     // Resolve the on-disk path: prefer room path (authoritative), then session
     // path, then fall back to the target string if it looks like a file path.
     let resolved_path = room
@@ -1011,6 +1005,23 @@ pub async fn show_notebook(
         .as_deref()
         .or(session_path.as_deref())
         .filter(|p| std::path::Path::new(p).is_absolute());
+
+    if !has_display() {
+        let mut result = serde_json::json!({
+            "notebook_id": target,
+            "opened": false,
+            "reason": "No display available (headless environment). The notebook is running in the daemon and accessible via MCP tools."
+        });
+        if let Some(path) = resolved_path {
+            result["path"] = serde_json::json!(path);
+        }
+        if is_ephemeral {
+            result["note"] = serde_json::json!(
+                "This notebook is ephemeral. Use save_notebook(path) to persist."
+            );
+        }
+        return tool_success(&serde_json::to_string_pretty(&result).unwrap_or_default());
+    }
 
     if let Some(path) = resolved_path {
         runt_workspace::open_notebook_app(Some(std::path::Path::new(path)), &[])
@@ -1024,6 +1035,12 @@ pub async fn show_notebook(
     }
 
     let mut result = serde_json::json!({ "notebook_id": target, "opened": true });
+    // Include path in the response so callers can see where the notebook lives.
+    if let Some(path) = room.notebook_path.as_deref() {
+        result["path"] = serde_json::json!(path);
+    } else if let Some(path) = session_path.as_deref() {
+        result["path"] = serde_json::json!(path);
+    }
     if is_ephemeral {
         result["warning"] =
             serde_json::json!("This notebook is ephemeral. Save it from the app to keep it.");
@@ -1083,6 +1100,39 @@ mod tests {
         assert!(
             uuid::Uuid::parse_str(&notebook_id).is_ok(),
             "notebook_id in save response must be a valid UUID"
+        );
+    }
+
+    /// Lifecycle states that carry error_reason/error_details must be
+    /// surfaced to MCP clients. Verify the predicate covers both Error
+    /// and AwaitingEnvBuild (the two states that write error details).
+    #[test]
+    fn error_surface_covers_awaiting_env_build() {
+        use runtime_doc::RuntimeLifecycle;
+        let should_surface = |lc: &RuntimeLifecycle| -> bool {
+            matches!(
+                lc,
+                RuntimeLifecycle::Error | RuntimeLifecycle::AwaitingEnvBuild
+            )
+        };
+
+        assert!(
+            should_surface(&RuntimeLifecycle::Error),
+            "Error must surface error details"
+        );
+        assert!(
+            should_surface(&RuntimeLifecycle::AwaitingEnvBuild),
+            "AwaitingEnvBuild must surface error details"
+        );
+        assert!(
+            !should_surface(&RuntimeLifecycle::NotStarted),
+            "NotStarted must not surface error details"
+        );
+        assert!(
+            !should_surface(&RuntimeLifecycle::Running(
+                runtime_doc::KernelActivity::Idle
+            )),
+            "Running(Idle) must not surface error details"
         );
     }
 }

@@ -775,6 +775,127 @@ pub fn validate_package_specifier(spec: &str) -> Result<(), String> {
              Package names may only contain letters, digits, hyphens, underscores, and dots"
         ));
     }
+    validate_version_operators(spec, &name)?;
+    Ok(())
+}
+
+/// Reject obviously invalid version operators in a specifier.
+///
+/// PEP 508 operators: `==`, `!=`, `<=`, `>=`, `<`, `>`, `~=`, `===`.
+/// Conda MatchSpec operators: same minus `===`.
+///
+/// This catches mangled specifiers like `pandas>>>999` or `numpy=!2.0`
+/// that would be silently recorded in the CRDT and only fail (confusingly)
+/// at install time. Not a full PEP 508 parser — just enough to reject
+/// operator sequences that no package manager would accept.
+///
+/// # Examples
+///
+/// ```
+/// use notebook_doc::metadata::validate_version_operators;
+/// assert!(validate_version_operators("pandas>=2.0", "pandas").is_ok());
+/// assert!(validate_version_operators("numpy==1.24", "numpy").is_ok());
+/// assert!(validate_version_operators("scipy~=1.11", "scipy").is_ok());
+/// assert!(validate_version_operators("foo===1.0", "foo").is_ok());
+/// assert!(validate_version_operators("pandas>>>999", "pandas").is_err());
+/// assert!(validate_version_operators("numpy=!2.0", "numpy").is_err());
+/// assert!(validate_version_operators("pandas", "pandas").is_ok());
+/// assert!(validate_version_operators("requests[security]>=2.0", "requests").is_ok());
+/// ```
+pub fn validate_version_operators(spec: &str, name: &str) -> Result<(), String> {
+    // Strip leading name (case-insensitive match since extract_package_name lowercases).
+    let spec_trimmed = spec.trim();
+    let after_name = if let Some(rest) = spec_trimmed.get(..name.len()).and_then(|prefix| {
+        if prefix.eq_ignore_ascii_case(name) {
+            spec_trimmed.get(name.len()..)
+        } else {
+            None
+        }
+    }) {
+        rest
+    } else {
+        // Name doesn't match at start — might have channel prefix.
+        // Skip to first version operator character.
+        let first_op = spec_trimmed.find(&['>', '<', '=', '!', '~'][..]);
+        match first_op {
+            Some(i) => &spec_trimmed[i..],
+            None => return Ok(()), // no version constraint
+        }
+    };
+
+    // Skip past extras brackets `[...]` and whitespace.
+    let after_extras = if let Some(bracket_start) = after_name.find('[') {
+        let bracket_end = after_name[bracket_start..].find(']');
+        match bracket_end {
+            Some(end) => after_name[bracket_start + end + 1..].trim_start(),
+            None => after_name, // unmatched bracket, caught elsewhere
+        }
+    } else {
+        after_name.trim_start()
+    };
+
+    if after_extras.is_empty() {
+        return Ok(()); // bare package name, no version constraint
+    }
+
+    // Check that version clauses use valid operators. Comma-separated
+    // clauses are checked individually (e.g., ">=1.0,<2.0").
+    for clause in after_extras.split(',') {
+        let clause = clause.trim();
+        if clause.is_empty() {
+            continue;
+        }
+        // Allow environment markers (;python_version>="3.8") — stop
+        // validating once we hit a semicolon.
+        if clause.starts_with(';') {
+            break;
+        }
+        // Allow URL specifiers (@ https://...).
+        if clause.starts_with('@') {
+            break;
+        }
+        // Allow bare version (no operator) — conda supports `numpy 1.24.*`.
+        if clause
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_digit() || c == '*')
+        {
+            continue;
+        }
+        // Non-operator start — could be env markers, path extras, etc.
+        if !clause
+            .chars()
+            .next()
+            .is_some_and(|c| matches!(c, '>' | '<' | '=' | '!' | '~'))
+        {
+            continue;
+        }
+
+        // Extract the operator prefix: consume all leading operator chars,
+        // then verify the prefix is a recognized operator.
+        let op_len = clause
+            .chars()
+            .take_while(|c| matches!(c, '>' | '<' | '=' | '!' | '~'))
+            .count();
+        let op = &clause[..op_len];
+        match op {
+            "===" | "~=" | "==" | "!=" | ">=" | "<=" | ">" | "<"
+            // Conda accepts single `=` as a glob operator (`python=3.12`
+            // means `python==3.12.*`). Not valid PEP 508, but UV would
+            // reject it at install time — our job is catching garbage
+            // operators, not full spec validation.
+            | "=" => {
+                // Valid operator — ok.
+            }
+            _ => {
+                return Err(format!(
+                    "invalid version specifier in '{spec}': '{op}' is not a \
+                     recognized operator (>=, <=, ==, !=, ~=, ===, >, <)"
+                ));
+            }
+        }
+    }
+
     Ok(())
 }
 
@@ -1119,6 +1240,24 @@ mod tests {
         assert!(validate_package_specifier("[\"pandas\"").is_err());
         assert!(validate_package_specifier("\"numpy\"").is_err());
         assert!(validate_package_specifier("\"seaborn\"]").is_err());
+    }
+
+    #[test]
+    fn test_validate_package_specifier_bad_version_operators() {
+        // Triple > is not a valid operator
+        assert!(validate_package_specifier("pandas>>>999").is_err());
+        // =! is not valid (should be !=)
+        assert!(validate_package_specifier("numpy=!2.0").is_err());
+        // >>= is not valid
+        assert!(validate_package_specifier("scipy>>=1.0").is_err());
+        // <<<< is not valid
+        assert!(validate_package_specifier("foo<<<<1.0").is_err());
+        // Valid operators should still pass
+        assert!(validate_package_specifier("pandas>=2.0,<3.0").is_ok());
+        assert!(validate_package_specifier("numpy~=1.24").is_ok());
+        assert!(validate_package_specifier("foo===1.0.0").is_ok());
+        // Conda-style single = should pass (for interop)
+        assert!(validate_package_specifier("python=3.12").is_ok());
     }
 
     // ── validate_conda_package_specifier ───────────────────────
