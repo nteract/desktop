@@ -1,4 +1,5 @@
 import type { CSSProperties } from "react";
+import { toCssLength } from "./css-length";
 
 /**
  * Utilities for converting ipywidgets Layout model properties to CSS.
@@ -6,6 +7,21 @@ import type { CSSProperties } from "react";
  * ipywidgets uses snake_case for CSS properties (e.g., grid_template_columns),
  * which need to be converted to camelCase for React's style prop.
  */
+
+/**
+ * Layout properties whose values are lengths. Bare numerics coming from
+ * Python (`Layout(width=64)` → `"64"`) need the same unit coercion we apply
+ * to `ipywidgets.Image.width`; without it the browser rejects the value and
+ * the widget collapses to its intrinsic size.
+ */
+const LENGTH_PROPERTIES = new Set([
+  "width",
+  "height",
+  "min_width",
+  "max_width",
+  "min_height",
+  "max_height",
+]);
 
 /**
  * Map of ipywidgets Layout model property names to React CSS property names.
@@ -126,6 +142,14 @@ export function layoutStateToCSS(
     if (value === null || value === undefined || value === "") continue;
     // Apply filter if provided
     if (propertyFilter && !propertyFilter.has(key)) continue;
+
+    if (LENGTH_PROPERTIES.has(key)) {
+      const coerced = toCssLength(value as string | number | null | undefined);
+      if (coerced === undefined) continue;
+      style[toReactCSSProperty(key)] = coerced;
+      continue;
+    }
+
     // Only include string values (CSS values)
     if (typeof value !== "string") continue;
 

@@ -7,14 +7,15 @@
 import { Label } from "@/components/ui/label";
 import { cn } from "@/lib/utils";
 import { buildMediaSrc } from "../buffer-utils";
+import { toCssLength } from "../css-length";
 import type { WidgetComponentProps } from "../widget-registry";
 import { useWidgetModelValue } from "../widget-store-context";
 
 export function ImageWidget({ modelId, className }: WidgetComponentProps) {
   const value = useWidgetModelValue<string | ArrayBuffer | DataView>(modelId, "value");
   const format = useWidgetModelValue<string>(modelId, "format") ?? "png";
-  const width = useWidgetModelValue<string>(modelId, "width") ?? "";
-  const height = useWidgetModelValue<string>(modelId, "height") ?? "";
+  const width = useWidgetModelValue<string | number>(modelId, "width");
+  const height = useWidgetModelValue<string | number>(modelId, "height");
   const description = useWidgetModelValue<string>(modelId, "description");
 
   const src = buildMediaSrc(value, "image", format);
@@ -23,10 +24,17 @@ export function ImageWidget({ modelId, className }: WidgetComponentProps) {
     return null;
   }
 
-  // Build style object for width/height
+  // ipywidgets Image declares width/height as CUnicode, so `Image(width=64)`
+  // arrives as the bare string "64" — not a valid CSS length. The canonical
+  // ipywidgets JS sets these as HTML attributes (where bare numerics are
+  // pixels); we apply the same coercion so the image has real size instead
+  // of falling back to its 1x1 intrinsic dimensions.
+  const cssWidth = toCssLength(width);
+  const cssHeight = toCssLength(height);
+
   const style: React.CSSProperties = {};
-  if (width) style.width = width;
-  if (height) style.height = height;
+  if (cssWidth) style.width = cssWidth;
+  if (cssHeight) style.height = cssHeight;
 
   return (
     <div
