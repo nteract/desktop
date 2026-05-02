@@ -1482,7 +1482,7 @@ mod tests {
 
         // Simulate interrupt: clear local queue + mark_inflight_executions_failed
         let cleared = state.clear_queue();
-        assert!(cleared.is_empty()); // Nothing in local queue besides executing cell
+        assert!(cleared.is_empty()); // clear_queue drains pending queue only, not the executing cell
 
         handle
             .with_doc(|sd| {

@@ -15,10 +15,7 @@ pub(crate) async fn handle(room: &NotebookRoom) -> NotebookResponse {
         // this, those entries stay "queued" forever because the runtime
         // agent's local queue doesn't know about them when it clears.
         if let Err(e) = room.state.with_doc(|sd| {
-            let marked = sd.mark_inflight_executions_failed()?;
-            if marked > 0 {
-                sd.set_queue(None, &[])?;
-            }
+            sd.mark_inflight_executions_failed()?;
             Ok(())
         }) {
             warn!(
