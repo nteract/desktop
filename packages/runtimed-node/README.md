@@ -75,6 +75,9 @@ main().catch((error) => {
 - `Session.runCell(source, options)` creates, runs, and waits for a cell.
 - `Session.queueCell(source, options)` queues a cell and returns IDs.
 - `Session.waitForExecution(executionId, options)` waits for queued work.
+- `Session.addDependency(spec, { packageManager })` and
+  `Session.removeDependency(spec, { packageManager })` edit notebook dependency
+  metadata for UV, Conda, or Pixi.
 - `Session.addUvDependency(spec)` records a UV dependency for the notebook.
 - `Session.syncEnvironment()` installs recorded notebook dependencies.
 - `Session.saveNotebook(path?)` saves the notebook.

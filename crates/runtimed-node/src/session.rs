@@ -80,6 +80,14 @@ pub struct OpenNotebookOptions {
     pub peer_label: Option<String>,
 }
 
+/// Options for dependency edit methods.
+#[napi(object)]
+#[derive(Default)]
+pub struct DependencyEditOptions {
+    /// Dependency manager to edit. Defaults to `uv` for Python notebooks.
+    pub package_manager: Option<PackageManager>,
+}
+
 /// Options for `Session.runCell()`.
 #[napi(object)]
 #[derive(Default)]
@@ -288,19 +296,58 @@ impl Session {
         Ok(())
     }
 
+    /// Add a dependency to the selected package manager (defaults to UV).
+    /// Call `syncEnvironment()` or restart the kernel to install it.
+    #[napi]
+    pub async fn add_dependency(
+        &self,
+        pkg: String,
+        options: Option<DependencyEditOptions>,
+    ) -> Result<()> {
+        let handle = session_handle(&self.state).await?;
+        let package_manager = dependency_package_manager(options);
+        match package_manager {
+            PackageManager::Uv => handle.add_uv_dependency(&pkg),
+            PackageManager::Conda => handle.add_conda_dependency(&pkg),
+            PackageManager::Pixi => handle.add_pixi_dependency(&pkg),
+        }
+        .map_err(to_napi_err)?;
+        approve_current_trust(&handle, None).await
+    }
+
+    /// Remove a dependency from the selected package manager (defaults to UV).
+    /// Returns true if a dependency was removed.
+    #[napi]
+    pub async fn remove_dependency(
+        &self,
+        pkg: String,
+        options: Option<DependencyEditOptions>,
+    ) -> Result<bool> {
+        let handle = session_handle(&self.state).await?;
+        let package_manager = dependency_package_manager(options);
+        let removed = match package_manager {
+            PackageManager::Uv => handle.remove_uv_dependency(&pkg),
+            PackageManager::Conda => handle.remove_conda_dependency(&pkg),
+            PackageManager::Pixi => handle.remove_pixi_dependency(&pkg),
+        }
+        .map_err(to_napi_err)?;
+        if removed {
+            approve_current_trust(&handle, None).await?;
+        }
+        Ok(removed)
+    }
+
     /// Add a UV dependency to the notebook (e.g. `"matplotlib>=3.8"`).
     /// Call `syncEnvironment()` or restart the kernel to install it.
     #[napi]
     pub async fn add_uv_dependency(&self, pkg: String) -> Result<()> {
-        let handle = {
-            let st = self.state.lock().await;
-            st.handle
-                .as_ref()
-                .ok_or_else(|| Error::from_reason("Not connected"))?
-                .clone()
-        };
-        handle.add_uv_dependency(&pkg).map_err(to_napi_err)?;
-        approve_current_trust(&handle, None).await
+        self.add_dependency(
+            pkg,
+            Some(DependencyEditOptions {
+                package_manager: Some(PackageManager::Uv),
+            }),
+        )
+        .await
     }
 
     /// Get the current dependency fingerprint for diagnostics.
@@ -751,6 +798,12 @@ async fn session_handle(state: &Arc<Mutex<SessionState>>) -> Result<DocHandle> {
         .as_ref()
         .ok_or_else(|| Error::from_reason("Not connected"))
         .cloned()
+}
+
+fn dependency_package_manager(options: Option<DependencyEditOptions>) -> PackageManager {
+    options
+        .and_then(|opts| opts.package_manager)
+        .unwrap_or(PackageManager::Uv)
 }
 
 fn js_cell_from_snapshot(cell: notebook_doc::CellSnapshot) -> JsCellSnapshot {
