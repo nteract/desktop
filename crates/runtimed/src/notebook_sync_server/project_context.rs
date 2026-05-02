@@ -780,7 +780,8 @@ mod tests {
         };
         assert_eq!(project_file.kind, ProjectFileKind::EnvironmentYml);
         assert!(parsed.dependencies.iter().any(|d| d == "numpy"));
-        assert_eq!(parsed.requires_python.as_deref(), Some("3.11"));
+        // rattler normalizes `python=3.11` → `"3.11.*"`
+        assert_eq!(parsed.requires_python.as_deref(), Some("3.11.*"));
         let ProjectFileExtras::EnvironmentYml { channels, pip } = parsed.extras else {
             panic!("expected EnvironmentYml extras");
         };

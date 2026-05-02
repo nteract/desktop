@@ -3202,11 +3202,18 @@ pub(crate) async fn auto_launch_kernel(
             }
         };
 
-        let conda_prefix = if let Some(ref prefix) = env_config.prefix {
-            prefix.clone()
+        // Track whether the env is daemon-owned (safe to auto-rebuild)
+        // vs. user-managed (prefix: field or pre-existing named env).
+        let (conda_prefix, is_daemon_owned_env) = if let Some(ref prefix) = env_config.prefix {
+            (prefix.clone(), false) // User-specified path — never auto-delete
         } else if let Some(ref name) = env_config.name {
-            crate::project_file::find_named_conda_env(name)
-                .unwrap_or_else(|| crate::project_file::default_conda_envs_dir().join(name))
+            match crate::project_file::find_named_conda_env(name) {
+                Some(found) => (found, false), // Pre-existing user env — never auto-delete
+                None => (
+                    crate::project_file::default_conda_envs_dir().join(name),
+                    true,
+                ),
+            }
         } else {
             let cache_dir = crate::paths::default_cache_dir().join("conda-envs");
             let conda_deps_tmp = kernel_env::CondaDependencies {
@@ -3215,7 +3222,10 @@ pub(crate) async fn auto_launch_kernel(
                 python: env_config.python.clone(),
                 env_id: None,
             };
-            cache_dir.join(kernel_env::conda::compute_env_hash(&conda_deps_tmp))
+            (
+                cache_dir.join(kernel_env::conda::compute_env_hash(&conda_deps_tmp)),
+                true,
+            )
         };
 
         let mut all_deps = env_config.dependencies.clone();
@@ -3262,7 +3272,76 @@ pub(crate) async fn auto_launch_kernel(
         };
 
         let python_path = crate::project_file::conda_python_path(&conda_prefix);
-        if python_path.exists() {
+
+        // Check for Python version mismatch: if environment.yaml
+        // requests e.g. python=3.12 but the existing env has 3.14,
+        // the env needs rebuilding. Only auto-rebuild daemon-owned
+        // envs (cache/hash paths). For user-managed envs (prefix:
+        // field or pre-existing named env), surface an error so the
+        // user can rebuild manually.
+        let python_version_ok = if python_path.exists() {
+            if let Some(ref requested) = env_config.python {
+                let matches = kernel_env::conda::installed_python_matches_constraint(
+                    &conda_prefix,
+                    requested,
+                );
+                if !matches {
+                    let installed =
+                        kernel_env::conda::detect_installed_python_version(&conda_prefix)
+                            .unwrap_or_else(|| "unknown".to_string());
+                    if is_daemon_owned_env {
+                        warn!(
+                            "[notebook-sync] conda:env_yml Python mismatch: \
+                             environment.yaml requests python={} but env has {}; \
+                             rebuilding daemon-owned env",
+                            requested, installed
+                        );
+                        if let Err(e) = tokio::fs::remove_dir_all(&conda_prefix).await {
+                            warn!(
+                                "[notebook-sync] Failed to remove mismatched env {:?}: {}",
+                                conda_prefix, e
+                            );
+                        }
+                        false
+                    } else {
+                        let details = format!(
+                            "Conda env {:?} has Python {} but environment.yml requests \
+                             python={}. This is a user-managed env — rebuild it manually \
+                             with: conda env remove -n {} && conda env create -f environment.yml",
+                            conda_prefix,
+                            installed,
+                            requested,
+                            env_config.name.as_deref().unwrap_or("<env>"),
+                        );
+                        warn!("[notebook-sync] {}", details);
+                        if let Err(e) = room.state.with_doc(|sd| {
+                            sd.set_lifecycle_with_error_details(
+                                &RuntimeLifecycle::Error,
+                                None,
+                                Some(&details),
+                            )?;
+                            sd.clear_env_progress()?;
+                            Ok(())
+                        }) {
+                            warn!("[runtime-state] {}", e);
+                        }
+                        return;
+                    }
+                } else {
+                    true
+                }
+            } else {
+                true // No python constraint → any version is fine
+            }
+        } else {
+            false // No existing env
+        };
+
+        // Re-check python_path after potential env removal
+        let python_path = crate::project_file::conda_python_path(&conda_prefix);
+
+        if python_path.exists() && python_version_ok {
+            // Existing env with correct Python — sync deps into it
             let conda_env = kernel_env::CondaEnvironment {
                 env_path: conda_prefix.clone(),
                 python_path: python_path.clone(),
