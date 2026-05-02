@@ -1,6 +1,6 @@
 [package]
 name = "runtime-doc"
-version = "0.1.5"
+version = "0.2.0"
 edition.workspace = true
 description = "RuntimeStateDoc and RuntimeStateHandle — per-notebook Automerge document for daemon-authoritative runtime state"
 repository.workspace = true

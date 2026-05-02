@@ -1,6 +1,6 @@
 [package]
 name = "runt-workspace"
-version = "0.2.7"
+version = "0.3.0"
 edition.workspace = true
 description = "Workspace and dev mode utilities for Runt"
 repository.workspace = true

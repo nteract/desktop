@@ -1,6 +1,6 @@
 [package]
 name = "runtimed"
-version = "2.3.5"
+version = "2.4.0"
 edition.workspace = true
 description = "Central daemon for managing Jupyter runtimes and prewarmed environments"
 repository.workspace = true
