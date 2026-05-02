@@ -26,15 +26,19 @@ import { Type } from "typebox";
 type RuntimedNode = {
   defaultSocketPath(): string;
   socketPathForChannel(channel: "stable" | "nightly"): string;
+  PackageManager?: { Uv: "uv"; Conda: "conda"; Pixi: "pixi" };
   createNotebook(opts?: {
     runtime?: string;
     workingDir?: string;
     socketPath?: string;
     peerLabel?: string;
+    description?: string;
+    dependencies?: string[];
+    packageManager?: "uv" | "conda" | "pixi";
   }): Promise<Session>;
   openNotebook(
     notebookId: string,
-    opts?: { socketPath?: string; peerLabel?: string },
+    opts?: { socketPath?: string; peerLabel?: string; description?: string },
   ): Promise<Session>;
   readParquetFile(
     filePath: string,
@@ -78,8 +82,20 @@ type Session = {
   readonly notebookId: string;
   runCell(source: string, opts?: { timeoutMs?: number; cellType?: string }): Promise<CellResult>;
   addUvDependency(pkg: string): Promise<void>;
+  addDependencies?(
+    packages: string[],
+    opts?: { packageManager?: "uv" | "conda" | "pixi" },
+  ): Promise<void>;
+  getDependencyStatus?(): Promise<{ uv?: { dependencies: string[] }; fingerprint?: string }>;
+  getRuntimeStatus?(): Promise<{
+    status: string;
+    lifecycle: string;
+    errorReason?: string;
+    errorDetails?: string;
+  }>;
   syncEnvironment(): Promise<void>;
   saveNotebook(path?: string): Promise<void>;
+  shutdownNotebook?(): Promise<boolean>;
   close(): Promise<void>;
 };
 
@@ -388,6 +404,12 @@ const PYTHON_PARAMS = Type.Object({
     description:
       "Python source to execute in the persistent notebook session. Use print(...) for side effects; the last expression's repr is returned as the result.",
   }),
+  dependencies: Type.Optional(
+    Type.Array(Type.String(), {
+      description:
+        "Packages to add before executing this code. On the first call they are recorded before the kernel starts; on later calls they are hot-synced into the running environment.",
+    }),
+  ),
   timeout_secs: Type.Optional(
     Type.Number({
       description: "Max seconds to wait for execution (default 120).",
@@ -407,15 +429,41 @@ export default function nteractReplExtension(pi: ExtensionAPI) {
   let opening: Promise<Session> | null = null;
   let nextExecCount: number | null = 1;
 
-  async function ensureSession(): Promise<Session> {
-    if (session) return session;
-    if (opening) return opening;
+  async function addDependenciesAndSync(sess: Session, packages: string[]): Promise<void> {
+    const unique = Array.from(new Set(packages.map((pkg) => pkg.trim()).filter(Boolean)));
+    if (!unique.length) return;
+    if (sess.addDependencies) {
+      await sess.addDependencies(unique, { packageManager: rn.PackageManager?.Uv ?? "uv" });
+    } else {
+      for (const pkg of unique) {
+        await sess.addUvDependency(pkg);
+      }
+    }
+    await sess.syncEnvironment();
+  }
+
+  async function ensureSession(initialDependencies: string[] = []): Promise<Session> {
+    const dependencies = Array.from(
+      new Set(initialDependencies.map((pkg) => pkg.trim()).filter(Boolean)),
+    );
+    if (session) {
+      await addDependenciesAndSync(session, dependencies);
+      return session;
+    }
+    if (opening) {
+      const opened = await opening;
+      await addDependenciesAndSync(opened, dependencies);
+      return opened;
+    }
     opening = (async () => {
       const socketPath = resolveSocketPath(rn);
       session = await rn.createNotebook({
         runtime: "python",
         socketPath,
         peerLabel: "pi",
+        description: "pi Python REPL",
+        dependencies,
+        packageManager: rn.PackageManager?.Uv ?? "uv",
       });
       return session;
     })();
@@ -438,7 +486,8 @@ export default function nteractReplExtension(pi: ExtensionAPI) {
       "State (imports, variables) persists across `python` calls in this session.",
       "Use print() for side-effect output; the last expression is echoed back as the result.",
       "Matplotlib / PIL images are returned inline — you can iterate on plots by looking at them.",
-      "Install packages with the `python_add_dependencies` tool (it uses the notebook's UV env and hot-reloads without restarting the kernel).",
+      "If code needs imports that may be missing, pass `dependencies` on the same `python` call so first-use packages are recorded before kernel start when possible.",
+      "Install additional packages with the `python_add_dependencies` tool (it uses the notebook environment and hot-reloads without restarting the kernel).",
     ],
     parameters: PYTHON_PARAMS,
     renderCall(args, theme, _context) {
@@ -545,7 +594,7 @@ export default function nteractReplExtension(pi: ExtensionAPI) {
     },
     async execute(_toolCallId, params, signal) {
       if (signal?.aborted) throw new Error("aborted");
-      const sess = await ensureSession();
+      const sess = await ensureSession(params.dependencies ?? []);
       const timeoutSecs = Math.max(1, params.timeout_secs ?? 120);
       const result = await sess.runCell(params.code, {
         timeoutMs: Math.round(timeoutSecs * 1000),
@@ -574,6 +623,9 @@ export default function nteractReplExtension(pi: ExtensionAPI) {
           execution_count: result.executionCount,
           is_error: isError,
           parquet_blob_path: parquetBlobPath,
+          runtime: sess.getRuntimeStatus
+            ? await sess.getRuntimeStatus().catch(() => undefined)
+            : undefined,
         },
       };
     },
@@ -583,9 +635,9 @@ export default function nteractReplExtension(pi: ExtensionAPI) {
     name: "python_add_dependencies",
     label: "Add Dependencies (nteract)",
     description:
-      "Add packages to the current nteract notebook's UV environment and hot-sync them so the running kernel can import them immediately. Accepts pip-style specs, e.g. 'matplotlib', 'numpy>=2', 'requests'.",
+      "Add packages to the current nteract notebook environment and hot-sync them so the running kernel can import them immediately. Accepts pip-style specs, e.g. 'matplotlib', 'numpy>=2', 'requests'.",
     promptSnippet:
-      "python_add_dependencies: add packages to the persistent Python notebook env (hot-installs without restarting the kernel).",
+      "python_add_dependencies: add packages to the persistent Python notebook environment (hot-installs without restarting the kernel).",
     parameters: Type.Object({
       packages: Type.Array(Type.String(), {
         description: "Package specs (e.g. ['matplotlib', 'pandas>=2']).",
@@ -597,10 +649,7 @@ export default function nteractReplExtension(pi: ExtensionAPI) {
         return { content: [{ type: "text", text: "No packages given." }], details: {} };
       }
       const sess = await ensureSession();
-      for (const pkg of params.packages) {
-        await sess.addUvDependency(pkg);
-      }
-      await sess.syncEnvironment();
+      await addDependenciesAndSync(sess, params.packages);
       return {
         content: [
           {
@@ -648,7 +697,11 @@ export default function nteractReplExtension(pi: ExtensionAPI) {
       nextExecCount = 1;
       if (old) {
         try {
-          await old.close();
+          if (old.shutdownNotebook) {
+            await old.shutdownNotebook();
+          } else {
+            await old.close();
+          }
         } catch {}
       }
       ctx.ui.notify(
@@ -661,7 +714,11 @@ export default function nteractReplExtension(pi: ExtensionAPI) {
   pi.on("session_shutdown", async () => {
     if (session) {
       try {
-        await session.close();
+        if (session.shutdownNotebook) {
+          await session.shutdownNotebook();
+        } else {
+          await session.close();
+        }
       } catch {}
       session = null;
     }

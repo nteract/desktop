@@ -15,6 +15,7 @@ use tokio::sync::Mutex;
 
 use notebook_protocol::protocol::{NotebookRequest, NotebookResponse};
 use notebook_sync::{BroadcastReceiver, DocHandle};
+use runtimed_client::client::PoolClient;
 use runtimed_client::output_resolver as shared_resolver;
 use runtimed_client::resolved_output::DataValue as SharedDataValue;
 
@@ -26,6 +27,30 @@ const VALID_CELL_TYPES: &[&str] = &["code", "markdown", "raw"];
 type CommMap = std::collections::HashMap<String, runtime_doc::CommDocEntry>;
 
 // ── Options ────────────────────────────────────────────────────────────
+
+/// Package manager for Python notebook dependencies.
+///
+/// This mirrors `notebook_protocol::connection::PackageManager` at the N-API
+/// boundary. We cannot attach `#[napi]` to the protocol crate's external enum,
+/// and that enum intentionally includes an `Unknown(String)` wire-compatibility
+/// variant that should not be exposed as a typed JavaScript option.
+#[napi(string_enum = "lowercase")]
+#[derive(Clone, Copy)]
+pub enum PackageManager {
+    Uv,
+    Conda,
+    Pixi,
+}
+
+impl From<PackageManager> for notebook_protocol::connection::PackageManager {
+    fn from(value: PackageManager) -> Self {
+        match value {
+            PackageManager::Uv => Self::Uv,
+            PackageManager::Conda => Self::Conda,
+            PackageManager::Pixi => Self::Pixi,
+        }
+    }
+}
 
 /// Options for `createNotebook()`.
 #[napi(object)]
@@ -39,14 +64,92 @@ pub struct CreateNotebookOptions {
     pub socket_path: Option<String>,
     /// Actor label for presence / Automerge provenance.
     pub peer_label: Option<String>,
+    /// Human-readable session description. Used as the peer label when `peerLabel` is omitted.
+    pub description: Option<String>,
+    /// Packages to record before the kernel starts (for example `["numpy", "matplotlib"]`).
+    /// Python notebooks use the selected package manager; Deno notebooks treat these as
+    /// runtime-native import dependencies.
+    pub dependencies: Option<Vec<String>>,
+    /// Package manager for Python dependencies. Defaults to the daemon/user setting.
+    pub package_manager: Option<PackageManager>,
 }
 
-/// Options for `openNotebook()`.
+/// Options for `openNotebook()` and `openNotebookPath()`.
 #[napi(object)]
 #[derive(Default)]
 pub struct OpenNotebookOptions {
     pub socket_path: Option<String>,
     pub peer_label: Option<String>,
+    /// Human-readable session description. Used as the peer label when `peerLabel` is omitted.
+    pub description: Option<String>,
+}
+
+/// Options for dependency edit methods.
+#[napi(object)]
+#[derive(Default)]
+pub struct DependencyEditOptions {
+    /// Dependency manager to edit. Defaults to `uv` for Python notebooks.
+    pub package_manager: Option<PackageManager>,
+}
+
+/// UV dependency metadata.
+#[napi(object)]
+pub struct UvDependencyStatus {
+    pub dependencies: Vec<String>,
+    pub requires_python: Option<String>,
+}
+
+/// Conda dependency metadata.
+#[napi(object)]
+pub struct CondaDependencyStatus {
+    pub dependencies: Vec<String>,
+    pub channels: Vec<String>,
+    pub python: Option<String>,
+}
+
+/// Pixi dependency metadata.
+#[napi(object)]
+pub struct PixiDependencyStatus {
+    pub dependencies: Vec<String>,
+    pub pypi_dependencies: Vec<String>,
+    pub channels: Vec<String>,
+    pub python: Option<String>,
+}
+
+/// Notebook trust state for dependency metadata.
+#[napi(object)]
+pub struct DependencyTrustStatus {
+    pub status: Option<String>,
+    pub needs_approval: Option<bool>,
+    pub approved_uv_dependencies: Vec<String>,
+    pub approved_conda_dependencies: Vec<String>,
+    pub approved_pixi_dependencies: Vec<String>,
+    pub approved_pixi_pypi_dependencies: Vec<String>,
+}
+
+/// Notebook dependency metadata and trust/runtime status.
+#[napi(object)]
+pub struct DependencyStatus {
+    pub uv: Option<UvDependencyStatus>,
+    pub conda: Option<CondaDependencyStatus>,
+    pub pixi: Option<PixiDependencyStatus>,
+    pub fingerprint: Option<String>,
+    pub trust: DependencyTrustStatus,
+}
+
+/// Runtime/kernel status from RuntimeStateDoc.
+#[napi(object)]
+pub struct RuntimeStatus {
+    pub status: String,
+    pub lifecycle: String,
+    pub activity: Option<String>,
+    pub starting_phase: String,
+    pub name: String,
+    pub language: String,
+    pub env_source: String,
+    pub runtime_agent_id: String,
+    pub error_reason: Option<String>,
+    pub error_details: Option<String>,
 }
 
 /// Options for `Session.runCell()`.
@@ -57,6 +160,42 @@ pub struct RunCellOptions {
     pub timeout_ms: Option<u32>,
     /// Cell source type: `"code"` (default), `"markdown"`, or `"raw"`.
     pub cell_type: Option<String>,
+}
+
+/// Options for `Session.createCell()`.
+#[napi(object)]
+#[derive(Default)]
+pub struct CreateCellOptions {
+    /// Cell source type: `"code"` (default), `"markdown"`, or `"raw"`.
+    pub cell_type: Option<String>,
+    /// Insert after this cell, or omit to insert at the beginning.
+    pub after_cell_id: Option<String>,
+}
+
+/// Options for `Session.setCell()`.
+#[napi(object)]
+#[derive(Default)]
+pub struct SetCellOptions {
+    /// New source text. Omit to leave unchanged.
+    pub source: Option<String>,
+    /// New cell source type. Omit to leave unchanged.
+    pub cell_type: Option<String>,
+}
+
+/// Options for `Session.moveCell()`.
+#[napi(object)]
+#[derive(Default)]
+pub struct MoveCellOptions {
+    /// Move after this cell, or omit/null to move to the beginning.
+    pub after_cell_id: Option<String>,
+}
+
+/// Options for `Session.executeCell()`.
+#[napi(object)]
+#[derive(Default)]
+pub struct ExecuteCellOptions {
+    /// Max milliseconds to wait for execution. Default 120_000 (2 min).
+    pub timeout_ms: Option<u32>,
 }
 
 /// Options for `Session.queueCell()`.
@@ -85,11 +224,76 @@ pub struct GetExecutionResultOptions {
     pub socket_path: Option<String>,
 }
 
+/// Options for top-level `listActiveNotebooks()`.
+#[napi(object)]
+#[derive(Default)]
+pub struct ListActiveNotebooksOptions {
+    /// Override daemon socket path (otherwise uses `defaultSocketPath()`).
+    pub socket_path: Option<String>,
+}
+
+/// Options for top-level `shutdownNotebook()`.
+#[napi(object)]
+#[derive(Default)]
+pub struct ShutdownNotebookOptions {
+    /// Override daemon socket path (otherwise uses `defaultSocketPath()`).
+    pub socket_path: Option<String>,
+}
+
+/// Options for top-level `showNotebook()`.
+#[napi(object)]
+#[derive(Default)]
+pub struct ShowNotebookOptions {
+    /// Override daemon socket path (otherwise uses `defaultSocketPath()`).
+    pub socket_path: Option<String>,
+    /// Active notebook UUID to open in the app.
+    pub notebook_id: Option<String>,
+    /// File path to open in the app. If both path and notebookId are provided, path wins.
+    pub path: Option<String>,
+}
+
 /// A queued execution handle.
 #[napi(object)]
 pub struct QueuedExecution {
     pub cell_id: String,
     pub execution_id: String,
+}
+
+/// An active notebook room reported by the daemon.
+#[napi(object)]
+pub struct ActiveNotebook {
+    pub notebook_id: String,
+    pub active_peers: u32,
+    pub had_peers: bool,
+    pub has_kernel: bool,
+    pub kernel_type: Option<String>,
+    pub env_source: Option<String>,
+    pub kernel_status: Option<String>,
+    pub ephemeral: bool,
+    pub notebook_path: Option<String>,
+}
+
+/// Result of asking nteract Desktop to show a notebook.
+#[napi(object)]
+pub struct ShowNotebookResult {
+    pub notebook_id: Option<String>,
+    pub path: Option<String>,
+    pub opened: bool,
+    pub reason: Option<String>,
+    pub warning: Option<String>,
+}
+
+/// A notebook cell snapshot.
+#[napi(object)]
+pub struct JsCellSnapshot {
+    pub id: String,
+    pub cell_type: String,
+    pub position: String,
+    pub source: String,
+    /// JSON-encoded metadata object.
+    pub metadata_json: String,
+    /// Legacy execution count as stored in the notebook doc.
+    pub execution_count: Option<String>,
 }
 
 // ── Outputs (serialized to JS via serde_json) ──────────────────────────
@@ -136,6 +340,7 @@ struct SessionState {
     #[allow(dead_code)]
     socket_path: PathBuf,
     working_dir: Option<String>,
+    peer_label: String,
 }
 
 struct OutputResolutionContext<'a> {
@@ -208,31 +413,111 @@ impl Session {
         Ok(())
     }
 
+    /// Add dependencies to the selected package manager (defaults to UV) in one CRDT transaction.
+    /// Call `syncEnvironment()` or restart the kernel to install them.
+    #[napi]
+    pub async fn add_dependencies(
+        &self,
+        packages: Vec<String>,
+        options: Option<DependencyEditOptions>,
+    ) -> Result<()> {
+        let handle = session_handle(&self.state).await?;
+        let package_manager = dependency_package_manager(options);
+        handle
+            .with_metadata(|snapshot| {
+                for pkg in &packages {
+                    match package_manager {
+                        PackageManager::Uv => snapshot.add_uv_dependency(pkg),
+                        PackageManager::Conda => snapshot.add_conda_dependency(pkg),
+                        PackageManager::Pixi => snapshot.add_pixi_dependency(pkg),
+                    }
+                }
+            })
+            .map_err(to_napi_err)?;
+        approve_current_trust(&handle, None).await
+    }
+
+    /// Add a dependency to the selected package manager (defaults to UV).
+    /// Call `syncEnvironment()` or restart the kernel to install it.
+    #[napi]
+    pub async fn add_dependency(
+        &self,
+        pkg: String,
+        options: Option<DependencyEditOptions>,
+    ) -> Result<()> {
+        self.add_dependencies(vec![pkg], options).await
+    }
+
+    /// Remove dependencies from the selected package manager (defaults to UV) in one CRDT transaction.
+    /// Returns the number of dependencies removed.
+    #[napi]
+    pub async fn remove_dependencies(
+        &self,
+        packages: Vec<String>,
+        options: Option<DependencyEditOptions>,
+    ) -> Result<u32> {
+        let handle = session_handle(&self.state).await?;
+        let package_manager = dependency_package_manager(options);
+        let removed = handle
+            .with_metadata(|snapshot| {
+                packages
+                    .iter()
+                    .filter(|pkg| match package_manager {
+                        PackageManager::Uv => snapshot.remove_uv_dependency(pkg),
+                        PackageManager::Conda => snapshot.remove_conda_dependency(pkg),
+                        PackageManager::Pixi => snapshot.remove_pixi_dependency(pkg),
+                    })
+                    .count()
+            })
+            .map_err(to_napi_err)?;
+        if removed > 0 {
+            approve_current_trust(&handle, None).await?;
+        }
+        Ok(removed.try_into().unwrap_or(u32::MAX))
+    }
+
+    /// Remove a dependency from the selected package manager (defaults to UV).
+    /// Returns true if a dependency was removed.
+    #[napi]
+    pub async fn remove_dependency(
+        &self,
+        pkg: String,
+        options: Option<DependencyEditOptions>,
+    ) -> Result<bool> {
+        Ok(self.remove_dependencies(vec![pkg], options).await? > 0)
+    }
+
     /// Add a UV dependency to the notebook (e.g. `"matplotlib>=3.8"`).
     /// Call `syncEnvironment()` or restart the kernel to install it.
     #[napi]
     pub async fn add_uv_dependency(&self, pkg: String) -> Result<()> {
-        let handle = {
-            let st = self.state.lock().await;
-            st.handle
-                .as_ref()
-                .ok_or_else(|| Error::from_reason("Not connected"))?
-                .clone()
-        };
-        handle.add_uv_dependency(&pkg).map_err(to_napi_err)?;
-        approve_current_trust(&handle, None).await
+        self.add_dependency(
+            pkg,
+            Some(DependencyEditOptions {
+                package_manager: Some(PackageManager::Uv),
+            }),
+        )
+        .await
+    }
+
+    /// Get runtime/kernel state, including lifecycle error details.
+    #[napi]
+    pub async fn get_runtime_status(&self) -> Result<RuntimeStatus> {
+        let handle = session_handle(&self.state).await?;
+        Ok(runtime_status_for_handle(&handle))
+    }
+
+    /// Get dependency metadata, fingerprint, and current trust state.
+    #[napi]
+    pub async fn get_dependency_status(&self) -> Result<DependencyStatus> {
+        let handle = session_handle(&self.state).await?;
+        Ok(dependency_status_for_handle(&handle))
     }
 
     /// Get the current dependency fingerprint for diagnostics.
     #[napi]
     pub async fn dependency_fingerprint(&self) -> Result<Option<String>> {
-        let handle = {
-            let st = self.state.lock().await;
-            st.handle
-                .as_ref()
-                .ok_or_else(|| Error::from_reason("Not connected"))?
-                .clone()
-        };
+        let handle = session_handle(&self.state).await?;
         Ok(dependency_fingerprint_for_handle(&handle))
     }
 
@@ -275,6 +560,130 @@ impl Session {
             other => Err(Error::from_reason(format!(
                 "Unexpected response: {other:?}"
             ))),
+        }
+    }
+
+    /// Return all cells in notebook order.
+    #[napi]
+    pub async fn list_cells(&self) -> Result<Vec<JsCellSnapshot>> {
+        let handle = session_handle(&self.state).await?;
+        Ok(handle
+            .get_cells()
+            .into_iter()
+            .map(js_cell_from_snapshot)
+            .collect())
+    }
+
+    /// Return one cell by ID, or null if it does not exist.
+    #[napi]
+    pub async fn get_cell(&self, cell_id: String) -> Result<Option<JsCellSnapshot>> {
+        let handle = session_handle(&self.state).await?;
+        Ok(handle.get_cell(&cell_id).map(js_cell_from_snapshot))
+    }
+
+    /// Create a cell without executing it. Returns the new cell ID.
+    #[napi]
+    pub async fn create_cell(
+        &self,
+        source: String,
+        options: Option<CreateCellOptions>,
+    ) -> Result<String> {
+        let opts = options.unwrap_or_default();
+        let cell_type = normalize_cell_type(opts.cell_type)?;
+        let (handle, peer_label) = session_handle_and_label(&self.state).await?;
+        let cell_id = format!("cell-{}", uuid::Uuid::new_v4());
+        handle
+            .add_cell_with_source(&cell_id, &cell_type, opts.after_cell_id.as_deref(), &source)
+            .map_err(to_napi_err)?;
+        emit_cursor_presence(&handle, &cell_id, &source, &peer_label).await;
+        Ok(cell_id)
+    }
+
+    /// Replace a cell's source and/or type. Returns true if the cell existed.
+    #[napi]
+    pub async fn set_cell(&self, cell_id: String, options: SetCellOptions) -> Result<bool> {
+        let cell_type = options
+            .cell_type
+            .map(|cell_type| normalize_cell_type(Some(cell_type)))
+            .transpose()?;
+        let (handle, peer_label) = session_handle_and_label(&self.state).await?;
+        let mut found = false;
+        if let Some(source) = options.source {
+            found |= handle
+                .update_source(&cell_id, &source)
+                .map_err(to_napi_err)?;
+            if found {
+                emit_cursor_presence(&handle, &cell_id, &source, &peer_label).await;
+            }
+        }
+        if let Some(cell_type) = cell_type {
+            found |= handle
+                .set_cell_type(&cell_id, &cell_type)
+                .map_err(to_napi_err)?;
+        }
+        Ok(found)
+    }
+
+    /// Delete a cell. Returns true if the cell existed.
+    #[napi]
+    pub async fn delete_cell(&self, cell_id: String) -> Result<bool> {
+        let (handle, peer_label) = session_handle_and_label(&self.state).await?;
+        let deleted = handle.delete_cell(&cell_id).map_err(to_napi_err)?;
+        if deleted {
+            announce_presence(&handle, &peer_label).await;
+        }
+        Ok(deleted)
+    }
+
+    /// Move a cell after another cell, or to the beginning when omitted/null.
+    /// Returns the new position string.
+    #[napi]
+    pub async fn move_cell(
+        &self,
+        cell_id: String,
+        options: Option<MoveCellOptions>,
+    ) -> Result<String> {
+        let handle = session_handle(&self.state).await?;
+        let after_cell_id = options.and_then(|opts| opts.after_cell_id);
+        let position = handle
+            .move_cell(&cell_id, after_cell_id.as_deref())
+            .map_err(to_napi_err)?;
+        let peer_label = session_peer_label(&self.state).await;
+        emit_focus_presence(&handle, &cell_id, &peer_label).await;
+        Ok(position)
+    }
+
+    /// Execute an existing code cell and wait for terminal outputs.
+    #[napi]
+    pub async fn execute_cell(
+        &self,
+        cell_id: String,
+        options: Option<ExecuteCellOptions>,
+    ) -> Result<CellResult> {
+        let opts = options.unwrap_or_default();
+        let timeout = Duration::from_millis(opts.timeout_ms.unwrap_or(120_000) as u64);
+        ensure_kernel_started(&self.state).await?;
+        let execution_id = queue_existing_cell(&self.state, &cell_id).await?;
+        if let Ok((handle, peer_label)) = session_handle_and_label(&self.state).await {
+            emit_focus_presence(&handle, &cell_id, &peer_label).await;
+        }
+
+        let result = tokio::time::timeout(timeout, async {
+            collect_outputs(&self.state, &cell_id, &execution_id).await
+        })
+        .await;
+
+        match result {
+            Ok(Ok(cell_result)) => Ok(cell_result),
+            Ok(Err(e)) => Err(e),
+            Err(_) => Ok(CellResult {
+                cell_id,
+                execution_id,
+                execution_count: None,
+                status: "timeout".to_string(),
+                success: false,
+                outputs: vec![],
+            }),
         }
     }
 
@@ -339,6 +748,97 @@ impl Session {
         })
     }
 
+    /// Interrupt the currently executing cell.
+    #[napi]
+    pub async fn interrupt_kernel(&self) -> Result<bool> {
+        let handle = session_handle(&self.state).await?;
+        let response = handle
+            .send_request(NotebookRequest::InterruptExecution {})
+            .await
+            .map_err(to_napi_err)?;
+        match response {
+            NotebookResponse::InterruptSent {} => Ok(true),
+            NotebookResponse::NoKernel {} => Ok(false),
+            NotebookResponse::Error { error } => Err(Error::from_reason(error)),
+            other => Err(Error::from_reason(format!(
+                "Unexpected response to interruptKernel: {other:?}"
+            ))),
+        }
+    }
+
+    /// Shutdown the running kernel. Returns false when no kernel is running.
+    #[napi]
+    pub async fn shutdown_kernel(&self) -> Result<bool> {
+        let handle = session_handle(&self.state).await?;
+        let response = handle
+            .send_request(NotebookRequest::ShutdownKernel {})
+            .await
+            .map_err(to_napi_err)?;
+        match response {
+            NotebookResponse::KernelShuttingDown {} => {
+                let mut st = self.state.lock().await;
+                st.kernel_started = false;
+                Ok(true)
+            }
+            NotebookResponse::NoKernel {} => {
+                let mut st = self.state.lock().await;
+                st.kernel_started = false;
+                Ok(false)
+            }
+            NotebookResponse::Error { error } => Err(Error::from_reason(error)),
+            other => Err(Error::from_reason(format!(
+                "Unexpected response to shutdownKernel: {other:?}"
+            ))),
+        }
+    }
+
+    /// Restart the kernel, clearing in-memory state while preserving notebook dependencies.
+    #[napi]
+    pub async fn restart_kernel(&self) -> Result<bool> {
+        let handle = session_handle(&self.state).await?;
+        let had_kernel = self.shutdown_kernel().await?;
+        if had_kernel {
+            wait_for_kernel_not_running(&handle, Duration::from_secs(30)).await?;
+        }
+        {
+            let mut st = self.state.lock().await;
+            st.kernel_started = false;
+        }
+        ensure_kernel_started(&self.state).await?;
+        Ok(true)
+    }
+
+    /// Shutdown this notebook's kernel and evict its daemon room.
+    #[napi]
+    pub async fn shutdown_notebook(&self) -> Result<bool> {
+        let (socket_path, notebook_id) = {
+            let st = self.state.lock().await;
+            (st.socket_path.clone(), self.notebook_id.clone())
+        };
+        let removed = PoolClient::new(socket_path)
+            .shutdown_notebook(&notebook_id)
+            .await
+            .map_err(to_napi_err)?;
+        if removed {
+            let mut st = self.state.lock().await;
+            st.handle = None;
+            st._broadcast_rx = None;
+            st.kernel_started = false;
+        }
+        Ok(removed)
+    }
+
+    /// Open this notebook in nteract Desktop. In headless environments, returns
+    /// `opened: false` with a reason instead of failing.
+    #[napi]
+    pub async fn show_notebook(&self) -> Result<ShowNotebookResult> {
+        let (socket_path, notebook_id) = {
+            let st = self.state.lock().await;
+            (st.socket_path.clone(), self.notebook_id.clone())
+        };
+        show_notebook_inner(socket_path, Some(notebook_id), None).await
+    }
+
     /// Wait for an already-queued execution in this live session.
     #[napi]
     pub async fn wait_for_execution(
@@ -379,10 +879,9 @@ pub async fn create_notebook(options: Option<CreateNotebookOptions>) -> Result<S
     let runtime = opts.runtime.unwrap_or_else(|| "python".to_string());
     let socket_path = resolve_socket_path(opts.socket_path);
     let working_dir: Option<PathBuf> = opts.working_dir.map(PathBuf::from);
-    let actor_label = opts
-        .peer_label
-        .clone()
-        .unwrap_or_else(|| "runtimed-node".to_string());
+    let actor_label = peer_label_or_description(opts.peer_label, opts.description);
+    let dependencies = opts.dependencies.unwrap_or_default();
+    let package_manager = opts.package_manager.map(Into::into);
 
     let result = notebook_sync::connect::connect_create(
         socket_path.clone(),
@@ -390,8 +889,8 @@ pub async fn create_notebook(options: Option<CreateNotebookOptions>) -> Result<S
         working_dir.clone(),
         &actor_label,
         /* ephemeral */ false,
-        None,
-        vec![],
+        package_manager,
+        dependencies,
     )
     .await
     .map_err(to_napi_err)?;
@@ -414,7 +913,94 @@ pub async fn create_notebook(options: Option<CreateNotebookOptions>) -> Result<S
         blob_store_path,
         socket_path,
         working_dir: working_dir.map(|p| p.to_string_lossy().to_string()),
+        peer_label: actor_label.clone(),
     };
+
+    announce_presence(state.handle.as_ref().expect("handle set"), &actor_label).await;
+
+    Ok(Session {
+        notebook_id,
+        state: Arc::new(Mutex::new(state)),
+    })
+}
+
+/// List active notebook rooms from the daemon.
+#[napi]
+pub async fn list_active_notebooks(
+    options: Option<ListActiveNotebooksOptions>,
+) -> Result<Vec<ActiveNotebook>> {
+    let opts = options.unwrap_or_default();
+    let socket_path = resolve_socket_path(opts.socket_path);
+    let rooms = PoolClient::new(socket_path)
+        .list_rooms()
+        .await
+        .map_err(to_napi_err)?;
+    Ok(rooms.into_iter().map(active_notebook_from_room).collect())
+}
+
+/// Shutdown a notebook's kernel and evict its daemon room by notebook ID.
+#[napi]
+pub async fn shutdown_notebook(
+    notebook_id: String,
+    options: Option<ShutdownNotebookOptions>,
+) -> Result<bool> {
+    let opts = options.unwrap_or_default();
+    let socket_path = resolve_socket_path(opts.socket_path);
+    PoolClient::new(socket_path)
+        .shutdown_notebook(&notebook_id)
+        .await
+        .map_err(to_napi_err)
+}
+
+/// Open a notebook in nteract Desktop by active notebook ID or file path.
+/// In headless environments, returns `opened: false` with a reason instead of failing.
+#[napi]
+pub async fn show_notebook(options: Option<ShowNotebookOptions>) -> Result<ShowNotebookResult> {
+    let opts = options.unwrap_or_default();
+    let socket_path = resolve_socket_path(opts.socket_path);
+    show_notebook_inner(socket_path, opts.notebook_id, opts.path).await
+}
+
+/// Open an existing notebook file by path.
+#[napi]
+pub async fn open_notebook_path(
+    path: String,
+    options: Option<OpenNotebookOptions>,
+) -> Result<Session> {
+    let opts = options.unwrap_or_default();
+    let socket_path = resolve_socket_path(opts.socket_path);
+    let actor_label = peer_label_or_description(opts.peer_label, opts.description);
+    let result = notebook_sync::connect::connect_open(
+        socket_path.clone(),
+        PathBuf::from(path),
+        &actor_label,
+    )
+    .await
+    .map_err(to_napi_err)?;
+
+    result
+        .handle
+        .await_session_ready()
+        .await
+        .map_err(to_napi_err)?;
+
+    let notebook_id = result.info.notebook_id.clone();
+    let (blob_base_url, blob_store_path) = resolve_blob_paths(&socket_path).await;
+    let (kernel_started, runtime) = kernel_state_from_handle(&result.handle);
+
+    let state = SessionState {
+        handle: Some(result.handle),
+        _broadcast_rx: Some(result.broadcast_rx),
+        kernel_started,
+        runtime,
+        blob_base_url,
+        blob_store_path,
+        socket_path,
+        working_dir: None,
+        peer_label: actor_label.clone(),
+    };
+
+    announce_presence(state.handle.as_ref().expect("handle set"), &actor_label).await;
 
     Ok(Session {
         notebook_id,
@@ -430,10 +1016,7 @@ pub async fn open_notebook(
 ) -> Result<Session> {
     let opts = options.unwrap_or_default();
     let socket_path = resolve_socket_path(opts.socket_path);
-    let actor_label = opts
-        .peer_label
-        .clone()
-        .unwrap_or_else(|| "runtimed-node".to_string());
+    let actor_label = peer_label_or_description(opts.peer_label, opts.description);
 
     let result =
         notebook_sync::connect::connect(socket_path.clone(), notebook_id.clone(), &actor_label)
@@ -449,24 +1032,7 @@ pub async fn open_notebook(
     let (blob_base_url, blob_store_path) = resolve_blob_paths(&socket_path).await;
 
     // Try to hydrate kernel state from the RuntimeStateDoc.
-    let (kernel_started, runtime) = {
-        let rs = result.handle.get_runtime_state().ok();
-        let started = rs
-            .as_ref()
-            .map(|r| {
-                matches!(
-                    r.kernel.lifecycle,
-                    runtime_doc::RuntimeLifecycle::Running(_)
-                )
-            })
-            .unwrap_or(false);
-        let runtime = rs
-            .as_ref()
-            .map(|r| r.kernel.name.clone())
-            .filter(|s| !s.is_empty())
-            .unwrap_or_else(|| "python".to_string());
-        (started, runtime)
-    };
+    let (kernel_started, runtime) = kernel_state_from_handle(&result.handle);
 
     let state = SessionState {
         handle: Some(result.handle),
@@ -477,7 +1043,10 @@ pub async fn open_notebook(
         blob_store_path,
         socket_path,
         working_dir: None,
+        peer_label: actor_label.clone(),
     };
+
+    announce_presence(state.handle.as_ref().expect("handle set"), &actor_label).await;
 
     Ok(Session {
         notebook_id,
@@ -552,6 +1121,272 @@ async fn resolve_blob_paths(socket_path: &std::path::Path) -> (Option<String>, O
     }
 }
 
+async fn session_handle(state: &Arc<Mutex<SessionState>>) -> Result<DocHandle> {
+    let st = state.lock().await;
+    st.handle
+        .as_ref()
+        .ok_or_else(|| Error::from_reason("Not connected"))
+        .cloned()
+}
+
+async fn session_handle_and_label(state: &Arc<Mutex<SessionState>>) -> Result<(DocHandle, String)> {
+    let st = state.lock().await;
+    let handle = st
+        .handle
+        .as_ref()
+        .ok_or_else(|| Error::from_reason("Not connected"))?
+        .clone();
+    Ok((handle, st.peer_label.clone()))
+}
+
+async fn session_peer_label(state: &Arc<Mutex<SessionState>>) -> String {
+    let st = state.lock().await;
+    st.peer_label.clone()
+}
+
+fn actor_label(handle: &DocHandle) -> Option<String> {
+    handle.get_actor_id().ok().filter(|s| !s.is_empty())
+}
+
+async fn announce_presence(handle: &DocHandle, peer_label: &str) {
+    let actor = actor_label(handle);
+    let encoded = if let Some(cell_id) = handle.first_cell_id() {
+        notebook_doc::presence::encode_focus_update_labeled(
+            "local",
+            Some(peer_label),
+            actor.as_deref(),
+            &cell_id,
+        )
+    } else {
+        notebook_doc::presence::encode_custom_update_labeled(
+            "local",
+            Some(peer_label),
+            actor.as_deref(),
+            &[],
+        )
+    };
+    if let Ok(data) = encoded {
+        let _ = handle.send_presence(data).await;
+    }
+}
+
+async fn emit_focus_presence(handle: &DocHandle, cell_id: &str, peer_label: &str) {
+    let actor = actor_label(handle);
+    if let Ok(data) = notebook_doc::presence::encode_focus_update_labeled(
+        "local",
+        Some(peer_label),
+        actor.as_deref(),
+        cell_id,
+    ) {
+        let _ = handle.send_presence(data).await;
+    }
+}
+
+async fn emit_cursor_presence(handle: &DocHandle, cell_id: &str, source: &str, peer_label: &str) {
+    let actor = actor_label(handle);
+    let (line, column) = offset_to_line_col(source, source.len());
+    let position = notebook_doc::presence::CursorPosition {
+        cell_id: cell_id.to_string(),
+        line,
+        column,
+    };
+    if let Ok(data) = notebook_doc::presence::encode_cursor_update_labeled(
+        "local",
+        Some(peer_label),
+        actor.as_deref(),
+        &position,
+    ) {
+        let _ = handle.send_presence(data).await;
+    }
+}
+
+fn offset_to_line_col(source: &str, offset: usize) -> (u32, u32) {
+    let before = &source[..offset.min(source.len())];
+    let line = before.chars().filter(|&c| c == '\n').count() as u32;
+    let after_last_newline = match before.rfind('\n') {
+        Some(pos) => &before[pos + 1..],
+        None => before,
+    };
+    let column = after_last_newline.chars().count() as u32;
+    (line, column)
+}
+
+fn peer_label_or_description(peer_label: Option<String>, description: Option<String>) -> String {
+    peer_label
+        .or_else(|| description.map(|desc| format!("runtimed-node:{desc}")))
+        .unwrap_or_else(|| "runtimed-node".to_string())
+}
+
+fn kernel_state_from_handle(handle: &DocHandle) -> (bool, String) {
+    let rs = handle.get_runtime_state().ok();
+    let started = rs
+        .as_ref()
+        .map(|r| {
+            matches!(
+                r.kernel.lifecycle,
+                runtime_doc::RuntimeLifecycle::Running(_)
+            )
+        })
+        .unwrap_or(false);
+    let runtime = rs
+        .as_ref()
+        .map(|r| r.kernel.name.clone())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "python".to_string());
+    (started, runtime)
+}
+
+async fn wait_for_kernel_not_running(handle: &DocHandle, timeout: Duration) -> Result<()> {
+    let start = std::time::Instant::now();
+    loop {
+        match handle.get_runtime_state() {
+            Ok(state)
+                if !matches!(
+                    state.kernel.lifecycle,
+                    runtime_doc::RuntimeLifecycle::Running(_)
+                ) =>
+            {
+                return Ok(());
+            }
+            Ok(_) | Err(_) if start.elapsed() < timeout => {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            Ok(state) => {
+                return Err(Error::from_reason(format!(
+                    "Timed out waiting for kernel shutdown; lifecycle is {}",
+                    state.kernel.lifecycle.variant_str()
+                )));
+            }
+            Err(e) => {
+                return Err(Error::from_reason(format!(
+                    "Timed out waiting for kernel shutdown; runtime state unavailable: {e}"
+                )));
+            }
+        }
+    }
+}
+
+fn active_notebook_from_room(room: runtimed_client::protocol::RoomInfo) -> ActiveNotebook {
+    ActiveNotebook {
+        notebook_id: room.notebook_id,
+        active_peers: room.active_peers.try_into().unwrap_or(u32::MAX),
+        had_peers: room.had_peers,
+        has_kernel: room.has_kernel,
+        kernel_type: room.kernel_type,
+        env_source: room.env_source,
+        kernel_status: room.kernel_status,
+        ephemeral: room.ephemeral,
+        notebook_path: room.notebook_path,
+    }
+}
+
+fn has_display() -> bool {
+    if cfg!(target_os = "macos") || cfg!(target_os = "windows") {
+        return true;
+    }
+    std::env::var("DISPLAY").is_ok() || std::env::var("WAYLAND_DISPLAY").is_ok()
+}
+
+async fn show_notebook_inner(
+    socket_path: PathBuf,
+    notebook_id: Option<String>,
+    path: Option<String>,
+) -> Result<ShowNotebookResult> {
+    if let Some(path) = path {
+        if !has_display() {
+            return Ok(ShowNotebookResult {
+                notebook_id,
+                path: Some(path),
+                opened: false,
+                reason: Some(
+                    "No display available (headless environment). The notebook can still be used through @runtimed/node."
+                        .to_string(),
+                ),
+                warning: None,
+            });
+        }
+        runt_workspace::open_notebook_app(Some(std::path::Path::new(&path)), &[])
+            .map_err(|e| Error::from_reason(format!("Failed to open app: {e}")))?;
+        return Ok(ShowNotebookResult {
+            notebook_id,
+            path: Some(path),
+            opened: true,
+            reason: None,
+            warning: None,
+        });
+    }
+
+    let notebook_id = notebook_id.ok_or_else(|| {
+        Error::from_reason("showNotebook requires notebookId or path when not called on a Session")
+    })?;
+    let rooms = PoolClient::new(socket_path)
+        .list_rooms()
+        .await
+        .map_err(to_napi_err)?;
+    let room = rooms
+        .iter()
+        .find(|room| room.notebook_id == notebook_id)
+        .ok_or_else(|| Error::from_reason(format!("Notebook {notebook_id} is not active")))?;
+    let resolved_path = room
+        .notebook_path
+        .as_deref()
+        .filter(|p| std::path::Path::new(p).is_absolute());
+
+    if !has_display() {
+        return Ok(ShowNotebookResult {
+            notebook_id: Some(notebook_id),
+            path: resolved_path.map(str::to_string),
+            opened: false,
+            reason: Some(
+                "No display available (headless environment). The notebook is running in the daemon and accessible through @runtimed/node."
+                    .to_string(),
+            ),
+            warning: room.ephemeral.then(|| {
+                "This notebook is ephemeral. Save it to a path to persist it.".to_string()
+            }),
+        });
+    }
+
+    if let Some(path) = resolved_path {
+        runt_workspace::open_notebook_app(Some(std::path::Path::new(path)), &[])
+            .map_err(|e| Error::from_reason(format!("Failed to open app: {e}")))?;
+    } else {
+        runt_workspace::open_notebook_app(None, &["--notebook-id", &notebook_id])
+            .map_err(|e| Error::from_reason(format!("Failed to open app: {e}")))?;
+    }
+
+    Ok(ShowNotebookResult {
+        notebook_id: Some(notebook_id),
+        path: resolved_path.map(str::to_string),
+        opened: true,
+        reason: None,
+        warning: room
+            .ephemeral
+            .then(|| "This notebook is ephemeral. Save it from the app to keep it.".to_string()),
+    })
+}
+
+fn dependency_package_manager(options: Option<DependencyEditOptions>) -> PackageManager {
+    options
+        .and_then(|opts| opts.package_manager)
+        .unwrap_or(PackageManager::Uv)
+}
+
+fn js_cell_from_snapshot(cell: notebook_doc::CellSnapshot) -> JsCellSnapshot {
+    JsCellSnapshot {
+        id: cell.id,
+        cell_type: cell.cell_type,
+        position: cell.position,
+        source: cell.source,
+        metadata_json: serde_json::to_string(&cell.metadata).unwrap_or_else(|_| "{}".to_string()),
+        execution_count: if cell.execution_count == "null" {
+            None
+        } else {
+            Some(cell.execution_count)
+        },
+    }
+}
+
 fn normalize_cell_type(cell_type: Option<String>) -> Result<String> {
     let cell_type = cell_type.unwrap_or_else(|| "code".to_string());
     if !VALID_CELL_TYPES.contains(&cell_type.as_str()) {
@@ -569,16 +1404,11 @@ async fn add_source_cell(
     cell_type: &str,
 ) -> Result<String> {
     let cell_id = format!("cell-{}", uuid::Uuid::new_v4());
-    {
-        let st = state.lock().await;
-        let handle = st
-            .handle
-            .as_ref()
-            .ok_or_else(|| Error::from_reason("Not connected"))?;
-        handle
-            .add_cell_with_source(&cell_id, cell_type, None, source)
-            .map_err(to_napi_err)?;
-    }
+    let (handle, peer_label) = session_handle_and_label(state).await?;
+    handle
+        .add_cell_with_source(&cell_id, cell_type, None, source)
+        .map_err(to_napi_err)?;
+    emit_cursor_presence(&handle, &cell_id, source, &peer_label).await;
     Ok(cell_id)
 }
 
@@ -586,6 +1416,79 @@ fn dependency_fingerprint_for_handle(handle: &DocHandle) -> Option<String> {
     handle
         .get_notebook_metadata()
         .map(|snapshot| snapshot.dependency_fingerprint())
+}
+
+fn runtime_status_for_handle(handle: &DocHandle) -> RuntimeStatus {
+    let kernel = handle
+        .get_runtime_state()
+        .ok()
+        .map(|state| state.kernel)
+        .unwrap_or_default();
+    let (lifecycle, activity) = match &kernel.lifecycle {
+        runtime_doc::RuntimeLifecycle::Running(activity) => (
+            kernel.lifecycle.variant_str().to_string(),
+            Some(activity.as_str().to_string()),
+        ),
+        lifecycle => (lifecycle.variant_str().to_string(), None),
+    };
+    RuntimeStatus {
+        status: kernel.status,
+        lifecycle,
+        activity,
+        starting_phase: kernel.starting_phase,
+        name: kernel.name,
+        language: kernel.language,
+        env_source: kernel.env_source,
+        runtime_agent_id: kernel.runtime_agent_id,
+        error_reason: kernel.error_reason.filter(|s| !s.is_empty()),
+        error_details: kernel.error_details.filter(|s| !s.is_empty()),
+    }
+}
+
+fn dependency_status_for_handle(handle: &DocHandle) -> DependencyStatus {
+    let metadata = handle.get_notebook_metadata().unwrap_or_default();
+    let uv = metadata.runt.uv.as_ref();
+    let conda = metadata.runt.conda.as_ref();
+    let pixi = metadata.runt.pixi.as_ref();
+    let trust = handle.get_runtime_state().ok().map(|state| state.trust);
+
+    DependencyStatus {
+        uv: uv.map(|uv| UvDependencyStatus {
+            dependencies: uv.dependencies.clone(),
+            requires_python: uv.requires_python.clone(),
+        }),
+        conda: conda.map(|conda| CondaDependencyStatus {
+            dependencies: conda.dependencies.clone(),
+            channels: conda.channels.clone(),
+            python: conda.python.clone(),
+        }),
+        pixi: pixi.map(|pixi| PixiDependencyStatus {
+            dependencies: pixi.dependencies.clone(),
+            pypi_dependencies: pixi.pypi_dependencies.clone(),
+            channels: pixi.channels.clone(),
+            python: pixi.python.clone(),
+        }),
+        fingerprint: Some(metadata.dependency_fingerprint()),
+        trust: DependencyTrustStatus {
+            status: trust.as_ref().map(|trust| trust.status.clone()),
+            needs_approval: trust.as_ref().map(|trust| trust.needs_approval),
+            approved_uv_dependencies: trust
+                .as_ref()
+                .map(|trust| trust.approved_uv_dependencies.clone())
+                .unwrap_or_default(),
+            approved_conda_dependencies: trust
+                .as_ref()
+                .map(|trust| trust.approved_conda_dependencies.clone())
+                .unwrap_or_default(),
+            approved_pixi_dependencies: trust
+                .as_ref()
+                .map(|trust| trust.approved_pixi_dependencies.clone())
+                .unwrap_or_default(),
+            approved_pixi_pypi_dependencies: trust
+                .map(|trust| trust.approved_pixi_pypi_dependencies)
+                .unwrap_or_default(),
+        },
+    }
 }
 
 async fn approve_current_trust(
@@ -916,6 +1819,17 @@ mod tests {
         let err = normalize_cell_type(Some("sql".to_string())).unwrap_err();
         assert!(err.reason.contains("Invalid cell_type"));
         assert!(err.reason.contains("code, markdown, raw"));
+    }
+
+    #[test]
+    fn package_manager_converts_to_protocol_enum() {
+        let uv: notebook_protocol::connection::PackageManager = PackageManager::Uv.into();
+        let conda: notebook_protocol::connection::PackageManager = PackageManager::Conda.into();
+        let pixi: notebook_protocol::connection::PackageManager = PackageManager::Pixi.into();
+
+        assert_eq!(uv.as_str(), "uv");
+        assert_eq!(conda.as_str(), "conda");
+        assert_eq!(pixi.as_str(), "pixi");
     }
 
     #[test]

@@ -7146,6 +7146,7 @@ dependencies = [
  "napi",
  "napi-build",
  "napi-derive",
+ "notebook-doc",
  "notebook-protocol",
  "notebook-sync",
  "nteract-predicate",
