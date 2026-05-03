@@ -475,17 +475,17 @@ export default function nteractReplExtension(pi: ExtensionAPI) {
   }
 
   pi.registerTool({
-    name: "python",
-    label: "Python",
+    name: "python_repl",
+    label: "Python REPL",
     description:
-      "Execute Python in a persistent IPython session backed by a real Jupyter kernel. Variables and imports stick around between calls. The last expression is returned as the result; use print() or display() for intermediate output. Images (matplotlib, PIL, IPython widgets) are returned inline and rendered in terminals that support graphics.",
+      "Execute Python in your persistent REPL. Backed by a real IPython runtime. Variables, imports, and state stick around between calls. The last expression is the result; use print() or display() for intermediate output. Images (matplotlib, PIL, widgets) are returned inline.",
     promptSnippet:
-      "python: run Python in a persistent IPython session (variables and imports persist; returns stdout + last expression + images).",
+      "python_repl: run Python in your persistent REPL (variables and imports persist; returns stdout + last expression + images).",
     promptGuidelines: [
-      "Use `python` for data analysis, plotting, and multi-step workflows. State persists between calls in a real Jupyter kernel.",
+      "Use `python_repl` for data analysis, plotting, and multi-step workflows. State persists between calls in a real IPython runtime.",
       "Variables and imports stick around. No need to re-import or redefine on every turn unless the user has reloaded the session.",
       "The last expression is the result; use print() or display() for intermediate output.",
-      "Images (matplotlib, PIL, IPython widgets) come back inline. The user sees them if their terminal supports graphics.",
+      "Images (matplotlib, PIL, widgets) come back inline. The user sees them if their terminal supports graphics.",
       "Pass `dependencies` on the first call to pre-install packages before the kernel starts.",
       "Use `python_add_dependencies` to install packages mid-session without restarting the kernel.",
     ],
@@ -690,7 +690,7 @@ export default function nteractReplExtension(pi: ExtensionAPI) {
 
   pi.registerCommand("python-reset", {
     description:
-      "Start fresh: next /python call opens a new kernel (clean slate, no prior variables or imports)",
+      "Start fresh: next /python_repl call opens a new kernel (clean slate, no prior variables or imports)",
     handler: async (_args, ctx) => {
       const old = session;
       session = null;
@@ -705,7 +705,7 @@ export default function nteractReplExtension(pi: ExtensionAPI) {
         } catch {}
       }
       ctx.ui.notify(
-        "Python session closed. Next /python call will start a fresh kernel.",
+        "Python session closed. Next python_repl call will start a fresh kernel.",
         "info",
       );
     },

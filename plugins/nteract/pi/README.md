@@ -2,13 +2,13 @@
 
 **Persistent notebook-backed Python REPL for Pi coding agents.** Stateful execution, hot dependency sync, zero cold starts.
 
-Run Python in a real Jupyter kernel with full IPython support. State (variables, imports, matplotlib figures) persists between agent turns. Perfect for data analysis, plotting, and multi-step workflows.
+Run Python in a real IPython runtime. State (variables, imports, matplotlib figures) persists between agent turns. Perfect for data analysis, plotting, and multi-step workflows.
 
 ## What you get
 
-- **`python`** — Execute Python in a persistent IPython session. Variables and imports stick around between calls. The last expression is the result; use `print()` or `display()` for intermediate output. Images (matplotlib, PIL, IPython widgets) are returned inline and rendered in terminals that support graphics.
+- **`python_repl`** — Execute Python in your persistent REPL. Backed by a real IPython runtime. Variables, imports, and state stick around between calls. The last expression is the result; use `print()` or `display()` for intermediate output. Images (matplotlib, PIL, widgets) are returned inline.
   
-- **`python_add_dependencies`** — Install packages mid-session without restarting the kernel. Or pass `dependencies` on the first `python` call to pre-install before kernel start.
+- **`python_add_dependencies`** — Install packages mid-session without restarting the kernel. Or pass `dependencies` on the first `python_repl` call to pre-install before kernel start.
 
 - **`python_save_notebook`** — Save your session as an `.ipynb` file you can open in Jupyter or nteract.
 
@@ -22,23 +22,11 @@ pi install npm:@nteract/pi
 
 ## How it works
 
-This extension uses **`@runtimed/node`**, the Node.js bindings for the nteract daemon (the same Python runtime that powers the nteract desktop app). If you have nteract installed, you already have everything you need. The daemon manages isolated Jupyter kernels and environments per working directory, handles dependency installation via `uv`, and keeps your Python state hot between agent calls.
+This extension uses **`@runtimed/node`**, the Node.js bindings for the nteract daemon (the same runtime that powers the nteract desktop app). If you have nteract installed, you already have everything you need. The daemon manages isolated Jupyter kernels and environments per working directory, handles dependency installation via `uv`, and keeps your Python state hot between agent calls.
 
-### Building on top of `@runtimed/node`
+## Building your own
 
-Want to build your own Pi extensions with persistent Python execution? You can use `@runtimed/node` directly:
-
-```typescript
-import { createNotebook } from "@runtimed/node";
-
-const session = await createNotebook({
-  runtime: "python",
-  dependencies: ["polars", "matplotlib"],
-});
-
-const result = await session.runCell("import polars as pl; pl.__version__");
-console.log(result.outputs);
-```
+This extension is a starting point. Want more control? Build your own Pi extensions using `@runtimed/node`.
 
 See [`packages/runtimed-node/README.md`](../../packages/runtimed-node/README.md) for the full API. The source for this extension ([`extensions/repl.ts`](./extensions/repl.ts)) shows how to wire it up to Pi's tool registration.
 
