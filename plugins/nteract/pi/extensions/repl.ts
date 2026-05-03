@@ -85,10 +85,7 @@ type Session = {
     source: string,
     opts?: { cellType?: string },
   ): Promise<{ cellId: string; executionId: string }>;
-  waitForExecution?(
-    executionId: string,
-    opts?: { timeoutMs?: number },
-  ): Promise<CellResult>;
+  waitForExecution?(executionId: string, opts?: { timeoutMs?: number }): Promise<CellResult>;
   addUvDependency(pkg: string): Promise<void>;
   addDependencies?(
     packages: string[],
