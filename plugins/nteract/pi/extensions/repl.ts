@@ -81,6 +81,11 @@ type CellResult = {
 type Session = {
   readonly notebookId: string;
   runCell(source: string, opts?: { timeoutMs?: number; cellType?: string }): Promise<CellResult>;
+  queueCell?(
+    source: string,
+    opts?: { cellType?: string },
+  ): Promise<{ cellId: string; executionId: string }>;
+  waitForExecution?(executionId: string, opts?: { timeoutMs?: number }): Promise<CellResult>;
   addUvDependency(pkg: string): Promise<void>;
   addDependencies?(
     packages: string[],
@@ -316,7 +321,10 @@ function stripAnsi(s: string): string {
   return s.replace(new RegExp(`${esc}\\[[0-9;]*[A-Za-z]`, "g"), "");
 }
 
-function formatResult(result: CellResult): {
+function formatResult(
+  result: CellResult,
+  executionId?: string,
+): {
   content: (TextContent | ImageContent)[];
   isError: boolean;
 } {
@@ -326,7 +334,9 @@ function formatResult(result: CellResult): {
     result.outputs.some((o) => o.outputType === "error");
 
   const parts: (TextContent | ImageContent)[] = [];
-  const header = `cell ${result.cellId} [${result.executionCount ?? "?"}] ${result.status}`;
+  // Use execution ID if provided, otherwise fall back to cell ID
+  const execHandle = executionId ?? result.cellId;
+  const header = `execution ${execHandle} [${result.executionCount ?? "?"}] ${result.status}`;
   const textChunks: string[] = [];
 
   for (const o of result.outputs) {
@@ -596,9 +606,24 @@ export default function nteractReplExtension(pi: ExtensionAPI) {
       if (signal?.aborted) throw new Error("aborted");
       const sess = await ensureSession(params.dependencies ?? []);
       const timeoutSecs = Math.max(1, params.timeout_secs ?? 120);
-      const result = await sess.runCell(params.code, {
-        timeoutMs: Math.round(timeoutSecs * 1000),
-      });
+
+      // Use queueCell + waitForExecution if available (execution-ID-first API),
+      // fall back to runCell for older bindings
+      let result: CellResult;
+      let executionId: string;
+      if (sess.queueCell && sess.waitForExecution) {
+        const queued = await sess.queueCell(params.code);
+        executionId = queued.executionId;
+        result = await sess.waitForExecution(executionId, {
+          timeoutMs: Math.round(timeoutSecs * 1000),
+        });
+      } else {
+        result = await sess.runCell(params.code, {
+          timeoutMs: Math.round(timeoutSecs * 1000),
+        });
+        executionId = result.cellId; // Fallback: use cellId as execution handle
+      }
+
       // Extract parquet blob path for human-side table rendering
       let parquetBlobPath: string | undefined;
       for (const o of result.outputs) {
@@ -613,12 +638,12 @@ export default function nteractReplExtension(pi: ExtensionAPI) {
         } catch {}
       }
 
-      const { content, isError } = formatResult(result);
+      const { content, isError } = formatResult(result, executionId);
       return {
         content,
         details: {
           notebook_id: sess.notebookId,
-          cell_id: result.cellId,
+          execution_id: executionId,
           status: result.status,
           execution_count: result.executionCount,
           is_error: isError,
@@ -722,5 +747,11 @@ export default function nteractReplExtension(pi: ExtensionAPI) {
       } catch {}
       session = null;
     }
+  });
+
+  // Eager-start: create ephemeral Python session on extension load so the
+  // kernel is hot when the first python_repl call arrives
+  ensureSession().catch((e) => {
+    console.warn("[nteract-repl] eager session startup failed:", e);
   });
 }
