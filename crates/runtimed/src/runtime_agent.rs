@@ -166,7 +166,7 @@ pub async fn run_runtime_agent(
                                             let cleared = kernel_state.clear_queue();
                                             // Write cleared entries AND sweep any CRDT-synced
                                             // executions that haven't reached the local queue yet.
-                                            // Only the agent does this sweep — the coordinator
+                                            // Only the agent does this sweep - the coordinator
                                             // intentionally does NOT, so that final state is
                                             // determined by the agent regardless of timing.
                                             if let Err(e) = state.with_doc(|sd| {
