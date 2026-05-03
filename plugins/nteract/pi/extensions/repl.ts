@@ -751,4 +751,10 @@ export default function nteractReplExtension(pi: ExtensionAPI) {
       session = null;
     }
   });
+
+  // Eager-start: create ephemeral Python session on extension load so the
+  // kernel is hot when the first python_repl call arrives
+  ensureSession().catch((e) => {
+    console.warn("[nteract-repl] eager session startup failed:", e);
+  });
 }
